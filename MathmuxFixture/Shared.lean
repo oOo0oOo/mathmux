@@ -1,6 +1,10 @@
-import Mathlib
+module
+
+public import Mathlib
 
 namespace MathmuxFixture
+
+@[expose] public section
 
 /-- Rowland's recurrence, indexed from zero so `rowland 0 = a(1)`. -/
 def rowland : ℕ → ℕ
@@ -27,5 +31,7 @@ theorem increment_dvd_value (n : ℕ) : increment n ∣ rowland n := by
 
 theorem increment_pos (n : ℕ) : 0 < increment n := by
   exact Nat.gcd_pos_of_pos_left _ (by omega)
+
+end
 
 end MathmuxFixture

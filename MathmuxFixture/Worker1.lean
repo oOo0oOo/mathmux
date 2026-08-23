@@ -1,3 +1,5 @@
+module
+
 import MathmuxFixture.Shared
 
 namespace MathmuxFixture.Worker1

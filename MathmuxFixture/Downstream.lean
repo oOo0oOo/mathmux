@@ -1,3 +1,6 @@
+module
+
+import MathmuxFixture.Shared
 import MathmuxFixture.Worker1
 import MathmuxFixture.Worker2
 import MathmuxFixture.Worker3

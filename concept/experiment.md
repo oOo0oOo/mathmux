@@ -5,6 +5,9 @@
 Mathmux needs a fast way for coding agents to check one dirty Lean file inside an ordinary Lake
 project. This experiment compares five Lean interaction families behind the same check contract.
 
+The production target is Lean's module system with Lake-managed artifacts. Artifact-backed candidates
+are primary; legacy non-module processing modes remain secondary comparison points.
+
 The primary criterion is warm time to complete diagnostics. Aggregate memory under concurrent work
 is second. Every result must be fresh and complete.
 
@@ -64,6 +67,8 @@ elaboration with small tactics. A fragment of Rowland's prime-generating recurre
 useful; its full theorem is outside the experiment.
 
 `Downstream.lean` imports the worker files and serves only as a downstream-build sentinel.
+Every fixture file uses a `module` header, the library sets `requiresModuleSystem := true`, and shared
+definitions declare their public and exposed surface explicitly.
 
 Each concurrent worker receives an isolated workspace and checks a different worker file:
 
