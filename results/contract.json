@@ -1,0 +1,24 @@
+{
+  "oracle": {
+    "valid": {"errors": 0, "completion_ms": 2182.793},
+    "error": {"errors": 1, "completion_ms": 2215.821},
+    "repair": {"errors": 0, "completion_ms": 2216.405}
+  },
+  "changed_dependency": {
+    "lsp-standard": {"errors": 5, "fresh": true, "downstream_built": false},
+    "lsp-custom": {"errors": 5, "fresh": true, "downstream_built": false},
+    "cli-snapshot": {"errors": 1, "fresh": true, "downstream_built": false},
+    "lake-build": {"errors": 1, "fresh": true, "downstream_built": false}
+  },
+  "supersede": {
+    "lsp-standard": {"newer_version_complete": true, "errors": 0, "published_versions": [202, 202], "completion_ms": 38.727},
+    "lsp-custom": {"newer_version_complete": true, "errors": 0, "published_versions": [202, 202], "completion_ms": 40.077},
+    "cli-snapshot": {"cancelled_exit": -15, "cancellation_ms": 2.028, "newer_version_complete": true, "recovery_ms": 2218.776},
+    "lake-build": {"cancelled_exit": -15, "cancellation_ms": 2.354, "newer_version_complete": true, "recovery_ms": 6721.381}
+  },
+  "compacted_region": {
+    "prepare_timeout_ms": 30000,
+    "peak_rss_mib": 10151.98,
+    "artifact_created": false
+  }
+}

@@ -367,7 +367,9 @@ class RegionBackend(Backend):
                        env=self.env, timeout=30)
         self.prepare_ms += measured["completion_ms"]
         if measured["exit_code"]:
-            raise RuntimeError(measured["stderr"])
+            reason = "timed out" if measured["timed_out"] else f"exit {measured['exit_code']}"
+            raise RuntimeError(
+                f"CompactedRegion environment save {reason}; peak RSS {measured['peak_rss_mib']:.1f} MiB")
 
     def check(self, source: str, version: int) -> dict[str, Any]:
         started = now_ns()
@@ -514,7 +516,7 @@ def main() -> int:
     (RESULTS / "run.json").write_text(json.dumps({"machine": machine(), "seed": args.seed,
         "repetitions": args.repetitions, "failures": failures}, indent=2) + "\n")
     print(json.dumps({"rows": len(rows), "failures": failures, "summary": summary}, indent=2))
-    return int(bool(failures))
+    return int(not rows)
 
 
 if __name__ == "__main__":
