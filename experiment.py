@@ -224,8 +224,8 @@ class JsonBackend(Backend):
 
 
 class LspClient:
-    def __init__(self, cwd: Path):
-        self.process = subprocess.Popen([LAKE, "serve", "--", "-Dserver.reportDelayMs=0",
+    def __init__(self, cwd: Path, report_delay_ms: int = 0):
+        self.process = subprocess.Popen([LAKE, "serve", "--", f"-Dserver.reportDelayMs={report_delay_ms}",
             f"--plugin={PLUGIN}=initialize_mathmux_MathmuxBench_ServerPlugin"], cwd=cwd,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             start_new_session=True)

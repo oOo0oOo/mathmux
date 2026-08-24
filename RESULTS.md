@@ -62,6 +62,28 @@ Observed RSS is the largest sampled check-process tree. `setup-file` time is inc
 while its transient RSS is outside this follow-up's sampler. The LSP close policy's post-close idle
 RSS was not sampled.
 
+## Exploratory LSP follow-up
+
+A virtual Worker1 placed one early error, one early hover target, and 200 changed declarations before
+the end of the file. Five randomized repetitions compared early standard-LSP feedback with eventual
+`waitForDiagnostics` completion. Every early response matched the current source, and every completed
+file contained the expected single error.
+
+| Report delay | Early error | Hover | Full file |
+| ---: | ---: | ---: | ---: |
+| 0 ms | 11.1 ms | 19.1 ms | 905.6 ms |
+| 200 ms | 209.3 ms | 17.7 ms | 870.3 ms |
+
+The standard 200 ms diagnostic debounce preserved a 681 ms median lead and suppressed the stale
+partial update in the rapid-edit probe. With zero delay, one diagnostic from the superseded version
+was emitted before cancellation; every notification carried its source version, so discarding
+non-current versions was sufficient. Position-scoped plain goals returned in 14 to 16 ms and are
+recorded as secondary evidence.
+
+Use incremental published diagnostics and local requests for exploratory feedback. Use
+`waitForDiagnostics` when a result must certify the entire current file. An empty partial diagnostic
+set never certifies that later declarations are clean.
+
 LSP idle RSS was 4.55 GiB for one worker, 9.78 GiB for two, and 20.24 GiB for four. CLI snapshots and
 Lake builds had no idle process. Median cold preparation was 11.7 to 11.9 seconds for LSP, 14.3 to
 14.5 seconds for CLI snapshots, and 4.2 seconds for the targeted Lake baseline.
@@ -94,3 +116,6 @@ Run `./experiment.py --repetitions 5`. Machine metadata and disqualifications ar
 
 Run `./switch_experiment.py --repetitions 3` for the file-switching follow-up. Its metadata, summary,
 and per-visit measurements use the `switching_` prefix in `results/`.
+
+Run `./exploratory_experiment.py` for the exploratory follow-up. Its metadata, contract probe,
+summary, and raw measurements use the `exploratory_` prefix in `results/`.

@@ -1,0 +1,74 @@
+[
+  {
+    "report_delay_ms": 0,
+    "probe": "partial-diagnostic",
+    "n": 5,
+    "correct": true,
+    "median_response_ms": 11.061,
+    "median_full_ms": 890.001,
+    "median_lead_ms": 878.031
+  },
+  {
+    "report_delay_ms": 0,
+    "probe": "plain-goal",
+    "n": 5,
+    "correct": true,
+    "median_response_ms": 16.378,
+    "median_full_ms": 896.31,
+    "median_lead_ms": 883.413
+  },
+  {
+    "report_delay_ms": 0,
+    "probe": "hover",
+    "n": 5,
+    "correct": true,
+    "median_response_ms": 19.105,
+    "median_full_ms": 897.869,
+    "median_lead_ms": 878.764
+  },
+  {
+    "report_delay_ms": 0,
+    "probe": "full-diagnostics",
+    "n": 5,
+    "correct": true,
+    "median_response_ms": 905.644,
+    "median_full_ms": 905.646,
+    "median_lead_ms": 0.002
+  },
+  {
+    "report_delay_ms": 200,
+    "probe": "partial-diagnostic",
+    "n": 5,
+    "correct": true,
+    "median_response_ms": 209.28,
+    "median_full_ms": 889.288,
+    "median_lead_ms": 681.069
+  },
+  {
+    "report_delay_ms": 200,
+    "probe": "plain-goal",
+    "n": 5,
+    "correct": true,
+    "median_response_ms": 14.132,
+    "median_full_ms": 876.304,
+    "median_lead_ms": 858.226
+  },
+  {
+    "report_delay_ms": 200,
+    "probe": "hover",
+    "n": 5,
+    "correct": true,
+    "median_response_ms": 17.703,
+    "median_full_ms": 864.125,
+    "median_lead_ms": 846.939
+  },
+  {
+    "report_delay_ms": 200,
+    "probe": "full-diagnostics",
+    "n": 5,
+    "correct": true,
+    "median_response_ms": 870.288,
+    "median_full_ms": 870.29,
+    "median_lead_ms": 0.001
+  }
+]

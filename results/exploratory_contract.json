@@ -1,0 +1,33 @@
+[
+  {
+    "report_delay_ms": 0,
+    "old_version": 21,
+    "new_version": 22,
+    "response_ms": 20.855923,
+    "full_ms": 914.594531,
+    "current_goal": true,
+    "stale_diagnostics": true,
+    "all_diagnostics_versioned": true,
+    "final_errors": 1,
+    "correct": true,
+    "published_version_counts": {
+      "21": 1,
+      "22": 204
+    }
+  },
+  {
+    "report_delay_ms": 200,
+    "old_version": 21,
+    "new_version": 22,
+    "response_ms": 16.740441,
+    "full_ms": 854.478714,
+    "current_goal": true,
+    "stale_diagnostics": false,
+    "all_diagnostics_versioned": true,
+    "final_errors": 1,
+    "correct": true,
+    "published_version_counts": {
+      "22": 152
+    }
+  }
+]
