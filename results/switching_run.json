@@ -1,0 +1,28 @@
+{
+  "machine": {
+    "date": "2026-08-24T07:57:32+0200",
+    "platform": "Linux-6.8.0-138-generic-x86_64-with-glibc2.39",
+    "logical_cores": 24,
+    "ram_mib": 128725,
+    "lean": "Lean (version 4.34.0-rc2, x86_64-unknown-linux-gnu, commit 6a10ac8c22beadecabdbb0919c2b50214762f91d, Release)",
+    "mathlib_revision": "f2916a54665af851fc9a4da901cfc242c47a8922",
+    "fixture_revision": "0c825d72d12c8c13040bec5de0079b43665aed88"
+  },
+  "seed": 20260824,
+  "repetitions": 3,
+  "files": 4,
+  "rounds": [
+    "valid",
+    "error",
+    "repair"
+  ],
+  "cold_visit_share": 0.3333333333333333,
+  "strategies": [
+    "lsp-keep-open",
+    "lsp-close-on-switch",
+    "lean-cached-setup",
+    "lean-setup-each",
+    "cli-snapshot",
+    "lake-build"
+  ]
+}

@@ -11,6 +11,12 @@ Use a clean targeted Lake build for integration validation. A second dirty-file 
 enough value: short-lived snapshot checkers saved about 5 GiB at four workers, while checks took about
 9.2 seconds instead of 45 milliseconds.
 
+The file-switching follow-up supports keeping recently visited files open in that single LSP session.
+With four files visited in rotation, the first visit to each file was cold and the next two reused its
+worker. LSP completed the twelve visits in 27.8 seconds versus 44.5 seconds for fresh Lean with cached
+per-file `ModuleSetup` artifacts. The LSP retained 14.8 GiB after opening all four files; the fresh
+process strategy retained no idle memory.
+
 ## Result
 
 Five repetitions of valid, error, and repair checks produced 465 raw rows. Times below are medians in
@@ -30,6 +36,31 @@ milliseconds. RSS is the peak aggregate process tree in MiB.
 | Lake build | 1 | 4,230 | 6,777 | 6,787 | 6,775 | 3,958 |
 | Lake build | 2 | 4,232 | 6,787 | 6,806 | 6,841 | 7,782 |
 | Lake build | 4 | 3,891 | 6,419 | 6,462 | 6,567 | 15,521 |
+
+## File-switching follow-up
+
+One workspace was visited in the order Worker1 through Worker4 three times. The rounds applied a
+valid source, an error edit, and its repair, producing four cold opens and eight revisits. Three
+repetitions produced 216 correct checks. Times are milliseconds; total is the median sum of twelve
+sequential visits.
+
+| Strategy | Cold visit | Revisit | 12-visit total | Observed RSS | Idle RSS |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| LSP, keep files open | 6,821 | 43 | 27,801 | 14,832 | 14,832 |
+| Fresh Lean, cache setup per file | 6,556 | 2,282 | 44,547 | 2,915 | 0 |
+| Fresh Lean, recreate setup | 6,564 | n/a | 78,602 | 2,915 | 0 |
+| Lake targeted build | 6,839 | 6,832 | 81,895 | 3,939 | 0 |
+| LSP, close after each visit | 6,887 | n/a | 82,561 | 5,235 | n/a |
+| CLI snapshot per file | 14,548 | 8,401 | 123,477 | 4,131 | 0 |
+
+At the measured per-visit medians, fresh Lean with cached setup overtakes keep-open LSP only when
+about 89% of visits are first-time file opens. Closing each LSP document after a switch removes its
+latency advantage. The retained file workers, rather than the protocol alone, account for the fast
+revisits.
+
+Observed RSS is the largest sampled check-process tree. `setup-file` time is included in cold visits,
+while its transient RSS is outside this follow-up's sampler. The LSP close policy's post-close idle
+RSS was not sampled.
 
 LSP idle RSS was 4.55 GiB for one worker, 9.78 GiB for two, and 20.24 GiB for four. CLI snapshots and
 Lake builds had no idle process. Median cold preparation was 11.7 to 11.9 seconds for LSP, 14.3 to
@@ -60,3 +91,6 @@ Lean's module system throughout, with `requiresModuleSystem := true` and explici
 Run `./experiment.py --repetitions 5`. Machine metadata and disqualifications are in
 `results/run.json`; summaries are in `results/summary.json`; contract probes are in
 `results/contract.json`; per-check data are in `results/raw.csv` and `results/raw.jsonl`.
+
+Run `./switch_experiment.py --repetitions 3` for the file-switching follow-up. Its metadata, summary,
+and per-visit measurements use the `switching_` prefix in `results/`.
