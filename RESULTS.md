@@ -84,6 +84,42 @@ Use incremental published diagnostics and local requests for exploratory feedbac
 `waitForDiagnostics` when a result must certify the entire current file. An empty partial diagnostic
 set never certifies that later declarations are clean.
 
+## Axiom and sorry audit follow-up
+
+Run this audit after artifacts are built, outside interactive checks and the ordinary build queue.
+Load the final modules once, enumerate the declarations in scope, and call `Lean.collectAxioms` for
+each accepted root. Reject `sorryAx` and every unknown or private axiom by default. A project policy
+may allow `propext`, `Classical.choice`, and `Quot.sound`; native evaluation should remain a distinct
+compiler-trust classification.
+
+The adversarial fixture covered direct `sorry`, `admit`, an imported macro that expands to `sorry`,
+disabled sorry warnings, a private sorry used by a public theorem, an unused axiom, a hidden custom
+axiom, an axiom whose type references two more axioms, `Classical.choice`, and `native_decide`. The
+source files were hidden before the artifact audits.
+
+`#print axioms` found every transitive dependency. In particular, it recovered all three axioms in
+the axiom-type chain and represented `native_decide` by its generated private axiom. Batched auditing
+of ten roots took 6.49 seconds: 4.26 seconds for `setup-file` and 2.23 seconds for the Lean process and
+queries. `assert_no_sorry`, which uses the same API, rejected all five affected public roots in 6.59
+seconds.
+
+The alternatives do not meet the soundness gate alone:
+
+- Build warnings reported four direct declarations. Warning suppression hid one sorry, and a public
+  theorem's transitive dependency was not attributed to that theorem.
+- Token scanning found unused axioms and option names while missing the imported macro expansion. It
+  cannot determine reachability.
+- Mathlib's `#print sorries` reported all ten imported roots as sorry-free because ordinary module
+  artifacts hide the bodies it traverses.
+- `leanchecker` replayed the adversarial module successfully in 9.28 seconds at 6.94 GiB RSS. Axioms
+  are kernel-valid, so replay verifies artifact integrity rather than axiom policy.
+- `leanchecker --fresh` exceeded the 30-second fixture bound and a separate 180-second Worker1 bound.
+  Keep it as the later gold-standard integrity pass.
+
+For proof soundness, audit the exported deliverable roots. Auditing every exported declaration adds
+a stronger repository policy. Unused private holes cannot affect those roots and require a separate
+source-cleanliness policy if they must also be forbidden.
+
 LSP idle RSS was 4.55 GiB for one worker, 9.78 GiB for two, and 20.24 GiB for four. CLI snapshots and
 Lake builds had no idle process. Median cold preparation was 11.7 to 11.9 seconds for LSP, 14.3 to
 14.5 seconds for CLI snapshots, and 4.2 seconds for the targeted Lake baseline.
@@ -119,3 +155,6 @@ and per-visit measurements use the `switching_` prefix in `results/`.
 
 Run `./exploratory_experiment.py` for the exploratory follow-up. Its metadata, contract probe,
 summary, and raw measurements use the `exploratory_` prefix in `results/`.
+
+Run `./axiom_experiment.py` for the artifact-only axiom and sorry audit. Detailed outputs and
+soundness assertions are in `results/axiom_audit.json`.

@@ -1,0 +1,191 @@
+{
+  "machine": {
+    "date": "2026-08-24T10:56:00+0200",
+    "platform": "Linux-6.8.0-138-generic-x86_64-with-glibc2.39",
+    "logical_cores": 24,
+    "ram_mib": 128725,
+    "lean": "Lean (version 4.34.0-rc2, x86_64-unknown-linux-gnu, commit 6a10ac8c22beadecabdbb0919c2b50214762f91d, Release)",
+    "mathlib_revision": "f2916a54665af851fc9a4da901cfc242c47a8922",
+    "fixture_revision": "d2aea3231e756fda5b9ca5004ea6b08b0940ffc7"
+  },
+  "fixture": {
+    "roots": [
+      "clean",
+      "usesChoice",
+      "usesNativeDecide",
+      "hiddenAxiomAlias",
+      "typedAxiomUse",
+      "directSorry",
+      "admitted",
+      "macroSorry",
+      "suppressedSorry",
+      "indirectPrivateSorry"
+    ],
+    "source_hidden_before_audits": true,
+    "source_scan_hits": [
+      {
+        "line": 10,
+        "tokens": [
+          "axiom"
+        ],
+        "text": "axiom hiddenProof : True"
+      },
+      {
+        "line": 11,
+        "tokens": [
+          "axiom"
+        ],
+        "text": "axiom unusedAxiom : False"
+      },
+      {
+        "line": 13,
+        "tokens": [
+          "axiom"
+        ],
+        "text": "axiom A0 : Type"
+      },
+      {
+        "line": 14,
+        "tokens": [
+          "axiom"
+        ],
+        "text": "axiom A1 : Type"
+      },
+      {
+        "line": 17,
+        "tokens": [
+          "axiom"
+        ],
+        "text": "axiom A2 (_ : A1) : C"
+      },
+      {
+        "line": 31,
+        "tokens": [
+          "sorry"
+        ],
+        "text": "sorry"
+      },
+      {
+        "line": 34,
+        "tokens": [
+          "admit"
+        ],
+        "text": "admit"
+      },
+      {
+        "line": 38,
+        "tokens": [
+          "sorry"
+        ],
+        "text": "set_option warn.sorry false in"
+      },
+      {
+        "line": 40,
+        "tokens": [
+          "sorry"
+        ],
+        "text": "sorry"
+      },
+      {
+        "line": 43,
+        "tokens": [
+          "sorry"
+        ],
+        "text": "sorry"
+      }
+    ],
+    "imported_macro_source_scan_hits": [
+      {
+        "line": 7,
+        "tokens": [
+          "sorry"
+        ],
+        "text": "macro \"hiddenHole\" : term => `(by exact sorry)"
+      }
+    ]
+  },
+  "build_warnings": {
+    "exit_code": 0,
+    "completion_ms": 13893.901721,
+    "warning_count": 4,
+    "warnings": [
+      "warning: MathmuxFixture/AxiomFixture.lean:30:8: declaration uses `sorry`",
+      "warning: MathmuxFixture/AxiomFixture.lean:33:8: declaration uses `sorry`",
+      "warning: MathmuxFixture/AxiomFixture.lean:36:8: declaration uses `sorry`",
+      "warning: MathmuxFixture/AxiomFixture.lean:42:16: declaration uses `sorry`"
+    ]
+  },
+  "print_axioms": {
+    "exit_code": 0,
+    "setup_ms": 4259.13065,
+    "completion_ms": 2229.60358,
+    "total_ms": 6488.73423,
+    "messages": [
+      "'MathmuxFixture.AxiomFixture.clean' does not depend on any axioms",
+      "'MathmuxFixture.AxiomFixture.usesChoice' depends on axioms: [Classical.choice]",
+      "'MathmuxFixture.AxiomFixture.usesNativeDecide' depends on axioms: [_private.MathmuxFixture.AxiomFixture.0.MathmuxFixture.AxiomFixture.usesNativeDecide._native.native_decide.ax_1_1]",
+      "'MathmuxFixture.AxiomFixture.hiddenAxiomAlias' depends on axioms: [MathmuxFixture.AxiomFixture.hiddenProof]",
+      "'MathmuxFixture.AxiomFixture.typedAxiomUse' depends on axioms: [MathmuxFixture.AxiomFixture.A0,\n MathmuxFixture.AxiomFixture.A1,\n MathmuxFixture.AxiomFixture.A2]",
+      "'MathmuxFixture.AxiomFixture.directSorry' depends on axioms: [sorryAx]",
+      "'MathmuxFixture.AxiomFixture.admitted' depends on axioms: [sorryAx]",
+      "'MathmuxFixture.AxiomFixture.macroSorry' depends on axioms: [sorryAx]",
+      "'MathmuxFixture.AxiomFixture.suppressedSorry' depends on axioms: [sorryAx]",
+      "'MathmuxFixture.AxiomFixture.indirectPrivateSorry' depends on axioms: [sorryAx]"
+    ]
+  },
+  "print_sorries": {
+    "exit_code": 0,
+    "setup_ms": 4164.080202,
+    "completion_ms": 2156.718713,
+    "total_ms": 6320.798915,
+    "messages": [
+      "Declarations are sorry-free!",
+      "Declarations are sorry-free!",
+      "Declarations are sorry-free!",
+      "Declarations are sorry-free!",
+      "Declarations are sorry-free!",
+      "Declarations are sorry-free!",
+      "Declarations are sorry-free!",
+      "Declarations are sorry-free!",
+      "Declarations are sorry-free!",
+      "Declarations are sorry-free!"
+    ]
+  },
+  "assert_no_sorry": {
+    "exit_code": 1,
+    "setup_ms": 4379.843257,
+    "completion_ms": 2213.744636,
+    "total_ms": 6593.587893,
+    "messages": [
+      "MathmuxFixture.AxiomFixture.directSorry contains sorry",
+      "MathmuxFixture.AxiomFixture.admitted contains sorry",
+      "MathmuxFixture.AxiomFixture.macroSorry contains sorry",
+      "MathmuxFixture.AxiomFixture.suppressedSorry contains sorry",
+      "MathmuxFixture.AxiomFixture.indirectPrivateSorry contains sorry"
+    ]
+  },
+  "leanchecker": {
+    "module_replay": {
+      "exit_code": 0,
+      "completion_ms": 9278.21251,
+      "peak_rss_mib": 6935.3671875,
+      "output": "replaying MathmuxFixture.AxiomFixture\n"
+    },
+    "fresh_replay": {
+      "exit_code": -9,
+      "completion_ms": 30386.32767,
+      "peak_rss_mib": 7018.02734375,
+      "timed_out": true,
+      "timeout_seconds": 30.0
+    }
+  },
+  "validation": {
+    "print_axioms_complete": true,
+    "print_sorries_imported_false_negatives": true,
+    "assert_no_sorry_complete": true,
+    "suppressed_warning_absent": true,
+    "target_scan_misses_macro_expansion": true,
+    "module_checker_accepts_axioms": true,
+    "fresh_checker_reaches_bound": true
+  }
+}
