@@ -2700,7 +2700,7 @@ fn declaration_glob_query(query: &str) -> bool {
 fn declaration_glob_matches(name: &str, query: &str) -> bool {
     let pattern = query
         .split('*')
-        .map(regex::escape)
+        .map(|part| regex::escape(part).replace(r"\.", "[._]"))
         .collect::<Vec<_>>()
         .join(".*");
     let prefix = if query.starts_with('*') {
@@ -4194,6 +4194,10 @@ end Demo
         assert!(declaration_glob_matches(
             "Demo.FiberBundle.local_equiv",
             "FiberBundle.*equiv"
+        ));
+        assert!(declaration_glob_matches(
+            "Demo.matrixToEuclideanCLM_mul",
+            "matrixToEuclideanCLM.*mul"
         ));
         assert!(!declaration_glob_matches(
             "Demo.FiberBundle.local_equiv_apply",
