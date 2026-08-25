@@ -1901,6 +1901,8 @@ fn fallback_source_hits(
         .map(str::to_lowercase)
         .filter(|term| term.len() >= 3 && !generic.contains(&term.as_str()))
         .collect::<Vec<_>>();
+    let named_argument_terms = named_argument_terms(query);
+    terms.extend(named_argument_terms.iter().cloned());
     let generated_suffixes = ["_symm_apply", "_apply"];
     for term in terms.clone() {
         for suffix in generated_suffixes {
@@ -2063,6 +2065,10 @@ fn fallback_source_hits(
                 .filter(|term| entry.name.to_lowercase().contains(*term))
                 .map(|term| if term.len() >= 12 { 3 } else { 1 })
                 .sum::<usize>();
+            let named_argument_score = named_argument_terms
+                .iter()
+                .filter(|term| entry.signature.to_lowercase().contains(*term))
+                .count();
             let name = entry.name.to_lowercase();
             let base = name.rsplit('.').next().unwrap_or(&name);
             let name_segments = name.split('.').collect::<HashSet<_>>();
@@ -2111,6 +2117,7 @@ fn fallback_source_hits(
                 score: 35.0
                     + score as f64 * 8.0
                     + name_score as f64 * 20.0
+                    + named_argument_score as f64 * 200.0
                     + segment_score as f64 * 30.0
                     + if exact_name { 80.0 } else { 0.0 }
                     + if qualified_leaf { 60.0 } else { 0.0 }
@@ -2138,6 +2145,18 @@ fn fallback_source_hits(
     });
     ranked.truncate(RESULT_LIMIT);
     Ok(ranked)
+}
+
+fn named_argument_terms(query: &str) -> Vec<String> {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    let regex = REGEX.get_or_init(|| {
+        Regex::new(r"\(([\p{L}_][\p{L}\p{N}\p{M}_']*)\s*:=").expect("valid named argument regex")
+    });
+    regex
+        .captures_iter(query)
+        .filter_map(|capture| capture.get(1))
+        .map(|name| format!("({} :", name.as_str().to_lowercase()))
+        .collect()
 }
 
 fn direct_module_paths(workspace: &Path, packages: Option<&Path>, query: &str) -> Vec<PathBuf> {
@@ -2730,6 +2749,28 @@ end Demo
                 .as_deref()
                 .unwrap()
                 .contains("continuous : True")
+        );
+    }
+
+    #[test]
+    fn fallback_honors_named_argument_queries() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("Precomp.lean"),
+            "namespace CategoryTheory\ndef precomp (α : X) := α\nend CategoryTheory\nnamespace ContinuousLinearMap\ndef precomp (G) (L : E → F) := L\nend ContinuousLinearMap\n",
+        )
+        .unwrap();
+        let query = "precomp (L :=)";
+        let hits =
+            fallback_source_hits(directory.path(), query, &meaningful_query_tokens(query)).unwrap();
+        assert_eq!(hits[0].hit.name, "ContinuousLinearMap.precomp");
+        assert!(
+            hits[0]
+                .hit
+                .signature
+                .as_deref()
+                .unwrap()
+                .contains("(L : E → F)")
         );
     }
 }
