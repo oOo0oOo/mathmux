@@ -905,6 +905,20 @@ impl Searcher {
                         }))
             })
         });
+        let missing_source_identifier = source_specific_query_tokens(query).iter().any(|token| {
+            !ranked.iter().any(|candidate| {
+                if matches!(candidate.hit.kind.as_str(), "file" | "imports") {
+                    return false;
+                }
+                let name = candidate.hit.name.to_lowercase();
+                let base = name.rsplit('.').next().unwrap_or(&name);
+                if token.contains('_') {
+                    name.contains(token)
+                } else {
+                    base == token
+                }
+            })
+        });
         let missing_named_detail =
             query_tokens
                 .iter()
@@ -921,8 +935,8 @@ impl Searcher {
                 });
         if ranked.len() < 3
             || missing_specific_term
+            || missing_source_identifier
             || missing_named_detail
-            || !source_specific_query_tokens(query).is_empty()
             || (!base_warming
                 && !type_search
                 && (query.contains('|')
