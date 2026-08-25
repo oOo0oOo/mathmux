@@ -15,6 +15,7 @@ pub enum Command {
     WsList,
     WsDelete { name: String },
     Check { file: Option<String> },
+    Search { query: String },
     Sync,
     Submit { message: Option<String> },
     Show { reference: String, all: bool },

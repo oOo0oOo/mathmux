@@ -67,6 +67,16 @@ enum TopCommand {
         /// Lean file to certify; omit to certify all dirty Lean files.
         file: Option<PathBuf>,
     },
+    /// Search local Lean declarations, types, source, and goals.
+    ///
+    /// Query forms are inferred. A FILE:LINE[:COLUMN] query searches the goal at
+    /// that position; every other query combines declaration, type, and source
+    /// search. Full results and references are stored under the returned reference.
+    Search {
+        /// Search terms, a Lean type pattern, or FILE:LINE[:COLUMN].
+        #[arg(required = true, num_args = 1.., trailing_var_arg = true)]
+        query: Vec<String>,
+    },
     /// Bring managed main into the current workspace.
     ///
     /// Merges mathmux-managed main into the current workspace and reports conflicts
@@ -203,6 +213,9 @@ pub fn run() -> Result<u8> {
                 };
                 path.to_string_lossy().into_owned()
             }),
+        },
+        TopCommand::Search { query } => Command::Search {
+            query: query.join(" "),
         },
         TopCommand::Sync => Command::Sync,
         TopCommand::Submit { message } => Command::Submit { message },

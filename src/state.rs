@@ -80,6 +80,39 @@ pub struct ValidationReport {
     pub duration_ms: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchUsage {
+    pub module: String,
+    pub path: String,
+    pub line: u64,
+    pub context: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchHit {
+    pub name: String,
+    pub kind: String,
+    pub signature: Option<String>,
+    pub module: String,
+    pub path: String,
+    pub line: u64,
+    pub doc: Option<String>,
+    pub source: Option<String>,
+    pub usages: Vec<SearchUsage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchRun {
+    pub reference: String,
+    pub workspace_ref: String,
+    pub query: String,
+    pub inference: String,
+    pub hits: Vec<SearchHit>,
+    pub note: Option<String>,
+    pub duration_ms: u64,
+    pub created_at: i64,
+}
+
 impl State {
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
         let state = Self {
@@ -174,7 +207,17 @@ impl State {
                 created_at INTEGER NOT NULL
              );
              CREATE INDEX IF NOT EXISTS submissions_validation
-                ON submissions(validation_status, created_at);",
+                ON submissions(validation_status, created_at);
+             CREATE TABLE IF NOT EXISTS searches (
+                ref TEXT PRIMARY KEY,
+                workspace_ref TEXT NOT NULL REFERENCES workspaces(ref),
+                query TEXT NOT NULL,
+                inference TEXT NOT NULL,
+                hits_json TEXT NOT NULL,
+                note TEXT,
+                duration_ms INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+             );",
         )?;
         let _ = connection.execute("ALTER TABLE workspaces ADD COLUMN deleted_at INTEGER", []);
         let _ = connection.execute(
@@ -493,6 +536,50 @@ impl State {
             .map_err(Into::into)
     }
 
+    pub fn add_search(&self, run: &SearchRun) -> Result<()> {
+        self.open()?.execute(
+            "INSERT INTO searches(
+                ref, workspace_ref, query, inference, hits_json, note, duration_ms, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                run.reference,
+                run.workspace_ref,
+                run.query,
+                run.inference,
+                serde_json::to_string(&run.hits)?,
+                run.note,
+                run.duration_ms,
+                run.created_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn search_run(&self, reference: &str) -> Result<Option<SearchRun>> {
+        self.open()?
+            .query_row(
+                "SELECT ref, workspace_ref, query, inference, hits_json, note,
+                        duration_ms, created_at
+                 FROM searches WHERE ref = ?1",
+                [reference],
+                |row| {
+                    let hits: String = row.get(4)?;
+                    Ok(SearchRun {
+                        reference: row.get(0)?,
+                        workspace_ref: row.get(1)?,
+                        query: row.get(2)?,
+                        inference: row.get(3)?,
+                        hits: serde_json::from_str(&hits).unwrap_or_default(),
+                        note: row.get(5)?,
+                        duration_ms: row.get(6)?,
+                        created_at: row.get(7)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
     pub fn show(&self, reference: &str, all: bool) -> Result<String> {
         let kind = validate_reference(reference)?;
         match kind {
@@ -506,6 +593,10 @@ impl State {
                 .with_context(|| format!("unknown reference {reference}")),
             'w' => self.show_workspace(reference, all),
             'u' => self.show_sync(reference, all),
+            'q' => self
+                .search_run(reference)?
+                .map(|run| render_search_run(&run, all))
+                .with_context(|| format!("unknown reference {reference}")),
             _ => bail!("unknown reference type {kind}"),
         }
     }
@@ -572,6 +663,54 @@ impl State {
             .optional()?
             .with_context(|| format!("unknown reference {reference}"))
     }
+}
+
+fn render_search_run(run: &SearchRun, all: bool) -> String {
+    let mut output = format!(
+        "{} {} {}ms\nquery: {}",
+        run.reference, run.inference, run.duration_ms, run.query
+    );
+    if let Some(note) = &run.note {
+        output.push_str(&format!("\n{note}"));
+    }
+    if run.hits.is_empty() {
+        output.push_str("\nno results");
+        return output;
+    }
+    for (index, hit) in run.hits.iter().enumerate() {
+        output.push_str(&format!("\n{}. {}", index + 1, hit.name));
+        if let Some(signature) = &hit.signature {
+            output.push_str(&format!(" : {}", single_line(signature)));
+        }
+        output.push_str(&format!("\n   {}:{}", hit.path, hit.line));
+        if !hit.usages.is_empty() {
+            output.push_str(&format!("  refs:{}", hit.usages.len()));
+        }
+        if all {
+            if let Some(doc) = &hit.doc {
+                for line in doc.trim().lines() {
+                    output.push_str(&format!("\n   doc: {}", line.trim()));
+                }
+            }
+            if let Some(source) = &hit.source {
+                output.push_str("\n   source:");
+                for line in source.trim().lines().take(20) {
+                    output.push_str(&format!("\n     {line}"));
+                }
+            }
+            for usage in &hit.usages {
+                output.push_str(&format!("\n   used: {}:{}", usage.path, usage.line));
+                if let Some(context) = &usage.context {
+                    output.push_str(&format!(" in {context}"));
+                }
+            }
+        }
+    }
+    output
+}
+
+fn single_line(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn validate_reference(reference: &str) -> Result<char> {

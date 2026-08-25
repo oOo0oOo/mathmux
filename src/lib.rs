@@ -5,6 +5,7 @@ pub mod git;
 pub mod issue;
 pub mod protocol;
 pub mod repo;
+pub mod search;
 pub mod state;
 pub mod util;
 pub mod validation;

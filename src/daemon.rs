@@ -15,11 +15,13 @@ use crate::check::{CheckOutcome, Checker};
 use crate::git::{self, dirty_lean_files, dirty_paths};
 use crate::protocol::{Command, Request, Response};
 use crate::repo::Repo;
+use crate::search::Searcher;
 use crate::state::{State, Submission};
 use crate::util::{build_id, clean_line, now_unix_ms};
 use crate::validation::ValidationQueue;
 
 pub fn run(repo: Repo) -> Result<()> {
+    let _ = build_id();
     if repo.socket_path.exists() {
         match UnixStream::connect(&repo.socket_path) {
             Ok(_) => bail!("mathmux daemon is already running"),
@@ -34,6 +36,7 @@ pub fn run(repo: Repo) -> Result<()> {
 
     let state = State::new(&repo.db_path)?;
     let checker = Arc::new(Checker::new(repo.clone(), state.clone())?);
+    let searcher = Searcher::new(repo.clone(), state.clone())?;
     let retiring = Arc::new(AtomicBool::new(false));
     let validation = ValidationQueue::start(repo.clone(), state.clone(), retiring.clone())?;
     let watcher = WorkspaceWatcher::new(state.clone(), checker.clone())?;
@@ -44,6 +47,7 @@ pub fn run(repo: Repo) -> Result<()> {
         repo: repo.clone(),
         state,
         checker,
+        searcher,
         validation,
         watcher,
         mutations: Mutex::new(()),
@@ -75,9 +79,13 @@ pub fn run(repo: Repo) -> Result<()> {
             }
             Err(error) => return Err(error.into()),
         }
-        let has_workers = service
+        let has_check_workers = service
             .checker
             .evict_idle_workers(Duration::from_secs(5 * 60));
+        let has_search_worker = service
+            .searcher
+            .evict_idle_worker(Duration::from_secs(5 * 60));
+        let has_workers = has_check_workers || has_search_worker;
         let has_jobs = service.state.has_validation_work().unwrap_or(true);
         if retiring.load(Ordering::SeqCst)
             && clients.load(Ordering::SeqCst) == 0
@@ -124,6 +132,7 @@ struct Service {
     repo: Repo,
     state: State,
     checker: Arc<Checker>,
+    searcher: Searcher,
     validation: ValidationQueue,
     watcher: WorkspaceWatcher,
     mutations: Mutex<()>,
@@ -186,6 +195,10 @@ impl Service {
                 } else {
                     bail!(summary)
                 }
+            }
+            Command::Search { query } => {
+                let workspace = self.state.workspace_for_path(&cwd)?;
+                self.searcher.search(&workspace, &cwd, &query)
             }
             Command::Sync => {
                 let _guard = self.mutations.lock().expect("mutation lock poisoned");
