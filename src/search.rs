@@ -1666,6 +1666,15 @@ impl Searcher {
                 workspace, &location, &source, None, true,
             ));
         }
+        if !location.probe {
+            return Ok(source_location_result(
+                workspace,
+                &location,
+                &source,
+                Some("source only"),
+                false,
+            ));
+        }
         let Some((start, end, in_tactic, indent)) = goal_probe(&source, location.line) else {
             return Ok(source_location_result(
                 workspace,
@@ -3941,9 +3950,11 @@ fn render_summary(run: &SearchRun) -> String {
 
 struct GoalLocation {
     path: PathBuf,
+    display_path: Option<String>,
     line: u64,
     tail: bool,
     more: bool,
+    probe: bool,
 }
 
 fn parse_goal_location(root: &Path, cwd: &Path, query: &str) -> Result<Option<GoalLocation>> {
@@ -3954,15 +3965,17 @@ fn parse_goal_location(root: &Path, cwd: &Path, query: &str) -> Result<Option<Go
     if let Some((path, suffix)) = query.rsplit_once(':')
         && suffix.eq_ignore_ascii_case("tail")
     {
-        let Some(path) = resolve_goal_path(root, cwd, path)? else {
+        let Some((path, display_path, probe)) = resolve_goal_path(root, cwd, path)? else {
             return Ok(None);
         };
         let line = fs::read_to_string(&path)?.lines().count().max(1) as u64;
         return Ok(Some(GoalLocation {
             path,
+            display_path,
             line,
             tail: true,
             more,
+            probe,
         }));
     }
     let mut parts = query.rsplitn(3, ':');
@@ -3983,38 +3996,71 @@ fn parse_goal_location(root: &Path, cwd: &Path, query: &str) -> Result<Option<Go
     } else {
         (second, last_number)
     };
-    let Some(path) = resolve_goal_path(root, cwd, path)? else {
+    let Some((path, display_path, probe)) = resolve_goal_path(root, cwd, path)? else {
         return Ok(None);
     };
     ensure!(line > 0, "goal line starts at 1");
     Ok(Some(GoalLocation {
         path,
+        display_path,
         line,
         tail: false,
         more,
+        probe,
     }))
 }
 
-fn resolve_goal_path(root: &Path, cwd: &Path, path: &str) -> Result<Option<PathBuf>> {
-    let requested = PathBuf::from(path);
-    let absolute = if requested.is_absolute() {
-        requested
-    } else {
-        cwd.join(requested)
-    };
-    if absolute
+fn resolve_goal_path(
+    root: &Path,
+    cwd: &Path,
+    path: &str,
+) -> Result<Option<(PathBuf, Option<String>, bool)>> {
+    let display = path.strip_prefix("<dependency>/").unwrap_or(path);
+    let requested = PathBuf::from(display);
+    if requested
         .extension()
         .is_none_or(|extension| extension != "lean")
-        || !absolute.is_file()
     {
         return Ok(None);
     }
-    let absolute = fs::canonicalize(absolute)?;
-    ensure!(
-        absolute.starts_with(root),
-        "goal position is outside the workspace"
-    );
-    Ok(Some(absolute))
+    let direct = if requested.is_absolute() {
+        requested.clone()
+    } else {
+        cwd.join(&requested)
+    };
+    if direct.is_file() {
+        let direct = fs::canonicalize(direct)?;
+        if direct.starts_with(root) {
+            return Ok(Some((direct, None, true)));
+        }
+    }
+
+    let packages = root.join(".lake/packages");
+    let Ok(packages) = fs::canonicalize(packages) else {
+        return Ok(None);
+    };
+    let mut candidates = Vec::new();
+    let direct_package = packages.join(&requested);
+    if direct_package.is_file() {
+        candidates.push(fs::canonicalize(direct_package)?);
+    }
+    for package in fs::read_dir(&packages)?.flatten() {
+        let candidate = package.path().join(&requested);
+        if candidate.is_file() {
+            candidates.push(fs::canonicalize(candidate)?);
+        }
+    }
+    candidates.sort();
+    candidates.dedup();
+    candidates.retain(|candidate| candidate.starts_with(&packages));
+    let [resolved] = candidates.as_slice() else {
+        return Ok(None);
+    };
+    Ok(Some((
+        resolved.clone(),
+        Some(display.to_owned()),
+        false,
+    )))
 }
 
 fn source_location_result(
@@ -4024,12 +4070,14 @@ fn source_location_result(
     note: Option<&str>,
     ok: bool,
 ) -> SearchResult {
-    let relative = location
-        .path
-        .strip_prefix(&workspace.path)
-        .unwrap_or(&location.path)
-        .to_string_lossy()
-        .into_owned();
+    let relative = location.display_path.clone().unwrap_or_else(|| {
+        location
+            .path
+            .strip_prefix(&workspace.path)
+            .unwrap_or(&location.path)
+            .to_string_lossy()
+            .into_owned()
+    });
     SearchResult {
         hits: vec![SearchHit {
             name: "source".into(),
@@ -4604,6 +4652,8 @@ end Demo
         assert_eq!(location.line, 30);
         assert!(location.tail);
         assert!(!location.more);
+        assert!(location.probe);
+        assert!(location.display_path.is_none());
         let tail = location_source_excerpt(&source, location.line, SOURCE_PREVIEW_LINES);
         assert_eq!(tail.lines().count(), 16);
         assert!(tail.contains("   30 | line 30"));
@@ -4618,6 +4668,26 @@ end Demo
         assert_eq!(more.line, 15);
         assert!(!more.tail);
         assert!(more.more);
+
+        let dependency = directory
+            .path()
+            .join(".lake/packages/mathlib/Mathlib/Topology");
+        fs::create_dir_all(&dependency).unwrap();
+        fs::write(dependency.join("Basic.lean"), &source).unwrap();
+        let dependency = parse_goal_location(
+            directory.path(),
+            directory.path(),
+            "Mathlib/Topology/Basic.lean:15 MORE",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(dependency.line, 15);
+        assert!(dependency.more);
+        assert!(!dependency.probe);
+        assert_eq!(
+            dependency.display_path.as_deref(),
+            Some("Mathlib/Topology/Basic.lean")
+        );
     }
 
     #[test]
