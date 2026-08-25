@@ -28,6 +28,7 @@ use crate::util::{
 const RESULT_LIMIT: usize = 24;
 const SUMMARY_LIMIT: usize = 5;
 const LOCATION_PREVIEW_LINES: usize = 32;
+const LOCATION_MORE_LINES: usize = 96;
 const GOAL_STATE_BEGIN: &str = "MATHMUX_GOAL_BEGIN";
 const GOAL_STATE_END: &str = "MATHMUX_GOAL_END";
 const SEARCH_INDEX_VERSION: i64 = 6;
@@ -1575,7 +1576,7 @@ impl Searcher {
 
     fn goal_search(&self, workspace: &Workspace, location: GoalLocation) -> Result<SearchResult> {
         let source = fs::read_to_string(&location.path)?;
-        if location.tail {
+        if location.tail || location.more {
             return Ok(source_location_result(
                 workspace, &location, &source, None, true,
             ));
@@ -3726,6 +3727,7 @@ fn render_summary(run: &SearchRun) -> String {
                     "class" | "inductive" | "structure" => 16,
                     "imports" => 64,
                     "location" => LOCATION_PREVIEW_LINES,
+                    "location-more" => LOCATION_MORE_LINES,
                     _ => SOURCE_PREVIEW_LINES,
                 }
             };
@@ -3751,9 +3753,14 @@ struct GoalLocation {
     path: PathBuf,
     line: u64,
     tail: bool,
+    more: bool,
 }
 
 fn parse_goal_location(root: &Path, cwd: &Path, query: &str) -> Result<Option<GoalLocation>> {
+    let (query, more) = query
+        .rsplit_once(char::is_whitespace)
+        .filter(|(_, modifier)| modifier.eq_ignore_ascii_case("more"))
+        .map_or((query, false), |(query, _)| (query.trim_end(), true));
     if let Some((path, suffix)) = query.rsplit_once(':')
         && suffix.eq_ignore_ascii_case("tail")
     {
@@ -3765,6 +3772,7 @@ fn parse_goal_location(root: &Path, cwd: &Path, query: &str) -> Result<Option<Go
             path,
             line,
             tail: true,
+            more,
         }));
     }
     let mut parts = query.rsplitn(3, ':');
@@ -3793,6 +3801,7 @@ fn parse_goal_location(root: &Path, cwd: &Path, query: &str) -> Result<Option<Go
         path,
         line,
         tail: false,
+        more,
     }))
 }
 
@@ -3834,7 +3843,12 @@ fn source_location_result(
     SearchResult {
         hits: vec![SearchHit {
             name: "source".into(),
-            kind: "location".into(),
+            kind: if location.more {
+                "location-more"
+            } else {
+                "location"
+            }
+            .into(),
             signature: None,
             module: String::new(),
             path: relative,
@@ -3843,7 +3857,9 @@ fn source_location_result(
             source: nonempty(location_source_excerpt(
                 source,
                 location.line,
-                if location.tail {
+                if location.more {
+                    LOCATION_MORE_LINES
+                } else if location.tail {
                     SOURCE_PREVIEW_LINES
                 } else {
                     LOCATION_PREVIEW_LINES
@@ -4358,9 +4374,21 @@ end Demo
             .unwrap();
         assert_eq!(location.line, 30);
         assert!(location.tail);
+        assert!(!location.more);
         let tail = location_source_excerpt(&source, location.line, SOURCE_PREVIEW_LINES);
         assert_eq!(tail.lines().count(), 16);
         assert!(tail.contains("   30 | line 30"));
+
+        let more = parse_goal_location(
+            directory.path(),
+            directory.path(),
+            "Demo.lean:15 MORE",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(more.line, 15);
+        assert!(!more.tail);
+        assert!(more.more);
     }
 
     #[test]
