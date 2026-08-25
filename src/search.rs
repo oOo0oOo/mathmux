@@ -24,7 +24,7 @@ use crate::util::{clean_line, hash_bytes, now_unix_ms};
 const RESULT_LIMIT: usize = 24;
 const SUMMARY_LIMIT: usize = 5;
 const GOAL_TIMEOUT_MS: u64 = 2_000;
-const SEARCH_INDEX_VERSION: i64 = 2;
+const SEARCH_INDEX_VERSION: i64 = 3;
 
 pub struct Searcher {
     repo: Repo,
@@ -1362,17 +1362,26 @@ fn declaration_header_end(block: &str) -> usize {
 }
 
 fn namespaces_by_line(source: &str) -> Vec<Vec<String>> {
-    let mut stack = Vec::new();
+    let mut scopes: Vec<Option<Vec<String>>> = Vec::new();
     let mut result = Vec::new();
     for line in source.lines() {
-        result.push(stack.clone());
+        result.push(
+            scopes
+                .iter()
+                .filter_map(Option::as_ref)
+                .flatten()
+                .cloned()
+                .collect(),
+        );
         let trimmed = line.trim();
         if let Some(name) = trimmed.strip_prefix("namespace ") {
             if let Some(name) = name.split_whitespace().next() {
-                stack.push(name.to_owned());
+                scopes.push(Some(name.split('.').map(str::to_owned).collect()));
             }
+        } else if trimmed == "section" || trimmed.starts_with("section ") {
+            scopes.push(None);
         } else if trimmed == "end" || trimmed.starts_with("end ") {
-            stack.pop();
+            scopes.pop();
         }
     }
     result
@@ -1607,6 +1616,13 @@ fn lexical_score(query: &str, tokens: &[String], row: &IndexedRow) -> f64 {
             score += 3.0;
         }
     }
+    let name_segments = name.split('.').collect::<HashSet<_>>();
+    score += tokens
+        .iter()
+        .flat_map(|token| token.split('.'))
+        .filter(|segment| name_segments.contains(segment))
+        .count() as f64
+        * 30.0;
     if row.kind != "file" {
         score += 4.0;
     }
@@ -1724,10 +1740,20 @@ fn fallback_source_hits(
     ];
     let mut terms = query_tokens
         .iter()
-        .flat_map(|token| [token.as_str(), token.rsplit('.').next().unwrap_or(token)])
+        .flat_map(|token| std::iter::once(token.as_str()).chain(token.split('.')))
         .map(str::to_lowercase)
         .filter(|term| term.len() >= 3 && !generic.contains(&term.as_str()))
         .collect::<Vec<_>>();
+    let generated_suffixes = ["_symm_apply", "_apply"];
+    for term in terms.clone() {
+        for suffix in generated_suffixes {
+            if let Some(stem) = term.strip_suffix(suffix)
+                && stem.len() >= 3
+            {
+                terms.push(stem.to_owned());
+            }
+        }
+    }
     terms.sort();
     terms.dedup();
     if terms.is_empty() {
@@ -1744,16 +1770,47 @@ fn fallback_source_hits(
             .iter()
             .filter_map(|token| token.rsplit_once('.').map(|(_, base)| base.to_lowercase())),
     );
+    let mut declaration_terms = Vec::new();
+    if query_tokens.len() <= 2
+        && let Some(token) = query_tokens.last()
+    {
+        for name in token.split('.').filter(|name| name.len() >= 3) {
+            for kind in [
+                "abbrev",
+                "class",
+                "def",
+                "instance",
+                "lemma",
+                "structure",
+                "theorem",
+            ] {
+                declaration_terms.push(format!("{kind} {name}"));
+            }
+        }
+    }
     let mut rare_terms = terms.clone();
     rare_terms.sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
     strong_terms.extend(rare_terms.into_iter().take(2));
     strong_terms.sort();
     strong_terms.dedup();
-    let mut paths = source_scan_paths(&workspace, packages.as_deref(), &strong_terms)?;
+    let declaration_paths = source_scan_paths(&workspace, packages.as_deref(), &declaration_terms)?;
+    let strong_paths = source_scan_paths(&workspace, packages.as_deref(), &strong_terms)?;
+    let strong_set = strong_paths.iter().collect::<HashSet<_>>();
+    let mut paths = declaration_paths
+        .iter()
+        .filter(|path| strong_set.contains(path))
+        .cloned()
+        .collect::<Vec<_>>();
     let mut seen_paths = paths.iter().cloned().collect::<HashSet<_>>();
-    for path in source_scan_paths(&workspace, packages.as_deref(), &terms)? {
-        if seen_paths.insert(path.clone()) {
-            paths.push(path);
+    for candidates in [
+        declaration_paths,
+        strong_paths,
+        source_scan_paths(&workspace, packages.as_deref(), &terms)?,
+    ] {
+        for path in candidates {
+            if seen_paths.insert(path.clone()) {
+                paths.push(path);
+            }
         }
     }
     let mut ranked = Vec::new();
@@ -1792,7 +1849,14 @@ fn fallback_source_hits(
                 .count();
             let name = entry.name.to_lowercase();
             let base = name.rsplit('.').next().unwrap_or(&name);
-            let exact_name = terms.iter().any(|term| term == &name || term == base);
+            let name_segments = name.split('.').collect::<HashSet<_>>();
+            let segment_score = terms
+                .iter()
+                .filter(|term| name_segments.contains(term.as_str()))
+                .count();
+            let exact_name = query_tokens
+                .iter()
+                .any(|token| token == &name || (!token.contains('.') && token.as_str() == base));
             let is_class = entry.kind == "class";
             ranked.push(RankedHit {
                 hit: SearchHit {
@@ -1809,6 +1873,7 @@ fn fallback_source_hits(
                 score: 35.0
                     + score as f64 * 8.0
                     + name_score as f64 * 20.0
+                    + segment_score as f64 * 30.0
                     + if exact_name { 80.0 } else { 0.0 }
                     + if is_class && class_query { 40.0 } else { 0.0 },
             });
@@ -2053,6 +2118,13 @@ end Demo
             "Demo",
         );
         assert_eq!(named_argument[0].signature, "(x : α) : f (R := 𝕜) x = x");
+
+        let sectioned = parse_source(
+            "namespace Outer\nsection First\ndef before := 1\nend First\nsection Second\ndef after := 2\nend Second\nend Outer\n",
+            "Outer",
+        );
+        assert!(sectioned.iter().any(|entry| entry.name == "Outer.before"));
+        assert!(sectioned.iter().any(|entry| entry.name == "Outer.after"));
     }
 
     #[test]
