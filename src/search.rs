@@ -1100,7 +1100,7 @@ impl Searcher {
                     });
                 }
             }
-        } else if name_search {
+        } else if name_search && base_warming {
             let (mut loogle_hits, is_warming) = self.loogle_hits(workspace, query);
             warming |= is_warming;
             let exact_positions = loogle_hits
@@ -3909,6 +3909,7 @@ fn source_scan_path_counts(
 
 fn render_summary(run: &SearchRun) -> String {
     let mut output = run.reference.clone();
+    let proof_body_requested = query_requests_proof_body(&run.query);
     if run.hits.is_empty() {
         output.push_str(" no results");
     }
@@ -3929,11 +3930,16 @@ fn render_summary(run: &SearchRun) -> String {
         let explicitly_named = !matches!(hit.kind.as_str(), "file" | "imports")
             && declaration_leaf_matches(&hit.name, &run.query);
         if (index == 0
-            || explicitly_named
-            || (index < 3 && matches!(hit.kind.as_str(), "class" | "inductive" | "structure")))
+            || (!proof_body_requested
+                && (explicitly_named
+                    || (index < 3
+                        && matches!(
+                            hit.kind.as_str(),
+                            "class" | "inductive" | "structure"
+                        )))))
             && let Some(source) = &hit.source
         {
-            let source_lines = if index == 0 && query_requests_proof_body(&run.query) {
+            let source_lines = if index == 0 && proof_body_requested {
                 DECLARATION_DETAIL_LINES
             } else {
                 match hit.kind.as_str() {
@@ -4579,6 +4585,39 @@ end Demo
             created_at: 0,
         });
         assert!(summary.contains("  | n + 1"));
+    }
+
+    #[test]
+    fn explicit_body_query_keeps_alternatives_compact() {
+        let hit = |name: &str, source: &str| SearchHit {
+            name: name.into(),
+            kind: "theorem".into(),
+            signature: Some("True".into()),
+            module: "Demo".into(),
+            path: "Demo.lean".into(),
+            line: 1,
+            doc: None,
+            source: Some(source.into()),
+            usages: Vec::new(),
+            applicable: false,
+            required_import: None,
+        };
+        let summary = render_summary(&SearchRun {
+            reference: "q3".into(),
+            workspace_ref: "w1".into(),
+            query: "theorem proof".into(),
+            inference: "hybrid".into(),
+            hits: vec![
+                hit("Demo.proof", "requested body"),
+                hit("Other.proof", "alternative body"),
+            ],
+            note: None,
+            duration_ms: 1,
+            created_at: 0,
+        });
+        assert!(summary.contains("requested body"));
+        assert!(summary.contains("Other.proof : True"));
+        assert!(!summary.contains("alternative body"));
     }
 
     #[test]
