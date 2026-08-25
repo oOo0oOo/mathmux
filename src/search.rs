@@ -844,7 +844,6 @@ impl Searcher {
         let query_tokens = meaningful_query_tokens(query);
         let rows = self.candidates(&query_tokens, type_search)?;
         let import_context = self.import_context(workspace, scopes, base_warming);
-        let query_lower = query.to_lowercase();
         if !type_search && qualified_name_query(query) {
             let mut exact = rows
                 .iter()
@@ -874,7 +873,7 @@ impl Searcher {
                             applicable: false,
                             required_import: None,
                         },
-                        score: lexical_score(&query_lower, &query_tokens, row)
+                        score: lexical_score(query, &query_tokens, row)
                             + if row.owner == format!("workspace:{}", workspace.reference) {
                                 8.0
                             } else {
@@ -1013,7 +1012,7 @@ impl Searcher {
             } else {
                 0.0
             };
-            let lexical = lexical_score(&query_lower, &query_tokens, &row);
+            let lexical = lexical_score(query, &query_tokens, &row);
             if type_search && row.kind == "file" && type_score == 0.0 {
                 continue;
             }
@@ -2468,6 +2467,9 @@ fn words_match(left: &str, right: &str) -> bool {
 }
 
 fn lexical_score(query: &str, tokens: &[String], row: &IndexedRow) -> f64 {
+    let exact_case_name = row.name == query;
+    let exact_case_leaf = row.name.rsplit('.').next() == Some(query);
+    let query = query.to_lowercase();
     let name = row.name.to_lowercase();
     let base = name.rsplit('.').next().unwrap_or(&name);
     let body = format!(
@@ -2483,9 +2485,9 @@ fn lexical_score(query: &str, tokens: &[String], row: &IndexedRow) -> f64 {
         105.0
     } else if name.ends_with(&format!(".{query}")) {
         95.0
-    } else if name.starts_with(query) || base.starts_with(query) {
+    } else if name.starts_with(&query) || base.starts_with(&query) {
         75.0
-    } else if name.contains(query) {
+    } else if name.contains(&query) {
         55.0
     } else {
         0.0
@@ -2496,6 +2498,11 @@ fn lexical_score(query: &str, tokens: &[String], row: &IndexedRow) -> f64 {
         })
     {
         score += 100.0;
+    }
+    if exact_case_name {
+        score += 200.0;
+    } else if exact_case_leaf {
+        score += 160.0;
     }
     for token in tokens {
         if name.contains(token) {
@@ -3197,7 +3204,7 @@ fn render_summary(run: &SearchRun) -> String {
                 DECLARATION_DETAIL_LINES
             } else {
                 match hit.kind.as_str() {
-                    "class" | "inductive" | "structure" => 48,
+                    "class" | "inductive" | "structure" => 16,
                     "imports" => 64,
                     "location" => 16,
                     _ => 8,
@@ -3512,6 +3519,30 @@ end Demo
             "Matrix.conjTranspose_mul",
             "matrix.conjtranspose_mul"
         ));
+        let named_row = |name: &str| IndexedRow {
+            owner: "workspace:w1".into(),
+            path: "Demo.lean".into(),
+            module: "Demo".into(),
+            line: 1,
+            name: name.into(),
+            kind: "structure".into(),
+            signature: String::new(),
+            docs: String::new(),
+            body: String::new(),
+            rank: 0.0,
+        };
+        let tokens = meaningful_query_tokens("HermitianBundleMetric");
+        assert!(
+            lexical_score(
+                "HermitianBundleMetric",
+                &tokens,
+                &named_row("AtiyahSinger.HermitianBundleMetric")
+            ) > lexical_score(
+                "HermitianBundleMetric",
+                &tokens,
+                &named_row("AtiyahSinger.Bundle.Trivial.hermitianBundleMetric")
+            )
+        );
         let summary = render_summary(&SearchRun {
             reference: "q1".into(),
             workspace_ref: "w1".into(),
