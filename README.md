@@ -1,25 +1,37 @@
 # mathmux
 
-**WIP: Not ready for use!**
+> Status: pre-implementation. The interface is designed and the experiment harness remains available.
 
-## Minimal CLI for fast local Lean checks in isolated git worktrees
+mathmux is a minimal native CLI for fast local Lean checks in isolated Git worktrees. It manages
+workspaces, synchronous check certificates, local integration, and one asynchronous build and axiom
+validation queue.
 
-### mathmux will do
+The [implementation plan](PLAN.md) is the current source of truth. [Experiment results](RESULTS.md) and
+the [original experiment specification](concept/experiment.md) are historical evidence and will age
+as Lean evolves.
+
+## Scope
 
 - manage isolated git worktrees, commits, and merges
-- check Lean files, build targets, and audit axioms
+- check dirty Lean files with exact dependency state
+- share Lake artifacts across worktrees
+- validate accepted submissions with a build and axiom audit
 
-### mathmux might eventually do
+Possible later work includes local search inspired by `lean-lsp-mcp` and informal-mathematics tools
+inspired by [TheoremGraph](https://arxiv.org/abs/2606.25363).
 
-- local search, like lean-lsp-mcp
-- informal mathematics (getting inspired by [TheoremGraph](https://arxiv.org/abs/2606.25363))
+mathmux stays outside agent orchestration, proof generation, toolchain and dependency management, and
+remote services.
 
-### mathmux won't
+## Planned CLI
 
-- orchestrate or run agents
-- generate or modify proofs
-- manage toolchains or dependencies
-- access remote resources
+```text
+mathmux ws create|list|delete
+mathmux check [<file>]
+mathmux sync
+mathmux submit -m <message>
+mathmux show <ref>
+```
 
 ## Development
 

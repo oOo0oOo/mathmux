@@ -1,8 +1,13 @@
-# Mathmux experiment results
+# mathmux experiment results
 
-## Recommendation
+> Status: historical early experiment. These measurements remain useful evidence, while the backend
+> recommendation below was superseded by later module-system, fail-fast, stale-dependency, and
+> large-file experiments. See [PLAN.md](PLAN.md) for the implementation decision. Expect this document
+> to become outdated as Lean changes.
 
-Use the standard Lean language server with `textDocument/waitForDiagnostics` as Mathmux's dirty-file
+## Historical recommendation
+
+Use the standard Lean language server with `textDocument/waitForDiagnostics` as mathmux's dirty-file
 checker. Keep one server session per active workspace and use Lake's `setup-file` result for module
 artifacts. The custom complete-diagnostics endpoint had equivalent latency and correctness, so the
 built-in barrier wins on implementation cost.

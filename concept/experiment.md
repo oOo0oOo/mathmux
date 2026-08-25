@@ -1,8 +1,12 @@
-# Mathmux experiment
+# mathmux experiment
+
+> Status: historical early experiment specification. The experiment has run, later follow-ups changed
+> parts of its recommendation, and this file will become outdated. See [PLAN.md](../PLAN.md) for the
+> implementation contract and [RESULTS.md](../RESULTS.md) for retained evidence.
 
 ## Question
 
-Mathmux needs a fast way for coding agents to check one dirty Lean file inside an ordinary Lake
+mathmux needs a fast way for coding agents to check one dirty Lean file inside an ordinary Lake
 project. This experiment compares five Lean interaction families behind the same check contract.
 
 The production target is Lean's module system with Lake-managed artifacts. Artifact-backed candidates
@@ -14,7 +18,7 @@ is second. Every result must be fresh and complete.
 ## Scope
 
 The experiment covers the file-checking operation used inside agent workspaces. Each agent edits its
-own file using normal tools and asks Mathmux to check it against the current project state.
+own file using normal tools and asks mathmux to check it against the current project state.
 
 Integration validation remains a separate clean `lake build` on the integrated main revision. The
 file checker should prepare only the target and its imports.
@@ -144,4 +148,4 @@ measurements. The most useful starting points are:
 - `results/support.csv`
 
 Those measurements identify promising implementations. This experiment supplies the common contract,
-fixture, and concurrent workload needed to select Mathmux's backend.
+fixture, and concurrent workload needed to select mathmux's backend.
