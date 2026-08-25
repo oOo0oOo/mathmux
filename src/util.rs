@@ -102,6 +102,31 @@ pub fn truncate_line(value: &str, limit: usize) -> String {
     output
 }
 
+pub fn truncate_middle(value: &str, limit: usize) -> String {
+    let length = value.chars().count();
+    if length <= limit {
+        return value.to_owned();
+    }
+    if limit == 0 {
+        return String::new();
+    }
+    let kept = limit - 1;
+    let head = kept.div_ceil(2);
+    let tail = kept - head;
+    let mut output = value.chars().take(head).collect::<String>();
+    output.push('…');
+    output.extend(
+        value
+            .chars()
+            .rev()
+            .take(tail)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev(),
+    );
+    output
+}
+
 pub fn query_requests_proof_body(query: &str) -> bool {
     let normalized = single_line(query).to_lowercase();
     normalized.contains(":= by")

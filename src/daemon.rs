@@ -18,7 +18,7 @@ use crate::repo::Repo;
 use crate::search::Searcher;
 use crate::state::{State, Submission};
 use crate::status;
-use crate::util::{build_id, clean_line, now_unix_ms, resident_memory_kib};
+use crate::util::{build_id, clean_line, now_unix_ms, resident_memory_kib, truncate_middle};
 use crate::validation::ValidationQueue;
 
 pub fn run(repo: Repo) -> Result<()> {
@@ -274,6 +274,8 @@ impl Service {
 }
 
 fn check_summary(outcome: &CheckOutcome) -> String {
+    const DIAGNOSTIC_PREVIEW_CHARS: usize = 1200;
+
     let mut output = format!("{} {}ms", outcome.reference, outcome.elapsed_ms);
     for warning in outcome.warnings.iter().take(3) {
         output.push_str(&format!("\nwarning {}", clean_line(&warning.text)));
@@ -287,7 +289,18 @@ fn check_summary(outcome: &CheckOutcome) -> String {
     }
     if !outcome.ok {
         if let Some(diagnostic) = outcome.diagnostics.first() {
-            output.push_str(&format!("\n{}", clean_line(&diagnostic.text)));
+            let detail = clean_line(&diagnostic.text);
+            output.push_str(&format!(
+                "\n{}",
+                truncate_middle(&detail, DIAGNOSTIC_PREVIEW_CHARS)
+            ));
+            if let Some(context) = &diagnostic.context {
+                output.push('\n');
+                output.push_str(context);
+            }
+            if detail.chars().count() > DIAGNOSTIC_PREVIEW_CHARS {
+                output.push_str(&format!("\nfull diagnostic: show {}", outcome.reference));
+            }
         }
         if outcome.diagnostics.len() > 1 {
             output.push_str(&format!(
@@ -357,5 +370,35 @@ impl WorkspaceWatcher {
 
     fn unwatch(&self, path: &Path) {
         let _ = self.watcher.lock().expect("watcher poisoned").unwatch(path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::Diagnostic;
+
+    #[test]
+    fn check_summary_keeps_source_and_both_ends_of_long_diagnostics() {
+        let diagnostic = format!(
+            "Demo.Proof:3:1: error: {} final target",
+            "detail ".repeat(300)
+        );
+        let summary = check_summary(&CheckOutcome {
+            reference: "c1".into(),
+            ok: false,
+            elapsed_ms: 10,
+            warnings: Vec::new(),
+            diagnostics: vec![Diagnostic {
+                kind: "error".into(),
+                text: diagnostic,
+                context: Some(">    3 | failing tactic".into()),
+            }],
+            profile: None,
+        });
+        assert!(summary.contains("Demo.Proof:3:1"));
+        assert!(summary.contains("final target"));
+        assert!(summary.contains(">    3 | failing tactic"));
+        assert!(summary.contains("full diagnostic: show c1"));
     }
 }
