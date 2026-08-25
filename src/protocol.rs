@@ -74,6 +74,8 @@ pub struct Response {
     #[serde(default)]
     pub build: String,
     #[serde(default)]
+    pub generation: u64,
+    #[serde(default)]
     pub retry: bool,
     pub ok: bool,
     pub summary: String,
@@ -99,6 +101,7 @@ impl Response {
     fn new(ok: bool, retry: bool, summary: impl Into<String>) -> Self {
         Self {
             build: crate::util::build_id().to_owned(),
+            generation: crate::util::build_generation(),
             retry,
             ok,
             summary: summary.into(),
@@ -117,6 +120,7 @@ mod tests {
         let response: Response =
             serde_json::from_str(r#"{"build":"old","ok":true,"summary":"ok"}"#).unwrap();
         assert!(!response.retry);
+        assert_eq!(response.generation, 0);
         assert!(Response::retry().retry);
     }
 

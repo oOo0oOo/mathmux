@@ -65,23 +65,32 @@ pub fn run(repo: Repo) -> Result<()> {
             .and_then(|value| value.parse().ok())
             .unwrap_or(30),
     );
+    let mut listener = Some(listener);
 
     loop {
-        match listener.accept() {
-            Ok((stream, _)) => {
-                last_activity = Instant::now();
-                clients.fetch_add(1, Ordering::SeqCst);
-                let service = service.clone();
-                let clients = clients.clone();
-                thread::spawn(move || {
-                    let _ = serve_client(stream, &service);
-                    clients.fetch_sub(1, Ordering::SeqCst);
-                });
+        if retiring.load(Ordering::SeqCst) {
+            // Stop admitting work while retaining the socket path as an exit
+            // marker. Replacement waits for active requests to drain and for
+            // the path to be removed below before binding a new listener.
+            listener.take();
+            thread::sleep(Duration::from_millis(50));
+        } else if let Some(listener) = &listener {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    last_activity = Instant::now();
+                    clients.fetch_add(1, Ordering::SeqCst);
+                    let service = service.clone();
+                    let clients = clients.clone();
+                    thread::spawn(move || {
+                        let _ = serve_client(stream, &service);
+                        clients.fetch_sub(1, Ordering::SeqCst);
+                    });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(50));
+                }
+                Err(error) => return Err(error.into()),
             }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(50));
-            }
-            Err(error) => return Err(error.into()),
         }
         let has_check_workers = service
             .checker
@@ -114,12 +123,10 @@ fn serve_client(mut stream: UnixStream, service: &Service) -> Result<()> {
     let mut line = String::new();
     BufReader::new(stream.try_clone()?).read_line(&mut line)?;
     let mut response = match serde_json::from_str::<Request>(&line) {
-        Ok(request) if service.retiring.load(Ordering::SeqCst) => {
-            retiring_response(service, request)
-        }
+        Ok(_request) if service.retiring.load(Ordering::SeqCst) => Response::retry(),
         Ok(request) if client_build_is_newer(&request) => {
             service.retiring.store(true, Ordering::SeqCst);
-            retiring_response(service, request)
+            Response::retry()
         }
         Ok(request) => handled_response(service, request),
         Err(error) => Response::error(format!("invalid request: {error}")),
@@ -148,16 +155,6 @@ fn build_precedes(
     other_generation: u64,
 ) -> bool {
     !other.is_empty() && other != current && other_generation > current_generation
-}
-
-fn retiring_response(service: &Service, request: Request) -> Response {
-    if request.command.transport_retry_safe()
-        && service.state.has_running_validation().unwrap_or(false)
-    {
-        handled_response(service, request)
-    } else {
-        Response::retry()
-    }
 }
 
 fn handled_response(service: &Service, request: Request) -> Response {

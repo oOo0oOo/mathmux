@@ -869,8 +869,8 @@ impl Searcher {
         let query_tokens = meaningful_query_tokens(query);
         let rows = self.candidates(&query_tokens, type_search)?;
         let import_context = self.import_context(workspace, scopes, base_warming);
-        if !type_search && qualified_name_query(query) {
-            let mut exact = rows
+        if !type_search && declaration_name_query(query) {
+            let exact = rows
                 .iter()
                 .filter(|row| {
                     scopes.contains(&row.owner) && qualified_name_matches(&row.name, query)
@@ -908,22 +908,10 @@ impl Searcher {
                     }
                 })
                 .collect::<Vec<_>>();
-            let exact_names = exact
-                .iter()
-                .map(|candidate| candidate.hit.name.to_lowercase())
-                .collect::<HashSet<_>>();
-            if exact_names.len() == 1 {
-                exact.sort_by(|left, right| {
-                    right
-                        .score
-                        .partial_cmp(&left.score)
-                        .unwrap_or(Ordering::Equal)
-                        .then_with(|| left.hit.name.cmp(&right.hit.name))
-                });
-                let mut resolved = exact.remove(0);
-                for mut candidate in exact {
-                    merge_duplicate_hit(&mut resolved.hit, &mut candidate.hit);
-                }
+            if unique_qualified_hit_name(exact.iter().map(|candidate| &candidate.hit), query)
+                .is_some()
+            {
+                let mut resolved = merge_exact_candidates(exact);
                 resolved.hit.usages = self.usages(&resolved.hit.name, scopes, workspace)?;
                 if let Some(context) = &import_context {
                     apply_import_context(&mut resolved, context);
@@ -931,7 +919,7 @@ impl Searcher {
                 return Ok(exact_search_result(resolved.hit, base_warming));
             }
         }
-        let name_search = !type_search && qualified_name_query(query);
+        let name_search = !type_search && declaration_name_query(query);
         let mut ranked = Vec::new();
         let mut warming = false;
         if type_search {
@@ -1093,6 +1081,30 @@ impl Searcher {
             &query_tokens,
             base_warming,
         ));
+        if name_search {
+            let exact_name = unique_qualified_hit_name(
+                ranked
+                    .iter()
+                    .map(|candidate| &candidate.hit)
+                    .filter(|hit| !matches!(hit.kind.as_str(), "file" | "imports")),
+                query,
+            );
+            if let Some(exact_name) = exact_name {
+                let exact = ranked
+                    .into_iter()
+                    .filter(|candidate| candidate.hit.name.to_lowercase() == exact_name)
+                    .collect::<Vec<_>>();
+                let mut resolved = merge_exact_candidates(exact);
+                resolved.hit.usages = self.usages(&resolved.hit.name, scopes, workspace)?;
+                if let Some(context) = &import_context {
+                    apply_import_context(&mut resolved, context);
+                }
+                return Ok(exact_search_result(
+                    resolved.hit,
+                    base_warming || warming,
+                ));
+            }
+        }
         let missing_specific_term = specific_query_tokens(query).iter().any(|token| {
             !ranked.iter().any(|candidate| {
                 !matches!(candidate.hit.kind.as_str(), "file" | "imports")
@@ -2304,9 +2316,9 @@ fn query_tokens(query: &str) -> Vec<String> {
         .collect()
 }
 
-fn qualified_name_query(query: &str) -> bool {
+fn declaration_name_query(query: &str) -> bool {
     let query = query.trim();
-    query.contains('.')
+    !query.is_empty()
         && !query.starts_with('.')
         && !query.ends_with('.')
         && query
@@ -2321,6 +2333,36 @@ fn qualified_name_matches(name: &str, query: &str) -> bool {
         || name
             .strip_suffix(&query)
             .is_some_and(|prefix| prefix.ends_with('.'))
+}
+
+fn unique_qualified_hit_name<'a>(
+    hits: impl Iterator<Item = &'a SearchHit>,
+    query: &str,
+) -> Option<String> {
+    let names = hits
+        .filter(|hit| qualified_name_matches(&hit.name, query))
+        .map(|hit| hit.name.to_lowercase())
+        .collect::<HashSet<_>>();
+    if names.len() == 1 {
+        names.into_iter().next()
+    } else {
+        None
+    }
+}
+
+fn merge_exact_candidates(mut candidates: Vec<RankedHit>) -> RankedHit {
+    candidates.sort_by(|left, right| {
+        right
+            .score
+            .partial_cmp(&left.score)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| left.hit.name.cmp(&right.hit.name))
+    });
+    let mut resolved = candidates.remove(0);
+    for mut candidate in candidates {
+        merge_duplicate_hit(&mut resolved.hit, &mut candidate.hit);
+    }
+    resolved
 }
 
 fn specific_query_tokens(query: &str) -> Vec<String> {
@@ -3521,9 +3563,10 @@ end Demo
         assert!(conclusion_query("⊢ _ → Injective _"));
         assert!(!conclusion_query("_ → Injective _"));
         assert_eq!(fts_query("List.map"), "\"list.map\"*");
-        assert!(qualified_name_query("Finsupp.sum_add_index"));
-        assert!(qualified_name_query("Ring.inverse_eq_inv'"));
-        assert!(!qualified_name_query("Finsupp.sum add"));
+        assert!(declaration_name_query("Finsupp.sum_add_index"));
+        assert!(declaration_name_query("Ring.inverse_eq_inv'"));
+        assert!(declaration_name_query("transportAmbient"));
+        assert!(!declaration_name_query("Finsupp.sum add"));
         assert!(qualified_name_matches(
             "AtiyahSinger.ComplexVectorSubbundle.transportAmbient",
             "ComplexVectorSubbundle.transportAmbient"

@@ -290,6 +290,7 @@ pub fn run() -> Result<u8> {
     };
     let client_started = Instant::now();
     let mut handoffs = 0;
+    let mut retirement_waits = 0;
     let mut transport_retries = 0;
     let mut handoff_stream = None;
     let response = loop {
@@ -313,12 +314,21 @@ pub fn run() -> Result<u8> {
         if !response.retry {
             break response;
         }
-        ensure!(
-            handoffs == 0,
-            "daemon build changed repeatedly; retry command"
-        );
-        handoffs += 1;
-        handoff_stream = Some(replace_daemon(&repo, project_development)?);
+        if request.generation > response.generation {
+            ensure!(
+                handoffs == 0,
+                "daemon build changed repeatedly; retry command"
+            );
+            handoffs += 1;
+            handoff_stream = Some(replace_daemon(&repo, project_development)?);
+        } else {
+            ensure!(
+                retirement_waits < 2,
+                "daemon replacement did not settle; retry command"
+            );
+            retirement_waits += 1;
+            handoff_stream = Some(wait_for_replacement(&repo)?);
+        }
     };
     if project_development {
         let _ = crate::issue::record_exchange(
@@ -374,6 +384,17 @@ fn wait_for_daemon_exit(repo: &Repo) -> Result<()> {
         std::thread::sleep(Duration::from_millis(25));
     }
     bail!("daemon did not finish its active validation")
+}
+
+fn wait_for_replacement(repo: &Repo) -> Result<UnixStream> {
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(10 * 60) {
+        if let Ok(stream) = UnixStream::connect(&repo.socket_path) {
+            return Ok(stream);
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    bail!("replacement daemon did not start")
 }
 
 fn run_issue(command: IssueCommand, cwd: &Path) -> Result<u8> {
