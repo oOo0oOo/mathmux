@@ -841,6 +841,7 @@ impl Searcher {
         base_warming: bool,
     ) -> Result<SearchResult> {
         let type_search = type_search_enabled() && type_shaped(query);
+        let name_search = !type_search && qualified_name_query(query);
         let query_tokens = meaningful_query_tokens(query);
         let rows = self.candidates(&query_tokens, type_search)?;
         let import_context = self.import_context(workspace, scopes, base_warming);
@@ -897,6 +898,33 @@ impl Searcher {
                         score: 180.0 - position as f64,
                     });
                 }
+            }
+        } else if name_search {
+            let (loogle_hits, is_warming) = self.loogle_hits(workspace, query);
+            warming |= is_warming;
+            for (position, hit) in loogle_hits.into_iter().enumerate() {
+                let exact = hit.name.eq_ignore_ascii_case(query.trim());
+                let usages = self.usages(&hit.name, scopes, workspace)?;
+                ranked.push(RankedHit {
+                    hit: SearchHit {
+                        path: format!("{}.lean", hit.module.replace('.', "/")),
+                        line: 1,
+                        kind: "declaration".into(),
+                        signature: nonempty(hit.signature),
+                        doc: hit.doc,
+                        source: None,
+                        usages,
+                        name: hit.name,
+                        module: hit.module,
+                        applicable: false,
+                        required_import: None,
+                    },
+                    score: if exact {
+                        420.0
+                    } else {
+                        160.0 - position as f64
+                    },
+                });
             }
         }
         for row in rows.into_iter().filter(|row| scopes.contains(&row.owner)) {
@@ -2175,6 +2203,16 @@ fn query_tokens(query: &str) -> Vec<String> {
         .collect()
 }
 
+fn qualified_name_query(query: &str) -> bool {
+    let query = query.trim();
+    query.contains('.')
+        && !query.starts_with('.')
+        && !query.ends_with('.')
+        && query
+            .chars()
+            .all(|character| character.is_alphanumeric() || matches!(character, '_' | '.' | '\''))
+}
+
 fn specific_query_tokens(query: &str) -> Vec<String> {
     query
         .split(|character: char| {
@@ -3279,6 +3317,9 @@ end Demo
         assert!(conclusion_query("⊢ _ → Injective _"));
         assert!(!conclusion_query("_ → Injective _"));
         assert_eq!(fts_query("List.map"), "\"list.map\"*");
+        assert!(qualified_name_query("Finsupp.sum_add_index"));
+        assert!(qualified_name_query("Ring.inverse_eq_inv'"));
+        assert!(!qualified_name_query("Finsupp.sum add"));
         assert_eq!(meaningful_query_tokens("precomp (L :=)"), vec!["precomp"]);
         assert_eq!(
             meaningful_query_tokens("finite_trivialization_cover proof body"),
