@@ -841,9 +841,13 @@ impl Searcher {
         base_warming: bool,
     ) -> Result<SearchResult> {
         let type_search = type_search_enabled() && type_shaped(query);
-        let name_search = !type_search && qualified_name_query(query);
         let query_tokens = meaningful_query_tokens(query);
         let rows = self.candidates(&query_tokens, type_search)?;
+        let name_search = !type_search
+            && qualified_name_query(query)
+            && !rows
+                .iter()
+                .any(|row| row.name.eq_ignore_ascii_case(query.trim()));
         let import_context = self.import_context(workspace, scopes, base_warming);
         let query_lower = query.to_lowercase();
         let mut ranked = Vec::new();
