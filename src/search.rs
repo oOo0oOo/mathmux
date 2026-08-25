@@ -24,7 +24,7 @@ use crate::util::{clean_line, hash_bytes, now_unix_ms};
 const RESULT_LIMIT: usize = 24;
 const SUMMARY_LIMIT: usize = 5;
 const GOAL_TIMEOUT_MS: u64 = 2_000;
-const SEARCH_INDEX_VERSION: i64 = 3;
+const SEARCH_INDEX_VERSION: i64 = 4;
 
 pub struct Searcher {
     repo: Repo,
@@ -1327,7 +1327,7 @@ fn declaration_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
         Regex::new(
-            r"(?m)^[ \t]*(?:@\[[^\n]*\][ \t]*)*(?:(?:private|protected|noncomputable|unsafe|partial|scoped|local)[ \t]+)*(?P<kind>theorem|lemma|def|abbrev|opaque|axiom|structure|class|inductive|instance)[ \t]+(?P<name>[A-Za-z_][A-Za-z0-9_'.]*)?",
+            r"(?m)^[ \t]*(?:@\[[^\n]*\][ \t]*)*(?:(?:private|protected|noncomputable|unsafe|partial|scoped|local)[ \t]+)*(?P<kind>theorem|lemma|def|abbrev|opaque|axiom|structure|class|inductive|instance)[ \t]+(?P<name>[\p{L}_][\p{L}\p{N}\p{M}_'.]*)?",
         )
         .expect("valid declaration regex")
     })
@@ -1898,6 +1898,11 @@ fn fallback_source_hits(
                 && query_tokens.iter().any(|token| {
                     token == &name || (!token.contains('.') && token.as_str() == base)
                 });
+            let qualified_leaf = query_tokens.iter().any(|token| {
+                token
+                    .rsplit_once('.')
+                    .is_some_and(|(_, leaf)| name_segments.contains(leaf))
+            });
             let is_class = entry.kind == "class";
             ranked.push(RankedHit {
                 hit: SearchHit {
@@ -1916,6 +1921,7 @@ fn fallback_source_hits(
                     + name_score as f64 * 20.0
                     + segment_score as f64 * 30.0
                     + if exact_name { 80.0 } else { 0.0 }
+                    + if qualified_leaf { 60.0 } else { 0.0 }
                     + if is_class && class_query { 40.0 } else { 0.0 },
             });
         }
@@ -2166,6 +2172,16 @@ end Demo
         );
         assert!(sectioned.iter().any(|entry| entry.name == "Outer.before"));
         assert!(sectioned.iter().any(|entry| entry.name == "Outer.after"));
+
+        let unicode = parse_source(
+            "namespace LinearMap\ndef mkContinuous₂ (f : α) := f\nend LinearMap\n",
+            "LinearMap",
+        );
+        assert!(
+            unicode
+                .iter()
+                .any(|entry| entry.name == "LinearMap.mkContinuous₂")
+        );
     }
 
     #[test]
