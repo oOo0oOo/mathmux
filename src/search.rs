@@ -1296,9 +1296,14 @@ fn parse_source(source: &str, module: &str) -> Vec<SourceEntry> {
     let mut entries = Vec::new();
     for (index, capture) in matches.iter().enumerate() {
         let complete = capture.get(0).expect("declaration match");
-        let Some(raw_name) = capture.name("name").map(|value| value.as_str()) else {
+        let kind = capture
+            .name("kind")
+            .map(|value| value.as_str())
+            .unwrap_or("declaration");
+        let raw_name = capture.name("name").map(|value| value.as_str());
+        if raw_name.is_none() && kind != "instance" {
             continue;
-        };
+        }
         let line = offset_line(&lines, complete.start());
         let end = matches
             .get(index + 1)
@@ -1308,9 +1313,9 @@ fn parse_source(source: &str, module: &str) -> Vec<SourceEntry> {
         let block = source[complete.start()..end].trim();
         let header_end = declaration_header_end(block);
         let header = block[..header_end].trim();
-        let name_end = header
-            .find(raw_name)
-            .map(|start| start + raw_name.len())
+        let name_end = raw_name
+            .and_then(|raw_name| header.find(raw_name).map(|start| start + raw_name.len()))
+            .or_else(|| header.find(kind).map(|start| start + kind.len()))
             .unwrap_or(header.len());
         let mut signature = header[name_end..]
             .trim()
@@ -1321,15 +1326,12 @@ fn parse_source(source: &str, module: &str) -> Vec<SourceEntry> {
             .get(line.saturating_sub(1))
             .cloned()
             .unwrap_or_default();
-        let name = if raw_name.contains('.') || namespace.is_empty() {
-            raw_name.to_owned()
-        } else {
-            format!("{}.{}", namespace.join("."), raw_name)
+        let name = match raw_name {
+            Some(raw_name) if raw_name.contains('.') || namespace.is_empty() => raw_name.to_owned(),
+            Some(raw_name) => format!("{}.{}", namespace.join("."), raw_name),
+            None if namespace.is_empty() => format!("instance@{line}"),
+            None => format!("{}.instance@{line}", namespace.join(".")),
         };
-        let kind = capture
-            .name("kind")
-            .map(|value| value.as_str())
-            .unwrap_or("declaration");
         if matches!(kind, "class" | "structure")
             && let Some(projection) = generated_parent_projection(&name, &signature)
         {
@@ -2135,7 +2137,7 @@ fn render_summary(run: &SearchRun) -> String {
             && let Some(source) = &hit.source
         {
             let source_lines = if matches!(hit.kind.as_str(), "class" | "inductive" | "structure") {
-                8
+                48
             } else {
                 3
             };
@@ -2343,6 +2345,16 @@ end Demo
         );
         assert!(priority_instance.iter().any(|entry| {
             entry.kind == "instance" && entry.name == "VectorBundle.trivialization_linear"
+        }));
+
+        let anonymous_instance = parse_source(
+            "namespace ComplexVectorBundle\ninstance (V : ComplexVectorBundle B) : NormedAddCommGroup V.F := V.normedAddCommGroup\nend ComplexVectorBundle\n",
+            "ComplexVectorBundle",
+        );
+        assert!(anonymous_instance.iter().any(|entry| {
+            entry.kind == "instance"
+                && entry.name.starts_with("ComplexVectorBundle.instance@")
+                && entry.signature.contains("NormedAddCommGroup V.F")
         }));
 
         let structure = parse_source(
