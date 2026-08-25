@@ -1929,13 +1929,11 @@ fn fallback_source_hits(
         let synonym = match term.as_str() {
             "addition" => Some("add"),
             "continuity" => Some("continuous"),
-            "dimensional" => Some("hasorthogonalprojection"),
             "islinear" => Some("linear"),
             "positive" => Some("pos"),
             "projection" => Some("proj"),
             "scaling" => Some("smul"),
             "trivializationat" => Some("trivialization"),
-            "toinnerproductspace" => Some("ofcore"),
             "weighted" => Some("weight"),
             _ => None,
         };
@@ -1984,6 +1982,8 @@ fn fallback_source_hits(
     strong_terms.dedup();
     let declaration_paths = source_scan_paths(&workspace, packages.as_deref(), &declaration_terms)?;
     let strong_paths = source_scan_paths(&workspace, packages.as_deref(), &strong_terms)?;
+    let named_argument_paths =
+        source_scan_paths(&workspace, packages.as_deref(), &named_argument_terms)?;
     let mut path_coverage = HashMap::<PathBuf, usize>::new();
     for term in rare_terms.iter().take(12) {
         for path in source_scan_paths(&workspace, packages.as_deref(), std::slice::from_ref(term))?
@@ -2010,6 +2010,12 @@ fn fallback_source_hits(
         .map(|(path, _)| path)
         .collect::<Vec<_>>();
     let strong_set = strong_paths.iter().collect::<HashSet<_>>();
+    let named_argument_set = named_argument_paths.iter().collect::<HashSet<_>>();
+    let preferred_set = if named_argument_set.is_empty() {
+        &strong_set
+    } else {
+        &named_argument_set
+    };
     let direct_paths = direct_module_paths(&workspace, packages.as_deref(), query);
     let direct_path_set = direct_paths.iter().cloned().collect::<HashSet<_>>();
     let mut paths = direct_paths
@@ -2017,7 +2023,7 @@ fn fallback_source_hits(
         .chain(
             declaration_paths
                 .iter()
-                .filter(|path| strong_set.contains(path))
+                .filter(|path| preferred_set.contains(path))
                 .cloned(),
         )
         .collect::<Vec<_>>();
