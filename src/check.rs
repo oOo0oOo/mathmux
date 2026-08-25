@@ -187,10 +187,14 @@ struct FileSetup {
     path: PathBuf,
 }
 
+type WorkerKey = (String, PathBuf);
+type CheckLocks = Mutex<HashMap<WorkerKey, Weak<Mutex<()>>>>;
+
 pub struct Checker {
     repo: Repo,
     state: State,
-    workers: Mutex<HashMap<(String, PathBuf), LeanWorker>>,
+    workers: Mutex<HashMap<WorkerKey, LeanWorker>>,
+    check_locks: CheckLocks,
     setup_locks: Mutex<HashMap<String, Weak<Mutex<()>>>>,
 }
 
@@ -205,6 +209,7 @@ impl Checker {
             repo,
             state,
             workers: Mutex::new(HashMap::new()),
+            check_locks: Mutex::new(HashMap::new()),
             setup_locks: Mutex::new(HashMap::new()),
         })
     }
@@ -314,6 +319,17 @@ impl Checker {
         reference: &str,
     ) -> Result<FileCheck> {
         let file_started = Instant::now();
+        let check_lock = {
+            let key = (workspace.reference.clone(), target.to_path_buf());
+            let mut locks = self.check_locks.lock().expect("check lock map poisoned");
+            locks.retain(|_, lock| lock.strong_count() > 0);
+            locks.entry(key.clone()).or_default().upgrade().unwrap_or_else(|| {
+                let lock = Arc::new(Mutex::new(()));
+                locks.insert(key, Arc::downgrade(&lock));
+                lock
+            })
+        };
+        let _check_guard = check_lock.lock().expect("target check lock poisoned");
         let target_name = target.to_string_lossy().into_owned();
         let target_absolute = workspace.path.join(target);
         if !target_absolute.exists() {
