@@ -116,7 +116,16 @@ fn serve_client(mut stream: UnixStream, service: &Service) -> Result<()> {
                 || (!request.build.is_empty() && request.build != build_id()) =>
         {
             service.retiring.store(true, Ordering::SeqCst);
-            Response::retry()
+            if request.command.transport_retry_safe()
+                && service.state.has_running_validation().unwrap_or(false)
+            {
+                match service.handle(request) {
+                    Ok(summary) => Response::ok(summary),
+                    Err(error) => Response::error(format!("{error:#}")),
+                }
+            } else {
+                Response::retry()
+            }
         }
         Ok(request) => match service.handle(request) {
             Ok(summary) => Response::ok(summary),
