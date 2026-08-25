@@ -982,7 +982,8 @@ impl Searcher {
         scopes: &HashSet<String>,
         base_warming: bool,
     ) -> Result<SearchResult> {
-        let query = explicit_declaration_name(query).unwrap_or(query);
+        let explicit_declaration = explicit_declaration_name(query);
+        let query = explicit_declaration.unwrap_or(query);
         let type_search = type_search_enabled() && type_shaped(query);
         let query_tokens = meaningful_query_tokens(query);
         let rows = self.candidates(query, &query_tokens, type_search)?;
@@ -1324,6 +1325,9 @@ impl Searcher {
             }
         }
         let mut ranked = deduplicated;
+        if explicit_declaration.is_some() {
+            ranked.sort_by_key(|candidate| !qualified_name_matches(&candidate.hit.name, query));
+        }
         promote_query_coverage(&mut ranked, &query_tokens);
         ranked.truncate(RESULT_LIMIT);
         let no_hits = ranked.is_empty();
