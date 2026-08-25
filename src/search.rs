@@ -2819,11 +2819,21 @@ fn declaration_glob_query(query: &str) -> bool {
 }
 
 fn declaration_glob_matches(name: &str, query: &str) -> bool {
-    let pattern = query
-        .split('*')
-        .map(|part| regex::escape(part).replace(r"\.", "[._]"))
-        .collect::<Vec<_>>()
-        .join(".*");
+    let characters = query.chars().collect::<Vec<_>>();
+    let pattern = characters
+        .iter()
+        .enumerate()
+        .map(|(index, character)| match character {
+            '*' => ".*".to_owned(),
+            '.' if index.checked_sub(1).is_some_and(|prior| characters[prior] == '*')
+                || characters.get(index + 1) == Some(&'*') =>
+            {
+                "[._]?".to_owned()
+            }
+            '.' => "[._]".to_owned(),
+            character => regex::escape(&character.to_string()),
+        })
+        .collect::<String>();
     let prefix = if query.starts_with('*') {
         ""
     } else {
@@ -4422,6 +4432,10 @@ end Demo
         assert!(declaration_glob_matches(
             "Demo.matrixToEuclideanCLM_mul",
             "matrixToEuclideanCLM.*mul"
+        ));
+        assert!(declaration_glob_matches(
+            "Demo.projectionRangePretrivializationAt_totalSpaceMk_isInducing",
+            "projectionRange.*IsInducing"
         ));
         assert!(!declaration_glob_matches(
             "Demo.FiberBundle.local_equiv_apply",
