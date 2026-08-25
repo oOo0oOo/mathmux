@@ -1022,9 +1022,7 @@ impl Searcher {
             || missing_named_detail
             || (!base_warming
                 && !type_search
-                && (query.contains('|')
-                    || query_tokens.len() > 1
-                    || !named_argument_terms(query).is_empty()))
+                && (query.contains('|') || !named_argument_terms(query).is_empty()))
         {
             match fallback_source_hits(&workspace.path, query, &query_tokens) {
                 Ok(hits) => ranked.extend(hits),
