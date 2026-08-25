@@ -9,6 +9,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::check::{parse_imports, project_module_name};
 use crate::git::{lake_command, project_lean_files};
+use crate::issue::{TelemetryOperation, TelemetryStore, development_enabled};
 use crate::repo::Repo;
 use crate::state::{State, Submission, ValidationReport};
 use crate::util::{run_checked, run_output};
@@ -63,6 +64,22 @@ fn validation_loop(
                     },
                 };
                 let _ = state.finish_validation(&submission.reference, &report);
+                if development_enabled()
+                    && let Ok(store) = TelemetryStore::global()
+                {
+                    let _ = store.record_operation(
+                        &repo,
+                        &TelemetryOperation {
+                            workspace: Some(&submission.workspace_ref),
+                            verb: "validation",
+                            reference: Some(&submission.reference),
+                            ok: report.passed,
+                            duration_ms: report.duration_ms,
+                            detail: &report.detail,
+                            rss_kib: None,
+                        },
+                    );
+                }
             }
             Ok(None) => {
                 let (lock, condition) = &*signal;

@@ -16,6 +16,7 @@ use serde_json::Value;
 use walkdir::WalkDir;
 
 use crate::git::lake_command;
+use crate::issue::{TelemetryOperation, TelemetryStore, development_enabled};
 use crate::repo::Repo;
 use crate::state::{SearchHit, SearchRun, SearchUsage, State, Workspace};
 use crate::util::{clean_line, hash_bytes, now_unix_ms};
@@ -180,8 +181,30 @@ impl Searcher {
             let repo = self.repo.clone();
             let workspace = workspace.path.clone();
             std::thread::spawn(move || {
+                let started = Instant::now();
                 let result =
                     LoogleWorker::start(&repo, &workspace).map_err(|error| format!("{error:#}"));
+                if development_enabled()
+                    && let Ok(store) = TelemetryStore::global()
+                {
+                    let detail = result
+                        .as_ref()
+                        .map(|_| "Loogle ready")
+                        .unwrap_or_else(|error| error.as_str());
+                    let rss_kib = result.as_ref().ok().and_then(LoogleWorker::rss_kib);
+                    let _ = store.record_operation(
+                        &repo,
+                        &TelemetryOperation {
+                            workspace: None,
+                            verb: "loogle_index",
+                            reference: None,
+                            ok: result.is_ok(),
+                            duration_ms: started.elapsed().as_millis() as u64,
+                            detail,
+                            rss_kib,
+                        },
+                    );
+                }
                 let _ = sender.send(result);
             });
             *state = LoogleState::Starting(receiver);
@@ -346,9 +369,30 @@ impl Searcher {
                 let state = self.state.clone();
                 let workspace = workspace.clone();
                 std::thread::spawn(move || {
-                    let result = Searcher::new(repo, state)
+                    let started = Instant::now();
+                    let result = Searcher::new(repo.clone(), state)
                         .and_then(|searcher| searcher.refresh_base(&workspace))
                         .map_err(|error| format!("{error:#}"));
+                    if development_enabled()
+                        && let Ok(store) = TelemetryStore::global()
+                    {
+                        let detail = result
+                            .as_ref()
+                            .map(|scopes| format!("{} scopes ready", scopes.len()))
+                            .unwrap_or_else(|error| error.clone());
+                        let _ = store.record_operation(
+                            &repo,
+                            &TelemetryOperation {
+                                workspace: Some(&workspace.reference),
+                                verb: "source_index",
+                                reference: None,
+                                ok: result.is_ok(),
+                                duration_ms: started.elapsed().as_millis() as u64,
+                                detail: &detail,
+                                rss_kib: None,
+                            },
+                        );
+                    }
                     let _ = sender.send(result);
                 });
                 states.insert(key, BaseState::Starting(receiver));
@@ -990,6 +1034,17 @@ impl LoogleWorker {
 
     fn alive(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
+    }
+
+    fn rss_kib(&self) -> Option<u64> {
+        fs::read_to_string(format!("/proc/{}/status", self.child.id()))
+            .ok()?
+            .lines()
+            .find_map(|line| line.strip_prefix("VmRSS:"))?
+            .split_whitespace()
+            .next()?
+            .parse()
+            .ok()
     }
 }
 

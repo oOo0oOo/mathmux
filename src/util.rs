@@ -74,3 +74,14 @@ pub fn build_id() -> &'static str {
 pub fn clean_line(value: &str) -> String {
     value.replace(['\r', '\n'], " ").trim().to_owned()
 }
+
+pub fn resident_memory_kib() -> Option<u64> {
+    fs::read_to_string("/proc/self/status")
+        .ok()?
+        .lines()
+        .find_map(|line| line.strip_prefix("VmRSS:"))?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}

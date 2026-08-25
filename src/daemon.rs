@@ -17,7 +17,7 @@ use crate::protocol::{Command, Request, Response};
 use crate::repo::Repo;
 use crate::search::Searcher;
 use crate::state::{State, Submission};
-use crate::util::{build_id, clean_line, now_unix_ms};
+use crate::util::{build_id, clean_line, now_unix_ms, resident_memory_kib};
 use crate::validation::ValidationQueue;
 
 pub fn run(repo: Repo) -> Result<()> {
@@ -106,9 +106,10 @@ pub fn run(repo: Repo) -> Result<()> {
 }
 
 fn serve_client(mut stream: UnixStream, service: &Service) -> Result<()> {
+    let started = Instant::now();
     let mut line = String::new();
     BufReader::new(stream.try_clone()?).read_line(&mut line)?;
-    let response = match serde_json::from_str::<Request>(&line) {
+    let mut response = match serde_json::from_str::<Request>(&line) {
         Ok(request)
             if service.retiring.load(Ordering::SeqCst)
                 || (!request.build.is_empty() && request.build != build_id()) =>
@@ -122,6 +123,8 @@ fn serve_client(mut stream: UnixStream, service: &Service) -> Result<()> {
         },
         Err(error) => Response::error(format!("invalid request: {error}")),
     };
+    response.daemon_ms = started.elapsed().as_millis() as u64;
+    response.rss_kib = resident_memory_kib();
     serde_json::to_writer(&mut stream, &response)?;
     stream.write_all(b"\n")?;
     stream.flush()?;

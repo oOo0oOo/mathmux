@@ -21,6 +21,21 @@ pub enum Command {
     Show { reference: String, all: bool },
 }
 
+impl Command {
+    pub fn verb(&self) -> &'static str {
+        match self {
+            Self::WsCreate { .. } => "ws_create",
+            Self::WsList => "ws_list",
+            Self::WsDelete { .. } => "ws_delete",
+            Self::Check { .. } => "check",
+            Self::Search { .. } => "search",
+            Self::Sync => "sync",
+            Self::Submit { .. } => "submit",
+            Self::Show { .. } => "show",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Response {
     #[serde(default)]
@@ -29,6 +44,10 @@ pub struct Response {
     pub retry: bool,
     pub ok: bool,
     pub summary: String,
+    #[serde(default)]
+    pub daemon_ms: u64,
+    #[serde(default)]
+    pub rss_kib: Option<u64>,
 }
 
 impl Response {
@@ -38,6 +57,8 @@ impl Response {
             retry: false,
             ok: true,
             summary: summary.into(),
+            daemon_ms: 0,
+            rss_kib: None,
         }
     }
 
@@ -47,6 +68,8 @@ impl Response {
             retry: false,
             ok: false,
             summary: summary.into(),
+            daemon_ms: 0,
+            rss_kib: None,
         }
     }
 
@@ -56,6 +79,8 @@ impl Response {
             retry: true,
             ok: false,
             summary: "daemon build changed".into(),
+            daemon_ms: 0,
+            rss_kib: None,
         }
     }
 }

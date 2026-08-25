@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -10,14 +11,31 @@ use crate::git::{dirty_paths, head};
 use crate::protocol::{Request, Response};
 use crate::repo::Repo;
 use crate::state::State;
-use crate::util::{build_id, hash_bytes, now_unix_ms};
+use crate::util::{build_id, hash_bytes, now_unix_ms, resident_memory_kib};
 
 const SNAPSHOT_LIMIT: usize = 256 * 1024;
 const LOG_LINES: usize = 80;
+const TELEMETRY_DAYS: i64 = 30;
+const TELEMETRY_LIMIT: i64 = 50_000;
 
 #[derive(Debug, Clone)]
 pub struct IssueStore {
     path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub struct TelemetryStore {
+    path: PathBuf,
+}
+
+pub struct TelemetryOperation<'a> {
+    pub workspace: Option<&'a str>,
+    pub verb: &'a str,
+    pub reference: Option<&'a str>,
+    pub ok: bool,
+    pub duration_ms: u64,
+    pub detail: &'a str,
+    pub rss_kib: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -34,6 +52,27 @@ struct IssueContext {
     dirty: Vec<String>,
     files: Vec<FileSnapshot>,
     log: Option<String>,
+    telemetry: Option<String>,
+}
+
+#[derive(Debug)]
+struct TelemetryEvent {
+    id: i64,
+    created_at: i64,
+    build: String,
+    project: String,
+    workspace: Option<String>,
+    verb: String,
+    reference: Option<String>,
+    ok: bool,
+    error_class: Option<String>,
+    client_ms: u64,
+    daemon_ms: u64,
+    rss_kib: Option<u64>,
+    request_bytes: u64,
+    response_bytes: u64,
+    request_json: String,
+    response_json: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -241,7 +280,260 @@ impl IssueStore {
     }
 }
 
-pub fn record_exchange(repo: &Repo, request: &Request, response: &Response) -> Result<()> {
+impl TelemetryStore {
+    pub fn global() -> Result<Self> {
+        let issues = IssueStore::global()?;
+        Self::new(issues.path)
+    }
+
+    pub fn new(path: impl AsRef<Path>) -> Result<Self> {
+        let store = Self {
+            path: path.as_ref().to_path_buf(),
+        };
+        store.migrate()?;
+        fs::set_permissions(&store.path, fs::Permissions::from_mode(0o600))?;
+        Ok(store)
+    }
+
+    fn open_db(&self) -> Result<Connection> {
+        let connection = Connection::open(&self.path)?;
+        connection.busy_timeout(std::time::Duration::from_secs(10))?;
+        Ok(connection)
+    }
+
+    fn migrate(&self) -> Result<()> {
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let connection = self.open_db()?;
+        connection.pragma_update(None, "journal_mode", "WAL")?;
+        connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS telemetry_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at INTEGER NOT NULL,
+                build TEXT NOT NULL,
+                project TEXT NOT NULL,
+                workspace TEXT,
+                verb TEXT NOT NULL,
+                reference TEXT,
+                ok INTEGER NOT NULL,
+                error_class TEXT,
+                client_ms INTEGER NOT NULL,
+                daemon_ms INTEGER NOT NULL,
+                rss_kib INTEGER,
+                request_bytes INTEGER NOT NULL,
+                response_bytes INTEGER NOT NULL,
+                request_json TEXT NOT NULL,
+                response_json TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS telemetry_created
+                ON telemetry_events(created_at DESC);
+             CREATE INDEX IF NOT EXISTS telemetry_verb_created
+                ON telemetry_events(verb, created_at DESC);
+             CREATE INDEX IF NOT EXISTS telemetry_project_created
+                ON telemetry_events(project, created_at DESC);",
+        )?;
+        Ok(())
+    }
+
+    pub fn record(
+        &self,
+        repo: &Repo,
+        request: &Request,
+        response: &Response,
+        client_ms: u64,
+    ) -> Result<String> {
+        let request_json = serde_json::to_string(request)?;
+        let response_json = serde_json::to_string(response)?;
+        let workspace = State::new(&repo.db_path)
+            .ok()
+            .and_then(|state| state.workspace_for_path(Path::new(&request.cwd)).ok())
+            .map(|workspace| workspace.reference);
+        let reference = response_reference(&response.summary);
+        let error_class = (!response.ok).then(|| error_class(&response.summary));
+        let now = now_unix_ms();
+        let mut connection = self.open_db()?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO telemetry_events(
+                created_at, build, project, workspace, verb, reference, ok, error_class,
+                client_ms, daemon_ms, rss_kib, request_bytes, response_bytes,
+                request_json, response_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            params![
+                now,
+                response.build,
+                repo.root.to_string_lossy(),
+                workspace,
+                request.command.verb(),
+                reference,
+                response.ok,
+                error_class,
+                client_ms,
+                response.daemon_ms,
+                response.rss_kib,
+                request_json.len() as u64,
+                response_json.len() as u64,
+                request_json,
+                response_json,
+            ],
+        )?;
+        let id = transaction.last_insert_rowid();
+        prune_telemetry(&transaction, now)?;
+        transaction.commit()?;
+        Ok(format!("e{id}"))
+    }
+
+    pub fn record_operation(
+        &self,
+        repo: &Repo,
+        operation: &TelemetryOperation<'_>,
+    ) -> Result<String> {
+        ensure!(
+            !operation.verb.is_empty()
+                && operation.verb.len() <= 64
+                && operation
+                    .verb
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '_'),
+            "invalid telemetry verb"
+        );
+        let response_json = serde_json::json!({ "detail": operation.detail }).to_string();
+        let now = now_unix_ms();
+        let mut connection = self.open_db()?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO telemetry_events(
+                created_at, build, project, workspace, verb, reference, ok, error_class,
+                client_ms, daemon_ms, rss_kib, request_bytes, response_bytes,
+                request_json, response_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10, 2, ?11, '{}', ?12)",
+            params![
+                now,
+                build_id(),
+                repo.root.to_string_lossy(),
+                operation.workspace,
+                operation.verb,
+                operation.reference,
+                operation.ok,
+                (!operation.ok).then(|| error_class(operation.detail)),
+                operation.duration_ms,
+                operation.rss_kib.or_else(resident_memory_kib),
+                response_json.len() as u64,
+                response_json,
+            ],
+        )?;
+        let id = transaction.last_insert_rowid();
+        prune_telemetry(&transaction, now)?;
+        transaction.commit()?;
+        Ok(format!("e{id}"))
+    }
+
+    pub fn summary(&self, since: &str, verb: Option<&str>, slow: Option<usize>) -> Result<String> {
+        let cutoff = parse_since(since)?;
+        let events = self.events_since(cutoff, verb)?;
+        if events.is_empty() {
+            return Ok("no telemetry".into());
+        }
+        if let Some(limit) = slow {
+            ensure!(
+                (1..=100).contains(&limit),
+                "--slow uses a value from 1 to 100"
+            );
+            let mut events = events;
+            events.sort_by_key(|event| std::cmp::Reverse(event.client_ms));
+            return Ok(events
+                .iter()
+                .take(limit)
+                .map(render_event_line)
+                .collect::<Vec<_>>()
+                .join("\n"));
+        }
+        let mut grouped: BTreeMap<&str, Vec<&TelemetryEvent>> = BTreeMap::new();
+        for event in &events {
+            grouped.entry(&event.verb).or_default().push(event);
+        }
+        Ok(grouped
+            .into_iter()
+            .map(|(verb, events)| render_aggregate(verb, &events))
+            .collect::<Vec<_>>()
+            .join("\n"))
+    }
+
+    pub fn show(&self, reference: &str, all: bool) -> Result<String> {
+        let id = parse_event_reference(reference)?;
+        let event = self
+            .open_db()?
+            .query_row(
+                "SELECT id, created_at, build, project, workspace, verb, reference, ok,
+                        error_class, client_ms, daemon_ms, rss_kib, request_bytes,
+                        response_bytes, request_json, response_json
+                 FROM telemetry_events WHERE id = ?1",
+                [id],
+                telemetry_from_row,
+            )
+            .optional()?
+            .with_context(|| format!("unknown reference {reference}"))?;
+        Ok(render_event(&event, all))
+    }
+
+    fn events_since(&self, cutoff: i64, verb: Option<&str>) -> Result<Vec<TelemetryEvent>> {
+        let connection = self.open_db()?;
+        let select = "SELECT id, created_at, build, project, workspace, verb, reference, ok,
+                             error_class, client_ms, daemon_ms, rss_kib, request_bytes,
+                             response_bytes, request_json, response_json
+                      FROM telemetry_events";
+        let (sql, value) = match verb {
+            Some(verb) => (
+                format!("{select} WHERE created_at >= ?1 AND verb = ?2 ORDER BY created_at DESC"),
+                Some(verb),
+            ),
+            None => (
+                format!("{select} WHERE created_at >= ?1 ORDER BY created_at DESC"),
+                None,
+            ),
+        };
+        let mut statement = connection.prepare(&sql)?;
+        let rows = match value {
+            Some(verb) => statement.query_map(params![cutoff, verb], telemetry_from_row)?,
+            None => statement.query_map([cutoff], telemetry_from_row)?,
+        };
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    fn recent(&self, project: &Path, workspace: Option<&str>) -> Result<Option<String>> {
+        let connection = self.open_db()?;
+        let mut statement = connection.prepare(
+            "SELECT id, created_at, build, project, workspace, verb, reference, ok,
+                    error_class, client_ms, daemon_ms, rss_kib, request_bytes,
+                    response_bytes, request_json, response_json
+             FROM telemetry_events
+             WHERE project = ?1 AND (?2 IS NULL OR workspace = ?2)
+             ORDER BY created_at DESC LIMIT 10",
+        )?;
+        let events = statement
+            .query_map(
+                params![project.to_string_lossy(), workspace],
+                telemetry_from_row,
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok((!events.is_empty()).then(|| {
+            events
+                .iter()
+                .map(render_event_line)
+                .collect::<Vec<_>>()
+                .join("\n")
+        }))
+    }
+}
+
+pub fn record_exchange(
+    repo: &Repo,
+    request: &Request,
+    response: &Response,
+    client_ms: u64,
+) -> Result<()> {
     #[derive(Serialize)]
     struct Exchange<'a> {
         request: &'a Request,
@@ -251,7 +543,194 @@ pub fn record_exchange(repo: &Repo, request: &Request, response: &Response) -> R
     let path = repo.state_dir.join("development-last-command.json");
     fs::write(&path, serde_json::to_vec(&Exchange { request, response })?)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    TelemetryStore::global()?.record(repo, request, response, client_ms)?;
     Ok(())
+}
+
+pub fn development_enabled() -> bool {
+    std::env::var("MATHMUX_DEVELOPMENT")
+        .ok()
+        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes"))
+}
+
+fn prune_telemetry(transaction: &rusqlite::Transaction<'_>, now: i64) -> Result<()> {
+    transaction.execute(
+        "DELETE FROM telemetry_events WHERE created_at < ?1",
+        [now - TELEMETRY_DAYS * 24 * 60 * 60 * 1000],
+    )?;
+    transaction.execute(
+        "DELETE FROM telemetry_events
+         WHERE id <= COALESCE((
+            SELECT id FROM telemetry_events ORDER BY id DESC LIMIT 1 OFFSET ?1
+         ), 0)",
+        [TELEMETRY_LIMIT],
+    )?;
+    Ok(())
+}
+
+fn parse_since(value: &str) -> Result<i64> {
+    if value == "all" {
+        return Ok(0);
+    }
+    let (number, unit) = value.split_at(value.len().saturating_sub(1));
+    let number = number
+        .parse::<i64>()
+        .with_context(|| format!("invalid --since value {value}"))?;
+    ensure!(number > 0, "--since must be positive");
+    let milliseconds = match unit {
+        "m" => 60 * 1000,
+        "h" => 60 * 60 * 1000,
+        "d" => 24 * 60 * 60 * 1000,
+        "w" => 7 * 24 * 60 * 60 * 1000,
+        _ => anyhow::bail!("--since uses m, h, d, w, or all"),
+    };
+    Ok(now_unix_ms().saturating_sub(number.saturating_mul(milliseconds)))
+}
+
+fn telemetry_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TelemetryEvent> {
+    Ok(TelemetryEvent {
+        id: row.get(0)?,
+        created_at: row.get(1)?,
+        build: row.get(2)?,
+        project: row.get(3)?,
+        workspace: row.get(4)?,
+        verb: row.get(5)?,
+        reference: row.get(6)?,
+        ok: row.get(7)?,
+        error_class: row.get(8)?,
+        client_ms: row.get(9)?,
+        daemon_ms: row.get(10)?,
+        rss_kib: row.get(11)?,
+        request_bytes: row.get(12)?,
+        response_bytes: row.get(13)?,
+        request_json: row.get(14)?,
+        response_json: row.get(15)?,
+    })
+}
+
+fn render_aggregate(verb: &str, events: &[&TelemetryEvent]) -> String {
+    let mut durations = events
+        .iter()
+        .map(|event| event.client_ms)
+        .collect::<Vec<_>>();
+    durations.sort_unstable();
+    let errors = events.iter().filter(|event| !event.ok).count();
+    let rss = events.iter().filter_map(|event| event.rss_kib).max();
+    let average = durations.iter().sum::<u64>() / durations.len() as u64;
+    let mut output = format!(
+        "{} {} avg:{} p50:{} p95:{} err:{}",
+        verb,
+        events.len(),
+        format_milliseconds(average),
+        format_milliseconds(percentile(&durations, 50)),
+        format_milliseconds(percentile(&durations, 95)),
+        errors
+    );
+    if let Some(rss) = rss {
+        output.push_str(&format!(" rss:{}", format_memory(rss)));
+    }
+    output
+}
+
+fn percentile(sorted: &[u64], percentile: usize) -> u64 {
+    let index = (sorted.len() * percentile).div_ceil(100).saturating_sub(1);
+    sorted.get(index).copied().unwrap_or(0)
+}
+
+fn render_event_line(event: &TelemetryEvent) -> String {
+    let status = if event.ok { "ok" } else { "error" };
+    let reference = event
+        .reference
+        .as_deref()
+        .map(|reference| format!(" {reference}"))
+        .unwrap_or_default();
+    format!(
+        "e{} {} {} {}{}",
+        event.id,
+        event.verb,
+        format_milliseconds(event.client_ms),
+        status,
+        reference
+    )
+}
+
+fn render_event(event: &TelemetryEvent, all: bool) -> String {
+    let mut output = render_event_line(event);
+    if let Some(error) = &event.error_class {
+        output.push_str(&format!("\nerror: {error}"));
+    }
+    if all {
+        output.push_str(&format!(
+            "\ncreated: {}\nbuild: {}\nproject: {}\nclient: {}\ndaemon: {}\nio: {}/{} bytes",
+            event.created_at,
+            event.build,
+            event.project,
+            format_milliseconds(event.client_ms),
+            format_milliseconds(event.daemon_ms),
+            event.request_bytes,
+            event.response_bytes,
+        ));
+        if let Some(workspace) = &event.workspace {
+            output.push_str(&format!("\nworkspace: {workspace}"));
+        }
+        if let Some(rss) = event.rss_kib {
+            output.push_str(&format!("\nrss: {}", format_memory(rss)));
+        }
+        output.push_str(&format!(
+            "\nrequest: {}\nresponse: {}",
+            event.request_json, event.response_json
+        ));
+    }
+    output
+}
+
+fn format_milliseconds(milliseconds: u64) -> String {
+    if milliseconds < 1000 {
+        format!("{milliseconds}ms")
+    } else {
+        format!("{:.1}s", milliseconds as f64 / 1000.0)
+    }
+}
+
+fn format_memory(kib: u64) -> String {
+    if kib < 1024 * 1024 {
+        format!("{}MiB", kib / 1024)
+    } else {
+        format!("{:.1}GiB", kib as f64 / 1024.0 / 1024.0)
+    }
+}
+
+fn response_reference(summary: &str) -> Option<String> {
+    summary
+        .split_whitespace()
+        .map(|token| token.trim_matches(|character: char| !character.is_ascii_alphanumeric()))
+        .find(|token| {
+            let mut characters = token.chars();
+            matches!(
+                characters.next(),
+                Some('c' | 'e' | 'i' | 'q' | 's' | 'u' | 'w')
+            ) && characters.clone().next().is_some()
+                && characters.all(|character| character.is_ascii_digit())
+        })
+        .map(str::to_owned)
+}
+
+fn error_class(summary: &str) -> String {
+    let value = summary.lines().next().unwrap_or("error").trim();
+    let mut boundary = value.len().min(120);
+    while !value.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    value[..boundary].to_owned()
+}
+
+fn parse_event_reference(reference: &str) -> Result<i64> {
+    let value = reference
+        .strip_prefix('e')
+        .filter(|value| !value.is_empty())
+        .filter(|value| value.chars().all(|character| character.is_ascii_digit()))
+        .with_context(|| format!("malformed telemetry reference {reference}"))?;
+    Ok(value.parse()?)
 }
 
 fn capture_context(cwd: &Path, related_ref: Option<&str>) -> Result<IssueContext> {
@@ -282,6 +761,10 @@ fn capture_context(cwd: &Path, related_ref: Option<&str>) -> Result<IssueContext
             context.related_detail = Some(state.show(reference, true)?);
         }
     }
+    context.telemetry = TelemetryStore::global()
+        .ok()
+        .and_then(|store| store.recent(&repo.root, context.workspace.as_deref()).ok())
+        .flatten();
     let dirty = dirty_paths(&worktree).unwrap_or_default();
     context.dirty = dirty
         .iter()
@@ -429,6 +912,11 @@ fn render_issue(issue: &Issue, all: bool) -> String {
         {
             output.push_str(&format!("\nlog:\n{log}"));
         }
+        if let Some(telemetry) = &issue.context.telemetry
+            && !telemetry.is_empty()
+        {
+            output.push_str(&format!("\ntelemetry:\n{telemetry}"));
+        }
         output.push_str(&format!("\ncreated: {}", issue.created_at));
         if let Some(resolved_at) = issue.resolved_at {
             output.push_str(&format!("\nresolved: {resolved_at}"));
@@ -473,5 +961,42 @@ mod tests {
                 .unwrap()
                 .contains("fixed by: abc123")
         );
+    }
+
+    #[test]
+    fn telemetry_aggregates_and_exposes_slow_events() {
+        let directory = tempdir().unwrap();
+        let store = TelemetryStore::new(directory.path().join("development.db")).unwrap();
+        let connection = store.open_db().unwrap();
+        for (verb, duration, ok) in [
+            ("check", 12, true),
+            ("check", 1200, false),
+            ("search", 8, true),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO telemetry_events(
+                        created_at, build, project, workspace, verb, reference, ok, error_class,
+                        client_ms, daemon_ms, rss_kib, request_bytes, response_bytes,
+                        request_json, response_json
+                     ) VALUES (?1, 'test', '/repo', 'w1', ?2, NULL, ?3, NULL,
+                               ?4, ?4, 1024, 10, 20, '{}', '{}')",
+                    params![now_unix_ms(), verb, ok, duration],
+                )
+                .unwrap();
+        }
+        let summary = store.summary("24h", None, None).unwrap();
+        assert!(summary.contains("check 2 avg:606ms p50:12ms p95:1.2s err:1"));
+        assert!(summary.contains("search 1 avg:8ms p50:8ms"));
+        let slow = store.summary("all", None, Some(1)).unwrap();
+        assert!(slow.starts_with("e2 check 1.2s error"));
+        assert!(store.show("e2", true).unwrap().contains("request: {}"));
+    }
+
+    #[test]
+    fn telemetry_windows_are_narrow() {
+        assert_eq!(parse_since("all").unwrap(), 0);
+        assert!(parse_since("24h").unwrap() < now_unix_ms());
+        assert!(parse_since("soon").is_err());
     }
 }

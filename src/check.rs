@@ -11,6 +11,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 
 use crate::git::{dirty_lean_files, lake_command, project_lean_files};
+use crate::issue::{TelemetryOperation, TelemetryStore, development_enabled};
 use crate::repo::Repo;
 use crate::state::{CheckRecord, CheckRun, Diagnostic, State, Workspace};
 use crate::util::{hash_bytes, hash_file, now_unix_ms};
@@ -388,6 +389,22 @@ impl Checker {
             .open(&self.repo.log_path)
         {
             let _ = writeln!(log, "direct worker fallback: {detail}");
+        }
+        if development_enabled()
+            && let Ok(store) = TelemetryStore::global()
+        {
+            let _ = store.record_operation(
+                &self.repo,
+                &TelemetryOperation {
+                    workspace: None,
+                    verb: "check_fallback",
+                    reference: None,
+                    ok: false,
+                    duration_ms: 0,
+                    detail,
+                    rss_kib: None,
+                },
+            );
         }
     }
 

@@ -11,7 +11,7 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use fs2::FileExt;
 
 use crate::daemon;
-use crate::issue::IssueStore;
+use crate::issue::{IssueStore, TelemetryStore};
 use crate::protocol::{Command, Request, Response};
 use crate::repo::Repo;
 
@@ -109,6 +109,19 @@ enum TopCommand {
         #[command(subcommand)]
         command: IssueCommand,
     },
+    /// Inspect local development telemetry.
+    #[command(hide = true)]
+    Telemetry {
+        /// Time window such as 30m, 24h, 7d, or all.
+        #[arg(long, default_value = "24h")]
+        since: String,
+        /// Restrict results to one command verb.
+        #[arg(long)]
+        verb: Option<String>,
+        /// Show the N slowest events instead of aggregates.
+        #[arg(long)]
+        slow: Option<usize>,
+    },
     #[command(name = "__daemon", hide = true)]
     Daemon {
         #[arg(long)]
@@ -174,7 +187,12 @@ impl IssueFilter {
 
 pub fn run() -> Result<u8> {
     let development = development_requested();
-    if !development && requested_top_command().as_deref() == Some("issue") {
+    if !development
+        && matches!(
+            requested_top_command().as_deref(),
+            Some("issue" | "telemetry")
+        )
+    {
         bail!("development commands are disabled");
     }
     let command = command_line(development);
@@ -190,11 +208,26 @@ pub fn run() -> Result<u8> {
         ensure!(development, "development commands are disabled");
         return run_issue(command, &cwd);
     }
+    if let TopCommand::Telemetry { since, verb, slow } = args.command {
+        ensure!(development, "development commands are disabled");
+        println!(
+            "{}",
+            TelemetryStore::global()?.summary(&since, verb.as_deref(), slow)?
+        );
+        return Ok(0);
+    }
     if let TopCommand::Show { reference, all } = &args.command
         && reference.starts_with('i')
     {
         ensure!(development, "development commands are disabled");
         println!("{}", IssueStore::global()?.show(reference, *all)?);
+        return Ok(0);
+    }
+    if let TopCommand::Show { reference, all } = &args.command
+        && reference.starts_with('e')
+    {
+        ensure!(development, "development commands are disabled");
+        println!("{}", TelemetryStore::global()?.show(reference, *all)?);
         return Ok(0);
     }
     let repo = Repo::discover(&cwd)?;
@@ -221,6 +254,7 @@ pub fn run() -> Result<u8> {
         TopCommand::Submit { message } => Command::Submit { message },
         TopCommand::Show { reference, all } => Command::Show { reference, all },
         TopCommand::Issue { .. } => unreachable!(),
+        TopCommand::Telemetry { .. } => unreachable!(),
         TopCommand::Daemon { .. } => unreachable!(),
     };
     let request = Request {
@@ -228,9 +262,10 @@ pub fn run() -> Result<u8> {
         cwd: cwd.to_string_lossy().into_owned(),
         command,
     };
+    let client_started = Instant::now();
     let mut handoffs = 0;
     let response = loop {
-        let response = exchange(connect_or_start(&repo)?, &request)?;
+        let response = exchange(connect_or_start(&repo, development)?, &request)?;
         if !response.retry {
             break response;
         }
@@ -242,7 +277,12 @@ pub fn run() -> Result<u8> {
         wait_for_daemon_exit(&repo)?;
     };
     if development {
-        let _ = crate::issue::record_exchange(&repo, &request, &response);
+        let _ = crate::issue::record_exchange(
+            &repo,
+            &request,
+            &response,
+            client_started.elapsed().as_millis() as u64,
+        );
     }
     if response.ok {
         println!("{}", response.summary);
@@ -308,12 +348,14 @@ fn requested_top_command() -> Option<String> {
 fn command_line(development: bool) -> clap::Command {
     let mut command = Args::command();
     if development {
-        command = command.mut_subcommand("issue", |command| command.hide(false));
+        command = command
+            .mut_subcommand("issue", |command| command.hide(false))
+            .mut_subcommand("telemetry", |command| command.hide(false));
     }
     command
 }
 
-fn connect_or_start(repo: &Repo) -> Result<UnixStream> {
+fn connect_or_start(repo: &Repo, development: bool) -> Result<UnixStream> {
     if let Ok(stream) = UnixStream::connect(&repo.socket_path) {
         return Ok(stream);
     }
@@ -327,7 +369,7 @@ fn connect_or_start(repo: &Repo) -> Result<UnixStream> {
     if let Ok(stream) = UnixStream::connect(&repo.socket_path) {
         return Ok(stream);
     }
-    start_daemon(repo)?;
+    start_daemon(repo, development)?;
     let started = Instant::now();
     while started.elapsed() < Duration::from_secs(10) {
         match UnixStream::connect(&repo.socket_path) {
@@ -338,7 +380,7 @@ fn connect_or_start(repo: &Repo) -> Result<UnixStream> {
     bail!("daemon did not start; see {}", repo.log_path.display())
 }
 
-fn start_daemon(repo: &Repo) -> Result<()> {
+fn start_daemon(repo: &Repo, development: bool) -> Result<()> {
     let executable = std::env::current_exe()?;
     let log = File::options()
         .create(true)
@@ -353,6 +395,9 @@ fn start_daemon(repo: &Repo) -> Result<()> {
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(error_log));
+    if development {
+        command.env("MATHMUX_DEVELOPMENT", "1");
+    }
     unsafe {
         command.pre_exec(|| {
             if libc::setsid() == -1 {
@@ -374,7 +419,9 @@ mod tests {
         let normal = command_line(false).render_help().to_string();
         let development = command_line(true).render_help().to_string();
         assert!(!normal.contains("issue"));
+        assert!(!normal.contains("telemetry"));
         assert!(development.contains("issue"));
+        assert!(development.contains("telemetry"));
         assert!(normal.contains("Do not run git, lean, lake build"));
         assert!(normal.contains("Keep each file focused on one coherent module"));
     }
