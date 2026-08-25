@@ -698,7 +698,13 @@ fn render_search_run(run: &SearchRun, all: bool) -> String {
             }
             if let Some(source) = &hit.source {
                 output.push_str("\n   source:");
-                for line in source.trim().lines().take(8) {
+                let source_lines =
+                    if matches!(hit.kind.as_str(), "class" | "inductive" | "structure") {
+                        48
+                    } else {
+                        8
+                    };
+                for line in source.trim().lines().take(source_lines) {
                     output.push_str(&format!("\n     {}", truncate_line(line, 240)));
                 }
             }
