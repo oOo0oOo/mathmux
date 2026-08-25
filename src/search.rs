@@ -455,6 +455,13 @@ impl Searcher {
                         let _guard = base_lock
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let _process_guard = match search_index_writer_lock(&repo) {
+                            Ok(guard) => guard,
+                            Err(error) => {
+                                let _ = sender.send(Err(format!("{error:#}")));
+                                return;
+                            }
+                        };
                         Searcher::initialized(repo.clone(), state)
                             .refresh_base(&workspace)
                             .map_err(|error| format!("{error:#}"))
@@ -1278,6 +1285,26 @@ impl Searcher {
             note,
         })
     }
+}
+
+fn search_index_writer_lock(repo: &Repo) -> Result<fs::File> {
+    let path = repo.state_dir.join("search-index.lock");
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("cannot open {}", path.display()))?;
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+    if result != 0 {
+        bail!(
+            "cannot lock {}: {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        );
+    }
+    Ok(file)
 }
 
 fn project_source_hits(
