@@ -359,13 +359,16 @@ impl Checker {
         }
         let cache_ms = phase.elapsed().as_millis() as u64;
         let phase = Instant::now();
-        let mut environment = self.worker_environment(workspace, target, &dependencies)?;
+        let setup_input = environment_fingerprint(&workspace.path, &dependencies)?;
+        let mut environment = self.worker_environment_from_base(workspace, target, &setup_input)?;
+        let persisted_setup = self.setup_path(workspace, target);
         let setup_path = match self.current_setup(workspace, target, &environment) {
             Some(path) => path,
+            None if setup_is_current(&persisted_setup, &setup_input) => persisted_setup,
             None => {
                 let setup =
-                    self.prepare_setup(workspace, target, &environment, !dependencies.is_empty())?;
-                environment = self.worker_environment(workspace, target, &dependencies)?;
+                    self.prepare_setup(workspace, target, &setup_input, !dependencies.is_empty())?;
+                environment = self.worker_environment_from_base(workspace, target, &setup_input)?;
                 setup.path
             }
         };
@@ -556,16 +559,15 @@ impl Checker {
         ))
     }
 
-    fn worker_environment(
+    fn worker_environment_from_base(
         &self,
         workspace: &Workspace,
         target: &Path,
-        dependencies: &[PathBuf],
+        base: &str,
     ) -> Result<String> {
-        let base = environment_fingerprint(&workspace.path, dependencies)?;
         let setup_path = self.setup_path(workspace, target);
         if !setup_path.is_file() {
-            return Ok(base);
+            return Ok(base.to_owned());
         }
         Ok(hash_bytes(
             format!("{base}{}", setup_artifact_fingerprint(&setup_path)?).as_bytes(),
@@ -595,6 +597,10 @@ impl Checker {
         let _build_guard = build_lock
             .as_ref()
             .map(|lock| lock.lock().expect("dependency build lock poisoned"));
+        let path = self.setup_path(workspace, target);
+        if setup_is_current(&path, input_fingerprint) {
+            return Ok(FileSetup { path });
+        }
         let output = lake_command(&self.repo, &workspace.path)
             .arg("setup-file")
             .arg(target)
@@ -621,8 +627,8 @@ impl Checker {
             .join("setups")
             .join(&workspace.reference);
         fs::create_dir_all(&directory)?;
-        let path = self.setup_path(workspace, target);
         fs::write(&path, &output.stdout)?;
+        fs::write(setup_fingerprint_path(&path), input_fingerprint)?;
         Ok(FileSetup { path })
     }
 
@@ -723,6 +729,16 @@ impl Checker {
         );
         Ok(references)
     }
+}
+
+fn setup_fingerprint_path(setup_path: &Path) -> PathBuf {
+    setup_path.with_extension("fingerprint")
+}
+
+fn setup_is_current(setup_path: &Path, input_fingerprint: &str) -> bool {
+    setup_path.is_file()
+        && fs::read_to_string(setup_fingerprint_path(setup_path))
+            .is_ok_and(|fingerprint| fingerprint == input_fingerprint)
 }
 
 struct LeanWorker {
@@ -1299,6 +1315,20 @@ mod tests {
         fs::write(&artifact, "different size").unwrap();
         let after = setup_artifact_fingerprint(&setup).unwrap();
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn persisted_setup_requires_matching_input_fingerprint() {
+        let directory = tempdir().unwrap();
+        let setup = directory.path().join("setup.json");
+        fs::write(&setup, "{}").unwrap();
+        assert!(!setup_is_current(&setup, "current"));
+
+        fs::write(setup_fingerprint_path(&setup), "stale").unwrap();
+        assert!(!setup_is_current(&setup, "current"));
+
+        fs::write(setup_fingerprint_path(&setup), "current").unwrap();
+        assert!(setup_is_current(&setup, "current"));
     }
 
     #[test]
