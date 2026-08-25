@@ -1176,7 +1176,6 @@ impl Searcher {
             if lexical <= 0.0 && type_score <= 0.0 {
                 continue;
             }
-            let usages = self.usages(&row.name, scopes, workspace)?;
             let (source, matched_line) = detailed_source_excerpt(
                 &row.body,
                 query,
@@ -1187,7 +1186,6 @@ impl Searcher {
             );
             let score = lexical
                 + type_score
-                + (usages.len() as f64 + 1.0).ln()
                 + if row.owner == format!("workspace:{}", workspace.reference) {
                     8.0
                 } else {
@@ -1204,7 +1202,7 @@ impl Searcher {
                     line: matched_line,
                     doc: nonempty(row.docs),
                     source,
-                    usages,
+                    usages: Vec::new(),
                     applicable: false,
                     required_import: None,
                 },
@@ -1339,6 +1337,13 @@ impl Searcher {
         }
         promote_query_coverage(&mut ranked, &query_tokens);
         ranked.truncate(RESULT_LIMIT);
+        for candidate in &mut ranked {
+            if candidate.hit.usages.is_empty()
+                && !matches!(candidate.hit.kind.as_str(), "file" | "imports")
+            {
+                candidate.hit.usages = self.usages(&candidate.hit.name, scopes, workspace)?;
+            }
+        }
         let no_hits = ranked.is_empty();
         let dependency_sources_missing = dependency_sources_missing(&workspace.path);
         Ok(SearchResult {
