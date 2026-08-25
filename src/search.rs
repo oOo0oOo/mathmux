@@ -25,7 +25,7 @@ const RESULT_LIMIT: usize = 24;
 const SUMMARY_LIMIT: usize = 5;
 const GOAL_TIMEOUT_MS: u64 = 2_000;
 const SEARCH_INDEX_VERSION: i64 = 6;
-const SOURCE_INDEX_KIND: &str = "source-v3";
+const SOURCE_INDEX_KIND: &str = "source-v4";
 const DECLARATION_DETAIL_LINES: usize = 48;
 const INDEX_COMMIT_BATCH: usize = 64;
 
@@ -1347,6 +1347,7 @@ fn parse_source(source: &str, module: &str) -> Vec<SourceEntry> {
     let matches = declaration.captures_iter(source).collect::<Vec<_>>();
     let lines = line_starts(source);
     let namespaces = namespaces_by_line(source);
+    let contexts = ambient_contexts_by_line(source);
     let mut entries = Vec::new();
     for (index, capture) in matches.iter().enumerate() {
         let complete = capture.get(0).expect("declaration match");
@@ -1398,13 +1399,22 @@ fn parse_source(source: &str, module: &str) -> Vec<SourceEntry> {
         {
             signature.push_str(&format!("; generated parent projection: {projection}"));
         }
+        let context = contexts
+            .get(line.saturating_sub(1))
+            .cloned()
+            .unwrap_or_default();
+        let body = if context.is_empty() {
+            block.to_owned()
+        } else {
+            format!("-- ambient context\n{}\n\n{block}", context.join("\n"))
+        };
         entries.push(SourceEntry {
             line: line as u64,
             name,
             kind: kind.to_owned(),
             signature: single_line(&signature),
             docs: preceding_doc(source, complete.start()).unwrap_or_default(),
-            body: block.chars().take(16_000).collect(),
+            body: body.chars().take(16_000).collect(),
         });
     }
     let imports = source
@@ -1507,6 +1517,45 @@ fn namespaces_by_line(source: &str) -> Vec<Vec<String>> {
             scopes.push(None);
         } else if trimmed == "end" || trimmed.starts_with("end ") {
             scopes.pop();
+        }
+    }
+    result
+}
+
+fn ambient_contexts_by_line(source: &str) -> Vec<Vec<String>> {
+    let mut scopes = vec![Vec::<String>::new()];
+    let mut result = Vec::new();
+    for line in source.lines() {
+        let flattened = scopes
+            .iter()
+            .flatten()
+            .rev()
+            .take(16)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        result.push(flattened);
+        let trimmed = line.trim();
+        if trimmed.starts_with("namespace ")
+            || trimmed == "section"
+            || trimmed.starts_with("section ")
+        {
+            scopes.push(Vec::new());
+        } else if trimmed == "end" || trimmed.starts_with("end ") {
+            if scopes.len() > 1 {
+                scopes.pop();
+            }
+        } else if ["universe ", "variable ", "include ", "omit "]
+            .iter()
+            .any(|prefix| trimmed.starts_with(prefix))
+            && !trimmed.ends_with(" in")
+        {
+            scopes
+                .last_mut()
+                .expect("root context scope")
+                .push(single_line(trimmed));
         }
     }
     result
@@ -2514,6 +2563,18 @@ end Demo
         assert!(structure[0].signature.contains(
             "generated parent projection: InnerProductSpace.Core.toPreInnerProductSpaceCore"
         ));
+
+        let contextual = parse_source(
+            "namespace Demo\nuniverse u\nvariable {α : Type u} [Group α]\nsection Closed\nvariable [TopologicalSpace α]\nend Closed\nstructure Box where\n  value : α\nend Demo\n",
+            "Demo",
+        );
+        let boxed = contextual
+            .iter()
+            .find(|entry| entry.name == "Demo.Box")
+            .unwrap();
+        assert!(boxed.body.contains("universe u"));
+        assert!(boxed.body.contains("variable {α : Type u} [Group α]"));
+        assert!(!boxed.body.contains("variable [TopologicalSpace α]"));
     }
 
     #[test]
