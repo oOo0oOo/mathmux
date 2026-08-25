@@ -1688,6 +1688,27 @@ impl Searcher {
 }
 
 fn diagnostic_search_query(diagnostic: &str) -> String {
+    let lines = diagnostic.lines().collect::<Vec<_>>();
+    if diagnostic.contains("unsolved goals")
+        && let Some(index) = lines
+            .iter()
+            .rposition(|line| line.trim_start().starts_with('⊢'))
+    {
+        let goal = lines[index..]
+            .iter()
+            .copied()
+            .take_while(|line| {
+                let trimmed = line.trim_start();
+                !trimmed.is_empty()
+                    && !trimmed
+                        .chars()
+                        .next()
+                        .is_some_and(|character| character.is_ascii_digit())
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        return truncate_line(&single_line(&goal), 600);
+    }
     static QUOTED: OnceLock<Regex> = OnceLock::new();
     let quoted = QUOTED.get_or_init(|| Regex::new(r"`([^`]+)`").expect("valid diagnostic regex"));
     let terms = quoted
