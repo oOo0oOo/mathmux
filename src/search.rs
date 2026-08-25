@@ -721,9 +721,9 @@ impl Searcher {
         base_warming: bool,
     ) -> Result<SearchResult> {
         let type_search = type_search_enabled() && type_shaped(query);
-        let rows = self.candidates(query, type_search)?;
-        let query_lower = query.to_lowercase();
         let query_tokens = meaningful_query_tokens(query);
+        let rows = self.candidates(&query_tokens, type_search)?;
+        let query_lower = query.to_lowercase();
         let mut ranked = Vec::new();
         let mut warming = false;
         if type_search {
@@ -860,9 +860,13 @@ impl Searcher {
         })
     }
 
-    fn candidates(&self, query: &str, include_all_signatures: bool) -> Result<Vec<IndexedRow>> {
+    fn candidates(
+        &self,
+        tokens: &[String],
+        include_all_signatures: bool,
+    ) -> Result<Vec<IndexedRow>> {
         let connection = self.open()?;
-        let fts_query = fts_query(query);
+        let fts_query = fts_query(&tokens.join(" "));
         let sql = if fts_query.is_empty() && include_all_signatures {
             "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0
              FROM search_fts WHERE signature <> '' LIMIT 20000"
