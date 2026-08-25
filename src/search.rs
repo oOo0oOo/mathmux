@@ -158,11 +158,13 @@ impl Searcher {
         let result = if let Some(location) = parse_goal_location(&workspace.path, cwd, query)? {
             self.goal_search(workspace, location)?
         } else {
-            let _guard = self
-                .index_lock
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let (scopes, base_warming) = self.refresh(workspace)?;
+            let (scopes, base_warming) = {
+                let _guard = self
+                    .index_lock
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                self.refresh(workspace)?
+            };
             self.combined_search(workspace, query, &scopes, base_warming)?
         };
         let run = SearchRun {

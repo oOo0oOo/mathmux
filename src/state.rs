@@ -957,7 +957,7 @@ mod tests {
             line: 1,
             doc: None,
             source: Some(
-                (1..=12)
+                (1..=24)
                     .map(|line| format!("proof line {line}"))
                     .collect::<Vec<_>>()
                     .join("\n"),
@@ -976,9 +976,9 @@ mod tests {
             duration_ms: 0,
             created_at: 0,
         };
-        assert!(!render_search_run(&run("Demo.proof"), false).contains("proof line 9"));
-        assert!(render_search_run(&run("Demo.proof :=   by"), false).contains("proof line 12"));
-        assert!(render_search_run(&run("Demo.proof proof body"), false).contains("proof line 12"));
+        assert!(!render_search_run(&run("Demo.proof"), false).contains("proof line 17"));
+        assert!(render_search_run(&run("Demo.proof :=   by"), false).contains("proof line 24"));
+        assert!(render_search_run(&run("Demo.proof proof body"), false).contains("proof line 24"));
     }
 
     #[test]
