@@ -11,7 +11,7 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use fs2::FileExt;
 
 use crate::daemon;
-use crate::issue::{IssueStore, TelemetryStore};
+use crate::issue::{IssueStore, TelemetryStore, development_enabled, enable_development};
 use crate::protocol::{Command, Request, Response};
 use crate::repo::Repo;
 
@@ -213,6 +213,9 @@ pub fn run() -> Result<u8> {
         return Ok(0);
     }
     let cwd = std::env::current_dir()?;
+    if development && let Ok(repo) = Repo::discover(&cwd) {
+        let _ = enable_development(&repo);
+    }
     if let TopCommand::Issue { command } = args.command {
         ensure!(development, "development commands are disabled");
         return run_issue(command, &cwd);
@@ -240,6 +243,7 @@ pub fn run() -> Result<u8> {
         return Ok(0);
     }
     let repo = Repo::discover(&cwd)?;
+    let project_development = development || development_enabled(&repo);
     let command = match args.command {
         TopCommand::Ws { command } => match command {
             WsCommand::Create { name } => Command::WsCreate { name },
@@ -275,7 +279,7 @@ pub fn run() -> Result<u8> {
     let mut handoffs = 0;
     let mut transport_retries = 0;
     let response = loop {
-        let response = match connect_or_start(&repo, development)
+        let response = match connect_or_start(&repo, project_development)
             .and_then(|stream| exchange(stream, &request))
         {
             Ok(response) => response,
@@ -300,7 +304,7 @@ pub fn run() -> Result<u8> {
         handoffs += 1;
         wait_for_daemon_exit(&repo)?;
     };
-    if development {
+    if project_development {
         let _ = crate::issue::record_exchange(
             &repo,
             &request,

@@ -189,7 +189,7 @@ impl Searcher {
                 let started = Instant::now();
                 let result =
                     LoogleWorker::start(&repo, &workspace).map_err(|error| format!("{error:#}"));
-                if development_enabled()
+                if development_enabled(&repo)
                     && let Ok(store) = TelemetryStore::global()
                 {
                     let detail = result
@@ -405,7 +405,7 @@ impl Searcher {
                             .and_then(|searcher| searcher.refresh_base(&workspace))
                             .map_err(|error| format!("{error:#}"))
                     };
-                    if development_enabled()
+                    if development_enabled(&repo)
                         && let Ok(store) = TelemetryStore::global()
                     {
                         let detail = result

@@ -65,7 +65,7 @@ fn validation_loop(
                     },
                 };
                 let _ = state.finish_validation(&submission.reference, &report);
-                if development_enabled()
+                if development_enabled(&repo)
                     && let Ok(store) = TelemetryStore::global()
                 {
                     let _ = store.record_operation(
