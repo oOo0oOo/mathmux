@@ -211,6 +211,16 @@ impl Searcher {
                 .state
                 .search_run(reference)?
                 .with_context(|| format!("unknown search reference {reference}"))?;
+            if prior.inference == "goal"
+                && !refinement.is_empty()
+                && let Some(goal) = prior
+                    .hits
+                    .iter()
+                    .find(|hit| hit.kind == "goal-state")
+                    .and_then(|hit| hit.source.as_deref())
+            {
+                return Ok(goal_refinement_query(goal, refinement));
+            }
             return Ok([prior.query.as_str(), refinement]
                 .into_iter()
                 .filter(|part| !part.is_empty())
@@ -231,18 +241,46 @@ impl Searcher {
                 .or_else(|| run.warnings.first())
                 .map(|diagnostic| diagnostic.text.as_str())
                 .unwrap_or_default();
-            let diagnostic = diagnostic_search_query(diagnostic);
+            let mut diagnostic_query = diagnostic_search_query(diagnostic);
+            if diagnostic.contains("Invalid field")
+                && let Some(nearest) = self.nearest_field_declaration(&diagnostic_query)?
+            {
+                diagnostic_query = nearest;
+            }
             ensure!(
-                !diagnostic.is_empty() || !refinement.is_empty(),
+                !diagnostic_query.is_empty() || !refinement.is_empty(),
                 "{reference} has no diagnostic to search"
             );
-            return Ok([diagnostic.as_str(), refinement]
+            return Ok([diagnostic_query.as_str(), refinement]
                 .into_iter()
                 .filter(|part| !part.is_empty())
                 .collect::<Vec<_>>()
                 .join(" "));
         }
         Ok(query.to_owned())
+    }
+
+    fn nearest_field_declaration(&self, missing: &str) -> Result<Option<String>> {
+        let Some((namespace, leaf)) = missing.rsplit_once('.') else {
+            return Ok(None);
+        };
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            "SELECT DISTINCT name FROM search_fts WHERE name LIKE ?1 COLLATE NOCASE LIMIT 2048",
+        )?;
+        let names = statement
+            .query_map([format!("{namespace}.%")], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let closest = names
+            .into_iter()
+            .filter_map(|name| {
+                let candidate = name.rsplit('.').next()?;
+                Some((edit_distance(leaf, candidate), candidate.len(), name))
+            })
+            .min();
+        Ok(closest
+            .filter(|(distance, _, _)| *distance <= 2.max(leaf.chars().count() / 3))
+            .map(|(_, _, name)| name))
     }
 
     pub fn evict_idle_worker(&self, idle_for: std::time::Duration) -> bool {
@@ -1684,6 +1722,43 @@ fn diagnostic_search_query(diagnostic: &str) -> String {
     } else {
         selected.join(" ")
     }
+}
+
+fn goal_refinement_query(goal_state: &str, refinement: &str) -> String {
+    let target = goal_state
+        .lines()
+        .find_map(|line| line.trim().strip_prefix('⊢'))
+        .map(str::trim)
+        .unwrap_or(goal_state);
+    let head = target
+        .split(|character: char| character.is_whitespace() || character == '(')
+        .find(|part| !part.is_empty());
+    if declaration_name_query(refinement)
+        && !refinement.contains('.')
+        && let Some(head) = head
+        && declaration_name_query(head)
+    {
+        format!("{head}.{refinement}")
+    } else {
+        format!("{target} {refinement}")
+    }
+}
+
+fn edit_distance(left: &str, right: &str) -> usize {
+    let right = right.chars().collect::<Vec<_>>();
+    let mut previous = (0..=right.len()).collect::<Vec<_>>();
+    for (left_index, left_character) in left.chars().enumerate() {
+        let mut current = vec![left_index + 1];
+        for (right_index, right_character) in right.iter().enumerate() {
+            current.push(
+                (previous[right_index + 1] + 1)
+                    .min(current[right_index] + 1)
+                    .min(previous[right_index] + usize::from(left_character != *right_character)),
+            );
+        }
+        previous = current;
+    }
+    previous[right.len()]
 }
 
 fn search_index_writer_lock(repo: &Repo) -> Result<fs::File> {
@@ -4091,6 +4166,11 @@ end Demo
             .map(String::as_str),
             Some("exact hf.comp hg")
         );
+        assert_eq!(
+            goal_refinement_query("hf : Continuous f\n⊢ Continuous (f ∘ g)", "comp"),
+            "Continuous.comp"
+        );
+        assert_eq!(edit_distance("compp", "comp"), 1);
         let source = (1..=30)
             .map(|line| format!("line {line}"))
             .collect::<Vec<_>>()
