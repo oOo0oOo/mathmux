@@ -25,6 +25,7 @@ const RESULT_LIMIT: usize = 24;
 const SUMMARY_LIMIT: usize = 5;
 const GOAL_TIMEOUT_MS: u64 = 2_000;
 const SEARCH_INDEX_VERSION: i64 = 6;
+const SOURCE_INDEX_KIND: &str = "source-v2";
 const DECLARATION_DETAIL_LINES: usize = 48;
 const INDEX_COMMIT_BATCH: usize = 64;
 
@@ -521,10 +522,10 @@ impl Searcher {
                     .is_some_and(|extension| extension == "lean")
             })
             .collect::<Vec<_>>();
-        self.remove_missing(&source_root.owner, "source", &files)?;
+        self.remove_missing(&source_root.owner, SOURCE_INDEX_KIND, &files)?;
         let mut changed = Vec::new();
         for path in files {
-            if self.file_changed(&source_root.owner, &path, "source")? {
+            if self.file_changed(&source_root.owner, &path, SOURCE_INDEX_KIND)? {
                 changed.push(path);
             }
         }
@@ -563,7 +564,7 @@ impl Searcher {
                         ])?;
                     }
                 }
-                record_file(&transaction, &source_root.owner, path, "source")?;
+                record_file(&transaction, &source_root.owner, path, SOURCE_INDEX_KIND)?;
             }
             transaction.commit()?;
         }
