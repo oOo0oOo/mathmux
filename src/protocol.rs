@@ -11,14 +11,29 @@ pub struct Request {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "verb", rename_all = "snake_case")]
 pub enum Command {
-    WsCreate { name: String },
+    WsCreate {
+        name: String,
+    },
     WsList,
-    WsDelete { name: String },
-    Check { file: Option<String> },
-    Search { query: String },
+    WsDelete {
+        name: String,
+    },
+    Check {
+        file: Option<String>,
+        #[serde(default)]
+        profile: bool,
+    },
+    Search {
+        query: String,
+    },
     Sync,
-    Submit { message: Option<String> },
-    Show { reference: String, all: bool },
+    Submit {
+        message: Option<String>,
+    },
+    Show {
+        reference: String,
+        all: bool,
+    },
 }
 
 impl Command {
@@ -111,7 +126,13 @@ mod tests {
     #[test]
     fn only_idempotent_commands_are_transport_retry_safe() {
         assert!(Command::Sync.transport_retry_safe());
-        assert!(Command::Check { file: None }.transport_retry_safe());
+        assert!(
+            Command::Check {
+                file: None,
+                profile: false
+            }
+            .transport_retry_safe()
+        );
         assert!(!Command::Submit { message: None }.transport_retry_safe());
         assert!(
             !Command::WsCreate {

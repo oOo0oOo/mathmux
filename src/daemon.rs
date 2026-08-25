@@ -197,12 +197,12 @@ impl Service {
                 git::delete_workspace(&self.repo, &self.state, &name)?;
                 Ok(format!("{} deleted", workspace.reference))
             }
-            Command::Check { file } => {
+            Command::Check { file, profile } => {
                 let workspace = self.state.workspace_for_path(&cwd)?;
                 git::prepare_workspace(&self.repo, &workspace.path)?;
-                let outcome = self
-                    .checker
-                    .check(&workspace, file.as_deref().map(Path::new))?;
+                let outcome =
+                    self.checker
+                        .check(&workspace, file.as_deref().map(Path::new), profile)?;
                 let summary = check_summary(&outcome);
                 if outcome.ok {
                     Ok(format!("ok {summary}"))
@@ -294,6 +294,10 @@ fn check_summary(outcome: &CheckOutcome) -> String {
                 outcome.reference
             ));
         }
+    }
+    if let Some(profile) = &outcome.profile {
+        output.push('\n');
+        output.push_str(&profile.render());
     }
     output
 }

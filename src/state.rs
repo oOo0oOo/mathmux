@@ -48,8 +48,48 @@ pub struct CheckRun {
     pub warnings: Vec<Diagnostic>,
     pub linters: Vec<Diagnostic>,
     pub diagnostics: Vec<Diagnostic>,
+    pub profile: Option<CheckProfile>,
     pub duration_ms: u64,
     pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckProfile {
+    pub planning_ms: u64,
+    pub files: Vec<FileCheckProfile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileCheckProfile {
+    pub target: String,
+    pub mode: String,
+    pub dependencies_ms: u64,
+    pub cache_ms: u64,
+    pub setup_ms: u64,
+    pub elaborate_ms: u64,
+    pub total_ms: u64,
+}
+
+impl CheckProfile {
+    pub fn render(&self) -> String {
+        let mut output = format!("profile:\n  planning {}ms", self.planning_ms);
+        for file in self.files.iter().take(32) {
+            output.push_str(&format!(
+                "\n  {} {} {}ms (dependencies {}ms, cache {}ms, setup {}ms, elaborate {}ms)",
+                file.target,
+                file.mode,
+                file.total_ms,
+                file.dependencies_ms,
+                file.cache_ms,
+                file.setup_ms,
+                file.elaborate_ms,
+            ));
+        }
+        if self.files.len() > 32 {
+            output.push_str(&format!("\n  +{} files", self.files.len() - 32));
+        }
+        output
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -169,6 +209,7 @@ impl State {
                 warnings_json TEXT NOT NULL,
                 linters_json TEXT NOT NULL,
                 diagnostics_json TEXT NOT NULL,
+                profile_json TEXT,
                 duration_ms INTEGER NOT NULL,
                 created_at INTEGER NOT NULL
              );
@@ -224,6 +265,7 @@ impl State {
             "ALTER TABLE checks ADD COLUMN source_version INTEGER NOT NULL DEFAULT 1",
             [],
         );
+        let _ = connection.execute("ALTER TABLE check_runs ADD COLUMN profile_json TEXT", []);
         for statement in [
             "ALTER TABLE submissions ADD COLUMN build_output TEXT",
             "ALTER TABLE submissions ADD COLUMN axioms_json TEXT NOT NULL DEFAULT '[]'",
@@ -334,8 +376,8 @@ impl State {
         transaction.execute(
             "INSERT INTO check_runs(
                 ref, workspace_ref, status, files_json, passed_json, failed, not_checked_json,
-                warnings_json, linters_json, diagnostics_json, duration_ms, created_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                warnings_json, linters_json, diagnostics_json, profile_json, duration_ms, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 run.reference,
                 run.workspace_ref,
@@ -347,6 +389,10 @@ impl State {
                 serde_json::to_string(&run.warnings)?,
                 serde_json::to_string(&run.linters)?,
                 serde_json::to_string(&run.diagnostics)?,
+                run.profile
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()?,
                 run.duration_ms,
                 run.created_at,
             ],
@@ -375,7 +421,7 @@ impl State {
             .query_row(
                 "SELECT ref, workspace_ref, status, files_json, passed_json, failed,
                         not_checked_json, warnings_json, linters_json, diagnostics_json,
-                        duration_ms, created_at
+                        profile_json, duration_ms, created_at
                  FROM check_runs WHERE ref = ?1",
                 [reference],
                 check_run_from_row,
@@ -785,6 +831,10 @@ fn render_check_run(run: &CheckRun, all: bool) -> String {
         output.push_str(&format!("\nlinters: {}", run.linters.len()));
     }
     append_diagnostics(&mut output, "diagnostics", &run.diagnostics);
+    if let Some(profile) = &run.profile {
+        output.push('\n');
+        output.push_str(&profile.render());
+    }
     output
 }
 
@@ -936,8 +986,11 @@ fn check_run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CheckRun> {
         warnings: json_column(row, 7),
         linters: json_column(row, 8),
         diagnostics: json_column(row, 9),
-        duration_ms: row.get(10)?,
-        created_at: row.get(11)?,
+        profile: row
+            .get::<_, Option<String>>(10)?
+            .and_then(|value| serde_json::from_str(&value).ok()),
+        duration_ms: row.get(11)?,
+        created_at: row.get(12)?,
     })
 }
 

@@ -66,6 +66,9 @@ enum TopCommand {
     Check {
         /// Lean file to certify; omit to certify all dirty Lean files.
         file: Option<PathBuf>,
+        /// Report dependency, cache, setup, and elaboration timings.
+        #[arg(long)]
+        profile: bool,
     },
     /// Search local Lean declarations, types, source, and goals.
     ///
@@ -250,7 +253,7 @@ pub fn run() -> Result<u8> {
             WsCommand::List => Command::WsList,
             WsCommand::Delete { name } => Command::WsDelete { name },
         },
-        TopCommand::Check { file } => Command::Check {
+        TopCommand::Check { file, profile } => Command::Check {
             file: file.map(|path| {
                 let path = if path.is_absolute() {
                     path
@@ -259,6 +262,7 @@ pub fn run() -> Result<u8> {
                 };
                 path.to_string_lossy().into_owned()
             }),
+            profile,
         },
         TopCommand::Search { query } => Command::Search {
             query: query.join(" "),

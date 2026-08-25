@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 use crate::git::{dirty_lean_files, lake_command, project_lean_files};
 use crate::issue::{TelemetryOperation, TelemetryStore, development_enabled};
 use crate::repo::Repo;
-use crate::state::{CheckRecord, CheckRun, Diagnostic, State, Workspace};
+use crate::state::{
+    CheckProfile, CheckRecord, CheckRun, Diagnostic, FileCheckProfile, State, Workspace,
+};
 use crate::util::{hash_bytes, hash_file, now_unix_ms};
 
 const WORKER_SOURCE: &str = r#"import Lean.Language.Lean
@@ -134,6 +136,7 @@ pub struct CheckOutcome {
     pub elapsed_ms: u64,
     pub warnings: Vec<Diagnostic>,
     pub diagnostics: Vec<Diagnostic>,
+    pub profile: Option<CheckProfile>,
 }
 
 #[derive(Debug, Serialize)]
@@ -162,6 +165,7 @@ struct FileCheck {
     linters: Vec<Diagnostic>,
     diagnostics: Vec<Diagnostic>,
     ok: bool,
+    profile: FileCheckProfile,
 }
 
 #[derive(Debug, Deserialize)]
@@ -195,7 +199,13 @@ impl Checker {
         })
     }
 
-    pub fn check(&self, workspace: &Workspace, requested: Option<&Path>) -> Result<CheckOutcome> {
+    pub fn check(
+        &self,
+        workspace: &Workspace,
+        requested: Option<&Path>,
+        include_profile: bool,
+    ) -> Result<CheckOutcome> {
+        let started = Instant::now();
         let targets = match requested {
             Some(path) => vec![resolve_target(&workspace.path, path)?],
             None => {
@@ -204,8 +214,8 @@ impl Checker {
                 dependency_order(&workspace.path, &files)?
             }
         };
+        let planning_ms = started.elapsed().as_millis() as u64;
         let reference = self.state.next_ref('c')?;
-        let started = Instant::now();
         let files = targets
             .iter()
             .map(|path| path.to_string_lossy().into_owned())
@@ -216,11 +226,13 @@ impl Checker {
         let mut linters = Vec::new();
         let mut diagnostics = Vec::new();
         let mut failed = None;
+        let mut file_profiles = Vec::new();
 
         for target in &targets {
             let target_name = target.to_string_lossy().into_owned();
             match self.check_one(workspace, target, &reference) {
                 Ok(result) => {
+                    file_profiles.push(result.profile.clone());
                     warnings.extend(result.warnings);
                     linters.extend(result.linters);
                     if result.ok {
@@ -263,6 +275,10 @@ impl Checker {
             warnings: warnings.clone(),
             linters: linters.clone(),
             diagnostics: diagnostics.clone(),
+            profile: include_profile.then(|| CheckProfile {
+                planning_ms,
+                files: file_profiles,
+            }),
             duration_ms: elapsed_ms,
             created_at: now_unix_ms(),
         };
@@ -275,6 +291,7 @@ impl Checker {
             elapsed_ms,
             warnings,
             diagnostics,
+            profile: run.profile,
         })
     }
 
@@ -284,6 +301,8 @@ impl Checker {
         target: &Path,
         reference: &str,
     ) -> Result<FileCheck> {
+        let file_started = Instant::now();
+        let target_name = target.to_string_lossy().into_owned();
         let target_absolute = workspace.path.join(target);
         if !target_absolute.exists() {
             return Ok(FileCheck {
@@ -300,12 +319,36 @@ impl Checker {
                 linters: Vec::new(),
                 diagnostics: Vec::new(),
                 ok: true,
+                profile: FileCheckProfile {
+                    target: target_name,
+                    mode: "deleted".into(),
+                    dependencies_ms: 0,
+                    cache_ms: 0,
+                    setup_ms: 0,
+                    elaborate_ms: 0,
+                    total_ms: file_started.elapsed().as_millis() as u64,
+                },
             });
         }
+        let phase = Instant::now();
         let dependencies = transitive_dependencies(&workspace.path, target)?;
+        let dependencies_ms = phase.elapsed().as_millis() as u64;
+        let phase = Instant::now();
         if let Some(cached) = self.cached_check(workspace, target, &dependencies, reference)? {
+            let mut cached = cached;
+            cached.profile = FileCheckProfile {
+                target: target_name,
+                mode: "cached".into(),
+                dependencies_ms,
+                cache_ms: phase.elapsed().as_millis() as u64,
+                setup_ms: 0,
+                elaborate_ms: 0,
+                total_ms: file_started.elapsed().as_millis() as u64,
+            };
             return Ok(cached);
         }
+        let cache_ms = phase.elapsed().as_millis() as u64;
+        let phase = Instant::now();
         let mut environment = self.worker_environment(workspace, target, &dependencies)?;
         let setup_path = match self.current_setup(workspace, target, &environment) {
             Some(path) => path,
@@ -316,11 +359,15 @@ impl Checker {
                 setup.path
             }
         };
+        let setup_ms = phase.elapsed().as_millis() as u64;
         let fingerprint = self.full_fingerprint(workspace, target, &dependencies)?;
         let source = fs::read_to_string(&target_absolute)
             .with_context(|| format!("cannot read {}", target.display()))?;
 
-        let response = self.run_worker(workspace, target, &setup_path, &environment, &source)?;
+        let phase = Instant::now();
+        let (response, mode) =
+            self.run_worker(workspace, target, &setup_path, &environment, &source)?;
+        let elaborate_ms = phase.elapsed().as_millis() as u64;
         ensure!(
             response.version > 0,
             "Lean worker returned an invalid source version"
@@ -343,6 +390,15 @@ impl Checker {
             linters,
             diagnostics,
             ok: response.ok,
+            profile: FileCheckProfile {
+                target: target_name,
+                mode: mode.into(),
+                dependencies_ms,
+                cache_ms,
+                setup_ms,
+                elaborate_ms,
+                total_ms: file_started.elapsed().as_millis() as u64,
+            },
         })
     }
 
@@ -374,6 +430,15 @@ impl Checker {
             linters: run.linters,
             diagnostics: Vec::new(),
             ok: true,
+            profile: FileCheckProfile {
+                target: target.to_string_lossy().into_owned(),
+                mode: "cached".into(),
+                dependencies_ms: 0,
+                cache_ms: 0,
+                setup_ms: 0,
+                elaborate_ms: 0,
+                total_ms: 0,
+            },
         }))
     }
 
@@ -384,7 +449,7 @@ impl Checker {
         setup_path: &Path,
         environment: &str,
         source: &str,
-    ) -> Result<WorkerResponse> {
+    ) -> Result<(WorkerResponse, &'static str)> {
         let mut workers = self.workers.lock().expect("worker map poisoned");
         let replace = workers.get_mut(&workspace.reference).is_none_or(|worker| {
             worker.target != target || worker.environment != environment || !worker.alive()
@@ -398,6 +463,7 @@ impl Checker {
                 Err(error) => {
                     self.record_worker_failure(&format!("start: {error:#}"));
                     return fallback_check(&self.repo, &workspace.path, target)
+                        .map(|response| (response, "fallback"))
                         .with_context(|| format!("direct Lean worker unavailable: {error:#}"));
                 }
             }
@@ -406,11 +472,19 @@ impl Checker {
             .get_mut(&workspace.reference)
             .context("Lean worker did not start")?;
         match worker.check(source) {
-            Ok(response) => Ok(response),
+            Ok(response) => Ok((
+                response,
+                if replace {
+                    "cold-worker"
+                } else {
+                    "warm-worker"
+                },
+            )),
             Err(error) => {
                 self.record_worker_failure(&format!("request: {error:#}"));
                 workers.remove(&workspace.reference);
                 fallback_check(&self.repo, &workspace.path, target)
+                    .map(|response| (response, "fallback"))
                     .with_context(|| format!("direct Lean worker failed: {error:#}"))
             }
         }
