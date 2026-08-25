@@ -1290,6 +1290,9 @@ impl Searcher {
                 ),
             }
         }
+        if declaration_glob_query(query) {
+            ranked.retain(|candidate| declaration_glob_matches(&candidate.hit.name, query));
+        }
         if let Some(context) = &import_context {
             for candidate in &mut ranked {
                 apply_import_context(candidate, context);
@@ -2685,6 +2688,28 @@ fn declaration_name_query(query: &str) -> bool {
         && query
             .chars()
             .all(|character| character.is_alphanumeric() || matches!(character, '_' | '.' | '\''))
+}
+
+fn declaration_glob_query(query: &str) -> bool {
+    query.contains('*')
+        && query.chars().all(|character| {
+            character.is_alphanumeric() || matches!(character, '_' | '.' | '\'' | '*')
+        })
+}
+
+fn declaration_glob_matches(name: &str, query: &str) -> bool {
+    let pattern = query
+        .split('*')
+        .map(regex::escape)
+        .collect::<Vec<_>>()
+        .join(".*");
+    let prefix = if query.starts_with('*') {
+        ""
+    } else {
+        r"(?:^|\.)"
+    };
+    Regex::new(&format!(r"(?i){prefix}{pattern}$"))
+        .is_ok_and(|pattern| pattern.is_match(name))
 }
 
 fn qualified_name_matches(name: &str, query: &str) -> bool {
@@ -4165,6 +4190,15 @@ end Demo
         assert!(declaration_name_query("Ring.inverse_eq_inv'"));
         assert!(declaration_name_query("transportAmbient"));
         assert!(!declaration_name_query("Finsupp.sum add"));
+        assert!(declaration_glob_query("FiberBundle.*equiv"));
+        assert!(declaration_glob_matches(
+            "Demo.FiberBundle.local_equiv",
+            "FiberBundle.*equiv"
+        ));
+        assert!(!declaration_glob_matches(
+            "Demo.FiberBundle.local_equiv_apply",
+            "FiberBundle.*equiv"
+        ));
         assert!(qualified_name_matches(
             "AtiyahSinger.ComplexVectorSubbundle.transportAmbient",
             "ComplexVectorSubbundle.transportAmbient"
