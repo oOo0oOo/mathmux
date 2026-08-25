@@ -984,7 +984,7 @@ impl Searcher {
     ) -> Result<SearchResult> {
         let type_search = type_search_enabled() && type_shaped(query);
         let query_tokens = meaningful_query_tokens(query);
-        let rows = self.candidates(&query_tokens, type_search)?;
+        let rows = self.candidates(query, &query_tokens, type_search)?;
         let import_context = self.import_context(workspace, scopes, base_warming);
         if !type_search && declaration_name_query(query) {
             let exact = rows
@@ -1140,6 +1140,7 @@ impl Searcher {
             }
             for (position, hit) in loogle_hits.into_iter().enumerate() {
                 let usages = self.usages(&hit.name, scopes, workspace)?;
+                let member_score = qualified_member_score(query, &hit.name);
                 ranked.push(RankedHit {
                     hit: SearchHit {
                         path: format!("{}.lean", hit.module.replace('.', "/")),
@@ -1154,7 +1155,7 @@ impl Searcher {
                         applicable: false,
                         required_import: None,
                     },
-                    score: 160.0 - position as f64,
+                    score: 160.0 - position as f64 + member_score,
                 });
             }
         }
@@ -1405,6 +1406,7 @@ impl Searcher {
 
     fn candidates(
         &self,
+        query: &str,
         tokens: &[String],
         include_all_signatures: bool,
     ) -> Result<Vec<IndexedRow>> {
@@ -1442,6 +1444,11 @@ impl Searcher {
             "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0
              FROM search_fts WHERE name LIKE ?1 COLLATE NOCASE LIMIT 32",
         )?;
+        let mut qualified = connection.prepare(
+            "SELECT owner, file, module, line, name, kind, signature, docs, body,
+                    bm25(search_fts, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 7.0, 3.0, 1.0)
+             FROM search_fts WHERE search_fts MATCH ?1 LIMIT 1024",
+        )?;
         for token in tokens
             .iter()
             .filter(|token| token.len() >= 4 && token.as_str() != "_")
@@ -1456,6 +1463,26 @@ impl Searcher {
                 rows.extend(
                     named_contains
                         .query_map([format!("%{token}%")], indexed_row_from_row)?
+                        .collect::<rusqlite::Result<Vec<_>>>()?,
+                );
+            }
+        }
+        if declaration_name_query(query)
+            && let Some((owner, leaf)) = query.rsplit_once('.')
+        {
+            let owner = owner.rsplit('.').next().unwrap_or(owner).to_lowercase();
+            for part in identifier_query_parts(leaf)
+                .into_iter()
+                .filter(|part| part.len() >= 2)
+            {
+                let query = format!(
+                    "name : \"{}\" AND name : \"{}\"*",
+                    owner.replace('"', "\"\""),
+                    part.replace('"', "\"\"")
+                );
+                rows.extend(
+                    qualified
+                        .query_map([query], indexed_row_from_row)?
                         .collect::<rusqlite::Result<Vec<_>>>()?,
                 );
             }
@@ -2845,8 +2872,10 @@ fn meaningful_query_tokens(query: &str) -> Vec<String> {
         .split(|character: char| {
             !character.is_alphanumeric() && character != '_' && character != '.'
         })
-        .filter(|token| !token.contains('.'))
-        .flat_map(identifier_query_parts)
+        // A guessed qualified declaration often gets the namespace right but the
+        // leaf wrong. Keep the qualified token for exact lookup, and search the
+        // leaf's Lean-style components for nearby members of that namespace.
+        .flat_map(|token| identifier_query_parts(token.rsplit('.').next().unwrap_or(token)))
         .filter(|part| {
             part.chars().count() >= 3
                 && !matches!(
@@ -2884,6 +2913,49 @@ fn identifier_query_parts(token: &str) -> Vec<String> {
         }
     }
     parts
+}
+
+fn qualified_member_score(query: &str, name: &str) -> f64 {
+    if !declaration_name_query(query) {
+        return 0.0;
+    }
+    let Some((query_owner, query_leaf_raw)) = query.trim().rsplit_once('.') else {
+        return 0.0;
+    };
+    let Some((name_owner, name_leaf_raw)) = name.rsplit_once('.') else {
+        return 0.0;
+    };
+    let query_owner = query_owner.to_lowercase();
+    let name_owner = name_owner.to_lowercase();
+    if name_owner != query_owner && !name_owner.ends_with(&format!(".{query_owner}")) {
+        return 0.0;
+    }
+
+    let query_parts = identifier_query_parts(query_leaf_raw)
+        .into_iter()
+        .filter(|part| part.len() >= 3)
+        .collect::<HashSet<_>>();
+    let name_parts = identifier_query_parts(name_leaf_raw)
+        .into_iter()
+        .filter(|part| part.len() >= 3)
+        .collect::<HashSet<_>>();
+    let shared_parts = query_parts.intersection(&name_parts).count();
+    let query_leaf = query_leaf_raw.to_lowercase();
+    let name_leaf = name_leaf_raw.to_lowercase();
+    let common_prefix = query_leaf
+        .chars()
+        .zip(name_leaf.chars())
+        .take_while(|(left, right)| left == right)
+        .count();
+    let common_suffix = query_leaf
+        .chars()
+        .rev()
+        .zip(name_leaf.chars().rev())
+        .take_while(|(left, right)| left == right)
+        .count();
+    300.0 + shared_parts as f64 * 250.0
+        + common_prefix.saturating_sub(3).min(10) as f64 * 4.0
+        + common_suffix.saturating_sub(3).min(10) as f64 * 4.0
 }
 
 fn promote_query_coverage(ranked: &mut Vec<RankedHit>, tokens: &[String]) {
@@ -3054,6 +3126,7 @@ fn lexical_score(query: &str, tokens: &[String], row: &IndexedRow) -> f64 {
     } else {
         score -= 40.0;
     }
+    score += qualified_member_score(&query, &row.name);
     score
 }
 
@@ -3520,18 +3593,24 @@ fn fallback_source_hits(
                     .rsplit_once('.')
                     .is_some_and(|(_, leaf)| name_segments.contains(leaf))
             });
-            let qualified_owner_score = query_tokens
-                .iter()
-                .enumerate()
-                .filter_map(|(index, token)| {
-                    token.rsplit_once('.').map(|(owner, _)| (index, owner))
-                })
-                .filter(|(_, owner)| *owner == name || name.ends_with(&format!(".{owner}")))
-                .map(|(index, _)| if index == 0 { 2 } else { 1 })
-                .sum::<usize>();
             let is_class = entry.kind == "class";
             let is_owner = matches!(entry.kind.as_str(), "structure" | "class");
-            let member_owner_score = if is_owner {
+            let qualified_member_query = declaration_name_query(query) && query.contains('.');
+            let qualified_owner_score = if qualified_member_query {
+                0
+            } else {
+                query_tokens
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, token)| {
+                        token.rsplit_once('.').map(|(owner, _)| (index, owner))
+                    })
+                    .filter(|(_, owner)| *owner == name || name.ends_with(&format!(".{owner}")))
+                    .map(|(index, _)| if index == 0 { 2 } else { 1 })
+                    .sum::<usize>()
+            };
+            let qualified_member_score = qualified_member_score(query, &entry.name);
+            let member_owner_score = if is_owner && !qualified_member_query {
                 query_tokens
                     .iter()
                     .filter(|token| {
@@ -3566,6 +3645,7 @@ fn fallback_source_hits(
                     + if exact_name { 80.0 } else { 0.0 }
                     + if qualified_leaf { 60.0 } else { 0.0 }
                     + qualified_owner_score as f64 * 250.0
+                    + qualified_member_score
                     + member_owner_score as f64 * 160.0
                     + if is_direct_path { 400.0 } else { 0.0 }
                     + if is_imports && imports_query {
@@ -4229,7 +4309,22 @@ end Demo
         assert_eq!(meaningful_query_tokens("precomp (L :=)"), vec!["precomp"]);
         assert_eq!(
             meaningful_query_tokens("LinearEquiv.ofFinrankEq --all"),
-            vec!["linearequiv.offinrankeq"]
+            vec!["linearequiv.offinrankeq", "finrank"]
+        );
+        assert_eq!(
+            meaningful_query_tokens("LinearMap.rangeEquiv"),
+            vec!["linearmap.rangeequiv", "range", "equiv"]
+        );
+        assert!(
+            qualified_member_score("LinearMap.rangeEquiv", "LinearMap.quotKerEquivRange")
+                > qualified_member_score("LinearMap.rangeEquiv", "Algebra.linearMap")
+        );
+        assert!(
+            qualified_member_score("LinearMap.rangeEquiv", "LinearMap.kerComplementEquivRange")
+                > qualified_member_score("LinearMap.rangeEquiv", "LinearMap.range")
+        );
+        assert!(
+            qualified_member_score("LinearEquiv.ofSurjective", "LinearEquiv.ofBijective") > 90.0
         );
         assert_eq!(
             meaningful_query_tokens("finite_trivialization_cover proof body"),
