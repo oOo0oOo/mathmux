@@ -354,22 +354,32 @@ impl Searcher {
                 [SEARCH_INDEX_VERSION],
             )?;
         }
-        connection.execute(
-            "DELETE FROM search_fts
-             WHERE EXISTS (
+        let has_stale_sources = connection.query_row(
+            "SELECT EXISTS(
                 SELECT 1 FROM search_files
-                WHERE search_files.owner = search_fts.owner
-                  AND search_files.path = search_fts.origin
-                  AND (search_files.kind = 'source' OR search_files.kind LIKE 'source-v%')
-                  AND search_files.kind <> ?1
+                WHERE (kind = 'source' OR kind LIKE 'source-v%') AND kind <> ?1
              )",
             [SOURCE_INDEX_KIND],
+            |row| row.get::<_, bool>(0),
         )?;
-        connection.execute(
-            "DELETE FROM search_files
-             WHERE (kind = 'source' OR kind LIKE 'source-v%') AND kind <> ?1",
-            [SOURCE_INDEX_KIND],
-        )?;
+        if has_stale_sources {
+            connection.execute(
+                "DELETE FROM search_fts
+                 WHERE EXISTS (
+                    SELECT 1 FROM search_files
+                    WHERE search_files.owner = search_fts.owner
+                      AND search_files.path = search_fts.origin
+                      AND (search_files.kind = 'source' OR search_files.kind LIKE 'source-v%')
+                      AND search_files.kind <> ?1
+                 )",
+                [SOURCE_INDEX_KIND],
+            )?;
+            connection.execute(
+                "DELETE FROM search_files
+                 WHERE (kind = 'source' OR kind LIKE 'source-v%') AND kind <> ?1",
+                [SOURCE_INDEX_KIND],
+            )?;
+        }
         let origins_mapped = connection
             .query_row(
                 "SELECT value FROM search_meta WHERE key = 'origins_mapped'",
