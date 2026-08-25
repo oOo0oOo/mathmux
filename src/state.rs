@@ -34,6 +34,8 @@ pub struct CheckRecord {
 pub struct Diagnostic {
     pub kind: String,
     pub text: String,
+    #[serde(default)]
+    pub context: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -928,6 +930,11 @@ fn append_diagnostics(output: &mut String, label: &str, diagnostics: &[Diagnosti
     for diagnostic in diagnostics {
         for line in diagnostic.text.trim().lines() {
             output.push_str(&format!("\n  {line}"));
+        }
+        if let Some(context) = &diagnostic.context {
+            for line in context.lines() {
+                output.push_str(&format!("\n  {line}"));
+            }
         }
     }
 }

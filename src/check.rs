@@ -90,13 +90,22 @@ def failureResponse (detail : String) (version : Nat) : Response :=
     version := version }
 
 def processSnapshot (snapshot : Language.Lean.InitialSnapshot) (version : Nat) : BaseIO Response := do
-  let some header := snapshot.result? | return failureResponse "header parsing failed" version
+  let some header := snapshot.result? | return ← failureWithDiagnostics snapshot "header parsing failed" version
   let processed := header.processedSnap.get
-  let some processed := processed.result? | return failureResponse "import processing failed" version
+  let some processed := processed.result? | return ← failureWithDiagnostics snapshot "import processing failed" version
   let (failed, commandMessages) ← firstErrorOrFinal processed.firstCmdSnap
   let messages ← if failed then pure commandMessages else collectTree (Language.toSnapshotTree snapshot)
   let diagnostics ← renderMessages messages
   return { ok := !messages.hasErrors, diagnostics, version := version }
+
+where
+  failureWithDiagnostics (snapshot : Language.Lean.InitialSnapshot) (detail : String)
+      (version : Nat) : BaseIO Response := do
+    let messages ← collectTree (Language.toSnapshotTree snapshot)
+    let diagnostics ← renderMessages messages
+    if diagnostics.isEmpty then
+      return failureResponse detail version
+    return { ok := false, diagnostics, version := version }
 
 def writeResponse (response : Response) : IO Unit := do
   let stdout ← IO.getStdout
@@ -248,6 +257,7 @@ impl Checker {
                     diagnostics.push(Diagnostic {
                         kind: "mathmux".into(),
                         text: format!("{error:#}"),
+                        context: None,
                     });
                     failed = Some(target_name);
                     break;
@@ -372,7 +382,8 @@ impl Checker {
             response.version > 0,
             "Lean worker returned an invalid source version"
         );
-        let (warnings, linters, diagnostics) = partition_diagnostics(&response.diagnostics);
+        let (warnings, linters, mut diagnostics) = partition_diagnostics(&response.diagnostics);
+        attach_source_context(&mut diagnostics, target, &source);
         Ok(FileCheck {
             certificate: CheckRecord {
                 reference: reference.to_owned(),
@@ -865,6 +876,7 @@ fn partition_diagnostics(
         let value = Diagnostic {
             kind: diagnostic.kind.clone(),
             text: diagnostic.text.clone(),
+            context: None,
         };
         match diagnostic.severity.as_str() {
             "warning" if is_linter(diagnostic) => linters.push(value),
@@ -877,6 +889,42 @@ fn partition_diagnostics(
     deduplicate(&mut linters);
     deduplicate(&mut errors);
     (warnings, linters, errors)
+}
+
+fn attach_source_context(diagnostics: &mut [Diagnostic], target: &Path, source: &str) {
+    let target = target.to_string_lossy();
+    let basename = target.rsplit('/').next().unwrap_or(&target);
+    let lines = source.lines().collect::<Vec<_>>();
+    for diagnostic in diagnostics {
+        let first = diagnostic.text.lines().next().unwrap_or_default();
+        let rest = [target.as_ref(), basename].iter().find_map(|prefix| {
+            first
+                .strip_prefix(prefix)
+                .and_then(|rest| rest.strip_prefix(':'))
+        });
+        let Some(line) = rest
+            .and_then(|rest| rest.split(':').next())
+            .and_then(|line| line.parse::<usize>().ok())
+            .filter(|line| *line > 0 && *line <= lines.len())
+        else {
+            continue;
+        };
+        let start = line.saturating_sub(2).max(1);
+        let end = (line + 2).min(lines.len());
+        diagnostic.context = Some(
+            (start..=end)
+                .map(|current| {
+                    format!(
+                        "{} {:>4} | {}",
+                        if current == line { ">" } else { " " },
+                        current,
+                        lines[current - 1]
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
 }
 
 fn is_linter(diagnostic: &WorkerDiagnostic) -> bool {
@@ -1257,8 +1305,19 @@ mod tests {
                 text: "Proof.lean:3:1: error: type mismatch".into(),
             },
         ];
-        let (warnings, linters, errors) = partition_diagnostics(&diagnostics);
+        let (warnings, linters, mut errors) = partition_diagnostics(&diagnostics);
         assert_eq!((warnings.len(), linters.len(), errors.len()), (1, 1, 1));
+        attach_source_context(
+            &mut errors,
+            Path::new("Proof.lean"),
+            "first\nsecond\nproblem\nfourth\nfifth\n",
+        );
+        assert_eq!(
+            errors[0].context.as_deref(),
+            Some(
+                "     1 | first\n     2 | second\n>    3 | problem\n     4 | fourth\n     5 | fifth"
+            )
+        );
     }
 
     #[test]
