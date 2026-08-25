@@ -77,11 +77,12 @@ enum TopCommand {
     },
     /// Search local Lean declarations, types, source, and goals.
     ///
-    /// Query forms are inferred. A FILE:LINE[:COLUMN] query searches the goal at
-    /// that position; every other query combines declaration, type, and source
-    /// search. Full results and references are stored under the returned reference.
+    /// Query forms are inferred. FILE:LINE[:COLUMN] searches the goal at that
+    /// position, while FILE:tail shows bounded source context at the end of a file.
+    /// Every other query combines declaration, type, and source search. Full results
+    /// and references are stored under the returned reference.
     Search {
-        /// Search terms, a Lean type pattern, or FILE:LINE[:COLUMN].
+        /// Search terms, a Lean type pattern, FILE:LINE[:COLUMN], or FILE:tail.
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
         /// Return complete stored results instead of the compact preview.

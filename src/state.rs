@@ -734,7 +734,9 @@ impl State {
     }
 
     pub fn show(&self, reference: &str, all: bool) -> Result<String> {
-        let kind = validate_reference(reference)?;
+        let kind = validate_reference(reference).with_context(|| {
+            "show expects a saved reference such as c123 or q456; use search FILE:LINE or FILE:tail for source context, or search --all DECLARATION for a body"
+        })?;
         match kind {
             'c' => self
                 .check_run(reference)?

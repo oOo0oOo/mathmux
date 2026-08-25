@@ -432,20 +432,30 @@ impl Searcher {
             scopes.insert(format!("artifacts:{}", workspace.reference));
         }
         if let Ok(_base_guard) = self.base_lock.try_lock() {
-            for root in &roots {
-                if let Err(error) = self.refresh_sources(root, &workspace.path) {
-                    append_log(
-                        &self.repo,
-                        &format!("workspace source refresh deferred: {error:#}"),
-                    );
+            match search_index_writer_lock(&self.repo) {
+                Ok(_process_guard) => {
+                    for root in &roots {
+                        if let Err(error) = self.refresh_sources(root, &workspace.path) {
+                            append_log(
+                                &self.repo,
+                                &format!("workspace source refresh deferred: {error:#}"),
+                            );
+                        }
+                    }
+                    if project_artifacts.is_dir() {
+                        let owner = format!("artifacts:{}", workspace.reference);
+                        if let Err(error) = self.refresh_ileans(&owner, &project_artifacts) {
+                            append_log(
+                                &self.repo,
+                                &format!("workspace artifact refresh deferred: {error:#}"),
+                            );
+                        }
+                    }
                 }
-            }
-            if project_artifacts.is_dir() {
-                let owner = format!("artifacts:{}", workspace.reference);
-                if let Err(error) = self.refresh_ileans(&owner, &project_artifacts) {
+                Err(error) => {
                     append_log(
                         &self.repo,
-                        &format!("workspace artifact refresh deferred: {error:#}"),
+                        &format!("workspace index refresh deferred: {error:#}"),
                     );
                 }
             }
@@ -1361,32 +1371,21 @@ impl Searcher {
 
     fn goal_search(&self, workspace: &Workspace, location: GoalLocation) -> Result<SearchResult> {
         let source = fs::read_to_string(&location.path)?;
+        if location.tail {
+            return Ok(source_location_result(
+                workspace,
+                &location,
+                &source,
+                "showing file tail",
+            ));
+        }
         let Some((start, end, replacement)) = goal_probe(&source, location.line) else {
-            let relative = location
-                .path
-                .strip_prefix(&workspace.path)
-                .unwrap_or(&location.path)
-                .to_string_lossy()
-                .into_owned();
-            return Ok(SearchResult {
-                hits: vec![SearchHit {
-                    name: format!("{relative}:{}", location.line),
-                    kind: "location".into(),
-                    signature: None,
-                    module: String::new(),
-                    path: relative,
-                    line: location.line,
-                    doc: None,
-                    source: nonempty(location_source_excerpt(&source, location.line)),
-                    usages: Vec::new(),
-                    applicable: false,
-                    required_import: None,
-                }],
-                inference: "source".into(),
-                note: Some(
-                    "no sorry or admit placeholder near that position; showing local source".into(),
-                ),
-            });
+            return Ok(source_location_result(
+                workspace,
+                &location,
+                &source,
+                "no sorry or admit placeholder near that position; showing local source",
+            ));
         };
         let mut probe = source;
         probe.replace_range(start..end, replacement);
@@ -3323,9 +3322,23 @@ fn render_summary(run: &SearchRun) -> String {
 struct GoalLocation {
     path: PathBuf,
     line: u64,
+    tail: bool,
 }
 
 fn parse_goal_location(root: &Path, cwd: &Path, query: &str) -> Result<Option<GoalLocation>> {
+    if let Some((path, suffix)) = query.rsplit_once(':')
+        && suffix.eq_ignore_ascii_case("tail")
+    {
+        let Some(path) = resolve_goal_path(root, cwd, path)? else {
+            return Ok(None);
+        };
+        let line = fs::read_to_string(&path)?.lines().count().max(1) as u64;
+        return Ok(Some(GoalLocation {
+            path,
+            line,
+            tail: true,
+        }));
+    }
     let mut parts = query.rsplitn(3, ':');
     let Some(last) = parts.next() else {
         return Ok(None);
@@ -3344,6 +3357,18 @@ fn parse_goal_location(root: &Path, cwd: &Path, query: &str) -> Result<Option<Go
     } else {
         (second, last_number)
     };
+    let Some(path) = resolve_goal_path(root, cwd, path)? else {
+        return Ok(None);
+    };
+    ensure!(line > 0, "goal line starts at 1");
+    Ok(Some(GoalLocation {
+        path,
+        line,
+        tail: false,
+    }))
+}
+
+fn resolve_goal_path(root: &Path, cwd: &Path, path: &str) -> Result<Option<PathBuf>> {
     let requested = PathBuf::from(path);
     let absolute = if requested.is_absolute() {
         requested
@@ -3362,11 +3387,38 @@ fn parse_goal_location(root: &Path, cwd: &Path, query: &str) -> Result<Option<Go
         absolute.starts_with(root),
         "goal position is outside the workspace"
     );
-    ensure!(line > 0, "goal line starts at 1");
-    Ok(Some(GoalLocation {
-        path: absolute,
-        line,
-    }))
+    Ok(Some(absolute))
+}
+
+fn source_location_result(
+    workspace: &Workspace,
+    location: &GoalLocation,
+    source: &str,
+    note: &str,
+) -> SearchResult {
+    let relative = location
+        .path
+        .strip_prefix(&workspace.path)
+        .unwrap_or(&location.path)
+        .to_string_lossy()
+        .into_owned();
+    SearchResult {
+        hits: vec![SearchHit {
+            name: format!("{relative}:{}", location.line),
+            kind: "location".into(),
+            signature: None,
+            module: String::new(),
+            path: relative,
+            line: location.line,
+            doc: None,
+            source: nonempty(location_source_excerpt(source, location.line)),
+            usages: Vec::new(),
+            applicable: false,
+            required_import: None,
+        }],
+        inference: "source".into(),
+        note: Some(note.into()),
+    }
 }
 
 fn location_source_excerpt(source: &str, requested_line: u64) -> String {
@@ -3377,7 +3429,7 @@ fn location_source_excerpt(source: &str, requested_line: u64) -> String {
     let target = requested_line
         .saturating_sub(1)
         .min(lines.len().saturating_sub(1) as u64) as usize;
-    let start = target.saturating_sub(6);
+    let start = target.saturating_sub(6).min(lines.len().saturating_sub(16));
     let end = lines.len().min(start + 16);
     lines[start..end]
         .iter()
@@ -3726,6 +3778,17 @@ end Demo
         let excerpt = location_source_excerpt(&source, 15);
         assert!(excerpt.contains("   15 | line 15"));
         assert_eq!(excerpt.lines().count(), 16);
+
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("Demo.lean"), &source).unwrap();
+        let location = parse_goal_location(directory.path(), directory.path(), "Demo.lean:tail")
+            .unwrap()
+            .unwrap();
+        assert_eq!(location.line, 30);
+        assert!(location.tail);
+        let tail = location_source_excerpt(&source, location.line);
+        assert_eq!(tail.lines().count(), 16);
+        assert!(tail.contains("   30 | line 30"));
     }
 
     #[test]
