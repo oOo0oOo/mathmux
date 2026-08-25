@@ -24,7 +24,7 @@ use crate::util::{clean_line, hash_bytes, now_unix_ms};
 const RESULT_LIMIT: usize = 24;
 const SUMMARY_LIMIT: usize = 5;
 const GOAL_TIMEOUT_MS: u64 = 2_000;
-const SEARCH_INDEX_VERSION: i64 = 5;
+const SEARCH_INDEX_VERSION: i64 = 6;
 const DECLARATION_DETAIL_LINES: usize = 48;
 
 pub struct Searcher {
@@ -1323,7 +1323,7 @@ fn declaration_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
         Regex::new(
-            r"(?m)^[ \t]*(?:@\[[^\n]*\][ \t]*)*(?:(?:private|protected|noncomputable|unsafe|partial|scoped|local)[ \t]+)*(?P<kind>theorem|lemma|def|abbrev|opaque|axiom|structure|class|inductive|instance)[ \t]+(?P<name>[\p{L}_][\p{L}\p{N}\p{M}_'.]*)?",
+            r"(?m)^[ \t]*(?:@\[[^\n]*\][ \t]*)*(?:(?:private|protected|noncomputable|unsafe|partial|scoped|local)[ \t]+)*(?P<kind>theorem|lemma|def|abbrev|opaque|axiom|structure|class|inductive|instance)[ \t]+(?:\([ \t]*priority[ \t]*:=[^\n)]*\)[ \t]+)?(?P<name>[\p{L}_][\p{L}\p{N}\p{M}_'.]*)?",
         )
         .expect("valid declaration regex")
     })
@@ -1791,9 +1791,11 @@ fn fallback_source_hits(
         let synonym = match term.as_str() {
             "addition" => Some("add"),
             "continuity" => Some("continuous"),
+            "islinear" => Some("linear"),
             "positive" => Some("pos"),
             "projection" => Some("proj"),
             "scaling" => Some("smul"),
+            "trivializationat" => Some("trivialization"),
             "weighted" => Some("weight"),
             _ => None,
         };
@@ -2269,6 +2271,14 @@ end Demo
             "Demo",
         );
         assert_eq!(additive_doc[0].docs, "Additive support around zero.");
+
+        let priority_instance = parse_source(
+            "namespace VectorBundle\ninstance (priority := 100) trivialization_linear [VectorBundle R F E] : e.IsLinear R := inferInstance\nend VectorBundle\n",
+            "VectorBundle",
+        );
+        assert!(priority_instance.iter().any(|entry| {
+            entry.kind == "instance" && entry.name == "VectorBundle.trivialization_linear"
+        }));
     }
 
     #[test]
@@ -2410,5 +2420,23 @@ end Demo
         let hits =
             fallback_source_hits(directory.path(), query, &meaningful_query_tokens(query)).unwrap();
         assert!(hits.iter().any(|hit| hit.hit.name == "project_weightedSum"));
+    }
+
+    #[test]
+    fn fallback_connects_trivialization_at_to_linearity_instance() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("Basic.lean"),
+            "namespace VectorBundle\ninstance (priority := 100) trivialization_linear : e.IsLinear R := inferInstance\nend VectorBundle\n",
+        )
+        .unwrap();
+        let query =
+            "linear_trivializationAt isLinear_trivializationAt VectorBundle.trivializationAt";
+        let hits =
+            fallback_source_hits(directory.path(), query, &meaningful_query_tokens(query)).unwrap();
+        assert!(
+            hits.iter()
+                .any(|hit| hit.hit.name == "VectorBundle.trivialization_linear")
+        );
     }
 }
