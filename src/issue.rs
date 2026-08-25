@@ -150,13 +150,21 @@ impl IssueStore {
                 note TEXT,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
-                resolved_at INTEGER
+                resolved_at INTEGER,
+                resolution TEXT CHECK(resolution IN ('fixed', 'dismissed'))
              );
              CREATE INDEX IF NOT EXISTS issues_status_updated
                 ON issues(status, updated_at DESC);
              CREATE INDEX IF NOT EXISTS issues_open_signature
                 ON issues(signature) WHERE status = 'open';",
         )?;
+        if !table_has_column(&connection, "issues", "resolution")? {
+            connection.execute(
+                "ALTER TABLE issues ADD COLUMN resolution TEXT
+                 CHECK(resolution IN ('fixed', 'dismissed'))",
+                [],
+            )?;
+        }
         Ok(())
     }
 
@@ -200,12 +208,22 @@ impl IssueStore {
 
     pub fn list(&self, status: &str) -> Result<String> {
         ensure!(
-            matches!(status, "open" | "resolved" | "all"),
+            matches!(status, "open" | "resolved" | "dismissed" | "all"),
             "invalid issue status"
         );
         let connection = self.open_db()?;
         let sql = if status == "all" {
-            "SELECT id, summary, status, occurrences FROM issues ORDER BY updated_at DESC"
+            "SELECT id, summary,
+                    CASE WHEN resolution = 'dismissed' THEN 'dismissed' ELSE status END,
+                    occurrences FROM issues ORDER BY updated_at DESC"
+        } else if status == "dismissed" {
+            "SELECT id, summary, 'dismissed', occurrences
+             FROM issues WHERE resolution = 'dismissed' ORDER BY updated_at DESC"
+        } else if status == "resolved" {
+            "SELECT id, summary, status, occurrences
+             FROM issues WHERE status = 'resolved'
+               AND (resolution IS NULL OR resolution = 'fixed')
+             ORDER BY updated_at DESC"
         } else {
             "SELECT id, summary, status, occurrences
              FROM issues WHERE status = ?1 ORDER BY updated_at DESC"
@@ -223,7 +241,7 @@ impl IssueStore {
             };
             Ok(format!("i{id} {status}{count} {summary}"))
         };
-        let issues: Vec<String> = if status == "all" {
+        let issues: Vec<String> = if matches!(status, "all" | "dismissed" | "resolved") {
             statement
                 .query_map([], render)?
                 .collect::<rusqlite::Result<Vec<_>>>()?
@@ -250,7 +268,8 @@ impl IssueStore {
     ) -> Result<String> {
         let id = parse_reference(reference)?;
         let changed = self.open_db()?.execute(
-            "UPDATE issues SET status = 'resolved', fixed_by = ?2, note = ?3,
+            "UPDATE issues SET status = 'resolved', resolution = 'fixed',
+                    fixed_by = ?2, note = ?3,
                     updated_at = ?4, resolved_at = ?4
              WHERE id = ?1 AND status = 'open'",
             params![
@@ -264,13 +283,30 @@ impl IssueStore {
         Ok(format!("{reference} resolved"))
     }
 
+    pub fn dismiss(&self, reference: &str, reason: &str) -> Result<String> {
+        let id = parse_reference(reference)?;
+        let reason = reason.trim();
+        ensure!(!reason.is_empty(), "dismissal reason is empty");
+        let now = now_unix_ms();
+        let changed = self.open_db()?.execute(
+            "UPDATE issues SET status = 'resolved', resolution = 'dismissed',
+                    fixed_by = NULL, note = ?2, updated_at = ?3, resolved_at = ?3
+             WHERE id = ?1 AND status = 'open'",
+            params![id, reason, now],
+        )?;
+        ensure!(changed == 1, "unknown or closed issue {reference}");
+        Ok(format!("{reference} dismissed"))
+    }
+
     pub fn show(&self, reference: &str, all: bool) -> Result<String> {
         let id = parse_reference(reference)?;
         let issue = self
             .open_db()?
             .query_row(
-                "SELECT id, summary, status, occurrences, context_json, fixed_by, note,
-                        created_at, resolved_at FROM issues WHERE id = ?1",
+                "SELECT id, summary,
+                        CASE WHEN resolution = 'dismissed' THEN 'dismissed' ELSE status END,
+                        occurrences, context_json, fixed_by, note, created_at, resolved_at
+                 FROM issues WHERE id = ?1",
                 [id],
                 issue_from_row,
             )
@@ -824,6 +860,14 @@ fn clean_optional(value: Option<&str>) -> Option<String> {
         .map(str::to_owned)
 }
 
+fn table_has_column(connection: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+    let names = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(names.iter().any(|name| name == column))
+}
+
 fn parse_reference(reference: &str) -> Result<i64> {
     let value = reference
         .strip_prefix('i')
@@ -932,7 +976,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn issues_deduplicate_while_open_and_resolve_without_claiming() {
+    fn issues_deduplicate_while_open_and_close_with_a_disposition() {
         let directory = tempdir().unwrap();
         let store = IssueStore::new(directory.path().join("issues.db")).unwrap();
         assert_eq!(
@@ -961,6 +1005,27 @@ mod tests {
                 .unwrap()
                 .contains("fixed by: abc123")
         );
+        assert_eq!(
+            store
+                .create(directory.path(), "not a tool bug", None)
+                .unwrap(),
+            "i2"
+        );
+        assert_eq!(
+            store.dismiss("i2", "formalization question").unwrap(),
+            "i2 dismissed"
+        );
+        assert_eq!(
+            store.list("dismissed").unwrap(),
+            "i2 dismissed not a tool bug"
+        );
+        assert_eq!(
+            store.list("resolved").unwrap(),
+            "i1 resolved 2x stale check"
+        );
+        let dismissed = store.show("i2", false).unwrap();
+        assert!(dismissed.contains("i2 dismissed"));
+        assert!(dismissed.contains("formalization question"));
     }
 
     #[test]

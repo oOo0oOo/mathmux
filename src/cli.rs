@@ -166,12 +166,20 @@ enum IssueCommand {
         #[arg(short = 'm')]
         note: Option<String>,
     },
+    /// Dismiss an issue that is not an actionable tooling defect.
+    Dismiss {
+        issue: String,
+        /// Why the issue is not actionable.
+        #[arg(short = 'm', long = "reason")]
+        reason: String,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
 enum IssueFilter {
     Open,
     Resolved,
+    Dismissed,
     All,
 }
 
@@ -180,6 +188,7 @@ impl IssueFilter {
         match self {
             Self::Open => "open",
             Self::Resolved => "resolved",
+            Self::Dismissed => "dismissed",
             Self::All => "all",
         }
     }
@@ -325,6 +334,7 @@ fn run_issue(command: IssueCommand, cwd: &Path) -> Result<u8> {
             fixed_by,
             note,
         } => store.resolve(&issue, fixed_by.as_deref(), note.as_deref())?,
+        IssueCommand::Dismiss { issue, reason } => store.dismiss(&issue, &reason)?,
     };
     println!("{summary}");
     Ok(0)
