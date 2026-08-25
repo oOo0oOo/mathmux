@@ -1464,24 +1464,36 @@ impl Searcher {
         import_context: Option<&ImportContext>,
     ) -> Result<Vec<SearchHit>> {
         let connection = self.open()?;
-        let prefix = format!("{}.%", exact.name);
+        let prefix = format!("{}.", exact.name);
         let leaf = exact.name.rsplit('.').next().unwrap_or(&exact.name);
         let mut statement = connection.prepare(
             "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0
              FROM search_fts
-             WHERE name <> ?1 AND (name LIKE ?2 OR (module = ?3 AND signature LIKE ?4))
+             WHERE search_fts MATCH ?1
              LIMIT 1024",
         )?;
-        let rows = statement
-            .query_map(
-                params![exact.name, prefix, exact.module, format!("%{leaf}%")],
-                indexed_row_from_row,
-            )?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let queries = [
+            format!("name : \"{}\"*", exact.name.replace('"', "\"\"")),
+            format!("signature : \"{}\"*", leaf.replace('"', "\"\"")),
+        ];
+        let mut rows = Vec::new();
+        for query in queries {
+            rows.extend(
+                statement
+                    .query_map([query], indexed_row_from_row)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?,
+            );
+        }
         let mut seen = HashSet::new();
         let mut ranked = rows
             .into_iter()
-            .filter(|row| scopes.contains(&row.owner) && seen.insert(row.name.clone()))
+            .filter(|row| {
+                row.name != exact.name
+                    && (row.name.starts_with(&prefix)
+                        || (row.module == exact.module && row.signature.contains(leaf)))
+                    && scopes.contains(&row.owner)
+                    && seen.insert(row.name.clone())
+            })
             .map(|row| {
                 let priority = if row.name == format!("{}.mk", exact.name) {
                     0
