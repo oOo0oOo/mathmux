@@ -103,13 +103,13 @@ pub(super) fn render_check_run(run: &CheckRun, all: bool) -> String {
             output.push_str(&format!("\n  {file}"));
         }
     }
-    append_diagnostics(&mut output, "warnings", &run.warnings);
+    append_diagnostics(&mut output, "diagnostics", &run.diagnostics, None);
+    append_diagnostics(&mut output, "warnings", &run.warnings, Some(8));
     if all {
-        append_diagnostics(&mut output, "linters", &run.linters);
+        append_diagnostics(&mut output, "linters", &run.linters, Some(8));
     } else if !run.linters.is_empty() {
         output.push_str(&format!("\nlinters: {}", run.linters.len()));
     }
-    append_diagnostics(&mut output, "diagnostics", &run.diagnostics);
     if let Some(profile) = &run.profile {
         output.push('\n');
         output.push_str(&profile.render());
@@ -199,12 +199,18 @@ pub(super) fn render_submission(submission: &Submission, all: bool) -> String {
     output
 }
 
-fn append_diagnostics(output: &mut String, label: &str, diagnostics: &[Diagnostic]) {
+fn append_diagnostics(
+    output: &mut String,
+    label: &str,
+    diagnostics: &[Diagnostic],
+    limit: Option<usize>,
+) {
     if diagnostics.is_empty() {
         return;
     }
     output.push_str(&format!("\n{label}:"));
-    for diagnostic in diagnostics {
+    let shown = limit.unwrap_or(diagnostics.len()).min(diagnostics.len());
+    for diagnostic in diagnostics.iter().take(shown) {
         for line in diagnostic.text.trim().lines() {
             output.push_str(&format!("\n  {line}"));
         }
@@ -213,6 +219,12 @@ fn append_diagnostics(output: &mut String, label: &str, diagnostics: &[Diagnosti
                 output.push_str(&format!("\n  {line}"));
             }
         }
+    }
+    if shown < diagnostics.len() {
+        output.push_str(&format!(
+            "\n  +{} {label} omitted",
+            diagnostics.len() - shown
+        ));
     }
 }
 
