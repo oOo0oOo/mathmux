@@ -25,6 +25,7 @@ const RESULT_LIMIT: usize = 24;
 const SUMMARY_LIMIT: usize = 5;
 const GOAL_TIMEOUT_MS: u64 = 2_000;
 const SEARCH_INDEX_VERSION: i64 = 5;
+const DECLARATION_DETAIL_LINES: usize = 48;
 
 pub struct Searcher {
     repo: Repo,
@@ -733,13 +734,8 @@ impl Searcher {
                 continue;
             }
             let usages = self.usages(&row.name, scopes, workspace)?;
-            let (source, matched_line) = source_excerpt(
-                &row.body,
-                query,
-                &query_tokens,
-                row.line,
-                row.kind == "file",
-            );
+            let (source, matched_line) =
+                detailed_source_excerpt(&row.body, query, &query_tokens, row.line, &row.kind);
             let score = lexical
                 + type_score
                 + (usages.len() as f64 + 1.0).ln()
@@ -1733,6 +1729,24 @@ fn source_excerpt(
     (nonempty(excerpt), line)
 }
 
+fn detailed_source_excerpt(
+    body: &str,
+    query: &str,
+    tokens: &[String],
+    declaration_line: u64,
+    kind: &str,
+) -> (Option<String>, u64) {
+    if matches!(kind, "class" | "inductive" | "structure") {
+        let excerpt = body
+            .lines()
+            .take(DECLARATION_DETAIL_LINES)
+            .collect::<Vec<_>>()
+            .join("\n");
+        return (nonempty(excerpt), declaration_line);
+    }
+    source_excerpt(body, query, tokens, declaration_line, kind == "file")
+}
+
 fn fallback_source_hits(
     workspace: &Path,
     query: &str,
@@ -1904,7 +1918,7 @@ fn fallback_source_hits(
                 continue;
             }
             let (excerpt, matched_line) =
-                source_excerpt(&entry.body, query, &terms, entry.line, entry.kind == "file");
+                detailed_source_excerpt(&entry.body, query, &terms, entry.line, &entry.kind);
             let name_score = terms
                 .iter()
                 .filter(|term| entry.name.to_lowercase().contains(*term))
@@ -2298,6 +2312,13 @@ end Demo
         assert!(excerpt.starts_with("-- line 10"));
         assert!(excerpt.contains("theorem exact_match"));
         assert_eq!(excerpt.lines().count(), 8);
+
+        let structure =
+            "structure Config where\n  first : Nat\n  second : String\n  third : Bool\n";
+        let (excerpt, line) =
+            detailed_source_excerpt(structure, "Config", &["config".into()], 10, "structure");
+        assert_eq!(line, 10);
+        assert!(excerpt.unwrap().contains("third : Bool"));
     }
 
     #[test]
