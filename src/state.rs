@@ -180,7 +180,11 @@ impl State {
         let connection = self.open()?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.execute_batch(
-            "CREATE TABLE IF NOT EXISTS counters (
+            "CREATE TABLE IF NOT EXISTS state_meta (
+                key TEXT PRIMARY KEY,
+                value INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS counters (
                 kind TEXT PRIMARY KEY,
                 value INTEGER NOT NULL
              );
@@ -281,6 +285,24 @@ impl State {
             let _ = connection.execute(statement, []);
         }
         migrate_legacy_checks(&connection)?;
+        let legacy_search_removed: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM state_meta WHERE key = 'legacy_search_removed')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !legacy_search_removed {
+            // Search indexing moved to its own database. Remove legacy index
+            // tables so queue state no longer shares pages with stale FTS data.
+            connection.execute_batch(
+                "DROP TABLE IF EXISTS search_fts;
+                 DROP TABLE IF EXISTS search_references;
+                 DROP TABLE IF EXISTS search_imports;
+                 DROP TABLE IF EXISTS search_files;
+                 DROP TABLE IF EXISTS search_meta;
+                 INSERT INTO state_meta(key, value)
+                 VALUES ('legacy_search_removed', 1);",
+            )?;
+        }
         Ok(())
     }
 
@@ -516,7 +538,9 @@ impl State {
                         validation_status, validation_detail, build_output, axioms_json,
                         sorries_json, validation_duration_ms, validated_by, created_at
                  FROM submissions WHERE validation_status = 'queued'
-                 ORDER BY created_at DESC LIMIT 1",
+                 ORDER BY created_at DESC,
+                          CAST(substr(ref, 2) AS INTEGER) DESC
+                 LIMIT 1",
                 [],
                 submission_from_row,
             )
@@ -900,15 +924,28 @@ fn render_submission(submission: &Submission, all: bool) -> String {
     if let Some(build_output) = &submission.build_output
         && !build_output.trim().is_empty()
     {
-        let rendered = if all {
-            build_output.trim().to_owned()
+        if !all && submission.validation_status == "passed" {
+            let warnings = build_output
+                .lines()
+                .filter(|line| line.trim_start().starts_with("warning:"))
+                .count();
+            if warnings > 0 {
+                output.push_str(&format!(
+                    "\nbuild warnings: {warnings}; show {} --all",
+                    submission.reference
+                ));
+            }
         } else {
-            condense_build_output(build_output)
-        };
-        if !rendered.is_empty() {
-            output.push_str("\noutput:");
-            for line in rendered.lines() {
-                output.push_str(&format!("\n  {line}"));
+            let rendered = if all {
+                build_output.trim().to_owned()
+            } else {
+                condense_build_output(build_output)
+            };
+            if !rendered.is_empty() {
+                output.push_str("\noutput:");
+                for line in rendered.lines() {
+                    output.push_str(&format!("\n  {line}"));
+                }
             }
         }
     }
@@ -1136,6 +1173,32 @@ mod tests {
     }
 
     #[test]
+    fn passed_validation_summarizes_build_warnings_by_default() {
+        let submission = Submission {
+            reference: "s1".into(),
+            workspace_ref: "w1".into(),
+            workspace_commit: "workspace".into(),
+            main_commit: "main".into(),
+            base_commit: "base".into(),
+            checks: vec!["c1".into()],
+            validation_status: "passed".into(),
+            validation_detail: Some("build passed; axioms clean (1 modules)".into()),
+            build_output: Some(
+                "warning: first warning\n  detail\nwarning: second warning\n  detail".into(),
+            ),
+            axioms: Vec::new(),
+            sorries: Vec::new(),
+            validation_duration_ms: Some(1000),
+            validated_by: None,
+            created_at: 0,
+        };
+        let compact = render_submission(&submission, false);
+        assert!(compact.contains("build warnings: 2; show s1 --all"));
+        assert!(!compact.contains("first warning"));
+        assert!(render_submission(&submission, true).contains("first warning"));
+    }
+
+    #[test]
     fn queued_submissions_coalesce_to_the_newest_revision() {
         let directory = tempdir().unwrap();
         let state = State::new(directory.path().join("state.db")).unwrap();
@@ -1147,7 +1210,7 @@ mod tests {
                 branch: "mathmux/agent".into(),
             })
             .unwrap();
-        for (reference, created_at) in [("s1", 1), ("s2", 2)] {
+        for (reference, created_at) in [("s1", 1), ("s2", 1)] {
             state
                 .add_submission(&Submission {
                     reference: reference.into(),
