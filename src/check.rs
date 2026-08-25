@@ -1061,6 +1061,29 @@ mod tests {
     }
 
     #[test]
+    fn configuration_changes_invalidate_certificates() {
+        let directory = tempdir().unwrap();
+        fs::write(directory.path().join("Proof.lean"), "def proof := 1\n").unwrap();
+        fs::write(
+            directory.path().join("lean-toolchain"),
+            "leanprover/lean4:v4.24.0\n",
+        )
+        .unwrap();
+        fs::write(directory.path().join("lakefile.toml"), "name = \"proof\"\n").unwrap();
+        let before =
+            certificate_fingerprint(directory.path(), Path::new("Proof.lean"), &[]).unwrap();
+
+        fs::write(
+            directory.path().join("lakefile.toml"),
+            "name = \"proof\"\nversion = \"0.2.0\"\n",
+        )
+        .unwrap();
+        let after =
+            certificate_fingerprint(directory.path(), Path::new("Proof.lean"), &[]).unwrap();
+        assert_ne!(before, after);
+    }
+
+    #[test]
     fn diagnostics_are_deduplicated_and_linters_are_separate() {
         let ordinary = WorkerDiagnostic {
             severity: "warning".into(),

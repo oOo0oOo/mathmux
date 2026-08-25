@@ -911,4 +911,42 @@ mod tests {
         assert!(full.contains("Proof.lean:12:3"));
         assert!(full.contains("info: Building Proof"));
     }
+
+    #[test]
+    fn running_validation_recovers_to_the_queue() {
+        let directory = tempdir().unwrap();
+        let state = State::new(directory.path().join("state.db")).unwrap();
+        state
+            .add_workspace(&Workspace {
+                reference: "w1".into(),
+                name: "agent".into(),
+                path: directory.path().join("agent"),
+                branch: "mathmux/agent".into(),
+            })
+            .unwrap();
+        state
+            .add_submission(&Submission {
+                reference: "s1".into(),
+                workspace_ref: "w1".into(),
+                workspace_commit: "workspace".into(),
+                main_commit: "main".into(),
+                base_commit: "base".into(),
+                checks: vec!["c1".into()],
+                validation_status: "queued".into(),
+                validation_detail: None,
+                build_output: None,
+                axioms: Vec::new(),
+                sorries: Vec::new(),
+                validation_duration_ms: None,
+                validated_by: None,
+                created_at: 1,
+            })
+            .unwrap();
+
+        assert_eq!(state.next_validation().unwrap().unwrap().reference, "s1");
+        assert!(state.has_running_validation().unwrap());
+        state.recover_validation().unwrap();
+        assert!(!state.has_running_validation().unwrap());
+        assert_eq!(state.next_validation().unwrap().unwrap().reference, "s1");
+    }
 }
