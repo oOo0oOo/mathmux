@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail, ensure};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 
-use crate::check::Checker;
+use crate::check::{CheckOutcome, Checker};
 use crate::git::{self, dirty_lean_files, dirty_paths};
 use crate::protocol::{Command, Request, Response};
 use crate::repo::Repo;
@@ -123,9 +123,8 @@ impl Service {
                 let workspace = git::create_workspace(&self.repo, &self.state, &name)?;
                 self.watcher.watch(&workspace.path)?;
                 Ok(format!(
-                    "{} {} {}",
+                    "{} {}",
                     workspace.reference,
-                    workspace.name,
                     workspace.path.display()
                 ))
             }
@@ -140,7 +139,11 @@ impl Service {
                         let dirty = dirty_paths(&workspace.path)
                             .map(|paths| paths.len())
                             .unwrap_or(0);
-                        format!("{} {} {} dirty", workspace.reference, workspace.name, dirty)
+                        if dirty == 0 {
+                            format!("{} {} clean", workspace.reference, workspace.name)
+                        } else {
+                            format!("{} {} dirty:{dirty}", workspace.reference, workspace.name)
+                        }
                     })
                     .collect::<Vec<_>>()
                     .join("\n"))
@@ -154,26 +157,19 @@ impl Service {
                 self.watcher.unwatch(&workspace.path);
                 self.checker.evict_worker(&workspace.reference);
                 git::delete_workspace(&self.repo, &self.state, &name)?;
-                Ok(format!(
-                    "deleted {} {}",
-                    workspace.reference, workspace.name
-                ))
+                Ok(format!("{} deleted", workspace.reference))
             }
             Command::Check { file } => {
                 let workspace = self.state.workspace_for_path(&cwd)?;
-                let outcomes = self
+                let outcome = self
                     .checker
                     .check(&workspace, file.as_deref().map(Path::new))?;
-                Ok(outcomes
-                    .iter()
-                    .map(|outcome| {
-                        format!(
-                            "{} {} {}ms",
-                            outcome.reference, outcome.target, outcome.elapsed_ms
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n"))
+                let summary = check_summary(&outcome);
+                if outcome.ok {
+                    Ok(format!("ok {summary}"))
+                } else {
+                    bail!(summary)
+                }
             }
             Command::Sync => {
                 let _guard = self.mutations.lock().expect("mutation lock poisoned");
@@ -185,9 +181,9 @@ impl Service {
                     self.state
                         .add_sync(&workspace.reference, status, &result.detail)?;
                 if result.clean {
-                    Ok(format!("{reference} synced"))
+                    Ok(format!("ok {reference}"))
                 } else {
-                    bail!("{reference} {}", clean_line(&result.detail))
+                    bail!("{reference} conflict: {}", clean_line(&result.detail))
                 }
             }
             Command::Submit { message } => {
@@ -201,6 +197,9 @@ impl Service {
                     "submission has no checked Lean changes"
                 );
                 let checks = self.checker.valid_certificates(&workspace, &targets)?;
+                let message = message
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| default_submit_message(&dirty));
                 let result = git::submit(&self.repo, &workspace, &message)?;
                 let reference = self.state.next_ref('s')?;
                 self.state.add_submission(&Submission {
@@ -212,15 +211,54 @@ impl Service {
                     checks,
                     validation_status: "queued".into(),
                     validation_detail: None,
+                    build_output: None,
+                    axioms: Vec::new(),
+                    sorries: Vec::new(),
+                    validation_duration_ms: None,
                     validated_by: None,
                     created_at: now_unix_ms(),
                 })?;
                 self.checker.invalidate_workspace(&workspace.reference)?;
                 self.validation.wake();
-                Ok(format!("{reference} accepted; validation queued"))
+                Ok(reference)
             }
-            Command::Show { reference } => self.state.show(&reference),
+            Command::Show { reference, all } => self.state.show(&reference, all),
         }
+    }
+}
+
+fn check_summary(outcome: &CheckOutcome) -> String {
+    let mut output = format!("{} {}ms", outcome.reference, outcome.elapsed_ms);
+    for warning in outcome.warnings.iter().take(3) {
+        output.push_str(&format!("\nwarning {}", clean_line(&warning.text)));
+    }
+    if outcome.warnings.len() > 3 {
+        output.push_str(&format!(
+            "\n+{} warnings; show {}",
+            outcome.warnings.len() - 3,
+            outcome.reference
+        ));
+    }
+    if !outcome.ok {
+        if let Some(diagnostic) = outcome.diagnostics.first() {
+            output.push_str(&format!("\n{}", clean_line(&diagnostic.text)));
+        }
+        if outcome.diagnostics.len() > 1 {
+            output.push_str(&format!(
+                "\n+{} diagnostics; show {}",
+                outcome.diagnostics.len() - 1,
+                outcome.reference
+            ));
+        }
+    }
+    output
+}
+
+fn default_submit_message(paths: &[PathBuf]) -> String {
+    if let [path] = paths {
+        format!("Update {}", path.display())
+    } else {
+        format!("Update {} files", paths.len())
     }
 }
 

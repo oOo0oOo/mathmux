@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::git::{dirty_lean_files, lake_command, project_lean_files};
 use crate::repo::Repo;
-use crate::state::{CheckRecord, State, Workspace};
+use crate::state::{CheckRecord, CheckRun, Diagnostic, State, Workspace};
 use crate::util::{hash_bytes, hash_file, now_unix_ms};
 
 const WORKER_SOURCE: &str = r#"import Lean.Language.Lean
@@ -25,10 +25,16 @@ structure Request where
   version : Nat
 deriving FromJson
 
+structure Diagnostic where
+  severity : String
+  kind : String
+  text : String
+deriving ToJson
+
 structure Response where
   ok : Bool
   errors : Nat
-  diagnostics : Array String
+  diagnostics : Array Diagnostic
   version : Nat
 deriving ToJson
 
@@ -66,14 +72,20 @@ partial def firstErrorOrFinal (task : Language.SnapshotTask Language.Lean.Comman
   else
     return (false, result.cmdState.messages)
 
-def renderMessages (messages : MessageLog) : BaseIO (Array String) := do
+def renderMessages (messages : MessageLog) : BaseIO (Array Diagnostic) := do
   let mut output := #[]
   for message in messages.reportedPlusUnreported do
-    output := output.push (← message.toString)
+    output := output.push {
+      severity := message.severity.toString
+      kind := message.kind.toString
+      text := ← message.toString
+    }
   return output
 
 def failureResponse (detail : String) (version : Nat) : Response :=
-  { ok := false, errors := 1, diagnostics := #[detail], version := version }
+  { ok := false, errors := 1,
+    diagnostics := #[{ severity := "error", kind := "mathmux", text := detail }],
+    version := version }
 
 def processSnapshot (snapshot : Language.Lean.InitialSnapshot) (version : Nat) : BaseIO Response := do
   let some header := snapshot.result? | return failureResponse "header parsing failed" version
@@ -101,7 +113,7 @@ unsafe def runServer (setup : ModuleSetup) : IO Unit := do
     if line.trimAscii.isEmpty then loop else
     match Json.parse line >>= fromJson? with
     | .error error =>
-      writeResponse { ok := false, errors := 1, diagnostics := #[error], version := 0 }
+      writeResponse (failureResponse error 0)
       loop
     | .ok (request : Request) =>
       let snapshot ← processor (Parser.mkInputContext request.source setup.name.toString)
@@ -119,8 +131,11 @@ unsafe def main (args : List String) : IO UInt32 := do
 #[derive(Debug, Clone)]
 pub struct CheckOutcome {
     pub reference: String,
-    pub target: String,
-    pub elapsed_ms: u128,
+    pub ok: bool,
+    pub elapsed_ms: u64,
+    pub warnings: Vec<Diagnostic>,
+    pub linters: Vec<Diagnostic>,
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 #[derive(Debug, Serialize)]
@@ -133,8 +148,23 @@ struct WorkerRequest<'a> {
 struct WorkerResponse {
     ok: bool,
     errors: usize,
-    diagnostics: Vec<String>,
+    diagnostics: Vec<WorkerDiagnostic>,
     version: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash)]
+struct WorkerDiagnostic {
+    severity: String,
+    kind: String,
+    text: String,
+}
+
+struct FileCheck {
+    certificate: CheckRecord,
+    warnings: Vec<Diagnostic>,
+    linters: Vec<Diagnostic>,
+    diagnostics: Vec<Diagnostic>,
+    ok: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -168,11 +198,7 @@ impl Checker {
         })
     }
 
-    pub fn check(
-        &self,
-        workspace: &Workspace,
-        requested: Option<&Path>,
-    ) -> Result<Vec<CheckOutcome>> {
+    pub fn check(&self, workspace: &Workspace, requested: Option<&Path>) -> Result<CheckOutcome> {
         let targets = match requested {
             Some(path) => vec![resolve_target(&workspace.path, path)?],
             None => {
@@ -181,32 +207,103 @@ impl Checker {
                 dependency_order(&workspace.path, &files)?
             }
         };
-        let mut outcomes = Vec::new();
-        for target in targets {
-            outcomes.push(self.check_one(workspace, &target)?);
+        let reference = self.state.next_ref('c')?;
+        let started = Instant::now();
+        let files = targets
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let mut certificates = Vec::new();
+        let mut passed = Vec::new();
+        let mut warnings = Vec::new();
+        let mut linters = Vec::new();
+        let mut diagnostics = Vec::new();
+        let mut failed = None;
+
+        for target in &targets {
+            let target_name = target.to_string_lossy().into_owned();
+            match self.check_one(workspace, target, &reference) {
+                Ok(result) => {
+                    warnings.extend(result.warnings);
+                    linters.extend(result.linters);
+                    if result.ok {
+                        passed.push(target_name);
+                        certificates.push(result.certificate);
+                    } else {
+                        diagnostics.extend(result.diagnostics);
+                        failed = Some(target_name);
+                        break;
+                    }
+                }
+                Err(error) => {
+                    diagnostics.push(Diagnostic {
+                        kind: "mathmux".into(),
+                        text: format!("{error:#}"),
+                    });
+                    failed = Some(target_name);
+                    break;
+                }
+            }
         }
+        deduplicate(&mut warnings);
+        deduplicate(&mut linters);
+        deduplicate(&mut diagnostics);
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        let ok = failed.is_none();
+        let not_checked = failed
+            .as_ref()
+            .and_then(|target| files.iter().position(|file| file == target))
+            .map(|index| files[index + 1..].to_vec())
+            .unwrap_or_default();
+        let run = CheckRun {
+            reference: reference.clone(),
+            workspace_ref: workspace.reference.clone(),
+            status: if ok { "passed" } else { "failed" }.into(),
+            files,
+            passed,
+            failed,
+            not_checked,
+            warnings: warnings.clone(),
+            linters: linters.clone(),
+            diagnostics: diagnostics.clone(),
+            duration_ms: elapsed_ms,
+            created_at: now_unix_ms(),
+        };
+        self.state
+            .add_check_run(&run, if ok { &certificates } else { &[] })?;
         self.state.touch_workspace(&workspace.reference)?;
-        Ok(outcomes)
+        Ok(CheckOutcome {
+            reference,
+            ok,
+            elapsed_ms,
+            warnings,
+            linters,
+            diagnostics,
+        })
     }
 
-    fn check_one(&self, workspace: &Workspace, target: &Path) -> Result<CheckOutcome> {
-        let started = Instant::now();
+    fn check_one(
+        &self,
+        workspace: &Workspace,
+        target: &Path,
+        reference: &str,
+    ) -> Result<FileCheck> {
         let target_absolute = workspace.path.join(target);
         if !target_absolute.exists() {
-            let reference = self.state.next_ref('c')?;
-            self.state.add_check(&CheckRecord {
-                reference: reference.clone(),
-                workspace_ref: workspace.reference.clone(),
-                target: target.to_string_lossy().into_owned(),
-                fingerprint: self.full_fingerprint(workspace, target, &[])?,
-                dependencies: Vec::new(),
-                source_version: 1,
-                created_at: now_unix_ms(),
-            })?;
-            return Ok(CheckOutcome {
-                reference,
-                target: target.to_string_lossy().into_owned(),
-                elapsed_ms: started.elapsed().as_millis(),
+            return Ok(FileCheck {
+                certificate: CheckRecord {
+                    reference: reference.to_owned(),
+                    workspace_ref: workspace.reference.clone(),
+                    target: target.to_string_lossy().into_owned(),
+                    fingerprint: self.full_fingerprint(workspace, target, &[])?,
+                    dependencies: Vec::new(),
+                    source_version: 1,
+                    created_at: now_unix_ms(),
+                },
+                warnings: Vec::new(),
+                linters: Vec::new(),
+                diagnostics: Vec::new(),
+                ok: true,
             });
         }
         let dependencies = transitive_dependencies(&workspace.path, target)?;
@@ -229,32 +326,24 @@ impl Checker {
             response.version > 0,
             "Lean worker returned an invalid source version"
         );
-        if !response.ok {
-            let diagnostics = concise_diagnostics(&response.diagnostics);
-            bail!(
-                "{} error(s) in {}\n{}",
-                response.errors,
-                target.display(),
-                diagnostics
-            );
-        }
-        let reference = self.state.next_ref('c')?;
-        self.state.add_check(&CheckRecord {
-            reference: reference.clone(),
-            workspace_ref: workspace.reference.clone(),
-            target: target.to_string_lossy().into_owned(),
-            fingerprint,
-            dependencies: dependencies
-                .iter()
-                .map(|path| path.to_string_lossy().into_owned())
-                .collect(),
-            source_version: response.version,
-            created_at: now_unix_ms(),
-        })?;
-        Ok(CheckOutcome {
-            reference,
-            target: target.to_string_lossy().into_owned(),
-            elapsed_ms: started.elapsed().as_millis(),
+        let (warnings, linters, diagnostics) = partition_diagnostics(&response.diagnostics);
+        Ok(FileCheck {
+            certificate: CheckRecord {
+                reference: reference.to_owned(),
+                workspace_ref: workspace.reference.clone(),
+                target: target.to_string_lossy().into_owned(),
+                fingerprint,
+                dependencies: dependencies
+                    .iter()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect(),
+                source_version: response.version,
+                created_at: now_unix_ms(),
+            },
+            warnings,
+            linters,
+            diagnostics,
+            ok: response.ok,
         })
     }
 
@@ -417,7 +506,7 @@ impl Checker {
             .lock()
             .expect("worker map poisoned")
             .remove(workspace_ref);
-        self.state.delete_checks(workspace_ref)
+        Ok(())
     }
 
     pub fn evict_worker(&self, workspace_ref: &str) {
@@ -472,6 +561,7 @@ impl Checker {
     ) -> Result<Vec<String>> {
         let mut uncovered: HashSet<PathBuf> = targets.iter().cloned().collect();
         let mut references = Vec::new();
+        let mut seen_references = HashSet::new();
         let mut seen_targets = HashSet::new();
         for check in self.state.checks_for_workspace(&workspace.reference)? {
             let check_target = PathBuf::from(&check.target);
@@ -487,7 +577,7 @@ impl Checker {
             for path in std::iter::once(check_target).chain(dependencies) {
                 covers |= uncovered.remove(&path);
             }
-            if covers {
+            if covers && seen_references.insert(check.reference.clone()) {
                 references.push(check.reference);
             }
             if uncovered.is_empty() {
@@ -609,6 +699,18 @@ fn fallback_check(repo: &Repo, root: &Path, target: &Path) -> Result<WorkerRespo
     let diagnostics = [stdout, stderr]
         .into_iter()
         .filter(|value| !value.is_empty())
+        .map(|text| {
+            let severity = if output.status.success() {
+                "warning"
+            } else {
+                "error"
+            };
+            WorkerDiagnostic {
+                severity: severity.into(),
+                kind: "lean".into(),
+                text,
+            }
+        })
         .collect::<Vec<_>>();
     Ok(WorkerResponse {
         ok: output.status.success(),
@@ -627,11 +729,51 @@ fn deduplicate_diagnostics(mut response: WorkerResponse) -> WorkerResponse {
         response.errors = response
             .diagnostics
             .iter()
-            .filter(|diagnostic| diagnostic.contains("error:"))
+            .filter(|diagnostic| diagnostic.severity == "error")
             .count()
             .max(1);
     }
     response
+}
+
+fn partition_diagnostics(
+    diagnostics: &[WorkerDiagnostic],
+) -> (Vec<Diagnostic>, Vec<Diagnostic>, Vec<Diagnostic>) {
+    let mut warnings = Vec::new();
+    let mut linters = Vec::new();
+    let mut errors = Vec::new();
+    for diagnostic in diagnostics {
+        let value = Diagnostic {
+            kind: diagnostic.kind.clone(),
+            text: diagnostic.text.clone(),
+        };
+        match diagnostic.severity.as_str() {
+            "warning" if is_linter(diagnostic) => linters.push(value),
+            "warning" => warnings.push(value),
+            "error" => errors.push(value),
+            _ => {}
+        }
+    }
+    deduplicate(&mut warnings);
+    deduplicate(&mut linters);
+    deduplicate(&mut errors);
+    (warnings, linters, errors)
+}
+
+fn is_linter(diagnostic: &WorkerDiagnostic) -> bool {
+    let kind = diagnostic.kind.to_ascii_lowercase();
+    let text = diagnostic.text.to_ascii_lowercase();
+    kind.contains("linter")
+        || text.contains("declaration uses 'sorry'")
+        || text.contains("declaration uses `sorry`")
+        || text.contains("unused variable")
+        || text.contains("automatically included section variable")
+        || text.contains("contains a placeholder")
+}
+
+fn deduplicate(diagnostics: &mut Vec<Diagnostic>) {
+    let mut seen = HashSet::new();
+    diagnostics.retain(|diagnostic| seen.insert(diagnostic.clone()));
 }
 
 pub fn resolve_target(root: &Path, requested: &Path) -> Result<PathBuf> {
@@ -883,16 +1025,6 @@ fn environment_fingerprint(root: &Path, dependencies: &[PathBuf]) -> Result<Stri
     Ok(hash_bytes(&material))
 }
 
-fn concise_diagnostics(diagnostics: &[String]) -> String {
-    diagnostics
-        .iter()
-        .flat_map(|value| value.lines())
-        .filter(|line| !line.trim().is_empty())
-        .take(12)
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 fn available_memory_gib() -> Option<u64> {
     fs::read_to_string("/proc/meminfo")
         .ok()?
@@ -937,5 +1069,30 @@ mod tests {
             certificate_fingerprint(directory.path(), Path::new("A/Top.lean"), &dependencies)
                 .unwrap();
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn diagnostics_are_deduplicated_and_linters_are_separate() {
+        let ordinary = WorkerDiagnostic {
+            severity: "warning".into(),
+            kind: "declaration".into(),
+            text: "Proof.lean:1:1: warning: deprecated".into(),
+        };
+        let diagnostics = vec![
+            ordinary.clone(),
+            ordinary,
+            WorkerDiagnostic {
+                severity: "warning".into(),
+                kind: "linter.unusedVariables".into(),
+                text: "Proof.lean:2:1: warning: unused variable".into(),
+            },
+            WorkerDiagnostic {
+                severity: "error".into(),
+                kind: "typeMismatch".into(),
+                text: "Proof.lean:3:1: error: type mismatch".into(),
+            },
+        ];
+        let (warnings, linters, errors) = partition_diagnostics(&diagnostics);
+        assert_eq!((warnings.len(), linters.len(), errors.len()), (1, 1, 1));
     }
 }

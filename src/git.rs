@@ -155,6 +155,7 @@ pub fn dirty_lean_files(root: &Path) -> Result<Vec<PathBuf>> {
         .filter(|path| {
             path.extension()
                 .is_some_and(|extension| extension == "lean")
+                && path.file_name().is_none_or(|name| name != "lakefile.lean")
         })
         .collect())
 }
@@ -174,6 +175,7 @@ pub fn project_lean_files(root: &Path) -> Vec<PathBuf> {
         .filter(|path| {
             path.extension()
                 .is_some_and(|extension| extension == "lean")
+                && path.file_name().is_none_or(|name| name != "lakefile.lean")
         })
         .filter_map(|path| path.strip_prefix(root).ok().map(Path::to_path_buf))
         .collect()

@@ -14,8 +14,8 @@ pub enum Command {
     WsDelete { name: String },
     Check { file: Option<String> },
     Sync,
-    Submit { message: String },
-    Show { reference: String },
+    Submit { message: Option<String> },
+    Show { reference: String, all: bool },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

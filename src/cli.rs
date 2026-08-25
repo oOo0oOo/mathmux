@@ -40,10 +40,14 @@ enum TopCommand {
     /// Integrate a certified change and queue validation.
     Submit {
         #[arg(short = 'm')]
-        message: String,
+        message: Option<String>,
     },
     /// Show full details for a short reference.
-    Show { reference: String },
+    Show {
+        reference: String,
+        #[arg(long)]
+        all: bool,
+    },
     #[command(name = "__daemon", hide = true)]
     Daemon {
         #[arg(long)]
@@ -87,7 +91,7 @@ pub fn run() -> Result<u8> {
         },
         TopCommand::Sync => Command::Sync,
         TopCommand::Submit { message } => Command::Submit { message },
-        TopCommand::Show { reference } => Command::Show { reference },
+        TopCommand::Show { reference, all } => Command::Show { reference, all },
         TopCommand::Daemon { .. } => unreachable!(),
     };
     let mut stream = connect_or_start(&repo)?;
@@ -107,7 +111,7 @@ pub fn run() -> Result<u8> {
         println!("{}", response.summary);
         Ok(0)
     } else {
-        eprintln!("error: {}", response.summary);
+        eprintln!("error {}", response.summary);
         Ok(1)
     }
 }

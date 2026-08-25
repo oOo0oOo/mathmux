@@ -2,13 +2,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
+use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 
 use crate::check::{project_module_name, transitive_dependencies};
 use crate::git::{lake_command, project_lean_files};
 use crate::repo::Repo;
-use crate::state::{State, Submission};
+use crate::state::{State, Submission, ValidationReport};
 use crate::util::{run_checked, run_output};
 
 #[derive(Clone)]
@@ -41,11 +42,18 @@ fn validation_loop(repo: Repo, state: State, signal: Arc<(Mutex<bool>, Condvar)>
         match state.next_validation() {
             Ok(Some(submission)) => {
                 let result = validate(&repo, &submission);
-                let (passed, detail) = match result {
-                    Ok(detail) => (true, detail),
-                    Err(error) => (false, format!("{error:#}")),
+                let report = match result {
+                    Ok(report) => report,
+                    Err(error) => ValidationReport {
+                        passed: false,
+                        detail: format!("validation failed: {error:#}"),
+                        build_output: String::new(),
+                        axioms: Vec::new(),
+                        sorries: Vec::new(),
+                        duration_ms: 0,
+                    },
                 };
-                let _ = state.finish_validation(&submission.reference, passed, &detail);
+                let _ = state.finish_validation(&submission.reference, &report);
             }
             Ok(None) => {
                 let (lock, condition) = &*signal;
@@ -61,25 +69,71 @@ fn validation_loop(repo: Repo, state: State, signal: Arc<(Mutex<bool>, Condvar)>
     }
 }
 
-fn validate(repo: &Repo, submission: &Submission) -> Result<String> {
+fn validate(repo: &Repo, submission: &Submission) -> Result<ValidationReport> {
+    let started = Instant::now();
     let root = prepare_worktree(repo, &submission.main_commit)?;
+    let sorries = find_sorries(&root)?;
     let output = lake_command(repo, &root)
         .arg("build")
         .output()
         .context("cannot start validation build")?;
+    let build_output = combined_output(&output);
     if !output.status.success() {
-        bail!("build failed: {}", command_detail(&output));
+        return Ok(ValidationReport {
+            passed: false,
+            detail: "build failed".into(),
+            build_output,
+            axioms: Vec::new(),
+            sorries,
+            duration_ms: started.elapsed().as_millis() as u64,
+        });
     }
     let (roots, project_modules) = deliverable_modules(&root);
-    let audit = run_axiom_audit(repo, &root, &roots, &project_modules)?;
-    Ok(format!(
-        "build passed; axiom audit passed ({} modules); native evaluation: compiler trust",
-        project_modules.len()
-    ) + if audit.is_empty() {
-        ""
-    } else {
-        "; audit output recorded"
+    let axioms = match run_axiom_audit(repo, &root, &roots, &project_modules) {
+        Ok(axioms) => axioms,
+        Err(error) => {
+            return Ok(ValidationReport {
+                passed: false,
+                detail: format!("axiom audit failed: {error:#}"),
+                build_output,
+                axioms: Vec::new(),
+                sorries,
+                duration_ms: started.elapsed().as_millis() as u64,
+            });
+        }
+    };
+    let passed = axioms.is_empty();
+    Ok(ValidationReport {
+        passed,
+        detail: if passed {
+            format!(
+                "build passed; axioms clean ({} modules)",
+                project_modules.len()
+            )
+        } else {
+            format!(
+                "build passed; {} extra axiom{}",
+                axioms.len(),
+                if axioms.len() == 1 { "" } else { "s" }
+            )
+        },
+        build_output,
+        axioms,
+        sorries,
+        duration_ms: started.elapsed().as_millis() as u64,
     })
+}
+
+fn combined_output(output: &std::process::Output) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    if stdout.is_empty() {
+        stderr
+    } else if stderr.is_empty() {
+        stdout
+    } else {
+        format!("{stdout}\n{stderr}")
+    }
 }
 
 fn prepare_worktree(repo: &Repo, commit: &str) -> Result<PathBuf> {
@@ -143,9 +197,9 @@ fn run_axiom_audit(
     root: &Path,
     roots: &[String],
     project_modules: &[String],
-) -> Result<String> {
+) -> Result<Vec<String>> {
     if roots.is_empty() {
-        return Ok(String::new());
+        return Ok(Vec::new());
     }
     let imports = roots
         .iter()
@@ -171,7 +225,7 @@ unsafe def main : IO UInt32 := do
     (fun set name => set.insert name) {{}}
   let context : Core.Context := {{ fileName := "<mathmux-audit>", fileMap := default }}
   let state : Core.State := {{ env }}
-  let mut failures : Array String := #[]
+  let mut failures : Array (Name × Name) := #[]
   for (name, _) in env.constants.toList do
     if let some index := env.getModuleIdxFor? name then
       let origin := env.header.moduleNames[index.toNat]!
@@ -179,9 +233,10 @@ unsafe def main : IO UInt32 := do
         let action : CoreM (Array Name) := collectAxioms name
         let (axioms, _) ← action.toIO context state
         for axiomName in axioms do
-          unless allowed.contains axiomName do
-            failures := failures.push s!"{{name}} uses {{axiomName}}"
-  for failure in failures do IO.eprintln failure
+          unless axiomName == `sorryAx || allowed.contains axiomName do
+            failures := failures.push (axiomName, name)
+  for (axiomName, name) in failures do
+    IO.println s!"MATHMUX_AXIOM\t{{axiomName}}\t{{name}}"
   return if failures.isEmpty then 0 else 1
 "#
     );
@@ -192,10 +247,112 @@ unsafe def main : IO UInt32 := do
         .arg(&path)
         .output()
         .context("cannot start axiom audit")?;
-    if !output.status.success() {
+    let text = combined_output(&output);
+    let mut failures = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("MATHMUX_AXIOM\t"))
+        .filter_map(|line| line.split_once('\t').map(|(axiom, _)| axiom.to_owned()))
+        .collect::<Vec<_>>();
+    failures.sort();
+    failures.dedup();
+    if !output.status.success() && failures.is_empty() {
         bail!("axiom audit failed: {}", command_detail(&output));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    Ok(failures)
+}
+
+fn find_sorries(root: &Path) -> Result<Vec<String>> {
+    let mut locations = Vec::new();
+    for relative in project_lean_files(root) {
+        let source = fs::read_to_string(root.join(&relative))?;
+        for (line, column) in sorry_positions(&source) {
+            locations.push(format!("{}:{line}:{column}", relative.display()));
+        }
+    }
+    locations.sort();
+    locations.dedup();
+    Ok(locations)
+}
+
+fn sorry_positions(source: &str) -> Vec<(usize, usize)> {
+    let bytes = source.as_bytes();
+    let mut positions = Vec::new();
+    let mut index = 0;
+    let mut line = 1;
+    let mut column = 1;
+    let mut block_depth = 0usize;
+    let mut string = false;
+    let mut escaped = false;
+    while index < bytes.len() {
+        if block_depth > 0 {
+            if bytes[index..].starts_with(b"/-") {
+                block_depth += 1;
+                index += 2;
+                column += 2;
+                continue;
+            }
+            if bytes[index..].starts_with(b"-/") {
+                block_depth -= 1;
+                index += 2;
+                column += 2;
+                continue;
+            }
+        } else if string {
+            if bytes[index] == b'"' && !escaped {
+                string = false;
+            }
+            escaped = bytes[index] == b'\\' && !escaped;
+            if bytes[index] != b'\\' {
+                escaped = false;
+            }
+        } else {
+            if bytes[index..].starts_with(b"--") {
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    index += 1;
+                    column += 1;
+                }
+                continue;
+            }
+            if bytes[index..].starts_with(b"/-") {
+                block_depth = 1;
+                index += 2;
+                column += 2;
+                continue;
+            }
+            if bytes[index] == b'"' {
+                string = true;
+                escaped = false;
+            } else if bytes[index..].starts_with(b"sorry")
+                && token_start(bytes, index)
+                && token_end(bytes, index + 5)
+            {
+                positions.push((line, column));
+                index += 5;
+                column += 5;
+                continue;
+            }
+        }
+        if bytes[index] == b'\n' {
+            line += 1;
+            column = 1;
+        } else {
+            column += 1;
+        }
+        index += 1;
+    }
+    positions
+}
+
+fn token_start(bytes: &[u8], index: usize) -> bool {
+    index == 0 || !identifier_byte(bytes[index - 1])
+}
+
+fn token_end(bytes: &[u8], index: usize) -> bool {
+    index == bytes.len() || !identifier_byte(bytes[index])
+}
+
+fn identifier_byte(byte: u8) -> bool {
+    matches!(byte, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'\'')
 }
 
 fn command_detail(output: &std::process::Output) -> String {
@@ -204,5 +361,16 @@ fn command_detail(output: &std::process::Output) -> String {
         String::from_utf8_lossy(&output.stdout).trim().to_owned()
     } else {
         stderr
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sorry_locations_ignore_comments_strings_and_longer_names() {
+        let source = "-- sorry\n/- outer /- sorry -/ -/\ndef a : True := by\n  sorry\ndef sorryAx := \"sorry\"\n";
+        assert_eq!(sorry_positions(source), vec![(4, 3)]);
     }
 }

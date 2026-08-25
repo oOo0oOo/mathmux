@@ -22,12 +22,15 @@ mathmux ws list
 mathmux ws delete <name>
 mathmux check [<file>]
 mathmux sync
-mathmux submit -m <message>
-mathmux show <ref>
+mathmux submit [-m <message>]
+mathmux show [--all] <ref>
 ```
 
 The current directory identifies the workspace for `check`, `sync`, and `submit`. Commands emit short,
-token-efficient summaries. Details are available through `show`, which always requires a reference.
+token-efficient summaries. Successful checks return `ok <ref> <duration>`; successful syncs return
+`ok <ref>`; accepted submissions return only their reference. Details are available through `show`,
+which always requires a reference. `show --all` includes full diagnostics, build output, and source
+locations.
 References use a bare type prefix and sequence number, such as `w12`, `c72`, `s18`, and `u31`.
 
 ### Workspaces
@@ -53,7 +56,9 @@ during normal inactivity without deleting their workspaces.
 `check <file>` synchronously certifies the requested Lean file and the source dependencies required to
 elaborate it. It never checks reverse dependents. Bare `check` applies the same operation to every dirty
 Lean file in dependency order. A successful command returns a check reference and stores its
-certificate internally. Failed checks return diagnostics and create no certificate.
+certificate internally. Failed checks return diagnostics and a durable reference, but create no
+certificate. Ordinary warnings are deduplicated and shown by default. Linter warnings are stored
+separately and appear only through `show --all`.
 
 A certificate covers:
 
@@ -81,13 +86,16 @@ dirty-file state and rejects missing or stale coverage. Under the repository int
 creates the workspace commit, applies it to the newest local `main`, and publishes `main` atomically.
 An integration conflict leaves `main` unchanged and directs the workspace to `sync`.
 
-Acceptance returns a submission reference without running a build or axiom audit. The submission
+Acceptance returns a submission reference without running a build or axiom audit. The commit message
+is optional; mathmux derives a short message from the changed paths when it is omitted. The submission
 record contains its commit, integration base, covered check references, and validation state.
 
 ### Show
 
-`show <ref>` renders full details for workspaces, checks, submissions, sync operations, and validation
-state. Unknown, malformed, and missing references are errors.
+`show <ref>` renders concise details for workspaces, checks, submissions, sync operations, and
+validation state. Submission details include condensed Lean build output, extra axioms, and the number
+of remaining sorries. `show --all <ref>` includes full build output, linter diagnostics, and sorry
+locations. Unknown, malformed, and missing references are errors.
 
 ## Checker design
 
@@ -141,9 +149,10 @@ One repository worker validates immutable accepted revisions. It uses a hidden c
 and the shared artifact cache. Validation performs a complete Lake build followed by one batched
 artifact axiom audit over the exported deliverable roots.
 
-The audit rejects `sorryAx`, undeclared custom axioms, and private generated axioms outside policy.
-The initial allowlist contains `propext`, `Classical.choice`, and `Quot.sound`. Native evaluation is
-reported as a separate compiler-trust classification.
+The audit rejects undeclared custom axioms and private generated axioms outside policy. The initial
+allowlist contains `propext`, `Classical.choice`, and `Quot.sound`. `sorryAx` is reported through the
+source-level sorry count and does not fail validation. Native evaluation is reported as a separate
+compiler-trust classification.
 
 An active validation always finishes. Pending descendant submissions coalesce to the newest revision,
 and skipped submissions link to the later validation that contains them. mathmux never cancels an old
