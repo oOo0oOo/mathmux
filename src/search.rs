@@ -2348,7 +2348,7 @@ fn meaningful_query_tokens(query: &str) -> Vec<String> {
         tokens.retain(|token| {
             !matches!(
                 token.as_str(),
-                "and" | "for" | "from" | "in" | "of" | "on" | "or" | "the" | "to" | "with"
+                "all" | "and" | "for" | "from" | "in" | "of" | "on" | "or" | "the" | "to" | "with"
             )
         });
     }
@@ -2479,6 +2479,14 @@ fn words_match(left: &str, right: &str) -> bool {
             .strip_suffix('s')
             .filter(|singular| singular.len() >= 4)
             .is_some_and(|singular| singular.eq_ignore_ascii_case(right))
+}
+
+fn declaration_leaf_matches(name: &str, query: &str) -> bool {
+    let leaf = name.rsplit('.').next().unwrap_or(name);
+    query_tokens(query).iter().any(|token| {
+        let token = token.rsplit('.').next().unwrap_or(token);
+        words_match(leaf, token)
+    })
 }
 
 fn lexical_score(query: &str, tokens: &[String], row: &IndexedRow) -> f64 {
@@ -3209,9 +3217,7 @@ fn render_summary(run: &SearchRun) -> String {
             output.push_str(&format!("\n  import {module}"));
         }
         let explicitly_named = !matches!(hit.kind.as_str(), "file" | "imports")
-            && query_tokens(&run.query)
-                .iter()
-                .any(|token| hit_name_matches(&hit.name, token));
+            && declaration_leaf_matches(&hit.name, &run.query);
         if (index == 0
             || explicitly_named
             || (index < 3 && matches!(hit.kind.as_str(), "class" | "inductive" | "structure")))
@@ -3493,6 +3499,10 @@ end Demo
         assert!(!qualified_name_query("Finsupp.sum add"));
         assert_eq!(meaningful_query_tokens("precomp (L :=)"), vec!["precomp"]);
         assert_eq!(
+            meaningful_query_tokens("LinearEquiv.ofFinrankEq --all"),
+            vec!["linearequiv.offinrankeq"]
+        );
+        assert_eq!(
             meaningful_query_tokens("finite_trivialization_cover proof body"),
             vec!["finite_trivialization_cover"]
         );
@@ -3508,6 +3518,14 @@ end Demo
         assert!(hit_name_matches(
             "Matrix.conjTranspose_mul",
             "matrix.conjtranspose_mul"
+        ));
+        assert!(declaration_leaf_matches(
+            "AtiyahSinger.ContinuousLinearBundleHom.matrixEquiv",
+            "ContinuousLinearBundleHom matrixEquiv"
+        ));
+        assert!(!declaration_leaf_matches(
+            "AtiyahSinger.ContinuousLinearBundleHom.matrixEquiv_apply",
+            "ContinuousLinearBundleHom matrixEquiv"
         ));
         let named_row = |name: &str| IndexedRow {
             owner: "workspace:w1".into(),
