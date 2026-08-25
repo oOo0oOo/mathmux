@@ -6,9 +6,8 @@ mathmux is a minimal native CLI for fast local Lean checks in isolated Git workt
 workspaces, synchronous check certificates, local integration, and one asynchronous build and axiom
 validation queue.
 
-The [implementation plan](PLAN.md) is the current source of truth. [Experiment results](RESULTS.md) and
-the [original experiment specification](concept/experiment.md) are historical evidence and will age
-as Lean evolves.
+The [implementation plan](PLAN.md) is the current source of truth. The completed experiment harnesses,
+fixtures, and results remain available at the `experiments-final` Git tag.
 
 ## Scope
 

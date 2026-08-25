@@ -189,3 +189,13 @@ The selected direct checker used about 4.2 GiB RSS on a real 1,492-line Mathlib 
 1.6 to 2.4 seconds on the real module; its tail edit completed in about 0.16 seconds versus 2.58
 seconds. Local fail-fast errors returned in roughly 10 to 32 ms. Same-process dependency refresh added
 about 7 GiB per attempt and later returned stale results, which requires process replacement.
+
+## Experiment archive
+
+The pre-implementation harnesses, Lean fixtures, raw results, and historical experiment documents were
+removed from `main` before implementation. They remain available at tag `experiments-final`, which
+points to commit `07309695d22249db235a58167c92e834128d9059`:
+
+```text
+git switch --detach experiments-final
+```
