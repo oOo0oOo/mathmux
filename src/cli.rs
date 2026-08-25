@@ -162,18 +162,24 @@ pub fn run() -> Result<u8> {
         TopCommand::Issue { .. } => unreachable!(),
         TopCommand::Daemon { .. } => unreachable!(),
     };
-    let mut stream = connect_or_start(&repo)?;
     let request = Request {
         build: crate::util::build_id().to_owned(),
         cwd: cwd.to_string_lossy().into_owned(),
         command,
     };
-    serde_json::to_writer(&mut stream, &request)?;
-    stream.write_all(b"\n")?;
-    stream.flush()?;
-    let mut line = String::new();
-    BufReader::new(stream).read_line(&mut line)?;
-    let response: Response = serde_json::from_str(&line).context("invalid daemon response")?;
+    let mut handoffs = 0;
+    let response = loop {
+        let response = exchange(connect_or_start(&repo)?, &request)?;
+        if !response.retry {
+            break response;
+        }
+        ensure!(
+            handoffs == 0,
+            "daemon build changed repeatedly; retry command"
+        );
+        handoffs += 1;
+        wait_for_daemon_exit(&repo)?;
+    };
     if development {
         let _ = crate::issue::record_exchange(&repo, &request, &response);
     }
@@ -184,6 +190,26 @@ pub fn run() -> Result<u8> {
         eprintln!("error {}", response.summary);
         Ok(1)
     }
+}
+
+fn exchange(mut stream: UnixStream, request: &Request) -> Result<Response> {
+    serde_json::to_writer(&mut stream, &request)?;
+    stream.write_all(b"\n")?;
+    stream.flush()?;
+    let mut line = String::new();
+    BufReader::new(stream).read_line(&mut line)?;
+    serde_json::from_str(&line).context("invalid daemon response")
+}
+
+fn wait_for_daemon_exit(repo: &Repo) -> Result<()> {
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(10 * 60) {
+        if !repo.socket_path.exists() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    bail!("daemon did not finish its active validation")
 }
 
 fn run_issue(command: IssueCommand, cwd: &Path) -> Result<u8> {

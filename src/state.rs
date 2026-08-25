@@ -483,6 +483,16 @@ impl State {
             .map_err(Into::into)
     }
 
+    pub fn has_running_validation(&self) -> Result<bool> {
+        self.open()?
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM submissions WHERE validation_status = 'running')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+    }
+
     pub fn show(&self, reference: &str, all: bool) -> Result<String> {
         let kind = validate_reference(reference)?;
         match kind {

@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Instant;
@@ -18,7 +19,7 @@ pub struct ValidationQueue {
 }
 
 impl ValidationQueue {
-    pub fn start(repo: Repo, state: State) -> Result<Self> {
+    pub fn start(repo: Repo, state: State, retiring: Arc<AtomicBool>) -> Result<Self> {
         state.recover_validation()?;
         let queue = Self {
             signal: Arc::new((Mutex::new(false), Condvar::new())),
@@ -26,7 +27,7 @@ impl ValidationQueue {
         let signal = queue.signal.clone();
         thread::Builder::new()
             .name("mathmux-validation".into())
-            .spawn(move || validation_loop(repo, state, signal))?;
+            .spawn(move || validation_loop(repo, state, signal, retiring))?;
         Ok(queue)
     }
 
@@ -37,8 +38,16 @@ impl ValidationQueue {
     }
 }
 
-fn validation_loop(repo: Repo, state: State, signal: Arc<(Mutex<bool>, Condvar)>) {
+fn validation_loop(
+    repo: Repo,
+    state: State,
+    signal: Arc<(Mutex<bool>, Condvar)>,
+    retiring: Arc<AtomicBool>,
+) {
     loop {
+        if retiring.load(Ordering::SeqCst) {
+            return;
+        }
         match state.next_validation() {
             Ok(Some(submission)) => {
                 let result = validate(&repo, &submission);

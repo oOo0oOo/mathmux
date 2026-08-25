@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -16,7 +16,7 @@ use crate::git::{self, dirty_lean_files, dirty_paths};
 use crate::protocol::{Command, Request, Response};
 use crate::repo::Repo;
 use crate::state::{State, Submission};
-use crate::util::{clean_line, now_unix_ms};
+use crate::util::{build_id, clean_line, now_unix_ms};
 use crate::validation::ValidationQueue;
 
 pub fn run(repo: Repo) -> Result<()> {
@@ -34,7 +34,8 @@ pub fn run(repo: Repo) -> Result<()> {
 
     let state = State::new(&repo.db_path)?;
     let checker = Arc::new(Checker::new(repo.clone(), state.clone())?);
-    let validation = ValidationQueue::start(repo.clone(), state.clone())?;
+    let retiring = Arc::new(AtomicBool::new(false));
+    let validation = ValidationQueue::start(repo.clone(), state.clone(), retiring.clone())?;
     let watcher = WorkspaceWatcher::new(state.clone(), checker.clone())?;
     for workspace in state.list_workspaces()? {
         watcher.watch(&workspace.path)?;
@@ -46,6 +47,7 @@ pub fn run(repo: Repo) -> Result<()> {
         validation,
         watcher,
         mutations: Mutex::new(()),
+        retiring: retiring.clone(),
     });
     let clients = Arc::new(AtomicUsize::new(0));
     let mut last_activity = Instant::now();
@@ -77,6 +79,12 @@ pub fn run(repo: Repo) -> Result<()> {
             .checker
             .evict_idle_workers(Duration::from_secs(5 * 60));
         let has_jobs = service.state.has_validation_work().unwrap_or(true);
+        if retiring.load(Ordering::SeqCst)
+            && clients.load(Ordering::SeqCst) == 0
+            && !service.state.has_running_validation().unwrap_or(true)
+        {
+            break;
+        }
         if clients.load(Ordering::SeqCst) == 0
             && !has_workers
             && !has_jobs
@@ -93,6 +101,13 @@ fn serve_client(mut stream: UnixStream, service: &Service) -> Result<()> {
     let mut line = String::new();
     BufReader::new(stream.try_clone()?).read_line(&mut line)?;
     let response = match serde_json::from_str::<Request>(&line) {
+        Ok(request)
+            if service.retiring.load(Ordering::SeqCst)
+                || (!request.build.is_empty() && request.build != build_id()) =>
+        {
+            service.retiring.store(true, Ordering::SeqCst);
+            Response::retry()
+        }
         Ok(request) => match service.handle(request) {
             Ok(summary) => Response::ok(summary),
             Err(error) => Response::error(format!("{error:#}")),
@@ -112,6 +127,7 @@ struct Service {
     validation: ValidationQueue,
     watcher: WorkspaceWatcher,
     mutations: Mutex<()>,
+    retiring: Arc<AtomicBool>,
 }
 
 impl Service {
