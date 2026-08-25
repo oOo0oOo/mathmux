@@ -65,9 +65,14 @@ pub(super) fn render_search_run(run: &SearchRun, all: bool) -> String {
         }
     }
     if run.hits.len() > hit_limit {
+        let guidance = if all {
+            "already at --all detail; refine the query"
+        } else {
+            "refine the query"
+        };
         output.push_str(&format!(
-            "\n+{} results omitted; refine the query",
-            run.hits.len() - hit_limit
+            "\n+{} results omitted; {guidance}",
+            run.hits.len() - hit_limit,
         ));
     }
     output
