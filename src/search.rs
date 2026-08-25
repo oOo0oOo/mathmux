@@ -1737,7 +1737,14 @@ fn detailed_source_excerpt(
     kind: &str,
 ) -> (Option<String>, u64) {
     if matches!(kind, "class" | "inductive" | "structure") {
-        let excerpt = body
+        let declaration = body
+            .split("\n\n/--")
+            .next()
+            .unwrap_or(body)
+            .split("\n\n/-!")
+            .next()
+            .unwrap_or(body);
+        let excerpt = declaration
             .lines()
             .take(DECLARATION_DETAIL_LINES)
             .collect::<Vec<_>>()
@@ -2313,12 +2320,13 @@ end Demo
         assert!(excerpt.contains("theorem exact_match"));
         assert_eq!(excerpt.lines().count(), 8);
 
-        let structure =
-            "structure Config where\n  first : Nat\n  second : String\n  third : Bool\n";
+        let structure = "structure Config where\n  first : Nat\n  second : String\n  third : Bool\n\n/-- The next declaration. -/\ndef next := 1\n";
         let (excerpt, line) =
             detailed_source_excerpt(structure, "Config", &["config".into()], 10, "structure");
         assert_eq!(line, 10);
-        assert!(excerpt.unwrap().contains("third : Bool"));
+        let excerpt = excerpt.unwrap();
+        assert!(excerpt.contains("third : Bool"));
+        assert!(!excerpt.contains("next declaration"));
     }
 
     #[test]
