@@ -190,7 +190,7 @@ struct FileSetup {
 pub struct Checker {
     repo: Repo,
     state: State,
-    workers: Mutex<HashMap<String, LeanWorker>>,
+    workers: Mutex<HashMap<(String, PathBuf), LeanWorker>>,
     setup_locks: Mutex<HashMap<String, Weak<Mutex<()>>>>,
 }
 
@@ -456,14 +456,28 @@ impl Checker {
         allow_fallback: bool,
     ) -> Result<(WorkerResponse, &'static str)> {
         let mut workers = self.workers.lock().expect("worker map poisoned");
-        let replace = workers.get_mut(&workspace.reference).is_none_or(|worker| {
-            worker.target != target || worker.environment != environment || !worker.alive()
-        });
+        let key = (workspace.reference.clone(), target.to_path_buf());
+        let replace = workers
+            .get_mut(&key)
+            .is_none_or(|worker| worker.environment != environment || !worker.alive());
         if replace {
-            workers.remove(&workspace.reference);
+            workers.remove(&key);
+            let workspace_workers = workers
+                .keys()
+                .filter(|(reference, _)| reference == &workspace.reference)
+                .count();
+            if workspace_workers >= 3
+                && let Some(oldest) = workers
+                    .iter()
+                    .filter(|((reference, _), _)| reference == &workspace.reference)
+                    .max_by_key(|(_, worker)| worker.last_used.elapsed())
+                    .map(|(key, _)| key.clone())
+            {
+                workers.remove(&oldest);
+            }
             match LeanWorker::start(&self.repo, &workspace.path, target, setup_path, environment) {
                 Ok(worker) => {
-                    workers.insert(workspace.reference.clone(), worker);
+                    workers.insert(key.clone(), worker);
                 }
                 Err(error) => {
                     self.record_worker_failure(&format!("start: {error:#}"));
@@ -477,7 +491,7 @@ impl Checker {
             }
         }
         let worker = workers
-            .get_mut(&workspace.reference)
+            .get_mut(&key)
             .context("Lean worker did not start")?;
         match worker.check(source) {
             Ok(response) => Ok((
@@ -490,7 +504,7 @@ impl Checker {
             )),
             Err(error) => {
                 self.record_worker_failure(&format!("request: {error:#}"));
-                workers.remove(&workspace.reference);
+                workers.remove(&key);
                 if allow_fallback {
                     fallback_check(&self.repo, &workspace.path, target)
                         .map(|response| (response, "fallback"))
@@ -507,18 +521,22 @@ impl Checker {
         workspace: &Workspace,
         requested: &Path,
         source: &str,
-    ) -> Result<String> {
+    ) -> Result<(bool, String)> {
         let target = resolve_target(&workspace.path, requested)?;
         let dependencies = transitive_dependencies(&workspace.path, &target)?;
         let (setup_path, environment) = self.worker_setup(workspace, &target, &dependencies)?;
         let (response, _) =
             self.run_worker(workspace, &target, &setup_path, &environment, source, false)?;
-        Ok(response
-            .diagnostics
-            .into_iter()
-            .map(|diagnostic| diagnostic.text)
-            .collect::<Vec<_>>()
-            .join("\n"))
+        let ok = response.ok;
+        Ok((
+            ok,
+            response
+                .diagnostics
+                .into_iter()
+                .map(|diagnostic| diagnostic.text)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ))
     }
 
     fn worker_setup(
@@ -576,10 +594,12 @@ impl Checker {
         environment: &str,
     ) -> Option<PathBuf> {
         let mut workers = self.workers.lock().expect("worker map poisoned");
-        workers.get_mut(&workspace.reference).and_then(|worker| {
-            (worker.target == target && worker.environment == environment && worker.alive())
-                .then(|| worker.setup_path.clone())
-        })
+        workers
+            .get_mut(&(workspace.reference.clone(), target.to_path_buf()))
+            .and_then(|worker| {
+                (worker.environment == environment && worker.alive())
+                    .then(|| worker.setup_path.clone())
+            })
     }
 
     fn full_fingerprint(
@@ -686,14 +706,14 @@ impl Checker {
         self.workers
             .lock()
             .expect("worker map poisoned")
-            .remove(workspace_ref);
+            .retain(|(reference, _), _| reference != workspace_ref);
     }
 
     pub fn evict_worker(&self, workspace_ref: &str) {
         self.workers
             .lock()
             .expect("worker map poisoned")
-            .remove(workspace_ref);
+            .retain(|(reference, _), _| reference != workspace_ref);
     }
 
     pub fn handle_filesystem_change(&self, workspace: &Workspace, path: &Path) {
@@ -701,15 +721,13 @@ impl Checker {
             self.evict_worker(&workspace.reference);
             return;
         };
-        let target = self
-            .workers
+        self.workers
             .lock()
             .expect("worker map poisoned")
-            .get(&workspace.reference)
-            .map(|worker| worker.target.clone());
-        if target.is_some_and(|target| invalidates_worker(relative, &target)) {
-            self.evict_worker(&workspace.reference);
-        }
+            .retain(|(reference, _), worker| {
+                reference != &workspace.reference
+                    || !invalidates_worker(&workspace.path, relative, &worker.target)
+            });
     }
 
     pub fn evict_idle_workers(&self, idle_for: std::time::Duration) -> bool {
@@ -910,14 +928,19 @@ fn deduplicate_diagnostics(mut response: WorkerResponse) -> WorkerResponse {
     response
 }
 
-fn invalidates_worker(path: &Path, target: &Path) -> bool {
-    path.components()
+fn invalidates_worker(root: &Path, path: &Path, target: &Path) -> bool {
+    let other_lean_file = path
+        .components()
         .next()
         .is_none_or(|component| component.as_os_str() != ".lake")
         && path
             .extension()
             .is_some_and(|extension| extension == "lean")
-        && path != target
+        && path != target;
+    other_lean_file
+        && transitive_dependencies(root, target)
+            .map(|dependencies| dependencies.iter().any(|dependency| dependency == path))
+            .unwrap_or(true)
 }
 
 fn partition_diagnostics(
@@ -1422,12 +1445,38 @@ mod tests {
 
     #[test]
     fn source_dependency_changes_evict_the_worker() {
+        let root = tempdir().unwrap();
+        fs::write(root.path().join("Dependency.lean"), "def dependency := 1\n").unwrap();
+        fs::write(
+            root.path().join("Proof.lean"),
+            "import Dependency\ndef proof := dependency\n",
+        )
+        .unwrap();
+        fs::write(root.path().join("Unrelated.lean"), "def unrelated := 2\n").unwrap();
         let target = Path::new("Proof.lean");
-        assert!(!invalidates_worker(target, target));
-        assert!(invalidates_worker(Path::new("Dependency.lean"), target));
-        assert!(!invalidates_worker(Path::new("lakefile.toml"), target));
-        assert!(!invalidates_worker(Path::new("lean-toolchain"), target));
+        assert!(!invalidates_worker(root.path(), target, target));
+        assert!(invalidates_worker(
+            root.path(),
+            Path::new("Dependency.lean"),
+            target
+        ));
         assert!(!invalidates_worker(
+            root.path(),
+            Path::new("Unrelated.lean"),
+            target
+        ));
+        assert!(!invalidates_worker(
+            root.path(),
+            Path::new("lakefile.toml"),
+            target
+        ));
+        assert!(!invalidates_worker(
+            root.path(),
+            Path::new("lean-toolchain"),
+            target
+        ));
+        assert!(!invalidates_worker(
+            root.path(),
             Path::new(".lake/build/lib/lean/Proof.olean"),
             target
         ));

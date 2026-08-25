@@ -27,6 +27,8 @@ use crate::util::{
 
 const RESULT_LIMIT: usize = 24;
 const SUMMARY_LIMIT: usize = 5;
+const GOAL_STATE_BEGIN: &str = "MATHMUX_GOAL_BEGIN";
+const GOAL_STATE_END: &str = "MATHMUX_GOAL_END";
 const SEARCH_INDEX_VERSION: i64 = 6;
 const SOURCE_INDEX_KIND: &str = "source-v6";
 const DECLARATION_DETAIL_LINES: usize = 48;
@@ -159,6 +161,7 @@ impl Searcher {
         query: &str,
         all: bool,
     ) -> Result<String> {
+        let query = self.expand_reference_query(query.trim())?;
         let query = query.trim();
         ensure!(!query.is_empty(), "search query is empty");
         let reference = self.state.next_ref('q')?;
@@ -194,6 +197,52 @@ impl Searcher {
             Ok(render_summary(&run))
         }?;
         if ok { Ok(rendered) } else { bail!(rendered) }
+    }
+
+    fn expand_reference_query(&self, query: &str) -> Result<String> {
+        let mut parts = query.splitn(2, char::is_whitespace);
+        let reference = parts.next().unwrap_or_default();
+        let refinement = parts.next().unwrap_or_default().trim();
+        if reference
+            .strip_prefix('q')
+            .is_some_and(|digits| !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()))
+        {
+            let prior = self
+                .state
+                .search_run(reference)?
+                .with_context(|| format!("unknown search reference {reference}"))?;
+            return Ok([prior.query.as_str(), refinement]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join(" "));
+        }
+        if reference
+            .strip_prefix('c')
+            .is_some_and(|digits| !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()))
+        {
+            let run = self
+                .state
+                .check_run(reference)?
+                .with_context(|| format!("unknown check reference {reference}"))?;
+            let diagnostic = run
+                .diagnostics
+                .first()
+                .or_else(|| run.warnings.first())
+                .map(|diagnostic| diagnostic.text.as_str())
+                .unwrap_or_default();
+            let diagnostic = diagnostic_search_query(diagnostic);
+            ensure!(
+                !diagnostic.is_empty() || !refinement.is_empty(),
+                "{reference} has no diagnostic to search"
+            );
+            return Ok([diagnostic.as_str(), refinement]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join(" "));
+        }
+        Ok(query.to_owned())
     }
 
     pub fn evict_idle_worker(&self, idle_for: std::time::Duration) -> bool {
@@ -941,7 +990,14 @@ impl Searcher {
                 if let Some(context) = &import_context {
                     apply_import_context(&mut resolved, context);
                 }
-                return Ok(exact_search_result(resolved.hit, base_warming));
+                let mut hits = vec![resolved.hit];
+                hits.extend(self.api_neighborhood(
+                    &hits[0],
+                    scopes,
+                    workspace,
+                    import_context.as_ref(),
+                )?);
+                return Ok(exact_search_result(hits, base_warming));
             }
         }
         let name_search = !type_search && declaration_name_query(query);
@@ -1030,7 +1086,14 @@ impl Searcher {
                 if let Some(context) = &import_context {
                     apply_import_context(&mut resolved, context);
                 }
-                return Ok(exact_search_result(resolved.hit, base_warming));
+                let mut hits = vec![resolved.hit];
+                hits.extend(self.api_neighborhood(
+                    &hits[0],
+                    scopes,
+                    workspace,
+                    import_context.as_ref(),
+                )?);
+                return Ok(exact_search_result(hits, base_warming));
             }
             for (position, hit) in loogle_hits.into_iter().enumerate() {
                 let usages = self.usages(&hit.name, scopes, workspace)?;
@@ -1124,10 +1187,14 @@ impl Searcher {
                 if let Some(context) = &import_context {
                     apply_import_context(&mut resolved, context);
                 }
-                return Ok(exact_search_result(
-                    resolved.hit,
-                    base_warming || warming,
-                ));
+                let mut hits = vec![resolved.hit];
+                hits.extend(self.api_neighborhood(
+                    &hits[0],
+                    scopes,
+                    workspace,
+                    import_context.as_ref(),
+                )?);
+                return Ok(exact_search_result(hits, base_warming || warming));
             }
         }
         let missing_specific_term = specific_query_tokens(query).iter().any(|token| {
@@ -1350,6 +1417,76 @@ impl Searcher {
         Ok(rows)
     }
 
+    fn api_neighborhood(
+        &self,
+        exact: &SearchHit,
+        scopes: &HashSet<String>,
+        workspace: &Workspace,
+        import_context: Option<&ImportContext>,
+    ) -> Result<Vec<SearchHit>> {
+        let connection = self.open()?;
+        let prefix = format!("{}.%", exact.name);
+        let leaf = exact.name.rsplit('.').next().unwrap_or(&exact.name);
+        let mut statement = connection.prepare(
+            "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0
+             FROM search_fts
+             WHERE name <> ?1 AND (name LIKE ?2 OR (module = ?3 AND signature LIKE ?4))
+             LIMIT 1024",
+        )?;
+        let rows = statement
+            .query_map(
+                params![exact.name, prefix, exact.module, format!("%{leaf}%")],
+                indexed_row_from_row,
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut seen = HashSet::new();
+        let mut ranked = rows
+            .into_iter()
+            .filter(|row| scopes.contains(&row.owner) && seen.insert(row.name.clone()))
+            .map(|row| {
+                let priority = if row.name == format!("{}.mk", exact.name) {
+                    0
+                } else if row.name.starts_with(&format!("{}.", exact.name)) {
+                    1
+                } else {
+                    2
+                };
+                (priority, row)
+            })
+            .collect::<Vec<_>>();
+        ranked.sort_by(|(left_priority, left), (right_priority, right)| {
+            left_priority
+                .cmp(right_priority)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        ranked
+            .into_iter()
+            .take(4)
+            .map(|(_, row)| {
+                let mut candidate = RankedHit {
+                    hit: SearchHit {
+                        name: row.name.clone(),
+                        kind: row.kind,
+                        signature: nonempty(row.signature),
+                        module: row.module,
+                        path: row.path,
+                        line: row.line,
+                        doc: nonempty(row.docs),
+                        source: None,
+                        usages: self.usages(&row.name, scopes, workspace)?,
+                        applicable: false,
+                        required_import: None,
+                    },
+                    score: 0.0,
+                };
+                if let Some(context) = import_context {
+                    apply_import_context(&mut candidate, context);
+                }
+                Ok(candidate.hit)
+            })
+            .collect()
+    }
+
     fn usages(
         &self,
         name: &str,
@@ -1392,7 +1529,7 @@ impl Searcher {
                 workspace, &location, &source, None, true,
             ));
         }
-        let Some((start, end, replacement)) = goal_probe(&source, location.line) else {
+        let Some((start, end, in_tactic, indent)) = goal_probe(&source, location.line) else {
             return Ok(source_location_result(
                 workspace,
                 &location,
@@ -1402,9 +1539,19 @@ impl Searcher {
             ));
         };
         let mut probe = source.clone();
-        probe.replace_range(start..end, replacement);
-        let rendered = match self.checker.probe_source(workspace, &location.path, &probe) {
-            Ok(rendered) => rendered,
+        probe.replace_range(
+            start..end,
+            &goal_probe_replacement(
+                in_tactic,
+                &indent,
+                "first | exact? | aesop? | simp? | apply? | rw?",
+            ),
+        );
+        let (_, rendered) = match self
+            .checker
+            .probe_source(workspace, &location.path, &probe)
+        {
+            Ok(result) => result,
             Err(error) => {
                 return Ok(source_location_result(
                     workspace,
@@ -1415,8 +1562,29 @@ impl Searcher {
                 ));
             }
         };
-        let suggestions = try_this_suggestions(&rendered);
-        if suggestions.is_empty() {
+        let goal_state = traced_goal_state(&rendered);
+        let mut suggestions = Vec::new();
+        if let Some(state) = &goal_state {
+            for candidate in local_method_candidates(state) {
+                probe = source.clone();
+                probe.replace_range(
+                    start..end,
+                    &goal_probe_replacement(in_tactic, &indent, &candidate),
+                );
+                if self
+                    .checker
+                    .probe_source(workspace, &location.path, &probe)
+                    .is_ok_and(|(ok, _)| ok)
+                {
+                    suggestions.push(candidate);
+                    break;
+                }
+            }
+        }
+        for suggestion in try_this_suggestions(&rendered) {
+            push_suggestion(&mut suggestions, &suggestion);
+        }
+        if suggestions.is_empty() && goal_state.is_none() {
             let detail = rendered
                 .lines()
                 .rev()
@@ -1442,28 +1610,79 @@ impl Searcher {
             .unwrap_or(&location.path)
             .to_string_lossy()
             .into_owned();
-        let hits: Vec<SearchHit> = suggestions
-            .into_iter()
-            .map(|suggestion| SearchHit {
-                name: clean_line(&suggestion),
-                kind: "goal".into(),
+        let mut hits = Vec::new();
+        if let Some(goal_state) = goal_state {
+            hits.push(SearchHit {
+                name: "goal".into(),
+                kind: "goal-state".into(),
                 signature: None,
                 module: String::new(),
                 path: relative.clone(),
                 line: location.line,
                 doc: None,
-                source: Some(suggestion),
+                source: Some(goal_state),
                 usages: Vec::new(),
-                applicable: true,
+                applicable: false,
                 required_import: None,
-            })
-            .collect();
+            });
+        }
+        hits.extend(suggestions.into_iter().map(|suggestion| SearchHit {
+            name: clean_line(&suggestion),
+            kind: "goal".into(),
+            signature: None,
+            module: String::new(),
+            path: relative.clone(),
+            line: location.line,
+            doc: None,
+            source: Some(suggestion),
+            usages: Vec::new(),
+            applicable: true,
+            required_import: None,
+        }));
+        let has_suggestion = hits.iter().any(|hit| hit.applicable);
         Ok(SearchResult {
             hits,
             inference: "goal".into(),
-            note: None,
+            note: (!has_suggestion).then(|| "no tactic suggestion".into()),
             ok: true,
         })
+    }
+}
+
+fn diagnostic_search_query(diagnostic: &str) -> String {
+    static QUOTED: OnceLock<Regex> = OnceLock::new();
+    let quoted = QUOTED.get_or_init(|| Regex::new(r"`([^`]+)`").expect("valid diagnostic regex"));
+    let terms = quoted
+        .captures_iter(diagnostic)
+        .filter_map(|capture| capture.get(1).map(|value| value.as_str().trim()))
+        .filter(|value| declaration_name_query(value))
+        .collect::<Vec<_>>();
+    if let Some(qualified) = terms.iter().find(|term| term.contains('.')) {
+        return (*qualified).to_owned();
+    }
+    let mut selected = terms
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    for token in diagnostic.split(|character: char| {
+        character.is_whitespace() || matches!(character, ':' | ',' | '(' | ')' | '[' | ']')
+    }) {
+        let token = token.trim_matches(|character: char| !character.is_alphanumeric() && character != '_' && character != '.');
+        if token.len() >= 4
+            && (token.contains(['.', '_'])
+                || token.chars().next().is_some_and(char::is_uppercase))
+            && !selected.iter().any(|seen| seen == token)
+        {
+            selected.push(token.to_owned());
+        }
+        if selected.len() >= 10 {
+            break;
+        }
+    }
+    if selected.is_empty() {
+        truncate_line(&single_line(diagnostic), 240)
+    } else {
+        selected.join(" ")
     }
 }
 
@@ -2669,9 +2888,9 @@ fn merge_duplicate_hit(existing: &mut SearchHit, candidate: &mut SearchHit) {
     }
 }
 
-fn exact_search_result(hit: SearchHit, base_warming: bool) -> SearchResult {
+fn exact_search_result(hits: Vec<SearchHit>, base_warming: bool) -> SearchResult {
     SearchResult {
-        hits: vec![hit],
+        hits,
         inference: if type_search_enabled() {
             "hybrid".into()
         } else {
@@ -3444,7 +3663,7 @@ fn location_source_excerpt(source: &str, requested_line: u64) -> String {
         .join("\n")
 }
 
-fn goal_probe(source: &str, requested_line: u64) -> Option<(usize, usize, &'static str)> {
+fn goal_probe(source: &str, requested_line: u64) -> Option<(usize, usize, bool, String)> {
     let lines = line_starts(source);
     let requested = requested_line.saturating_sub(1) as usize;
     for distance in 0..=2 {
@@ -3455,23 +3674,34 @@ fn goal_probe(source: &str, requested_line: u64) -> Option<(usize, usize, &'stat
             for placeholder in ["sorry", "admit"] {
                 if let Some(local) = text.find(placeholder) {
                     let absolute = start + local;
+                    let indent = text[..local]
+                        .chars()
+                        .take_while(|character| character.is_whitespace())
+                        .collect();
                     let preceding = &source[..absolute];
                     let in_tactic = preceding
                         .lines()
                         .rev()
                         .find(|line| !line.trim().is_empty())
                         .is_some_and(|line| line.trim_end().ends_with("by"));
-                    let replacement = if in_tactic {
-                        "first | simp? | exact? | apply? | rw?"
-                    } else {
-                        "by first | simp? | exact? | apply? | rw?"
-                    };
-                    return Some((absolute, absolute + placeholder.len(), replacement));
+                    return Some((absolute, absolute + placeholder.len(), in_tactic, indent));
                 }
             }
         }
     }
     None
+}
+
+fn goal_probe_replacement(in_tactic: bool, indent: &str, tactic: &str) -> String {
+    if in_tactic {
+        format!(
+            "run_tac\n{indent}  let goal ← Lean.Elab.Tactic.getMainGoal\n{indent}  let state ← Lean.Meta.ppGoal goal\n{indent}  Lean.logInfo m!\"{GOAL_STATE_BEGIN}\\n{{state}}\\n{GOAL_STATE_END}\"\n{indent}{tactic}"
+        )
+    } else {
+        format!(
+            "by\n{indent}  run_tac\n{indent}    let goal ← Lean.Elab.Tactic.getMainGoal\n{indent}    let state ← Lean.Meta.ppGoal goal\n{indent}    Lean.logInfo m!\"{GOAL_STATE_BEGIN}\\n{{state}}\\n{GOAL_STATE_END}\"\n{indent}  {tactic}"
+        )
+    }
 }
 
 fn try_this_suggestions(output: &str) -> Vec<String> {
@@ -3491,6 +3721,76 @@ fn try_this_suggestions(output: &str) -> Vec<String> {
         }
     }
     suggestions
+}
+
+fn traced_goal_state(output: &str) -> Option<String> {
+    let lines = output.lines().collect::<Vec<_>>();
+    let start = lines
+        .iter()
+        .position(|line| line.contains(GOAL_STATE_BEGIN))?
+        + 1;
+    let end = lines[start..]
+        .iter()
+        .position(|line| line.contains(GOAL_STATE_END))?
+        + start;
+    let state = lines[start..end]
+        .iter()
+        .map(|line| line.trim_end())
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>();
+    if state.is_empty() {
+        return None;
+    }
+    let omitted = state.len().saturating_sub(SOURCE_PREVIEW_LINES);
+    let mut rendered = state[state.len().saturating_sub(SOURCE_PREVIEW_LINES)..].join("\n");
+    if omitted > 0 {
+        rendered = format!("+{omitted} context lines omitted\n{rendered}");
+    }
+    Some(rendered)
+}
+
+fn local_method_candidates(goal_state: &str) -> Vec<String> {
+    let Some(goal) = goal_state
+        .lines()
+        .find_map(|line| line.trim().strip_prefix('⊢'))
+        .map(str::trim)
+    else {
+        return Vec::new();
+    };
+    let Some(goal_head) = goal
+        .split(|character: char| character.is_whitespace() || character == '(')
+        .find(|part| !part.is_empty())
+    else {
+        return Vec::new();
+    };
+    let hypotheses = goal_state
+        .lines()
+        .filter_map(|line| line.trim().split_once(':'))
+        .filter_map(|(name, ty)| {
+            let head = ty
+                .trim()
+                .split(|character: char| character.is_whitespace() || character == '(')
+                .find(|part| !part.is_empty())?;
+            (head == goal_head)
+                .then(|| name.split_whitespace().last().map(str::to_owned))
+                .flatten()
+        })
+        .take(6)
+        .collect::<Vec<_>>();
+    let mut candidates = Vec::new();
+    for left in &hypotheses {
+        for right in &hypotheses {
+            if left == right {
+                continue;
+            }
+            candidates.push(format!("exact {left}.comp {right}"));
+            candidates.push(format!("exact {left}.trans {right}"));
+            if candidates.len() >= 8 {
+                return candidates;
+            }
+        }
+    }
+    candidates
 }
 
 fn push_suggestion(suggestions: &mut Vec<String>, suggestion: &str) {
@@ -3775,6 +4075,21 @@ end Demo
         assert_eq!(
             try_this_suggestions("Try this:\n  [apply] exact useful h\n"),
             vec!["exact useful h"]
+        );
+        assert_eq!(
+            traced_goal_state(
+                "MATHMUX_GOAL_BEGIN\nX : Type\nh : True\n⊢ True\nMATHMUX_GOAL_END\nTry this: exact h"
+            )
+            .as_deref(),
+            Some("X : Type\nh : True\n⊢ True")
+        );
+        assert_eq!(
+            local_method_candidates(
+                "f g : X → X\nhf : Continuous f\nhg : Continuous g\n⊢ Continuous (f ∘ g)"
+            )
+            .first()
+            .map(String::as_str),
+            Some("exact hf.comp hg")
         );
         let source = (1..=30)
             .map(|line| format!("line {line}"))
