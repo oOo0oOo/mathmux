@@ -92,21 +92,26 @@ pub fn run(repo: Repo) -> Result<()> {
                 Err(error) => return Err(error.into()),
             }
         }
-        let has_check_workers = service
-            .checker
-            .evict_idle_workers(Duration::from_secs(5 * 60));
-        let has_search_worker = service
-            .searcher
-            .evict_idle_worker(Duration::from_secs(5 * 60));
-        let has_workers = has_check_workers || has_search_worker;
+        let active_clients = clients.load(Ordering::SeqCst);
+        let has_workers = if active_clients == 0 {
+            let has_check_workers = service
+                .checker
+                .evict_idle_workers(Duration::from_secs(5 * 60));
+            let has_search_worker = service
+                .searcher
+                .evict_idle_worker(Duration::from_secs(5 * 60));
+            has_check_workers || has_search_worker
+        } else {
+            true
+        };
         let has_jobs = service.state.has_validation_work().unwrap_or(true);
         if retiring.load(Ordering::SeqCst)
-            && clients.load(Ordering::SeqCst) == 0
+            && active_clients == 0
             && !service.state.has_running_validation().unwrap_or(true)
         {
             break;
         }
-        if clients.load(Ordering::SeqCst) == 0
+        if active_clients == 0
             && !has_workers
             && !has_jobs
             && last_activity.elapsed() >= grace
