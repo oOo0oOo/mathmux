@@ -920,7 +920,7 @@ impl Searcher {
                         required_import: None,
                     },
                     score: if exact {
-                        420.0
+                        900.0
                     } else {
                         160.0 - position as f64
                     },
