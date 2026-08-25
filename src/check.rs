@@ -155,7 +155,7 @@ struct WorkerRequest<'a> {
     version: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct WorkerResponse {
     ok: bool,
     diagnostics: Vec<WorkerDiagnostic>,
@@ -494,10 +494,12 @@ impl Checker {
             .get_mut(&key)
             .context("Lean worker did not start")?;
         match worker.check(source) {
-            Ok(response) => Ok((
+            Ok((response, reused)) => Ok((
                 response,
                 if replace {
                     "cold-worker"
+                } else if reused {
+                    "worker-cache"
                 } else {
                     "warm-worker"
                 },
@@ -808,6 +810,8 @@ struct LeanWorker {
     version: u64,
     stderr: Arc<Mutex<String>>,
     last_used: Instant,
+    last_source: Option<String>,
+    last_response: Option<WorkerResponse>,
 }
 
 impl LeanWorker {
@@ -848,11 +852,18 @@ impl LeanWorker {
             version: 0,
             stderr,
             last_used: Instant::now(),
+            last_source: None,
+            last_response: None,
         })
     }
 
-    fn check(&mut self, source: &str) -> Result<WorkerResponse> {
+    fn check(&mut self, source: &str) -> Result<(WorkerResponse, bool)> {
         self.last_used = Instant::now();
+        if self.last_source.as_deref() == Some(source)
+            && let Some(response) = &self.last_response
+        {
+            return Ok((response.clone(), true));
+        }
         self.version += 1;
         serde_json::to_writer(
             &mut self.stdin,
@@ -872,7 +883,10 @@ impl LeanWorker {
         let response: WorkerResponse = serde_json::from_str(&line)
             .with_context(|| format!("invalid Lean response: {}", line.trim()))?;
         ensure!(response.version == self.version, "stale Lean response");
-        Ok(deduplicate_diagnostics(response))
+        let response = deduplicate_diagnostics(response);
+        self.last_source = Some(source.to_owned());
+        self.last_response = Some(response.clone());
+        Ok((response, false))
     }
 
     fn alive(&mut self) -> bool {
