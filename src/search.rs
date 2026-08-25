@@ -934,10 +934,28 @@ impl Searcher {
     fn goal_search(&self, workspace: &Workspace, location: GoalLocation) -> Result<SearchResult> {
         let source = fs::read_to_string(&location.path)?;
         let Some((start, end, replacement)) = goal_probe(&source, location.line) else {
+            let relative = location
+                .path
+                .strip_prefix(&workspace.path)
+                .unwrap_or(&location.path)
+                .to_string_lossy()
+                .into_owned();
             return Ok(SearchResult {
-                hits: Vec::new(),
-                inference: "goal".into(),
-                note: Some("no sorry or admit placeholder near that position".into()),
+                hits: vec![SearchHit {
+                    name: format!("{relative}:{}", location.line),
+                    kind: "location".into(),
+                    signature: None,
+                    module: String::new(),
+                    path: relative,
+                    line: location.line,
+                    doc: None,
+                    source: nonempty(location_source_excerpt(&source, location.line)),
+                    usages: Vec::new(),
+                }],
+                inference: "source".into(),
+                note: Some(
+                    "no sorry or admit placeholder near that position; showing local source".into(),
+                ),
             });
         };
         let mut probe = source;
@@ -2213,6 +2231,7 @@ fn render_summary(run: &SearchRun) -> String {
             let source_lines = match hit.kind.as_str() {
                 "class" | "inductive" | "structure" => 48,
                 "imports" => 64,
+                "location" => 16,
                 _ => 3,
             };
             for line in source.lines().take(source_lines) {
@@ -2297,6 +2316,24 @@ fn parse_goal_location(root: &Path, cwd: &Path, query: &str) -> Result<Option<Go
         path: absolute,
         line,
     }))
+}
+
+fn location_source_excerpt(source: &str, requested_line: u64) -> String {
+    let lines = source.lines().collect::<Vec<_>>();
+    if lines.is_empty() {
+        return String::new();
+    }
+    let target = requested_line
+        .saturating_sub(1)
+        .min(lines.len().saturating_sub(1) as u64) as usize;
+    let start = target.saturating_sub(6);
+    let end = lines.len().min(start + 16);
+    lines[start..end]
+        .iter()
+        .enumerate()
+        .map(|(offset, line)| format!("{:>5} | {line}", start + offset + 1))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn goal_probe(source: &str, requested_line: u64) -> Option<(usize, usize, &'static str)> {
@@ -2464,6 +2501,13 @@ end Demo
             try_this_suggestions("Try this:\n  [apply] exact useful h\n"),
             vec!["exact useful h"]
         );
+        let source = (1..=30)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let excerpt = location_source_excerpt(&source, 15);
+        assert!(excerpt.contains("   15 | line 15"));
+        assert_eq!(excerpt.lines().count(), 16);
     }
 
     #[test]
