@@ -1630,7 +1630,7 @@ fn lexical_score(query: &str, tokens: &[String], row: &IndexedRow) -> f64 {
 }
 
 fn type_shaped(query: &str) -> bool {
-    query.contains('_')
+    query_tokens(query).iter().any(|token| token == "_")
         || query.contains('→')
         || query.contains("->")
         || query.contains('⊢')
@@ -2188,6 +2188,7 @@ end Demo
     fn inference_reserves_positions_and_recognizes_type_patterns() {
         assert!(type_shaped("_ → Injective _"));
         assert!(!type_shaped("injective function"));
+        assert!(!type_shaped("norm_inner_le_norm"));
         assert!(structural_type_score("_ → Injective _", "Bijective f → Injective f") > 0.0);
         assert_eq!(fts_query("List.map"), "\"list.map\"*");
     }
