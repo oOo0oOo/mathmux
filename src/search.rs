@@ -2322,11 +2322,15 @@ fn render_summary(run: &SearchRun) -> String {
             || (index < 3 && matches!(hit.kind.as_str(), "class" | "inductive" | "structure")))
             && let Some(source) = &hit.source
         {
-            let source_lines = match hit.kind.as_str() {
-                "class" | "inductive" | "structure" => 48,
-                "imports" => 64,
-                "location" => 16,
-                _ => 3,
+            let source_lines = if index == 0 && query_requests_proof_body(&run.query) {
+                DECLARATION_DETAIL_LINES
+            } else {
+                match hit.kind.as_str() {
+                    "class" | "inductive" | "structure" => 48,
+                    "imports" => 64,
+                    "location" => 16,
+                    _ => 3,
+                }
             };
             for line in source.lines().take(source_lines) {
                 output.push_str(&format!("\n  | {}", truncate_line(line.trim(), 200)));
@@ -2344,6 +2348,14 @@ fn render_summary(run: &SearchRun) -> String {
         output.push_str(&format!("\n{note}"));
     }
     output
+}
+
+fn query_requests_proof_body(query: &str) -> bool {
+    query
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .contains(":= by")
 }
 
 fn single_line(value: &str) -> String {
