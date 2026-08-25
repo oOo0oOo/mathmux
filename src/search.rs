@@ -577,12 +577,7 @@ impl Searcher {
             })
             .collect::<Vec<_>>();
         self.remove_missing(&source_root.owner, SOURCE_INDEX_KIND, &files)?;
-        let mut changed = Vec::new();
-        for path in files {
-            if self.file_changed(&source_root.owner, &path, SOURCE_INDEX_KIND)? {
-                changed.push(path);
-            }
-        }
+        let changed = self.changed_files(&source_root.owner, SOURCE_INDEX_KIND, &files)?;
         let mut connection = self.open()?;
         for batch in changed.chunks(INDEX_COMMIT_BATCH) {
             let transaction = connection.transaction()?;
@@ -658,12 +653,7 @@ impl Searcher {
             })
             .collect::<Vec<_>>();
         self.remove_missing(owner, "ilean", &files)?;
-        let mut changed = Vec::new();
-        for path in files {
-            if self.file_changed(owner, &path, "ilean")? {
-                changed.push(path);
-            }
-        }
+        let changed = self.changed_files(owner, "ilean", &files)?;
         let mut connection = self.open()?;
         for batch in changed.chunks(INDEX_COMMIT_BATCH) {
             let transaction = connection.transaction()?;
@@ -773,20 +763,33 @@ impl Searcher {
         Ok(())
     }
 
-    fn file_changed(&self, owner: &str, path: &Path, kind: &str) -> Result<bool> {
-        let metadata = fs::metadata(path)?;
-        let modified = modified_ns(&metadata);
-        let size = metadata.len() as i64;
-        let prior = self
-            .open()?
-            .query_row(
-                "SELECT modified_ns, size FROM search_files
-                 WHERE owner = ?1 AND path = ?2 AND kind = ?3",
-                params![owner, path.to_string_lossy(), kind],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
-            )
-            .optional()?;
-        Ok(prior != Some((modified, size)))
+    fn changed_files(&self, owner: &str, kind: &str, files: &[PathBuf]) -> Result<Vec<PathBuf>> {
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            "SELECT path, modified_ns, size FROM search_files
+             WHERE owner = ?1 AND kind = ?2",
+        )?;
+        let prior = statement
+            .query_map(params![owner, kind], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    (row.get::<_, i64>(1)?, row.get::<_, i64>(2)?),
+                ))
+            })?
+            .collect::<rusqlite::Result<HashMap<_, _>>>()?;
+        files
+            .iter()
+            .filter_map(|path| match fs::metadata(path) {
+                Ok(metadata)
+                    if prior.get(path.to_string_lossy().as_ref())
+                        == Some(&(modified_ns(&metadata), metadata.len() as i64)) =>
+                {
+                    None
+                }
+                Ok(_) => Some(Ok(path.clone())),
+                Err(error) => Some(Err(error.into())),
+            })
+            .collect()
     }
 
     fn combined_search(
