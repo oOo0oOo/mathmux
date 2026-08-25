@@ -843,13 +843,66 @@ impl Searcher {
         let type_search = type_search_enabled() && type_shaped(query);
         let query_tokens = meaningful_query_tokens(query);
         let rows = self.candidates(&query_tokens, type_search)?;
-        let name_search = !type_search
-            && qualified_name_query(query)
-            && !rows
-                .iter()
-                .any(|row| row.name.eq_ignore_ascii_case(query.trim()));
         let import_context = self.import_context(workspace, scopes, base_warming);
         let query_lower = query.to_lowercase();
+        if !type_search && qualified_name_query(query) {
+            let mut exact = rows
+                .iter()
+                .filter(|row| {
+                    scopes.contains(&row.owner) && row.name.eq_ignore_ascii_case(query.trim())
+                })
+                .map(|row| {
+                    let (source, matched_line) = detailed_source_excerpt(
+                        &row.body,
+                        query,
+                        &query_tokens,
+                        row.line,
+                        &row.kind,
+                    );
+                    RankedHit {
+                        hit: SearchHit {
+                            name: row.name.clone(),
+                            kind: row.kind.clone(),
+                            signature: nonempty(row.signature.clone()),
+                            module: row.module.clone(),
+                            path: row.path.clone(),
+                            line: matched_line,
+                            doc: nonempty(row.docs.clone()),
+                            source,
+                            usages: Vec::new(),
+                            applicable: false,
+                            required_import: None,
+                        },
+                        score: lexical_score(&query_lower, &query_tokens, row)
+                            + if row.owner == format!("workspace:{}", workspace.reference) {
+                                8.0
+                            } else {
+                                0.0
+                            }
+                            - row.rank.max(0.0),
+                    }
+                })
+                .collect::<Vec<_>>();
+            if !exact.is_empty() {
+                exact.sort_by(|left, right| {
+                    right
+                        .score
+                        .partial_cmp(&left.score)
+                        .unwrap_or(Ordering::Equal)
+                        .then_with(|| left.hit.name.cmp(&right.hit.name))
+                });
+                let mut resolved = exact.remove(0);
+                for mut candidate in exact {
+                    merge_duplicate_hit(&mut resolved.hit, &mut candidate.hit);
+                }
+                resolved.hit.usages = self.usages(&resolved.hit.name, scopes, workspace)?;
+                if let Some(context) = &import_context {
+                    apply_import_context(&mut resolved, context);
+                }
+                return Ok(exact_search_result(resolved.hit, base_warming));
+            }
+        }
+        let name_search = !type_search && qualified_name_query(query);
         let mut ranked = Vec::new();
         let mut warming = false;
         if type_search {
@@ -904,10 +957,36 @@ impl Searcher {
                 }
             }
         } else if name_search {
-            let (loogle_hits, is_warming) = self.loogle_hits(workspace, query);
+            let (mut loogle_hits, is_warming) = self.loogle_hits(workspace, query);
             warming |= is_warming;
+            if let Some(position) = loogle_hits
+                .iter()
+                .position(|hit| hit.name.eq_ignore_ascii_case(query.trim()))
+            {
+                let hit = loogle_hits.remove(position);
+                let usages = self.usages(&hit.name, scopes, workspace)?;
+                let mut resolved = RankedHit {
+                    hit: SearchHit {
+                        path: format!("{}.lean", hit.module.replace('.', "/")),
+                        line: 1,
+                        kind: "declaration".into(),
+                        signature: nonempty(hit.signature),
+                        doc: hit.doc,
+                        source: None,
+                        usages,
+                        name: hit.name,
+                        module: hit.module,
+                        applicable: false,
+                        required_import: None,
+                    },
+                    score: 900.0,
+                };
+                if let Some(context) = &import_context {
+                    apply_import_context(&mut resolved, context);
+                }
+                return Ok(exact_search_result(resolved.hit, base_warming));
+            }
             for (position, hit) in loogle_hits.into_iter().enumerate() {
-                let exact = hit.name.eq_ignore_ascii_case(query.trim());
                 let usages = self.usages(&hit.name, scopes, workspace)?;
                 ranked.push(RankedHit {
                     hit: SearchHit {
@@ -923,11 +1002,7 @@ impl Searcher {
                         applicable: false,
                         required_import: None,
                     },
-                    score: if exact {
-                        900.0
-                    } else {
-                        160.0 - position as f64
-                    },
+                    score: 160.0 - position as f64,
                 });
             }
         }
@@ -1048,28 +1123,7 @@ impl Searcher {
         let mut deduplicated: Vec<RankedHit> = Vec::new();
         for mut candidate in ranked {
             if let Some(index) = positions.get(&candidate.hit.name).copied() {
-                let existing = &mut deduplicated[index].hit;
-                if existing.kind == "declaration"
-                    && !matches!(candidate.hit.kind.as_str(), "declaration" | "file")
-                {
-                    existing.kind = candidate.hit.kind;
-                }
-                if existing.signature.is_none() {
-                    existing.signature = candidate.hit.signature.take();
-                }
-                if existing.doc.is_none() {
-                    existing.doc = candidate.hit.doc.take();
-                }
-                if existing.source.is_none() {
-                    existing.source = candidate.hit.source.take();
-                }
-                if existing.usages.is_empty() {
-                    existing.usages = candidate.hit.usages;
-                }
-                existing.applicable |= candidate.hit.applicable;
-                if existing.required_import.is_none() {
-                    existing.required_import = candidate.hit.required_import.take();
-                }
+                merge_duplicate_hit(&mut deduplicated[index].hit, &mut candidate.hit);
             } else {
                 positions.insert(candidate.hit.name.clone(), deduplicated.len());
                 deduplicated.push(candidate);
@@ -2476,6 +2530,41 @@ fn apply_import_context(candidate: &mut RankedHit, context: &ImportContext) {
     } else if context.complete {
         candidate.score -= 10.0;
         candidate.hit.required_import = Some(candidate.hit.module.clone());
+    }
+}
+
+fn merge_duplicate_hit(existing: &mut SearchHit, candidate: &mut SearchHit) {
+    if existing.kind == "declaration" && !matches!(candidate.kind.as_str(), "declaration" | "file")
+    {
+        existing.kind = candidate.kind.clone();
+    }
+    if existing.signature.is_none() {
+        existing.signature = candidate.signature.take();
+    }
+    if existing.doc.is_none() {
+        existing.doc = candidate.doc.take();
+    }
+    if existing.source.is_none() {
+        existing.source = candidate.source.take();
+    }
+    if existing.usages.is_empty() {
+        existing.usages = std::mem::take(&mut candidate.usages);
+    }
+    existing.applicable |= candidate.applicable;
+    if existing.required_import.is_none() {
+        existing.required_import = candidate.required_import.take();
+    }
+}
+
+fn exact_search_result(hit: SearchHit, base_warming: bool) -> SearchResult {
+    SearchResult {
+        hits: vec![hit],
+        inference: if type_search_enabled() {
+            "hybrid".into()
+        } else {
+            "hybrid(type-off)".into()
+        },
+        note: base_warming.then(|| "source index warming".into()),
     }
 }
 
