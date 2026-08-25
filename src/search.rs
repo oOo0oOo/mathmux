@@ -294,6 +294,13 @@ impl Searcher {
                 body,
                 tokenize = 'unicode61 remove_diacritics 2'
              );
+             CREATE TABLE IF NOT EXISTS search_origins (
+                rowid INTEGER PRIMARY KEY,
+                owner TEXT NOT NULL,
+                origin TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS search_origins_origin
+                ON search_origins(owner, origin);
              CREATE TABLE IF NOT EXISTS search_references (
                 owner TEXT NOT NULL,
                 file TEXT NOT NULL,
@@ -304,6 +311,8 @@ impl Searcher {
              );
              CREATE INDEX IF NOT EXISTS search_references_target
                 ON search_references(target);
+             CREATE INDEX IF NOT EXISTS search_references_file
+                ON search_references(owner, file);
              CREATE TABLE IF NOT EXISTS search_imports (
                 owner TEXT NOT NULL,
                 origin TEXT NOT NULL,
@@ -329,8 +338,10 @@ impl Searcher {
             connection.execute_batch(
                 "DELETE FROM search_files;
                  DELETE FROM search_fts;
+                 DELETE FROM search_origins;
                  DELETE FROM search_references;
-                 DELETE FROM search_imports;",
+                 DELETE FROM search_imports;
+                 DELETE FROM search_meta WHERE key = 'origins_mapped';",
             )?;
             connection.execute(
                 "INSERT INTO search_meta(key, value) VALUES ('version', ?1)
@@ -354,6 +365,23 @@ impl Searcher {
              WHERE (kind = 'source' OR kind LIKE 'source-v%') AND kind <> ?1",
             [SOURCE_INDEX_KIND],
         )?;
+        let origins_mapped = connection
+            .query_row(
+                "SELECT value FROM search_meta WHERE key = 'origins_mapped'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            == Some(1);
+        if !origins_mapped {
+            connection.execute_batch(
+                "DELETE FROM search_origins;
+                 INSERT INTO search_origins(rowid, owner, origin)
+                    SELECT rowid, owner, origin FROM search_fts;
+                 INSERT INTO search_meta(key, value) VALUES ('origins_mapped', 1)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value;",
+            )?;
+        }
         Ok(())
     }
 
@@ -588,9 +616,10 @@ impl Searcher {
                     display_path(path, workspace_root, &source_root.root, source_root.kind);
                 let module = module_name(path, &source_root.root, source_root.kind);
                 let entries = parse_source(&source, &module);
-                transaction.execute(
-                    "DELETE FROM search_fts WHERE owner = ?1 AND origin = ?2",
-                    params![source_root.owner, path.to_string_lossy()],
+                delete_search_origin(
+                    &transaction,
+                    &source_root.owner,
+                    path.to_string_lossy().as_ref(),
                 )?;
                 transaction.execute(
                     "DELETE FROM search_imports WHERE owner = ?1 AND origin = ?2",
@@ -616,6 +645,10 @@ impl Searcher {
                             owner, origin, file, module, line, name, kind, signature, docs, body
                          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                     )?;
+                    let mut map_origin = transaction.prepare_cached(
+                        "INSERT INTO search_origins(rowid, owner, origin)
+                         VALUES (?1, ?2, ?3)",
+                    )?;
                     for entry in entries {
                         insert.execute(params![
                             source_root.owner,
@@ -628,6 +661,11 @@ impl Searcher {
                             entry.signature,
                             entry.docs,
                             entry.body,
+                        ])?;
+                        map_origin.execute(params![
+                            transaction.last_insert_rowid(),
+                            source_root.owner,
+                            path.to_string_lossy(),
                         ])?;
                     }
                 }
@@ -666,10 +704,7 @@ impl Searcher {
                     .unwrap_or_default();
                 let source_path = format!("{}.lean", module.replace('.', "/"));
                 let artifact = path.to_string_lossy();
-                transaction.execute(
-                    "DELETE FROM search_fts WHERE owner = ?1 AND origin = ?2",
-                    params![owner, artifact],
-                )?;
+                delete_search_origin(&transaction, owner, artifact.as_ref())?;
                 transaction.execute(
                     "DELETE FROM search_references WHERE owner = ?1 AND file = ?2",
                     params![owner, artifact],
@@ -679,6 +714,10 @@ impl Searcher {
                         "INSERT INTO search_fts(
                             owner, origin, file, module, line, name, kind, signature, docs, body
                          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'declaration', '', '', '')",
+                    )?;
+                    let mut map_origin = transaction.prepare_cached(
+                        "INSERT INTO search_origins(rowid, owner, origin)
+                         VALUES (?1, ?2, ?3)",
                     )?;
                     for (name, range) in declarations {
                         let line = range
@@ -694,6 +733,11 @@ impl Searcher {
                             module,
                             line,
                             name
+                        ])?;
+                        map_origin.execute(params![
+                            transaction.last_insert_rowid(),
+                            owner,
+                            artifact,
                         ])?;
                     }
                 }
@@ -745,10 +789,7 @@ impl Searcher {
                 "DELETE FROM search_files WHERE owner = ?1 AND path = ?2 AND kind = ?3",
                 params![owner, missing, kind],
             )?;
-            connection.execute(
-                "DELETE FROM search_fts WHERE owner = ?1 AND origin = ?2",
-                params![owner, missing],
-            )?;
+            delete_search_origin(&connection, owner, &missing)?;
             connection.execute(
                 "DELETE FROM search_imports WHERE owner = ?1 AND origin = ?2",
                 params![owner, missing],
@@ -2058,6 +2099,20 @@ fn modified_ns(metadata: &fs::Metadata) -> i64 {
         .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|duration| duration.as_nanos().min(i64::MAX as u128) as i64)
         .unwrap_or(0)
+}
+
+fn delete_search_origin(connection: &Connection, owner: &str, origin: &str) -> Result<()> {
+    connection.execute(
+        "DELETE FROM search_fts WHERE rowid IN (
+            SELECT rowid FROM search_origins WHERE owner = ?1 AND origin = ?2
+         )",
+        params![owner, origin],
+    )?;
+    connection.execute(
+        "DELETE FROM search_origins WHERE owner = ?1 AND origin = ?2",
+        params![owner, origin],
+    )?;
+    Ok(())
 }
 
 fn record_file(
