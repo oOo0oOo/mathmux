@@ -1429,7 +1429,7 @@ impl Searcher {
         let mut named = connection.prepare(
             "SELECT owner, file, module, line, name, kind, signature, docs, body,
                     bm25(search_fts, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 7.0, 3.0, 1.0)
-             FROM search_fts WHERE search_fts MATCH ?1 LIMIT 32",
+             FROM search_fts WHERE search_fts MATCH ?1 LIMIT 256",
         )?;
         let mut named_contains = connection.prepare(
             "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0
@@ -2802,9 +2802,49 @@ fn meaningful_query_tokens(query: &str) -> Vec<String> {
         .map(str::to_owned)
         .collect::<Vec<_>>();
     tokens.extend(aliases);
+    let identifier_parts = query
+        .split(|character: char| {
+            !character.is_alphanumeric() && character != '_' && character != '.'
+        })
+        .filter(|token| !token.contains('.'))
+        .flat_map(identifier_query_parts)
+        .filter(|part| {
+            part.chars().count() >= 3
+                && !matches!(
+                    part.as_str(),
+                    "all" | "and" | "for" | "from" | "the" | "with"
+                )
+        })
+        .collect::<Vec<_>>();
+    tokens.extend(identifier_parts);
     let mut seen = HashSet::new();
     tokens.retain(|token| seen.insert(token.clone()));
     tokens
+}
+
+fn identifier_query_parts(token: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    for segment in token.split(['.', '_']) {
+        let mut start = 0;
+        let characters = segment.char_indices().collect::<Vec<_>>();
+        for index in 1..characters.len() {
+            let (_, previous) = characters[index - 1];
+            let (offset, current) = characters[index];
+            let next_is_lower = characters
+                .get(index + 1)
+                .is_some_and(|(_, next)| next.is_lowercase());
+            if current.is_uppercase()
+                && (previous.is_lowercase() || previous.is_numeric() || next_is_lower)
+            {
+                parts.push(segment[start..offset].to_lowercase());
+                start = offset;
+            }
+        }
+        if start > 0 || segment != token {
+            parts.push(segment[start..].to_lowercase());
+        }
+    }
+    parts
 }
 
 fn promote_query_coverage(ranked: &mut Vec<RankedHit>, tokens: &[String]) {
@@ -4124,7 +4164,23 @@ end Demo
         );
         assert_eq!(
             meaningful_query_tokens("finite_trivialization_cover proof body"),
-            vec!["finite_trivialization_cover"]
+            vec![
+                "finite_trivialization_cover",
+                "finite",
+                "trivialization",
+                "cover"
+            ]
+        );
+        assert_eq!(
+            meaningful_query_tokens("elementaryTransvectionLoop_homotopic_one"),
+            vec![
+                "elementarytransvectionloop_homotopic_one",
+                "elementary",
+                "transvection",
+                "loop",
+                "homotopic",
+                "one"
+            ]
         );
         assert_eq!(
             meaningful_query_tokens("adapter weights to complex"),
