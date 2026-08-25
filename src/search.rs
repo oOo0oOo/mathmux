@@ -2003,6 +2003,15 @@ fn fallback_source_hits(
                     .rsplit_once('.')
                     .is_some_and(|(_, leaf)| name_segments.contains(leaf))
             });
+            let qualified_owner_score = query_tokens
+                .iter()
+                .enumerate()
+                .filter_map(|(index, token)| {
+                    token.rsplit_once('.').map(|(owner, _)| (index, owner))
+                })
+                .filter(|(_, owner)| *owner == name)
+                .map(|(index, _)| if index == 0 { 2 } else { 1 })
+                .sum::<usize>();
             let is_class = entry.kind == "class";
             ranked.push(RankedHit {
                 hit: SearchHit {
@@ -2022,6 +2031,7 @@ fn fallback_source_hits(
                     + segment_score as f64 * 30.0
                     + if exact_name { 80.0 } else { 0.0 }
                     + if qualified_leaf { 60.0 } else { 0.0 }
+                    + qualified_owner_score as f64 * 250.0
                     + if is_class && class_query { 40.0 } else { 0.0 }
                     + if is_file {
                         -40.0
@@ -2526,5 +2536,27 @@ end Demo
                     .unwrap();
             assert!(hits.iter().any(|hit| hit.hit.name == expected));
         }
+    }
+
+    #[test]
+    fn fallback_respects_qualified_member_owner_order() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("Core.lean"),
+            "structure PreInnerProductSpace.Core where\n  conj_inner_symm : True\nstructure InnerProductSpace.Core extends PreInnerProductSpace.Core where\n  definite : True\n",
+        )
+        .unwrap();
+        let query = "InnerProductSpace.Core.definite PreInnerProductSpace.Core.conj_inner_symm";
+        let hits =
+            fallback_source_hits(directory.path(), query, &meaningful_query_tokens(query)).unwrap();
+        assert_eq!(hits[0].hit.name, "InnerProductSpace.Core");
+        assert!(
+            hits[0]
+                .hit
+                .signature
+                .as_deref()
+                .unwrap()
+                .contains("InnerProductSpace.Core.toPreInnerProductSpaceCore")
+        );
     }
 }
