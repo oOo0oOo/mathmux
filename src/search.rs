@@ -1754,6 +1754,20 @@ fn fallback_source_hits(
             }
         }
     }
+    for term in terms.clone() {
+        let synonym = match term.as_str() {
+            "addition" => Some("add"),
+            "continuity" => Some("continuous"),
+            "positive" => Some("pos"),
+            "projection" => Some("proj"),
+            "scaling" => Some("smul"),
+            "weighted" => Some("weight"),
+            _ => None,
+        };
+        if let Some(synonym) = synonym {
+            terms.push(synonym.to_owned());
+        }
+    }
     terms.sort();
     terms.dedup();
     if terms.is_empty() {
@@ -1790,11 +1804,36 @@ fn fallback_source_hits(
     }
     let mut rare_terms = terms.clone();
     rare_terms.sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
-    strong_terms.extend(rare_terms.into_iter().take(2));
+    strong_terms.extend(rare_terms.iter().take(2).cloned());
     strong_terms.sort();
     strong_terms.dedup();
     let declaration_paths = source_scan_paths(&workspace, packages.as_deref(), &declaration_terms)?;
     let strong_paths = source_scan_paths(&workspace, packages.as_deref(), &strong_terms)?;
+    let mut path_coverage = HashMap::<PathBuf, usize>::new();
+    for term in rare_terms.iter().take(12) {
+        for path in source_scan_paths(&workspace, packages.as_deref(), std::slice::from_ref(term))?
+        {
+            *path_coverage.entry(path).or_default() += 1;
+        }
+    }
+    let mut balanced_paths = path_coverage.into_iter().collect::<Vec<_>>();
+    balanced_paths.sort_by(|(left_path, left_score), (right_path, right_score)| {
+        right_score.cmp(left_score).then_with(|| {
+            let left_dependency = packages
+                .as_ref()
+                .is_some_and(|packages| left_path.starts_with(packages));
+            let right_dependency = packages
+                .as_ref()
+                .is_some_and(|packages| right_path.starts_with(packages));
+            right_dependency
+                .cmp(&left_dependency)
+                .then_with(|| left_path.cmp(right_path))
+        })
+    });
+    let balanced_paths = balanced_paths
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect::<Vec<_>>();
     let strong_set = strong_paths.iter().collect::<HashSet<_>>();
     let mut paths = declaration_paths
         .iter()
@@ -1804,6 +1843,7 @@ fn fallback_source_hits(
     let mut seen_paths = paths.iter().cloned().collect::<HashSet<_>>();
     for candidates in [
         declaration_paths,
+        balanced_paths,
         strong_paths,
         source_scan_paths(&workspace, packages.as_deref(), &terms)?,
     ] {
@@ -1854,9 +1894,10 @@ fn fallback_source_hits(
                 .iter()
                 .filter(|term| name_segments.contains(term.as_str()))
                 .count();
-            let exact_name = query_tokens
-                .iter()
-                .any(|token| token == &name || (!token.contains('.') && token.as_str() == base));
+            let exact_name = query_tokens.len() == 1
+                && query_tokens.iter().any(|token| {
+                    token == &name || (!token.contains('.') && token.as_str() == base)
+                });
             let is_class = entry.kind == "class";
             ranked.push(RankedHit {
                 hit: SearchHit {
