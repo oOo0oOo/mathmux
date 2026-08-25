@@ -24,7 +24,7 @@ use crate::util::{clean_line, hash_bytes, now_unix_ms};
 const RESULT_LIMIT: usize = 24;
 const SUMMARY_LIMIT: usize = 5;
 const GOAL_TIMEOUT_MS: u64 = 2_000;
-const SEARCH_INDEX_VERSION: i64 = 4;
+const SEARCH_INDEX_VERSION: i64 = 5;
 
 pub struct Searcher {
     repo: Repo,
@@ -1390,7 +1390,10 @@ fn namespaces_by_line(source: &str) -> Vec<Vec<String>> {
 fn preceding_doc(source: &str, offset: usize) -> Option<String> {
     let prefix = &source[..offset];
     let end = prefix.rfind("-/")? + 2;
-    if !prefix[end..].trim().is_empty() {
+    let suffix = prefix[end..].trim();
+    let separated_only_by_attributes = suffix.chars().all(|character| character == ']')
+        || (suffix.starts_with("@[") && suffix.ends_with(']'));
+    if !suffix.is_empty() && !separated_only_by_attributes {
         return None;
     }
     let start = prefix[..end].rfind("/--")?;
@@ -1624,7 +1627,9 @@ fn lexical_score(query: &str, tokens: &[String], row: &IndexedRow) -> f64 {
         .count() as f64
         * 30.0;
     if row.kind != "file" {
-        score += 4.0;
+        score += 20.0;
+    } else {
+        score -= 40.0;
     }
     score
 }
@@ -1740,7 +1745,7 @@ fn fallback_source_hits(
     ];
     let mut terms = query_tokens
         .iter()
-        .flat_map(|token| std::iter::once(token.as_str()).chain(token.split('.')))
+        .flat_map(|token| std::iter::once(token.as_str()).chain(token.split(['.', '_'])))
         .map(str::to_lowercase)
         .filter(|term| term.len() >= 3 && !generic.contains(&term.as_str()))
         .collect::<Vec<_>>();
@@ -1835,10 +1840,15 @@ fn fallback_source_hits(
         .map(|(path, _)| path)
         .collect::<Vec<_>>();
     let strong_set = strong_paths.iter().collect::<HashSet<_>>();
-    let mut paths = declaration_paths
-        .iter()
-        .filter(|path| strong_set.contains(path))
-        .cloned()
+    let direct_paths = direct_module_paths(&workspace, packages.as_deref(), query);
+    let mut paths = direct_paths
+        .into_iter()
+        .chain(
+            declaration_paths
+                .iter()
+                .filter(|path| strong_set.contains(path))
+                .cloned(),
+        )
         .collect::<Vec<_>>();
     let mut seen_paths = paths.iter().cloned().collect::<HashSet<_>>();
     for candidates in [
@@ -1865,6 +1875,11 @@ fn fallback_source_hits(
             workspace.join(path)
         };
         let source = fs::read_to_string(&path)?;
+        let source_lower = source.to_lowercase();
+        let file_coverage = terms
+            .iter()
+            .filter(|term| source_lower.contains(*term))
+            .count();
         let (root, kind) = packages
             .as_ref()
             .filter(|packages| path.starts_with(packages))
@@ -1894,16 +1909,17 @@ fn fallback_source_hits(
                 .iter()
                 .filter(|term| name_segments.contains(term.as_str()))
                 .count();
-            let exact_name = query_tokens.len() == 1
-                && query_tokens.iter().any(|token| {
-                    token == &name || (!token.contains('.') && token.as_str() == base)
-                });
+            let exact_name = query_tokens.iter().any(|token| {
+                (token.contains('.') && token == &name)
+                    || (query_tokens.len() == 1 && !token.contains('.') && token.as_str() == base)
+            });
             let qualified_leaf = query_tokens.iter().any(|token| {
                 token
                     .rsplit_once('.')
                     .is_some_and(|(_, leaf)| name_segments.contains(leaf))
             });
             let is_class = entry.kind == "class";
+            let is_file = entry.kind == "file";
             ranked.push(RankedHit {
                 hit: SearchHit {
                     name: entry.name,
@@ -1922,7 +1938,12 @@ fn fallback_source_hits(
                     + segment_score as f64 * 30.0
                     + if exact_name { 80.0 } else { 0.0 }
                     + if qualified_leaf { 60.0 } else { 0.0 }
-                    + if is_class && class_query { 40.0 } else { 0.0 },
+                    + if is_class && class_query { 40.0 } else { 0.0 }
+                    + if is_file {
+                        -40.0
+                    } else {
+                        20.0 + file_coverage as f64 * 4.0
+                    },
             });
         }
     }
@@ -1934,6 +1955,34 @@ fn fallback_source_hits(
     });
     ranked.truncate(RESULT_LIMIT);
     Ok(ranked)
+}
+
+fn direct_module_paths(workspace: &Path, packages: Option<&Path>, query: &str) -> Vec<PathBuf> {
+    let mut roots = vec![workspace.to_path_buf()];
+    if let Some(packages) = packages
+        && let Ok(entries) = fs::read_dir(packages)
+    {
+        roots.extend(entries.flatten().map(|entry| entry.path()));
+    }
+    let mut paths = Vec::new();
+    let tokens = query
+        .split(|character: char| {
+            !character.is_alphanumeric() && character != '_' && character != '.'
+        })
+        .filter(|token| token.contains('.'));
+    for token in tokens {
+        let relative = PathBuf::from(format!("{}.lean", token.replace('.', "/")));
+        for root in &roots {
+            let candidate = root.join(&relative);
+            if candidate.is_file()
+                && let Ok(candidate) = fs::canonicalize(candidate)
+                && !paths.contains(&candidate)
+            {
+                paths.push(candidate);
+            }
+        }
+    }
+    paths
 }
 
 fn source_scan_paths(
@@ -2182,6 +2231,12 @@ end Demo
                 .iter()
                 .any(|entry| entry.name == "LinearMap.mkContinuous₂")
         );
+
+        let additive_doc = parse_source(
+            "/-- Multiplicative support. -/\n@[to_additive /-- Additive support around zero. -/]\ntheorem mulSupportFact : True := trivial\n",
+            "Demo",
+        );
+        assert_eq!(additive_doc[0].docs, "Additive support around zero.");
     }
 
     #[test]
@@ -2256,5 +2311,41 @@ end Demo
         assert!(hits.iter().any(|hit| {
             hit.hit.name == "Bundle.ContinuousLinearMap.topologicalSpaceTotalSpace"
         }));
+    }
+
+    #[test]
+    fn fallback_prefers_declarations_over_whole_file_matches() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("Support.lean"),
+            "theorem continuous_of_support (f : α → β) : Continuous f := by sorry\n-- closure support zero neighborhood\n",
+        )
+        .unwrap();
+        let tokens = meaningful_query_tokens("continuous support closure zero neighborhood");
+        let hits = fallback_source_hits(
+            directory.path(),
+            "continuous support closure zero neighborhood",
+            &tokens,
+        )
+        .unwrap();
+        assert_eq!(hits[0].hit.name, "continuous_of_support");
+    }
+
+    #[test]
+    fn fallback_opens_an_explicit_module_before_broad_matches() {
+        let directory = tempfile::tempdir().unwrap();
+        let package = directory
+            .path()
+            .join(".lake/packages/demo/Mathlib/Topology");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(
+            package.join("Support.lean"),
+            "theorem support_fact : True := trivial\n",
+        )
+        .unwrap();
+        let query = "Mathlib.Topology.Support Function.support";
+        let hits =
+            fallback_source_hits(directory.path(), query, &meaningful_query_tokens(query)).unwrap();
+        assert!(hits.iter().any(|hit| hit.hit.name == "support_fact"));
     }
 }
