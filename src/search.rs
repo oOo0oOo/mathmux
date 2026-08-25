@@ -2693,14 +2693,11 @@ fn fallback_source_hits(
     let strong_paths = source_scan_paths(&workspace, packages.as_deref(), &strong_terms)?;
     let named_argument_paths =
         source_scan_paths(&workspace, packages.as_deref(), &named_argument_terms)?;
-    let mut path_coverage = HashMap::<PathBuf, usize>::new();
-    for term in rare_terms.iter().take(12) {
-        for path in source_scan_paths(&workspace, packages.as_deref(), std::slice::from_ref(term))?
-        {
-            *path_coverage.entry(path).or_default() += 1;
-        }
-    }
-    let mut balanced_paths = path_coverage.into_iter().collect::<Vec<_>>();
+    let mut balanced_paths = source_scan_path_counts(
+        &workspace,
+        packages.as_deref(),
+        &rare_terms.into_iter().take(12).collect::<Vec<_>>(),
+    )?;
     balanced_paths.sort_by(|(left_path, left_score), (right_path, right_score)| {
         right_score.cmp(left_score).then_with(|| {
             let left_dependency = packages
@@ -2990,6 +2987,48 @@ fn source_scan_paths(
     Ok(String::from_utf8_lossy(&output.stdout)
         .lines()
         .map(PathBuf::from)
+        .collect())
+}
+
+fn source_scan_path_counts(
+    workspace: &Path,
+    packages: Option<&Path>,
+    terms: &[String],
+) -> Result<Vec<(PathBuf, usize)>> {
+    if terms.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut command = std::process::Command::new("timeout");
+    command.args([
+        "--signal=KILL",
+        "2s",
+        "rg",
+        "-c",
+        "-i",
+        "-F",
+        "--glob",
+        "*.lean",
+    ]);
+    for term in terms {
+        command.args(["-e", term]);
+    }
+    command.arg(workspace);
+    if let Some(packages) = packages {
+        command.arg(packages);
+    }
+    let output = command.stdin(Stdio::null()).output()?;
+    if !output.status.success() && !matches!(output.status.code(), Some(1 | 124 | 137)) {
+        bail!(
+            "local source coverage scan failed: {}",
+            clean_line(&String::from_utf8_lossy(&output.stderr))
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let (path, count) = line.rsplit_once(':')?;
+            Some((PathBuf::from(path), count.parse().ok()?))
+        })
         .collect())
 }
 
