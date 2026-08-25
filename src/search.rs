@@ -344,14 +344,14 @@ impl Searcher {
                 SELECT 1 FROM search_files
                 WHERE search_files.owner = search_fts.owner
                   AND search_files.path = search_fts.origin
-                  AND search_files.kind LIKE 'source-v%'
+                  AND (search_files.kind = 'source' OR search_files.kind LIKE 'source-v%')
                   AND search_files.kind <> ?1
              )",
             [SOURCE_INDEX_KIND],
         )?;
         connection.execute(
             "DELETE FROM search_files
-             WHERE kind LIKE 'source-v%' AND kind <> ?1",
+             WHERE (kind = 'source' OR kind LIKE 'source-v%') AND kind <> ?1",
             [SOURCE_INDEX_KIND],
         )?;
         Ok(())
