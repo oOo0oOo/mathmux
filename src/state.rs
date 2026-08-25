@@ -666,10 +666,7 @@ impl State {
 }
 
 fn render_search_run(run: &SearchRun, all: bool) -> String {
-    let mut output = format!(
-        "{} {} {}ms\nquery: {}",
-        run.reference, run.inference, run.duration_ms, run.query
-    );
+    let mut output = format!("{} {}\nquery: {}", run.reference, run.inference, run.query);
     if let Some(note) = &run.note {
         output.push_str(&format!("\n{note}"));
     }

@@ -2286,7 +2286,6 @@ fn render_summary(run: &SearchRun) -> String {
     if let Some(note) = &run.note {
         output.push_str(&format!("\n{note}"));
     }
-    output.push_str(&format!("\n{}ms", run.duration_ms));
     output
 }
 
@@ -2525,6 +2524,17 @@ end Demo
         assert!(structural_type_score("_ → Injective _", "Bijective f → Injective f") > 0.0);
         assert_eq!(fts_query("List.map"), "\"list.map\"*");
         assert_eq!(meaningful_query_tokens("precomp (L :=)"), vec!["precomp"]);
+        let summary = render_summary(&SearchRun {
+            reference: "q1".into(),
+            workspace_ref: "w1".into(),
+            query: "demo".into(),
+            inference: "hybrid".into(),
+            hits: Vec::new(),
+            note: None,
+            duration_ms: 123,
+            created_at: 0,
+        });
+        assert_eq!(summary, "q1 no results");
     }
 
     #[test]
