@@ -1708,7 +1708,13 @@ fn diagnostic_search_query(diagnostic: &str) -> String {
             })
             .collect::<Vec<_>>()
             .join(" ");
-        return truncate_line(&single_line(&goal), 600);
+        let locals = lines[..index]
+            .iter()
+            .filter_map(|line| line.trim().split_once(':').map(|(names, _)| names))
+            .flat_map(str::split_whitespace)
+            .filter(|name| declaration_name_query(name))
+            .collect::<HashSet<_>>();
+        return truncate_line(&single_line(&anonymize_goal(&goal, &locals)), 600);
     }
     static QUOTED: OnceLock<Regex> = OnceLock::new();
     let quoted = QUOTED.get_or_init(|| Regex::new(r"`([^`]+)`").expect("valid diagnostic regex"));
@@ -1744,6 +1750,31 @@ fn diagnostic_search_query(diagnostic: &str) -> String {
     } else {
         selected.join(" ")
     }
+}
+
+fn anonymize_goal(goal: &str, locals: &HashSet<&str>) -> String {
+    let mut output = String::with_capacity(goal.len());
+    let mut identifier = String::new();
+    let flush = |output: &mut String, identifier: &mut String| {
+        if !identifier.is_empty() {
+            if locals.contains(identifier.as_str()) {
+                output.push('_');
+            } else {
+                output.push_str(identifier);
+            }
+            identifier.clear();
+        }
+    };
+    for character in goal.chars() {
+        if character.is_alphanumeric() || matches!(character, '_' | '\'' | '✝') {
+            identifier.push(character);
+        } else {
+            flush(&mut output, &mut identifier);
+            output.push(character);
+        }
+    }
+    flush(&mut output, &mut identifier);
+    output
 }
 
 fn goal_refinement_query(goal_state: &str, refinement: &str) -> String {
@@ -3013,6 +3044,28 @@ fn structural_type_score(pattern: &str, signature: &str) -> f64 {
     {
         return 0.0;
     }
+    let explicit_conclusion = conclusion_query(pattern);
+    let pattern_without_turnstile = pattern
+        .trim_start()
+        .strip_prefix('⊢')
+        .or_else(|| pattern.trim_start().strip_prefix("|-"))
+        .unwrap_or(pattern)
+        .trim_start();
+    let conclusion_head = pattern_without_turnstile
+        .split(|character: char| character.is_whitespace() || character == '(')
+        .find(|part| !part.is_empty());
+    let conclusion_score = if explicit_conclusion
+        && conclusion_head.is_some_and(|head| signature.contains(&format!(": {head}")))
+    {
+        80.0
+    } else {
+        0.0
+    };
+    let shape_score = ["∘", "→L", "≃L", "↔", "∈", "⊆"]
+        .into_iter()
+        .filter(|shape| pattern.contains(shape) && signature.contains(shape))
+        .count() as f64
+        * 50.0;
     let arrows = pattern.matches('→').count() + pattern.matches("->").count();
     let signature_arrows = signature.matches('→').count() + signature.matches("->").count();
     let arrow_score = if arrows == 0 {
@@ -3024,7 +3077,11 @@ fn structural_type_score(pattern: &str, signature: &str) -> f64 {
     } else {
         0.0
     };
-    20.0 + arrow_score + pattern_tokens.len() as f64 * 5.0
+    20.0
+        + arrow_score
+        + conclusion_score
+        + shape_score
+        + pattern_tokens.len() as f64 * 5.0
 }
 
 fn type_search_enabled() -> bool {
@@ -4024,6 +4081,15 @@ end Demo
         assert!(!type_shaped("injective function"));
         assert!(!type_shaped("norm_inner_le_norm"));
         assert!(structural_type_score("_ → Injective _", "Bijective f → Injective f") > 0.0);
+        assert!(
+            structural_type_score(
+                "⊢ Continuous (_ ∘ _)",
+                "{f : X → Y} {g : Y → Z} (hf : Continuous f) (hg : Continuous g) : Continuous (g ∘ f)",
+            ) > structural_type_score(
+                "⊢ Continuous (_ ∘ _)",
+                "(e : LocalTrivialization F E) [e.IsLinear 𝕜]",
+            )
+        );
         assert!(conclusion_query("⊢ _ → Injective _"));
         assert!(!conclusion_query("_ → Injective _"));
         assert_eq!(fts_query("List.map"), "\"list.map\"*");
@@ -4203,6 +4269,12 @@ end Demo
             "Continuous.comp"
         );
         assert_eq!(edit_distance("compp", "comp"), 1);
+        assert_eq!(
+            diagnostic_search_query(
+                "error: unsolved goals\nX : Type\nf g : X → X\nhf : Continuous f\n⊢ Continuous (f ∘ g)\n   3 | example"
+            ),
+            "⊢ Continuous (_ ∘ _)"
+        );
         let source = (1..=30)
             .map(|line| format!("line {line}"))
             .collect::<Vec<_>>()
