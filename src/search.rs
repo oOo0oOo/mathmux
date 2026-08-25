@@ -2413,7 +2413,7 @@ fn lexical_score(query: &str, tokens: &[String], row: &IndexedRow) -> f64 {
         row.path.to_lowercase()
     );
     let mut score = if name == query {
-        120.0
+        600.0
     } else if base == query {
         105.0
     } else if name.ends_with(&format!(".{query}")) {
