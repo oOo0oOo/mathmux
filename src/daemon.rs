@@ -175,7 +175,7 @@ impl Service {
                 let _guard = self.mutations.lock().expect("mutation lock poisoned");
                 let workspace = self.state.workspace_for_path(&cwd)?;
                 let result = git::sync(&self.repo, &workspace)?;
-                self.checker.invalidate_workspace(&workspace.reference)?;
+                self.checker.invalidate_workspace(&workspace.reference);
                 let status = if result.clean { "clean" } else { "conflict" };
                 let reference =
                     self.state
@@ -218,7 +218,7 @@ impl Service {
                     validated_by: None,
                     created_at: now_unix_ms(),
                 })?;
-                self.checker.invalidate_workspace(&workspace.reference)?;
+                self.checker.invalidate_workspace(&workspace.reference);
                 self.validation.wake();
                 Ok(reference)
             }
@@ -270,16 +270,17 @@ impl WorkspaceWatcher {
     fn new(state: State, checker: Arc<Checker>) -> Result<Self> {
         let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
             let Ok(event) = event else { return };
+            if matches!(event.kind, notify::EventKind::Access(_)) {
+                return;
+            }
             for path in event.paths {
                 if path.components().any(|part| part.as_os_str() == ".lake") {
                     continue;
                 }
-                let relevant = path.extension().is_some_and(|extension| {
-                    matches!(extension.to_str(), Some("lean" | "toml" | "json"))
-                }) || path
-                    .file_name()
-                    .is_some_and(|name| name == "lean-toolchain");
-                if !relevant {
+                if !path
+                    .extension()
+                    .is_some_and(|extension| extension == "lean")
+                {
                     continue;
                 }
                 if let Ok(workspaces) = state.list_workspaces()

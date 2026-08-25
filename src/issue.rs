@@ -58,22 +58,22 @@ struct Issue {
 impl IssueStore {
     pub fn global() -> Result<Self> {
         let override_path = std::env::var_os("MATHMUX_ISSUE_DB");
-        let path = if let Some(path) = override_path {
-            PathBuf::from(path)
-        } else {
-            let base = std::env::var_os("XDG_STATE_HOME")
-                .map(PathBuf::from)
-                .or_else(|| {
-                    std::env::var_os("HOME")
-                        .map(PathBuf::from)
-                        .map(|path| path.join(".local/state"))
-                })
-                .context("cannot locate the local state directory")?;
-            base.join("mathmux/development.sqlite3")
+        let managed = override_path.is_none();
+        let path = match override_path {
+            Some(path) => PathBuf::from(path),
+            None => {
+                let base = std::env::var_os("XDG_STATE_HOME")
+                    .map(PathBuf::from)
+                    .or_else(|| {
+                        std::env::var_os("HOME")
+                            .map(PathBuf::from)
+                            .map(|path| path.join(".local/state"))
+                    })
+                    .context("cannot locate the local state directory")?;
+                base.join("mathmux/development.sqlite3")
+            }
         };
-        if std::env::var_os("MATHMUX_ISSUE_DB").is_none()
-            && let Some(parent) = path.parent()
-        {
+        if managed && let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
             fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
         }
@@ -166,20 +166,31 @@ impl IssueStore {
         );
         let connection = self.open_db()?;
         let sql = if status == "all" {
-            "SELECT id, summary, status, occurrences, context_json, fixed_by, note,
-                    created_at, resolved_at FROM issues ORDER BY updated_at DESC"
+            "SELECT id, summary, status, occurrences FROM issues ORDER BY updated_at DESC"
         } else {
-            "SELECT id, summary, status, occurrences, context_json, fixed_by, note,
-                    created_at, resolved_at FROM issues WHERE status = ?1 ORDER BY updated_at DESC"
+            "SELECT id, summary, status, occurrences
+             FROM issues WHERE status = ?1 ORDER BY updated_at DESC"
         };
         let mut statement = connection.prepare(sql)?;
-        let issues = if status == "all" {
+        let render = |row: &rusqlite::Row<'_>| {
+            let id = row.get::<_, i64>(0)?;
+            let summary = row.get::<_, String>(1)?;
+            let status = row.get::<_, String>(2)?;
+            let occurrences = row.get::<_, u64>(3)?;
+            let count = if occurrences > 1 {
+                format!(" {occurrences}x")
+            } else {
+                String::new()
+            };
+            Ok(format!("i{id} {status}{count} {summary}"))
+        };
+        let issues: Vec<String> = if status == "all" {
             statement
-                .query_map([], issue_from_row)?
+                .query_map([], render)?
                 .collect::<rusqlite::Result<Vec<_>>>()?
         } else {
             statement
-                .query_map([status], issue_from_row)?
+                .query_map([status], render)?
                 .collect::<rusqlite::Result<Vec<_>>>()?
         };
         if issues.is_empty() {
@@ -189,21 +200,7 @@ impl IssueStore {
                 format!("no {status} issues")
             });
         }
-        Ok(issues
-            .iter()
-            .map(|issue| {
-                let occurrences = if issue.occurrences > 1 {
-                    format!(" {}x", issue.occurrences)
-                } else {
-                    String::new()
-                };
-                format!(
-                    "i{} {}{} {}",
-                    issue.id, issue.status, occurrences, issue.summary
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n"))
+        Ok(issues.join("\n"))
     }
 
     pub fn resolve(
@@ -258,9 +255,8 @@ pub fn record_exchange(repo: &Repo, request: &Request, response: &Response) -> R
 }
 
 fn capture_context(cwd: &Path, related_ref: Option<&str>) -> Result<IssueContext> {
-    let build = current_build();
     let mut context = IssueContext {
-        build,
+        build: build_id().to_owned(),
         cwd: cwd.to_string_lossy().into_owned(),
         related_ref: related_ref.map(str::to_owned),
         ..IssueContext::default()
@@ -276,22 +272,16 @@ fn capture_context(cwd: &Path, related_ref: Option<&str>) -> Result<IssueContext
         .map(|value| value.trim().to_owned());
     context.exchange =
         fs::read_to_string(repo.state_dir.join("development-last-command.json")).ok();
+    let mut worktree = repo.root.clone();
     if let Ok(state) = State::new(&repo.db_path) {
-        context.workspace = state
-            .workspace_for_path(cwd)
-            .ok()
-            .map(|workspace| workspace.reference);
+        if let Ok(workspace) = state.workspace_for_path(cwd) {
+            context.workspace = Some(workspace.reference);
+            worktree = workspace.path;
+        }
         if let Some(reference) = related_ref {
             context.related_detail = Some(state.show(reference, true)?);
         }
     }
-    let worktree = context
-        .workspace
-        .as_ref()
-        .and_then(|_| State::new(&repo.db_path).ok())
-        .and_then(|state| state.workspace_for_path(cwd).ok())
-        .map(|workspace| workspace.path)
-        .unwrap_or_else(|| repo.root.clone());
     let dirty = dirty_paths(&worktree).unwrap_or_default();
     context.dirty = dirty
         .iter()
@@ -315,7 +305,11 @@ fn snapshot_files(root: &Path, paths: &[PathBuf]) -> Vec<FileSnapshot> {
             break;
         }
         if text.len() > remaining {
-            text.truncate(remaining);
+            let mut boundary = remaining;
+            while !text.is_char_boundary(boundary) {
+                boundary -= 1;
+            }
+            text.truncate(boundary);
         }
         remaining -= text.len();
         snapshots.push(FileSnapshot {
@@ -333,10 +327,6 @@ fn relevant_file(path: &Path) -> bool {
         || path
             .file_name()
             .is_some_and(|name| name == "lean-toolchain")
-}
-
-fn current_build() -> String {
-    build_id().to_owned()
 }
 
 fn tail_lines(value: &str, count: usize) -> String {

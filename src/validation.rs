@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 
-use crate::check::{project_module_name, transitive_dependencies};
+use crate::check::{parse_imports, project_module_name};
 use crate::git::{lake_command, project_lean_files};
 use crate::repo::Repo;
 use crate::state::{State, Submission, ValidationReport};
@@ -168,27 +168,32 @@ fn prepare_worktree(repo: &Repo, commit: &str) -> Result<PathBuf> {
 }
 
 fn deliverable_modules(root: &Path) -> (Vec<String>, Vec<String>) {
-    let all = project_lean_files(root);
-    let imported: std::collections::HashSet<PathBuf> = all
-        .iter()
-        .flat_map(|target| transitive_dependencies(root, target).unwrap_or_default())
-        .collect();
-    let mut roots: Vec<_> = all
-        .iter()
-        .filter(|path| !imported.contains(*path))
-        .map(|path| project_module_name(root, path))
-        .collect();
-    let mut project_modules: Vec<_> = all
+    let files = project_lean_files(root);
+    let mut project_modules = files
         .iter()
         .map(|path| project_module_name(root, path))
-        .collect();
+        .collect::<Vec<_>>();
+    project_modules.sort();
+    project_modules.dedup();
+    let project_set = project_modules
+        .iter()
+        .cloned()
+        .collect::<std::collections::HashSet<_>>();
+    let imported = files
+        .iter()
+        .filter_map(|path| fs::read_to_string(root.join(path)).ok())
+        .flat_map(|source| parse_imports(&source))
+        .filter(|module| project_set.contains(module))
+        .collect::<std::collections::HashSet<_>>();
+    let mut roots = project_modules
+        .iter()
+        .filter(|module| !imported.contains(*module))
+        .cloned()
+        .collect::<Vec<_>>();
     if roots.is_empty() {
         roots.clone_from(&project_modules);
     }
     roots.sort();
-    roots.dedup();
-    project_modules.sort();
-    project_modules.dedup();
     (roots, project_modules)
 }
 
@@ -366,7 +371,29 @@ fn command_detail(output: &std::process::Output) -> String {
 
 #[cfg(test)]
 mod tests {
+    use tempfile::tempdir;
+
     use super::*;
+
+    #[test]
+    fn deliverable_modules_are_unimported_project_roots() {
+        let directory = tempdir().unwrap();
+        fs::write(directory.path().join("Base.lean"), "def base := 1\n").unwrap();
+        fs::write(
+            directory.path().join("Result.lean"),
+            "import Base\n\ndef result := base\n",
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("Independent.lean"),
+            "def other := 2\n",
+        )
+        .unwrap();
+
+        let (roots, modules) = deliverable_modules(directory.path());
+        assert_eq!(roots, ["Independent", "Result"]);
+        assert_eq!(modules, ["Base", "Independent", "Result"]);
+    }
 
     #[test]
     fn sorry_locations_ignore_comments_strings_and_longer_names() {

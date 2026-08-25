@@ -285,24 +285,6 @@ impl State {
         Ok(())
     }
 
-    pub fn add_check(&self, check: &CheckRecord) -> Result<()> {
-        self.open()?.execute(
-            "INSERT INTO checks(
-                ref, workspace_ref, target, fingerprint, dependencies_json, source_version, created_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                check.reference,
-                check.workspace_ref,
-                check.target,
-                check.fingerprint,
-                serde_json::to_string(&check.dependencies)?,
-                check.source_version,
-                check.created_at
-            ],
-        )?;
-        Ok(())
-    }
-
     pub fn add_check_run(&self, run: &CheckRun, certificates: &[CheckRecord]) -> Result<()> {
         let mut connection = self.open()?;
         let transaction = connection.transaction()?;
@@ -359,20 +341,6 @@ impl State {
             .map_err(Into::into)
     }
 
-    pub fn latest_check(&self, workspace_ref: &str, target: &str) -> Result<Option<CheckRecord>> {
-        self.open()?
-            .query_row(
-                "SELECT ref, workspace_ref, target, fingerprint, dependencies_json,
-                        source_version, created_at
-                 FROM checks WHERE workspace_ref = ?1 AND target = ?2
-                 ORDER BY created_at DESC LIMIT 1",
-                params![workspace_ref, target],
-                check_from_row,
-            )
-            .optional()
-            .map_err(Into::into)
-    }
-
     pub fn checks_for_workspace(&self, workspace_ref: &str) -> Result<Vec<CheckRecord>> {
         let connection = self.open()?;
         let mut statement = connection.prepare(
@@ -384,14 +352,6 @@ impl State {
         let rows = statement.query_map([workspace_ref], check_from_row)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)
-    }
-
-    pub fn delete_checks(&self, workspace_ref: &str) -> Result<()> {
-        self.open()?.execute(
-            "DELETE FROM checks WHERE workspace_ref = ?1",
-            [workspace_ref],
-        )?;
-        Ok(())
     }
 
     pub fn add_sync(&self, workspace_ref: &str, status: &str, detail: &str) -> Result<String> {

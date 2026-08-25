@@ -233,7 +233,6 @@ pub fn sync(repo: &Repo, workspace: &Workspace) -> Result<SyncResult> {
     if conflicts.is_empty() {
         bail!("sync failed: {}", command_detail(&output));
     }
-    let _ = repo;
     Ok(SyncResult {
         clean: false,
         detail: format!(

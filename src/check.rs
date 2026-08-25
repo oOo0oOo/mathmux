@@ -33,7 +33,6 @@ deriving ToJson
 
 structure Response where
   ok : Bool
-  errors : Nat
   diagnostics : Array Diagnostic
   version : Nat
 deriving ToJson
@@ -83,7 +82,7 @@ def renderMessages (messages : MessageLog) : BaseIO (Array Diagnostic) := do
   return output
 
 def failureResponse (detail : String) (version : Nat) : Response :=
-  { ok := false, errors := 1,
+  { ok := false,
     diagnostics := #[{ severity := "error", kind := "mathmux", text := detail }],
     version := version }
 
@@ -94,8 +93,7 @@ def processSnapshot (snapshot : Language.Lean.InitialSnapshot) (version : Nat) :
   let (failed, commandMessages) ← firstErrorOrFinal processed.firstCmdSnap
   let messages ← if failed then pure commandMessages else collectTree (Language.toSnapshotTree snapshot)
   let diagnostics ← renderMessages messages
-  let errors := messages.reportedPlusUnreported.toArray.countP (·.severity == .error)
-  return { ok := errors == 0, errors, diagnostics, version := version }
+  return { ok := !messages.hasErrors, diagnostics, version := version }
 
 def writeResponse (response : Response) : IO Unit := do
   let stdout ← IO.getStdout
@@ -134,7 +132,6 @@ pub struct CheckOutcome {
     pub ok: bool,
     pub elapsed_ms: u64,
     pub warnings: Vec<Diagnostic>,
-    pub linters: Vec<Diagnostic>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -147,7 +144,6 @@ struct WorkerRequest<'a> {
 #[derive(Debug, Deserialize)]
 struct WorkerResponse {
     ok: bool,
-    errors: usize,
     diagnostics: Vec<WorkerDiagnostic>,
     version: u64,
 }
@@ -277,7 +273,6 @@ impl Checker {
             ok,
             elapsed_ms,
             warnings,
-            linters,
             diagnostics,
         })
     }
@@ -501,12 +496,11 @@ impl Checker {
             ))
     }
 
-    pub fn invalidate_workspace(&self, workspace_ref: &str) -> Result<()> {
+    pub fn invalidate_workspace(&self, workspace_ref: &str) {
         self.workers
             .lock()
             .expect("worker map poisoned")
             .remove(workspace_ref);
-        Ok(())
     }
 
     pub fn evict_worker(&self, workspace_ref: &str) {
@@ -517,24 +511,17 @@ impl Checker {
     }
 
     pub fn handle_filesystem_change(&self, workspace: &Workspace, path: &Path) {
-        let relative = path.strip_prefix(&workspace.path).ok();
-        let should_evict = relative.is_none_or(|relative| {
-            let generated = relative
-                .components()
-                .next()
-                .is_some_and(|component| component.as_os_str() == ".lake");
-            let is_other_source = relative
-                .extension()
-                .is_some_and(|extension| extension == "lean")
-                && self
-                    .workers
-                    .lock()
-                    .expect("worker map poisoned")
-                    .get(&workspace.reference)
-                    .is_some_and(|worker| worker.target != relative);
-            !generated && is_other_source
-        });
-        if should_evict {
+        let Ok(relative) = path.strip_prefix(&workspace.path) else {
+            self.evict_worker(&workspace.reference);
+            return;
+        };
+        let target = self
+            .workers
+            .lock()
+            .expect("worker map poisoned")
+            .get(&workspace.reference)
+            .map(|worker| worker.target.clone());
+        if target.is_some_and(|target| invalidates_worker(relative, &target)) {
             self.evict_worker(&workspace.reference);
         }
     }
@@ -714,7 +701,6 @@ fn fallback_check(repo: &Repo, root: &Path, target: &Path) -> Result<WorkerRespo
         .collect::<Vec<_>>();
     Ok(WorkerResponse {
         ok: output.status.success(),
-        errors: usize::from(!output.status.success()),
         diagnostics,
         version: 1,
     })
@@ -725,15 +711,18 @@ fn deduplicate_diagnostics(mut response: WorkerResponse) -> WorkerResponse {
     response
         .diagnostics
         .retain(|diagnostic| seen.insert(diagnostic.clone()));
-    if !response.ok {
-        response.errors = response
-            .diagnostics
-            .iter()
-            .filter(|diagnostic| diagnostic.severity == "error")
-            .count()
-            .max(1);
-    }
     response
+}
+
+fn invalidates_worker(path: &Path, target: &Path) -> bool {
+    !path
+        .components()
+        .next()
+        .is_some_and(|component| component.as_os_str() == ".lake")
+        && path
+            .extension()
+            .is_some_and(|extension| extension == "lean")
+        && path != target
 }
 
 fn partition_diagnostics(
@@ -853,7 +842,7 @@ fn dependency_order(root: &Path, targets: &[PathBuf]) -> Result<Vec<PathBuf>> {
     Ok(ordered)
 }
 
-fn parse_imports(source: &str) -> Vec<String> {
+pub(crate) fn parse_imports(source: &str) -> Vec<String> {
     let mut imports = Vec::new();
     for line in source.lines() {
         let line = line.trim();
@@ -1094,5 +1083,18 @@ mod tests {
         ];
         let (warnings, linters, errors) = partition_diagnostics(&diagnostics);
         assert_eq!((warnings.len(), linters.len(), errors.len()), (1, 1, 1));
+    }
+
+    #[test]
+    fn source_dependency_changes_evict_the_worker() {
+        let target = Path::new("Proof.lean");
+        assert!(!invalidates_worker(target, target));
+        assert!(invalidates_worker(Path::new("Dependency.lean"), target));
+        assert!(!invalidates_worker(Path::new("lakefile.toml"), target));
+        assert!(!invalidates_worker(Path::new("lean-toolchain"), target));
+        assert!(!invalidates_worker(
+            Path::new(".lake/build/lib/lean/Proof.olean"),
+            target
+        ));
     }
 }
