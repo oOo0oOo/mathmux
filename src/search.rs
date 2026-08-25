@@ -734,6 +734,8 @@ impl Searcher {
         let mut seen = HashSet::new();
         ranked.retain(|candidate| seen.insert(candidate.hit.name.clone()));
         ranked.truncate(RESULT_LIMIT);
+        let no_hits = ranked.is_empty();
+        let dependency_sources_missing = dependency_sources_missing(&workspace.path);
         Ok(SearchResult {
             hits: ranked.into_iter().map(|candidate| candidate.hit).collect(),
             inference: if type_search {
@@ -743,11 +745,14 @@ impl Searcher {
             } else {
                 "hybrid".into()
             },
-            note: match (base_warming, warming) {
-                (true, true) => Some("source and type indexes warming".into()),
-                (true, false) => Some("source index warming".into()),
-                (false, true) => Some("type index warming".into()),
-                (false, false) => None,
+            note: match (base_warming, warming, no_hits && dependency_sources_missing) {
+                (_, _, true) => {
+                    Some("dependency sources unavailable: .lake/packages is missing".into())
+                }
+                (true, true, _) => Some("source and type indexes warming".into()),
+                (true, false, _) => Some("source index warming".into()),
+                (false, true, _) => Some("type index warming".into()),
+                (false, false, false) => None,
             },
         })
     }
@@ -1151,6 +1156,10 @@ fn base_input_id(workspace: &Path) -> String {
         }
     }
     hash_bytes(&material)[..16].to_owned()
+}
+
+fn dependency_sources_missing(workspace: &Path) -> bool {
+    workspace.join("lake-manifest.json").is_file() && !workspace.join(".lake/packages").is_dir()
 }
 
 fn read_line_timeout(
@@ -1733,5 +1742,14 @@ end Demo
             try_this_suggestions("Try this:\n  [apply] exact useful h\n"),
             vec!["exact useful h"]
         );
+    }
+
+    #[test]
+    fn missing_dependency_sources_are_detected_from_the_manifest() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("lake-manifest.json"), "{}").unwrap();
+        assert!(dependency_sources_missing(directory.path()));
+        fs::create_dir_all(directory.path().join(".lake/packages")).unwrap();
+        assert!(!dependency_sources_missing(directory.path()));
     }
 }

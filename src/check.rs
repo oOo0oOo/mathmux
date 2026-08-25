@@ -480,7 +480,12 @@ impl Checker {
             .arg("setup-file")
             .arg(target)
             .output()
-            .with_context(|| format!("cannot configure {}", target.display()))?;
+            .with_context(|| {
+                format!(
+                    "cannot start lake to configure {}; install the project's Lean toolchain and dependencies",
+                    target.display()
+                )
+            })?;
         if !output.status.success() {
             bail!(
                 "dependency setup failed for {}: {}",
