@@ -361,19 +361,7 @@ impl Checker {
         }
         let cache_ms = phase.elapsed().as_millis() as u64;
         let phase = Instant::now();
-        let setup_input = environment_fingerprint(&workspace.path, &dependencies)?;
-        let mut environment = self.worker_environment_from_base(workspace, target, &setup_input)?;
-        let persisted_setup = self.setup_path(workspace, target);
-        let setup_path = match self.current_setup(workspace, target, &environment) {
-            Some(path) => path,
-            None if setup_is_current(&persisted_setup, &setup_input) => persisted_setup,
-            None => {
-                let setup =
-                    self.prepare_setup(workspace, target, &setup_input, !dependencies.is_empty())?;
-                environment = self.worker_environment_from_base(workspace, target, &setup_input)?;
-                setup.path
-            }
-        };
+        let (setup_path, environment) = self.worker_setup(workspace, target, &dependencies)?;
         let setup_ms = phase.elapsed().as_millis() as u64;
         let fingerprint = self.full_fingerprint(workspace, target, &dependencies)?;
         let source = fs::read_to_string(&target_absolute)
@@ -381,7 +369,7 @@ impl Checker {
 
         let phase = Instant::now();
         let (response, mode) =
-            self.run_worker(workspace, target, &setup_path, &environment, &source)?;
+            self.run_worker(workspace, target, &setup_path, &environment, &source, true)?;
         let elaborate_ms = phase.elapsed().as_millis() as u64;
         ensure!(
             response.version > 0,
@@ -465,6 +453,7 @@ impl Checker {
         setup_path: &Path,
         environment: &str,
         source: &str,
+        allow_fallback: bool,
     ) -> Result<(WorkerResponse, &'static str)> {
         let mut workers = self.workers.lock().expect("worker map poisoned");
         let replace = workers.get_mut(&workspace.reference).is_none_or(|worker| {
@@ -478,9 +467,12 @@ impl Checker {
                 }
                 Err(error) => {
                     self.record_worker_failure(&format!("start: {error:#}"));
-                    return fallback_check(&self.repo, &workspace.path, target)
-                        .map(|response| (response, "fallback"))
-                        .with_context(|| format!("direct Lean worker unavailable: {error:#}"));
+                    if allow_fallback {
+                        return fallback_check(&self.repo, &workspace.path, target)
+                            .map(|response| (response, "fallback"))
+                            .with_context(|| format!("direct Lean worker unavailable: {error:#}"));
+                    }
+                    return Err(error).context("direct Lean worker unavailable");
                 }
             }
         }
@@ -499,11 +491,56 @@ impl Checker {
             Err(error) => {
                 self.record_worker_failure(&format!("request: {error:#}"));
                 workers.remove(&workspace.reference);
-                fallback_check(&self.repo, &workspace.path, target)
-                    .map(|response| (response, "fallback"))
-                    .with_context(|| format!("direct Lean worker failed: {error:#}"))
+                if allow_fallback {
+                    fallback_check(&self.repo, &workspace.path, target)
+                        .map(|response| (response, "fallback"))
+                        .with_context(|| format!("direct Lean worker failed: {error:#}"))
+                } else {
+                    Err(error).context("direct Lean worker failed")
+                }
             }
         }
+    }
+
+    pub fn probe_source(
+        &self,
+        workspace: &Workspace,
+        requested: &Path,
+        source: &str,
+    ) -> Result<String> {
+        let target = resolve_target(&workspace.path, requested)?;
+        let dependencies = transitive_dependencies(&workspace.path, &target)?;
+        let (setup_path, environment) = self.worker_setup(workspace, &target, &dependencies)?;
+        let (response, _) =
+            self.run_worker(workspace, &target, &setup_path, &environment, source, false)?;
+        Ok(response
+            .diagnostics
+            .into_iter()
+            .map(|diagnostic| diagnostic.text)
+            .collect::<Vec<_>>()
+            .join("\n"))
+    }
+
+    fn worker_setup(
+        &self,
+        workspace: &Workspace,
+        target: &Path,
+        dependencies: &[PathBuf],
+    ) -> Result<(PathBuf, String)> {
+        let setup_input = environment_fingerprint(&workspace.path, dependencies)?;
+        let mut environment = self.worker_environment_from_base(workspace, target, &setup_input)?;
+        let persisted_setup = self.setup_path(workspace, target);
+        let setup_path = match self.current_setup(workspace, target, &environment) {
+            Some(path) => path,
+            None if setup_is_current(&persisted_setup, &setup_input) => persisted_setup,
+            None => {
+                let setup =
+                    self.prepare_setup(workspace, target, &setup_input, !dependencies.is_empty())?;
+                environment = self.worker_environment_from_base(workspace, target, &setup_input)?;
+                setup.path
+            }
+        };
+        Ok((setup_path, environment))
     }
 
     fn record_worker_failure(&self, detail: &str) {

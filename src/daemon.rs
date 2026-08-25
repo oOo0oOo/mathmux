@@ -39,7 +39,7 @@ pub fn run(repo: Repo) -> Result<()> {
 
     let state = State::new(&repo.db_path)?;
     let checker = Arc::new(Checker::new(repo.clone(), state.clone())?);
-    let searcher = Searcher::new(repo.clone(), state.clone())?;
+    let searcher = Searcher::new(repo.clone(), state.clone(), checker.clone())?;
     let retiring = Arc::new(AtomicBool::new(false));
     let validation = ValidationQueue::start(repo.clone(), state.clone(), retiring.clone())?;
     let watcher = WorkspaceWatcher::new(state.clone(), checker.clone())?;

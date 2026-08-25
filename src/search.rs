@@ -15,7 +15,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 use walkdir::WalkDir;
 
-use crate::check::{parse_imports, project_module_name};
+use crate::check::{Checker, parse_imports, project_module_name};
 use crate::git::{dirty_lean_files, lake_command, lake_executable, project_lean_files};
 use crate::issue::{TelemetryOperation, TelemetryStore, development_enabled};
 use crate::repo::Repo;
@@ -27,7 +27,6 @@ use crate::util::{
 
 const RESULT_LIMIT: usize = 24;
 const SUMMARY_LIMIT: usize = 5;
-const GOAL_TIMEOUT_MS: u64 = 2_000;
 const SEARCH_INDEX_VERSION: i64 = 6;
 const SOURCE_INDEX_KIND: &str = "source-v6";
 const DECLARATION_DETAIL_LINES: usize = 48;
@@ -36,6 +35,7 @@ const INDEX_COMMIT_BATCH: usize = 64;
 pub struct Searcher {
     repo: Repo,
     state: State,
+    checker: Arc<Checker>,
     index_lock: Mutex<()>,
     base_lock: Arc<Mutex<()>>,
     loogle: Mutex<LoogleState>,
@@ -46,6 +46,7 @@ struct SearchResult {
     hits: Vec<SearchHit>,
     inference: String,
     note: Option<String>,
+    ok: bool,
 }
 
 #[derive(Debug)]
@@ -133,16 +134,17 @@ struct SourceRoot {
 }
 
 impl Searcher {
-    pub fn new(repo: Repo, state: State) -> Result<Self> {
-        let searcher = Self::initialized(repo, state);
+    pub fn new(repo: Repo, state: State, checker: Arc<Checker>) -> Result<Self> {
+        let searcher = Self::initialized(repo, state, checker);
         searcher.migrate()?;
         Ok(searcher)
     }
 
-    fn initialized(repo: Repo, state: State) -> Self {
+    fn initialized(repo: Repo, state: State, checker: Arc<Checker>) -> Self {
         Self {
             repo,
             state,
+            checker,
             index_lock: Mutex::new(()),
             base_lock: Arc::new(Mutex::new(())),
             loogle: Mutex::new(LoogleState::Empty),
@@ -183,13 +185,15 @@ impl Searcher {
             duration_ms: started.elapsed().as_millis() as u64,
             created_at: now_unix_ms(),
         };
+        let ok = result.ok;
         self.state.add_search(&run)?;
         self.state.touch_workspace(&workspace.reference)?;
-        if all {
+        let rendered = if all {
             self.state.show(&run.reference, true)
         } else {
             Ok(render_summary(&run))
-        }
+        }?;
+        if ok { Ok(rendered) } else { bail!(rendered) }
     }
 
     pub fn evict_idle_worker(&self, idle_for: std::time::Duration) -> bool {
@@ -509,6 +513,7 @@ impl Searcher {
                 let (sender, receiver) = std::sync::mpsc::channel();
                 let repo = self.repo.clone();
                 let state = self.state.clone();
+                let checker = self.checker.clone();
                 let workspace = workspace.clone();
                 let base_lock = self.base_lock.clone();
                 let partial = package_scopes(&workspace.path);
@@ -525,7 +530,7 @@ impl Searcher {
                                 return;
                             }
                         };
-                        Searcher::initialized(repo.clone(), state)
+                        Searcher::initialized(repo.clone(), state, checker)
                             .refresh_base(&workspace)
                             .map_err(|error| format!("{error:#}"))
                     };
@@ -1213,6 +1218,7 @@ impl Searcher {
                 (false, true, _) => Some("type index warming".into()),
                 (false, false, false) => None,
             },
+            ok: true,
         })
     }
 
@@ -1373,10 +1379,7 @@ impl Searcher {
         let source = fs::read_to_string(&location.path)?;
         if location.tail {
             return Ok(source_location_result(
-                workspace,
-                &location,
-                &source,
-                "showing file tail",
+                workspace, &location, &source, None, true,
             ));
         }
         let Some((start, end, replacement)) = goal_probe(&source, location.line) else {
@@ -1384,46 +1387,45 @@ impl Searcher {
                 workspace,
                 &location,
                 &source,
-                "no sorry or admit placeholder near that position; showing local source",
+                Some("source only"),
+                false,
             ));
         };
-        let mut probe = source;
+        let mut probe = source.clone();
         probe.replace_range(start..end, replacement);
-        let directory = self.repo.state_dir.join("search-goals");
-        fs::create_dir_all(&directory)?;
-        let id = hash_bytes(
-            format!(
-                "{}:{}:{}:{}",
-                workspace.reference,
-                location.path.display(),
-                location.line,
-                now_unix_ms()
-            )
-            .as_bytes(),
-        );
-        let temporary = directory.join(format!("GoalProbe-{}.lean", &id[..16]));
-        fs::write(&temporary, probe)?;
-        let timeout = format!("{:.3}s", GOAL_TIMEOUT_MS as f64 / 1000.0);
-        let mut command = std::process::Command::new("timeout");
-        command
-            .args(["--signal=KILL", &timeout])
-            .arg(lake_executable())
-            .args(["env", "lean"])
-            .arg(&temporary)
-            .current_dir(&workspace.path)
-            .env("LAKE_ARTIFACT_CACHE", "true")
-            .env("LAKE_CACHE_DIR", &self.repo.cache_dir)
-            .stdin(Stdio::null());
-        let output = command.output();
-        let _ = fs::remove_file(&temporary);
-        let output = output?;
-        let timed_out = matches!(output.status.code(), None | Some(124 | 137));
-        let rendered = format!(
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+        let rendered = match self.checker.probe_source(workspace, &location.path, &probe) {
+            Ok(rendered) => rendered,
+            Err(error) => {
+                return Ok(source_location_result(
+                    workspace,
+                    &location,
+                    &source,
+                    Some(&format!("goal unavailable: {error:#}")),
+                    false,
+                ));
+            }
+        };
         let suggestions = try_this_suggestions(&rendered);
+        if suggestions.is_empty() {
+            let detail = rendered
+                .lines()
+                .rev()
+                .find(|line| !line.trim().is_empty())
+                .map(|line| {
+                    format!(
+                        "goal search returned no tactic suggestion: {}",
+                        clean_line(line)
+                    )
+                })
+                .unwrap_or_else(|| "goal search returned no tactic suggestion".into());
+            return Ok(source_location_result(
+                workspace,
+                &location,
+                &source,
+                Some(&detail),
+                false,
+            ));
+        }
         let relative = location
             .path
             .strip_prefix(&workspace.path)
@@ -1446,21 +1448,11 @@ impl Searcher {
                 required_import: None,
             })
             .collect();
-        let note = if timed_out {
-            Some(format!("goal search timed out after {GOAL_TIMEOUT_MS}ms"))
-        } else if hits.is_empty() && !output.status.success() {
-            rendered
-                .lines()
-                .rev()
-                .find(|line| !line.trim().is_empty())
-                .map(|line| format!("goal search unavailable: {}", clean_line(line)))
-        } else {
-            None
-        };
         Ok(SearchResult {
             hits,
             inference: "goal".into(),
-            note,
+            note: None,
+            ok: true,
         })
     }
 }
@@ -2676,6 +2668,7 @@ fn exact_search_result(hit: SearchHit, base_warming: bool) -> SearchResult {
             "hybrid(type-off)".into()
         },
         note: base_warming.then(|| "source index warming".into()),
+        ok: true,
     }
 }
 
@@ -3394,7 +3387,8 @@ fn source_location_result(
     workspace: &Workspace,
     location: &GoalLocation,
     source: &str,
-    note: &str,
+    note: Option<&str>,
+    ok: bool,
 ) -> SearchResult {
     let relative = location
         .path
@@ -3404,7 +3398,7 @@ fn source_location_result(
         .into_owned();
     SearchResult {
         hits: vec![SearchHit {
-            name: format!("{relative}:{}", location.line),
+            name: "source".into(),
             kind: "location".into(),
             signature: None,
             module: String::new(),
@@ -3416,8 +3410,9 @@ fn source_location_result(
             applicable: false,
             required_import: None,
         }],
-        inference: "source".into(),
-        note: Some(note.into()),
+        inference: if ok { "source" } else { "source-only" }.into(),
+        note: note.map(Into::into),
+        ok,
     }
 }
 
@@ -3457,9 +3452,9 @@ fn goal_probe(source: &str, requested_line: u64) -> Option<(usize, usize, &'stat
                         .find(|line| !line.trim().is_empty())
                         .is_some_and(|line| line.trim_end().ends_with("by"));
                     let replacement = if in_tactic {
-                        "first | exact? | apply? | rw?"
+                        "first | simp? | exact? | apply? | rw?"
                     } else {
-                        "by first | exact? | apply? | rw?"
+                        "by first | simp? | exact? | apply? | rw?"
                     };
                     return Some((absolute, absolute + placeholder.len(), replacement));
                 }

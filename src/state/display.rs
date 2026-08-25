@@ -9,7 +9,7 @@ use crate::util::{
 };
 
 pub(super) fn render_search_run(run: &SearchRun, all: bool) -> String {
-    let mut output = format!("{} {}\nquery: {}", run.reference, run.inference, run.query);
+    let mut output = format!("{}\nquery: {}", run.reference, run.query);
     if let Some(note) = &run.note {
         output.push_str(&format!("\n{note}"));
     }
@@ -43,7 +43,9 @@ pub(super) fn render_search_run(run: &SearchRun, all: bool) -> String {
                 }
             }
             if let Some(source) = &hit.source {
-                output.push_str("\n   source:");
+                if hit.kind != "location" {
+                    output.push_str("\n   source:");
+                }
                 let source_lines =
                     if matches!(hit.kind.as_str(), "class" | "inductive" | "structure")
                         || (index == 0 && query_requests_proof_body(&run.query))
