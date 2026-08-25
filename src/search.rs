@@ -1795,11 +1795,13 @@ fn fallback_source_hits(
         let synonym = match term.as_str() {
             "addition" => Some("add"),
             "continuity" => Some("continuous"),
+            "dimensional" => Some("hasorthogonalprojection"),
             "islinear" => Some("linear"),
             "positive" => Some("pos"),
             "projection" => Some("proj"),
             "scaling" => Some("smul"),
             "trivializationat" => Some("trivialization"),
+            "toinnerproductspace" => Some("ofcore"),
             "weighted" => Some("weight"),
             _ => None,
         };
@@ -1935,7 +1937,8 @@ fn fallback_source_hits(
             let name_score = terms
                 .iter()
                 .filter(|term| entry.name.to_lowercase().contains(*term))
-                .count();
+                .map(|term| if term.len() >= 12 { 3 } else { 1 })
+                .sum::<usize>();
             let name = entry.name.to_lowercase();
             let base = name.rsplit('.').next().unwrap_or(&name);
             let name_segments = name.split('.').collect::<HashSet<_>>();
@@ -2442,5 +2445,30 @@ end Demo
             hits.iter()
                 .any(|hit| hit.hit.name == "VectorBundle.trivialization_linear")
         );
+    }
+
+    #[test]
+    fn fallback_connects_conceptual_inner_product_api_terms() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("Inner.lean"),
+            "namespace InnerProductSpace\ndef ofCore (c : Core K E) : InnerProductSpace K E := by sorry\nend InnerProductSpace\nnamespace Submodule\ntheorem sup_orthogonal_of_hasOrthogonalProjection [K.HasOrthogonalProjection] : K ⊔ Kᗮ = ⊤ := by sorry\nend Submodule\n",
+        )
+        .unwrap();
+        for (query, expected) in [
+            (
+                "InnerProductSpace.Core.toInnerProductSpace constructor",
+                "InnerProductSpace.ofCore",
+            ),
+            (
+                "orthogonal complement finite dimensional sup top",
+                "Submodule.sup_orthogonal_of_hasOrthogonalProjection",
+            ),
+        ] {
+            let hits =
+                fallback_source_hits(directory.path(), query, &meaningful_query_tokens(query))
+                    .unwrap();
+            assert!(hits.iter().any(|hit| hit.hit.name == expected));
+        }
     }
 }
