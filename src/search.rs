@@ -847,14 +847,24 @@ impl Searcher {
     fn changed_files(&self, owner: &str, kind: &str, files: &[PathBuf]) -> Result<Vec<PathBuf>> {
         let connection = self.open()?;
         let mut statement = connection.prepare(
-            "SELECT path, modified_ns, size FROM search_files
+            "SELECT path, modified_ns, size,
+                    EXISTS(
+                        SELECT 1 FROM search_origins
+                        WHERE search_origins.owner = search_files.owner
+                          AND search_origins.origin = search_files.path
+                    )
+             FROM search_files
              WHERE owner = ?1 AND kind = ?2",
         )?;
         let prior = statement
             .query_map(params![owner, kind], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
-                    (row.get::<_, i64>(1)?, row.get::<_, i64>(2)?),
+                    (
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, bool>(3)?,
+                    ),
                 ))
             })?
             .collect::<rusqlite::Result<HashMap<_, _>>>()?;
@@ -863,7 +873,7 @@ impl Searcher {
             .filter_map(|path| match fs::metadata(path) {
                 Ok(metadata)
                     if prior.get(path.to_string_lossy().as_ref())
-                        == Some(&(modified_ns(&metadata), metadata.len() as i64)) =>
+                        == Some(&(modified_ns(&metadata), metadata.len() as i64, true)) =>
                 {
                     None
                 }
