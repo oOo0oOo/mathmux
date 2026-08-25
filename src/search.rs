@@ -521,6 +521,7 @@ impl Searcher {
             })
             .collect::<Vec<_>>();
         self.remove_missing(&source_root.owner, "source", &files)?;
+        let mut connection = self.open()?;
         for path in files {
             if !self.file_changed(&source_root.owner, &path, "source")? {
                 continue;
@@ -530,7 +531,6 @@ impl Searcher {
             let display = display_path(&path, workspace_root, &source_root.root, source_root.kind);
             let module = module_name(&path, &source_root.root, source_root.kind);
             let entries = parse_source(&source, &module);
-            let mut connection = self.open()?;
             let transaction = connection.transaction()?;
             transaction.execute(
                 "DELETE FROM search_fts WHERE owner = ?1 AND origin = ?2",
@@ -578,6 +578,7 @@ impl Searcher {
             })
             .collect::<Vec<_>>();
         self.remove_missing(owner, "ilean", &files)?;
+        let mut connection = self.open()?;
         for path in files {
             if !self.file_changed(owner, &path, "ilean")? {
                 continue;
@@ -589,7 +590,6 @@ impl Searcher {
                 .and_then(Value::as_str)
                 .unwrap_or_default();
             let source_path = format!("{}.lean", module.replace('.', "/"));
-            let mut connection = self.open()?;
             let transaction = connection.transaction()?;
             let artifact = path.to_string_lossy();
             transaction.execute(
