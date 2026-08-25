@@ -169,10 +169,8 @@ fn restore_project_oleans(cache_dir: &Path, root: &Path, modules: &[String]) -> 
         if artifact.is_file() {
             continue;
         }
-        let hash_path = artifact.with_extension("olean.hash");
-        let hash = fs::read_to_string(&hash_path)
+        let hash = project_olean_hash(&artifact)
             .with_context(|| format!("missing artifact hash for {module}"))?;
-        let hash = hash.trim();
         ensure!(
             hash.len() == 16 && hash.chars().all(|character| character.is_ascii_hexdigit()),
             "invalid artifact hash for {module}"
@@ -191,6 +189,28 @@ fn restore_project_oleans(cache_dir: &Path, root: &Path, modules: &[String]) -> 
         }
     }
     Ok(())
+}
+
+fn project_olean_hash(artifact: &Path) -> Result<String> {
+    let hash_path = artifact.with_extension("olean.hash");
+    if hash_path.is_file() {
+        return Ok(fs::read_to_string(hash_path)?.trim().to_owned());
+    }
+    let trace_path = artifact.with_extension("trace");
+    let trace: serde_json::Value = serde_json::from_slice(&fs::read(trace_path)?)?;
+    trace
+        .pointer("/outputs/o")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .find_map(|name| {
+            Path::new(name)
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(str::to_owned)
+        })
+        .context("trace has no olean output")
 }
 
 fn combined_output(output: &std::process::Output) -> String {
@@ -489,5 +509,29 @@ mod tests {
 
         restore_project_oleans(&cache, &root, &["Demo.Result".into()]).unwrap();
         assert_eq!(fs::read_to_string(artifact).unwrap(), "olean");
+    }
+
+    #[test]
+    fn project_oleans_are_restored_from_synthetic_lake_traces() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("worktree");
+        let cache = directory.path().join("cache");
+        let hash = "fedcba9876543210";
+        let artifact = root.join(".lake/build/lib/lean/Demo/Result.olean");
+        fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+        fs::write(
+            artifact.with_extension("trace"),
+            format!(r#"{{"synthetic":true,"outputs":{{"o":["{hash}.olean"]}}}}"#),
+        )
+        .unwrap();
+        fs::create_dir_all(cache.join("artifacts")).unwrap();
+        fs::write(
+            cache.join("artifacts").join(format!("{hash}.olean")),
+            "cached olean",
+        )
+        .unwrap();
+
+        restore_project_oleans(&cache, &root, &["Demo.Result".into()]).unwrap();
+        assert_eq!(fs::read_to_string(artifact).unwrap(), "cached olean");
     }
 }
