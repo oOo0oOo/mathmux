@@ -99,8 +99,10 @@ fn validate(repo: &Repo, submission: &Submission) -> Result<ValidationReport> {
     let started = Instant::now();
     let root = prepare_worktree(repo, &submission.main_commit)?;
     let sorries = find_sorries(&root)?;
+    let (roots, project_modules) = deliverable_modules(&root);
     let output = lake_command(repo, &root)
         .arg("build")
+        .args(&roots)
         .output()
         .context("cannot start validation build")?;
     let build_output = combined_output(&output);
@@ -114,7 +116,6 @@ fn validate(repo: &Repo, submission: &Submission) -> Result<ValidationReport> {
             duration_ms: started.elapsed().as_millis() as u64,
         });
     }
-    let (roots, project_modules) = deliverable_modules(&root);
     let axioms = match run_axiom_audit(repo, &root, &roots, &project_modules) {
         Ok(axioms) => axioms,
         Err(error) => {
