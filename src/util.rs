@@ -146,7 +146,10 @@ pub fn truncate_middle(value: &str, limit: usize) -> String {
 
 pub fn query_requests_proof_body(query: &str) -> bool {
     let normalized = single_line(query).to_lowercase();
-    normalized.contains(":= by")
+    normalized.starts_with("def ")
+        || normalized.starts_with("theorem ")
+        || normalized.starts_with("lemma ")
+        || normalized.contains(":= by")
         || normalized.contains("proof body")
         || normalized.contains("implementation body")
 }
