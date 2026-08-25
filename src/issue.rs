@@ -562,6 +562,30 @@ impl TelemetryStore {
                 .join("\n")
         }))
     }
+
+    fn latest_exchange(&self, project: &Path, workspace: Option<&str>) -> Result<Option<String>> {
+        let row = self
+            .open_db()?
+            .query_row(
+                "SELECT request_json, response_json
+                 FROM telemetry_events
+                 WHERE project = ?1 AND (?2 IS NULL OR workspace = ?2)
+                 ORDER BY created_at DESC, id DESC LIMIT 1",
+                params![project.to_string_lossy(), workspace],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        row.map(|(request, response)| {
+            let request = serde_json::from_str::<serde_json::Value>(&request)?;
+            let response = serde_json::from_str::<serde_json::Value>(&response)?;
+            serde_json::to_string(&serde_json::json!({
+                "request": request,
+                "response": response,
+            }))
+            .map_err(Into::into)
+        })
+        .transpose()
+    }
 }
 
 pub fn record_exchange(
@@ -570,15 +594,6 @@ pub fn record_exchange(
     response: &Response,
     client_ms: u64,
 ) -> Result<()> {
-    #[derive(Serialize)]
-    struct Exchange<'a> {
-        request: &'a Request,
-        response: &'a Response,
-    }
-
-    let path = repo.state_dir.join("development-last-command.json");
-    fs::write(&path, serde_json::to_vec(&Exchange { request, response })?)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
     TelemetryStore::global()?.record(repo, request, response, client_ms)?;
     Ok(())
 }
@@ -785,8 +800,6 @@ fn capture_context(cwd: &Path, related_ref: Option<&str>) -> Result<IssueContext
     context.lean_toolchain = fs::read_to_string(repo.root.join("lean-toolchain"))
         .ok()
         .map(|value| value.trim().to_owned());
-    context.exchange =
-        fs::read_to_string(repo.state_dir.join("development-last-command.json")).ok();
     let mut worktree = repo.root.clone();
     if let Ok(state) = State::new(&repo.db_path) {
         if let Ok(workspace) = state.workspace_for_path(cwd) {
@@ -797,10 +810,16 @@ fn capture_context(cwd: &Path, related_ref: Option<&str>) -> Result<IssueContext
             context.related_detail = Some(state.show(reference, true)?);
         }
     }
-    context.telemetry = TelemetryStore::global()
-        .ok()
-        .and_then(|store| store.recent(&repo.root, context.workspace.as_deref()).ok())
-        .flatten();
+    if let Ok(store) = TelemetryStore::global() {
+        context.exchange = store
+            .latest_exchange(&repo.root, context.workspace.as_deref())
+            .ok()
+            .flatten();
+        context.telemetry = store
+            .recent(&repo.root, context.workspace.as_deref())
+            .ok()
+            .flatten();
+    }
     let dirty = dirty_paths(&worktree).unwrap_or_default();
     context.dirty = dirty
         .iter()
@@ -1056,6 +1075,29 @@ mod tests {
         let slow = store.summary("all", None, Some(1)).unwrap();
         assert!(slow.starts_with("e2 check 1.2s error"));
         assert!(store.show("e2", true).unwrap().contains("request: {}"));
+        connection
+            .execute(
+                "UPDATE telemetry_events SET request_json = '{\"cwd\":\"w1\"}' WHERE id = 3",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO telemetry_events(
+                    created_at, build, project, workspace, verb, reference, ok, error_class,
+                    client_ms, daemon_ms, rss_kib, request_bytes, response_bytes,
+                    request_json, response_json
+                 ) VALUES (?1, 'test', '/repo', 'w2', 'search', NULL, 1, NULL,
+                           1, 1, 1024, 10, 20, '{\"cwd\":\"w2\"}', '{}')",
+                [now_unix_ms() + 1],
+            )
+            .unwrap();
+        let exchange = store
+            .latest_exchange(Path::new("/repo"), Some("w1"))
+            .unwrap()
+            .unwrap();
+        assert!(exchange.contains("\"cwd\":\"w1\""));
+        assert!(!exchange.contains("\"cwd\":\"w2\""));
     }
 
     #[test]
