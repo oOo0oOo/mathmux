@@ -1283,13 +1283,22 @@ impl Searcher {
                             candidate.hit.signature.is_none() && candidate.hit.source.is_none()
                         })
                 });
-        if ranked.len() < 3
-            || missing_specific_term
-            || missing_source_identifier
-            || missing_named_detail
-            || (!base_warming
-                && !type_search
-                && (query.contains('|') || !named_argument_terms(query).is_empty()))
+        let warm_name_coverage = name_search
+            && !base_warming
+            && ranked
+                .iter()
+                .filter(|candidate| !matches!(candidate.hit.kind.as_str(), "file" | "imports"))
+                .take(3)
+                .count()
+                == 3;
+        if !warm_name_coverage
+            && (ranked.len() < 3
+                || missing_specific_term
+                || missing_source_identifier
+                || missing_named_detail
+                || (!base_warming
+                    && !type_search
+                    && (query.contains('|') || !named_argument_terms(query).is_empty())))
         {
             match fallback_source_hits(&workspace.path, query, &query_tokens) {
                 Ok(hits) => ranked.extend(hits),
