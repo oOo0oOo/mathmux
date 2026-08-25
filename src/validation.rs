@@ -52,6 +52,7 @@ fn validation_loop(
         }
         match state.next_validation() {
             Ok(Some(submission)) => {
+                let started = Instant::now();
                 let result = validate(&repo, &submission);
                 let report = match result {
                     Ok(report) => report,
@@ -61,7 +62,7 @@ fn validation_loop(
                         build_output: String::new(),
                         axioms: Vec::new(),
                         sorries: Vec::new(),
-                        duration_ms: 0,
+                        duration_ms: started.elapsed().as_millis() as u64,
                     },
                 };
                 let _ = state.finish_validation(&submission.reference, &report);
