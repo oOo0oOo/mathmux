@@ -803,8 +803,34 @@ impl Searcher {
                 .unwrap_or(Ordering::Equal)
                 .then_with(|| left.hit.name.cmp(&right.hit.name))
         });
-        let mut seen = HashSet::new();
-        ranked.retain(|candidate| seen.insert(candidate.hit.name.clone()));
+        let mut positions: HashMap<String, usize> = HashMap::new();
+        let mut deduplicated: Vec<RankedHit> = Vec::new();
+        for mut candidate in ranked {
+            if let Some(index) = positions.get(&candidate.hit.name).copied() {
+                let existing = &mut deduplicated[index].hit;
+                if existing.kind == "declaration"
+                    && !matches!(candidate.hit.kind.as_str(), "declaration" | "file")
+                {
+                    existing.kind = candidate.hit.kind;
+                }
+                if existing.signature.is_none() {
+                    existing.signature = candidate.hit.signature.take();
+                }
+                if existing.doc.is_none() {
+                    existing.doc = candidate.hit.doc.take();
+                }
+                if existing.source.is_none() {
+                    existing.source = candidate.hit.source.take();
+                }
+                if existing.usages.is_empty() {
+                    existing.usages = candidate.hit.usages;
+                }
+            } else {
+                positions.insert(candidate.hit.name.clone(), deduplicated.len());
+                deduplicated.push(candidate);
+            }
+        }
+        let mut ranked = deduplicated;
         ranked.truncate(RESULT_LIMIT);
         let no_hits = ranked.is_empty();
         let dependency_sources_missing = dependency_sources_missing(&workspace.path);
@@ -2172,7 +2198,7 @@ fn render_summary(run: &SearchRun) -> String {
     if run.hits.is_empty() {
         output.push_str(" no results");
     }
-    for hit in run.hits.iter().take(SUMMARY_LIMIT) {
+    for (index, hit) in run.hits.iter().take(SUMMARY_LIMIT).enumerate() {
         output.push('\n');
         output.push_str(&hit.name);
         if let Some(signature) = &hit.signature {
@@ -2180,7 +2206,8 @@ fn render_summary(run: &SearchRun) -> String {
             output.push_str(&truncate_line(&single_line(signature), 240));
         }
         output.push_str(&format!("  {}:{}", hit.path, hit.line));
-        if run.hits.first().is_some_and(|first| first.name == hit.name)
+        if (index == 0
+            || (index < 3 && matches!(hit.kind.as_str(), "class" | "inductive" | "structure")))
             && let Some(source) = &hit.source
         {
             let source_lines = match hit.kind.as_str() {
