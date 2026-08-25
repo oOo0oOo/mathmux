@@ -1435,9 +1435,14 @@ impl Searcher {
     ) -> Result<Vec<IndexedRow>> {
         let connection = self.open()?;
         let fts_query = fts_query(&tokens.join(" "));
+        let name_query = declaration_name_query(query);
         let sql = if fts_query.is_empty() && include_all_signatures {
             "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0
              FROM search_fts WHERE signature <> '' LIMIT 20000"
+        } else if name_query {
+            "SELECT owner, file, module, line, name, kind, signature, docs, body,
+                    bm25(search_fts, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 7.0, 3.0, 1.0)
+             FROM search_fts WHERE search_fts MATCH ?1 LIMIT 256"
         } else {
             "SELECT owner, file, module, line, name, kind, signature, docs, body,
                     bm25(search_fts, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 7.0, 3.0, 1.0)
@@ -1461,7 +1466,7 @@ impl Searcher {
         let mut named = connection.prepare(
             "SELECT owner, file, module, line, name, kind, signature, docs, body,
                     bm25(search_fts, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 7.0, 3.0, 1.0)
-             FROM search_fts WHERE search_fts MATCH ?1 LIMIT 256",
+             FROM search_fts WHERE search_fts MATCH ?1 LIMIT 128",
         )?;
         let mut named_contains = connection.prepare(
             "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0
@@ -1470,7 +1475,7 @@ impl Searcher {
         let mut qualified = connection.prepare(
             "SELECT owner, file, module, line, name, kind, signature, docs, body,
                     bm25(search_fts, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 7.0, 3.0, 1.0)
-             FROM search_fts WHERE search_fts MATCH ?1 LIMIT 1024",
+             FROM search_fts WHERE search_fts MATCH ?1 LIMIT 256",
         )?;
         for token in tokens
             .iter()
@@ -1490,13 +1495,13 @@ impl Searcher {
                 );
             }
         }
-        if declaration_name_query(query)
-            && let Some((owner, leaf)) = query.rsplit_once('.')
+        if name_query && let Some((owner, leaf)) = query.rsplit_once('.')
         {
             let owner = owner.rsplit('.').next().unwrap_or(owner).to_lowercase();
+            let mut seen = HashSet::new();
             for part in identifier_query_parts(leaf)
                 .into_iter()
-                .filter(|part| part.len() >= 2)
+                .filter(|part| part.len() >= 2 && seen.insert(part.clone()))
             {
                 let query = format!(
                     "name : \"{}\" AND name : \"{}\"*",
