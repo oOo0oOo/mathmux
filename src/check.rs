@@ -1038,6 +1038,8 @@ pub(crate) fn parse_imports(source: &str) -> Vec<String> {
         }
         break;
     }
+    let mut seen = HashSet::new();
+    imports.retain(|module| seen.insert(module.clone()));
     imports
 }
 
@@ -1215,6 +1217,14 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[test]
+    fn duplicate_imports_are_ignored() {
+        assert_eq!(
+            parse_imports("import A B\npublic import A\n\ndef value := 1\n"),
+            ["A", "B"]
+        );
+    }
 
     #[test]
     fn imports_drive_dependency_order_and_fingerprints() {

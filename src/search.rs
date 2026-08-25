@@ -603,7 +603,7 @@ impl Searcher {
                 )?;
                 {
                     let mut insert = transaction.prepare_cached(
-                        "INSERT INTO search_imports(owner, origin, module, imported)
+                        "INSERT OR IGNORE INTO search_imports(owner, origin, module, imported)
                          VALUES (?1, ?2, ?3, ?4)",
                     )?;
                     for imported in parse_imports(&source) {
