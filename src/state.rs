@@ -139,6 +139,10 @@ pub struct SearchHit {
     pub doc: Option<String>,
     pub source: Option<String>,
     pub usages: Vec<SearchUsage>,
+    #[serde(default)]
+    pub applicable: bool,
+    #[serde(default)]
+    pub required_import: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -730,8 +734,14 @@ fn render_search_run(run: &SearchRun, all: bool) -> String {
             ));
         }
         output.push_str(&format!("\n   {}:{}", hit.path, hit.line));
+        if hit.applicable {
+            output.push_str("  applicable");
+        }
         if !hit.usages.is_empty() {
             output.push_str(&format!("  refs:{}", hit.usages.len()));
+        }
+        if let Some(module) = &hit.required_import {
+            output.push_str(&format!("\n   import {module}"));
         }
         if all || index < 3 {
             if let Some(doc) = &hit.doc {
@@ -771,11 +781,14 @@ fn render_search_run(run: &SearchRun, all: bool) -> String {
 }
 
 fn query_requests_proof_body(query: &str) -> bool {
-    query
+    let normalized = query
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
-        .contains(":= by")
+        .to_lowercase();
+    normalized.contains(":= by")
+        || normalized.contains("proof body")
+        || normalized.contains("implementation body")
 }
 
 fn single_line(value: &str) -> String {
@@ -1097,6 +1110,8 @@ mod tests {
                     .join("\n"),
             ),
             usages: Vec::new(),
+            applicable: false,
+            required_import: None,
         };
         let run = |query: &str| SearchRun {
             reference: "q1".into(),
@@ -1110,6 +1125,7 @@ mod tests {
         };
         assert!(!render_search_run(&run("Demo.proof"), false).contains("proof line 9"));
         assert!(render_search_run(&run("Demo.proof :=   by"), false).contains("proof line 12"));
+        assert!(render_search_run(&run("Demo.proof proof body"), false).contains("proof line 12"));
     }
 
     #[test]

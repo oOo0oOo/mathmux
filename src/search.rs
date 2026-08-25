@@ -15,7 +15,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 use walkdir::WalkDir;
 
-use crate::git::{lake_command, lake_executable};
+use crate::check::{parse_imports, project_module_name};
+use crate::git::{dirty_lean_files, lake_command, lake_executable, project_lean_files};
 use crate::issue::{TelemetryOperation, TelemetryStore, development_enabled};
 use crate::repo::Repo;
 use crate::state::{SearchHit, SearchRun, SearchUsage, State, Workspace};
@@ -25,7 +26,7 @@ const RESULT_LIMIT: usize = 24;
 const SUMMARY_LIMIT: usize = 5;
 const GOAL_TIMEOUT_MS: u64 = 2_000;
 const SEARCH_INDEX_VERSION: i64 = 6;
-const SOURCE_INDEX_KIND: &str = "source-v4";
+const SOURCE_INDEX_KIND: &str = "source-v6";
 const DECLARATION_DETAIL_LINES: usize = 48;
 const INDEX_COMMIT_BATCH: usize = 64;
 
@@ -50,6 +51,11 @@ struct RankedHit {
     score: f64,
 }
 
+struct ImportContext {
+    accessible: HashSet<String>,
+    complete: bool,
+}
+
 #[derive(Debug)]
 struct IndexedRow {
     owner: String,
@@ -62,6 +68,21 @@ struct IndexedRow {
     docs: String,
     body: String,
     rank: f64,
+}
+
+fn indexed_row_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexedRow> {
+    Ok(IndexedRow {
+        owner: row.get(0)?,
+        path: row.get(1)?,
+        module: row.get(2)?,
+        line: row.get::<_, i64>(3)?.max(1) as u64,
+        name: row.get(4)?,
+        kind: row.get(5)?,
+        signature: row.get(6)?,
+        docs: row.get(7)?,
+        body: row.get(8)?,
+        rank: row.get(9)?,
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -283,6 +304,15 @@ impl Searcher {
              );
              CREATE INDEX IF NOT EXISTS search_references_target
                 ON search_references(target);
+             CREATE TABLE IF NOT EXISTS search_imports (
+                owner TEXT NOT NULL,
+                origin TEXT NOT NULL,
+                module TEXT NOT NULL,
+                imported TEXT NOT NULL,
+                PRIMARY KEY(owner, origin, imported)
+             );
+             CREATE INDEX IF NOT EXISTS search_imports_module
+                ON search_imports(module);
              CREATE TABLE IF NOT EXISTS search_meta (
                 key TEXT PRIMARY KEY,
                 value INTEGER NOT NULL
@@ -299,7 +329,8 @@ impl Searcher {
             connection.execute_batch(
                 "DELETE FROM search_files;
                  DELETE FROM search_fts;
-                 DELETE FROM search_references;",
+                 DELETE FROM search_references;
+                 DELETE FROM search_imports;",
             )?;
             connection.execute(
                 "INSERT INTO search_meta(key, value) VALUES ('version', ?1)
@@ -307,6 +338,22 @@ impl Searcher {
                 [SEARCH_INDEX_VERSION],
             )?;
         }
+        connection.execute(
+            "DELETE FROM search_fts
+             WHERE EXISTS (
+                SELECT 1 FROM search_files
+                WHERE search_files.owner = search_fts.owner
+                  AND search_files.path = search_fts.origin
+                  AND search_files.kind LIKE 'source-v%'
+                  AND search_files.kind <> ?1
+             )",
+            [SOURCE_INDEX_KIND],
+        )?;
+        connection.execute(
+            "DELETE FROM search_files
+             WHERE kind LIKE 'source-v%' AND kind <> ?1",
+            [SOURCE_INDEX_KIND],
+        )?;
         Ok(())
     }
 
@@ -543,6 +590,24 @@ impl Searcher {
                     "DELETE FROM search_fts WHERE owner = ?1 AND origin = ?2",
                     params![source_root.owner, path.to_string_lossy()],
                 )?;
+                transaction.execute(
+                    "DELETE FROM search_imports WHERE owner = ?1 AND origin = ?2",
+                    params![source_root.owner, path.to_string_lossy()],
+                )?;
+                {
+                    let mut insert = transaction.prepare_cached(
+                        "INSERT INTO search_imports(owner, origin, module, imported)
+                         VALUES (?1, ?2, ?3, ?4)",
+                    )?;
+                    for imported in parse_imports(&source) {
+                        insert.execute(params![
+                            source_root.owner,
+                            path.to_string_lossy(),
+                            module,
+                            imported,
+                        ])?;
+                    }
+                }
                 {
                     let mut insert = transaction.prepare_cached(
                         "INSERT INTO search_fts(
@@ -687,6 +752,10 @@ impl Searcher {
                 "DELETE FROM search_fts WHERE owner = ?1 AND origin = ?2",
                 params![owner, missing],
             )?;
+            connection.execute(
+                "DELETE FROM search_imports WHERE owner = ?1 AND origin = ?2",
+                params![owner, missing],
+            )?;
             if kind == "ilean" {
                 connection.execute(
                     "DELETE FROM search_references WHERE owner = ?1 AND file = ?2",
@@ -723,13 +792,20 @@ impl Searcher {
         let type_search = type_search_enabled() && type_shaped(query);
         let query_tokens = meaningful_query_tokens(query);
         let rows = self.candidates(&query_tokens, type_search)?;
+        let import_context = self.import_context(workspace, scopes, base_warming);
         let query_lower = query.to_lowercase();
         let mut ranked = Vec::new();
         let mut warming = false;
         if type_search {
-            let (loogle_hits, is_warming) = self.loogle_hits(workspace, query);
-            warming = is_warming;
-            for (position, hit) in loogle_hits.into_iter().enumerate() {
+            let explicit_conclusion = conclusion_query(query);
+            let applicability_query = (!explicit_conclusion).then(|| format!("⊢ {query}"));
+            let (applicable_hits, applicable_warming) = match applicability_query.as_deref() {
+                Some(query) => self.loogle_hits(workspace, query),
+                None => self.loogle_hits(workspace, query),
+            };
+            warming |= applicable_warming;
+            let has_full_applicability_page = applicable_hits.len() >= RESULT_LIMIT;
+            for (position, hit) in applicable_hits.into_iter().enumerate() {
                 let usages = self.usages(&hit.name, scopes, workspace)?;
                 ranked.push(RankedHit {
                     hit: SearchHit {
@@ -742,9 +818,34 @@ impl Searcher {
                         usages,
                         name: hit.name,
                         module: hit.module,
+                        applicable: true,
+                        required_import: None,
                     },
-                    score: 180.0 - position as f64,
+                    score: 280.0 - position as f64,
                 });
+            }
+            if !explicit_conclusion && !has_full_applicability_page {
+                let (loogle_hits, is_warming) = self.loogle_hits(workspace, query);
+                warming |= is_warming;
+                for (position, hit) in loogle_hits.into_iter().enumerate() {
+                    let usages = self.usages(&hit.name, scopes, workspace)?;
+                    ranked.push(RankedHit {
+                        hit: SearchHit {
+                            path: format!("{}.lean", hit.module.replace('.', "/")),
+                            line: 1,
+                            kind: "declaration".into(),
+                            signature: nonempty(hit.signature),
+                            doc: hit.doc,
+                            source: None,
+                            usages,
+                            name: hit.name,
+                            module: hit.module,
+                            applicable: false,
+                            required_import: None,
+                        },
+                        score: 180.0 - position as f64,
+                    });
+                }
             }
         }
         for row in rows.into_iter().filter(|row| scopes.contains(&row.owner)) {
@@ -783,15 +884,50 @@ impl Searcher {
                     doc: nonempty(row.docs),
                     source,
                     usages,
+                    applicable: false,
+                    required_import: None,
                 },
                 score,
             });
         }
-        if base_warming
-            || ranked.len() < 3
-            || query.contains('|')
-            || query_tokens.len() > 1
-            || !named_argument_terms(query).is_empty()
+        ranked.extend(project_source_hits(
+            workspace,
+            query,
+            &query_tokens,
+            base_warming,
+        ));
+        let missing_specific_term = specific_query_tokens(query).iter().any(|token| {
+            !ranked.iter().any(|candidate| {
+                !matches!(candidate.hit.kind.as_str(), "file" | "imports")
+                    && (text_matches_token(&candidate.hit.name.to_lowercase(), token)
+                        || candidate.hit.signature.as_deref().is_some_and(|signature| {
+                            text_matches_token(&signature.to_lowercase(), token)
+                        }))
+            })
+        });
+        let missing_named_detail =
+            query_tokens
+                .iter()
+                .filter(|token| token.len() >= 8)
+                .any(|token| {
+                    let matches = ranked
+                        .iter()
+                        .filter(|candidate| hit_name_matches(&candidate.hit.name, token))
+                        .collect::<Vec<_>>();
+                    !matches.is_empty()
+                        && matches.iter().all(|candidate| {
+                            candidate.hit.signature.is_none() && candidate.hit.source.is_none()
+                        })
+                });
+        if ranked.len() < 3
+            || missing_specific_term
+            || missing_named_detail
+            || !source_specific_query_tokens(query).is_empty()
+            || (!base_warming
+                && !type_search
+                && (query.contains('|')
+                    || query_tokens.len() > 1
+                    || !named_argument_terms(query).is_empty()))
         {
             match fallback_source_hits(&workspace.path, query, &query_tokens) {
                 Ok(hits) => ranked.extend(hits),
@@ -799,6 +935,11 @@ impl Searcher {
                     &self.repo,
                     &format!("source fallback unavailable: {error:#}"),
                 ),
+            }
+        }
+        if let Some(context) = &import_context {
+            for candidate in &mut ranked {
+                apply_import_context(candidate, context);
             }
         }
         ranked.sort_by(|left, right| {
@@ -830,19 +971,24 @@ impl Searcher {
                 if existing.usages.is_empty() {
                     existing.usages = candidate.hit.usages;
                 }
+                existing.applicable |= candidate.hit.applicable;
+                if existing.required_import.is_none() {
+                    existing.required_import = candidate.hit.required_import.take();
+                }
             } else {
                 positions.insert(candidate.hit.name.clone(), deduplicated.len());
                 deduplicated.push(candidate);
             }
         }
         let mut ranked = deduplicated;
+        promote_query_coverage(&mut ranked, &query_tokens);
         ranked.truncate(RESULT_LIMIT);
         let no_hits = ranked.is_empty();
         let dependency_sources_missing = dependency_sources_missing(&workspace.path);
         Ok(SearchResult {
             hits: ranked.into_iter().map(|candidate| candidate.hit).collect(),
             inference: if type_search {
-                "hybrid+type".into()
+                "hybrid+applicability".into()
             } else if !type_search_enabled() {
                 "hybrid(type-off)".into()
             } else {
@@ -857,6 +1003,64 @@ impl Searcher {
                 (false, true, _) => Some("type index warming".into()),
                 (false, false, false) => None,
             },
+        })
+    }
+
+    fn import_context(
+        &self,
+        workspace: &Workspace,
+        scopes: &HashSet<String>,
+        base_warming: bool,
+    ) -> Option<ImportContext> {
+        if base_warming {
+            return None;
+        }
+        let dirty = dirty_lean_files(&workspace.path).ok()?;
+        let nested = dirty
+            .iter()
+            .filter(|path| path.components().count() > 1)
+            .collect::<Vec<_>>();
+        let target = if nested.len() == 1 {
+            nested[0]
+        } else if dirty.len() == 1 {
+            &dirty[0]
+        } else {
+            return None;
+        };
+        let source = fs::read_to_string(workspace.path.join(target)).ok()?;
+        let module = project_module_name(&workspace.path, target);
+        let mut graph: HashMap<String, Vec<String>> = HashMap::new();
+        let connection = self.open().ok()?;
+        let mut statement = connection
+            .prepare("SELECT owner, module, imported FROM search_imports")
+            .ok()?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .ok()?;
+        for row in rows.flatten() {
+            if scopes.contains(&row.0) {
+                graph.entry(row.1).or_default().push(row.2);
+            }
+        }
+        graph.insert(module.clone(), parse_imports(&source));
+        let mut accessible = HashSet::from([module.clone()]);
+        let mut pending = vec![module];
+        while let Some(module) = pending.pop() {
+            for imported in graph.get(&module).into_iter().flatten() {
+                if accessible.insert(imported.clone()) {
+                    pending.push(imported.clone());
+                }
+            }
+        }
+        Some(ImportContext {
+            accessible,
+            complete: !base_warming,
         })
     }
 
@@ -876,33 +1080,37 @@ impl Searcher {
              FROM search_fts WHERE search_fts MATCH ?1 LIMIT 1000"
         };
         let mut statement = connection.prepare(sql)?;
-        let map = |row: &rusqlite::Row<'_>| {
-            Ok(IndexedRow {
-                owner: row.get(0)?,
-                path: row.get(1)?,
-                module: row.get(2)?,
-                line: row.get::<_, i64>(3)?.max(1) as u64,
-                name: row.get(4)?,
-                kind: row.get(5)?,
-                signature: row.get(6)?,
-                docs: row.get(7)?,
-                body: row.get(8)?,
-                rank: row.get(9)?,
-            })
-        };
-        if fts_query.is_empty() && include_all_signatures {
+        let mut rows = if fts_query.is_empty() && include_all_signatures {
             statement
-                .query_map([], map)?
+                .query_map([], indexed_row_from_row)?
                 .collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(Into::into)
+                .map_err(anyhow::Error::from)?
         } else if fts_query.is_empty() {
-            Ok(Vec::new())
+            Vec::new()
         } else {
             statement
-                .query_map([fts_query], map)?
+                .query_map([fts_query], indexed_row_from_row)?
                 .collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(Into::into)
+                .map_err(anyhow::Error::from)?
+        };
+        drop(statement);
+        let mut named = connection.prepare(
+            "SELECT owner, file, module, line, name, kind, signature, docs, body,
+                    bm25(search_fts, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 7.0, 3.0, 1.0)
+             FROM search_fts WHERE search_fts MATCH ?1 LIMIT 32",
+        )?;
+        for token in tokens
+            .iter()
+            .filter(|token| token.len() >= 4 && token.as_str() != "_")
+        {
+            let query = format!("name : \"{}\"*", token.replace('"', "\"\""));
+            rows.extend(
+                named
+                    .query_map([query], indexed_row_from_row)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?,
+            );
         }
+        Ok(rows)
     }
 
     fn usages(
@@ -960,6 +1168,8 @@ impl Searcher {
                     doc: None,
                     source: nonempty(location_source_excerpt(&source, location.line)),
                     usages: Vec::new(),
+                    applicable: false,
+                    required_import: None,
                 }],
                 inference: "source".into(),
                 note: Some(
@@ -1022,6 +1232,8 @@ impl Searcher {
                 doc: None,
                 source: Some(suggestion),
                 usages: Vec::new(),
+                applicable: true,
+                required_import: None,
             })
             .collect();
         let note = if timed_out {
@@ -1041,6 +1253,89 @@ impl Searcher {
             note,
         })
     }
+}
+
+fn project_source_hits(
+    workspace: &Workspace,
+    query: &str,
+    query_tokens: &[String],
+    scan_all: bool,
+) -> Vec<RankedHit> {
+    let paths = if scan_all {
+        project_lean_files(&workspace.path)
+    } else {
+        let Ok(paths) = dirty_lean_files(&workspace.path) else {
+            return Vec::new();
+        };
+        paths
+    };
+    let mut ranked = Vec::new();
+    // Small projects should be searchable immediately while their persistent
+    // index is still warming. Keep a generous bound so ordinary projects are
+    // not silently truncated, while still bounding cold-start filesystem work.
+    for path in paths.into_iter().take(256) {
+        let absolute = workspace.path.join(&path);
+        let Ok(source) = fs::read_to_string(&absolute) else {
+            continue;
+        };
+        let module = project_module_name(&workspace.path, &path);
+        for entry in parse_source(&source, &module) {
+            let name = entry.name.to_lowercase();
+            let searchable = format!("{} {} {}", name, entry.signature, entry.body).to_lowercase();
+            let matched_tokens = query_tokens
+                .iter()
+                .filter(|token| text_matches_token(&searchable, token))
+                .collect::<Vec<_>>();
+            if matched_tokens.is_empty() {
+                continue;
+            }
+            let relevance = matched_tokens
+                .iter()
+                .map(|token| token.len().min(20))
+                .sum::<usize>();
+            let base = name.rsplit('.').next().unwrap_or(&name);
+            let exact_name = query_tokens
+                .iter()
+                .any(|token| token == base || token == &name);
+            let named = query_tokens
+                .iter()
+                .filter(|token| hit_name_matches(&name, token))
+                .count();
+            let (source, line) =
+                detailed_source_excerpt(&entry.body, query, query_tokens, entry.line, &entry.kind);
+            let is_file_like = matches!(entry.kind.as_str(), "file" | "imports");
+            let import_query = query_tokens
+                .iter()
+                .any(|token| matches!(token.as_str(), "import" | "imports"));
+            ranked.push(RankedHit {
+                hit: SearchHit {
+                    name: entry.name,
+                    kind: entry.kind,
+                    signature: nonempty(entry.signature),
+                    module: module.clone(),
+                    path: path.to_string_lossy().into_owned(),
+                    line,
+                    doc: nonempty(entry.docs),
+                    source,
+                    usages: Vec::new(),
+                    applicable: false,
+                    required_import: None,
+                },
+                score: 320.0
+                    + relevance as f64 * 4.0
+                    + named as f64 * 45.0
+                    + if exact_name { 140.0 } else { 0.0 }
+                    - if is_file_like && !import_query {
+                        300.0
+                    } else if is_file_like {
+                        60.0
+                    } else {
+                        0.0
+                    },
+            });
+        }
+    }
+    ranked
 }
 
 const LOOGLE_FILES: &[(&str, &str)] = &[
@@ -1131,12 +1426,17 @@ impl LoogleWorker {
     fn query(&mut self, query: &str) -> Result<Vec<LoogleHit>> {
         self.last_used = Instant::now();
         let query = query.lines().collect::<Vec<_>>().join(" ");
-        self.stdin.write_all(query.as_bytes())?;
-        self.stdin.write_all(b"\n")?;
-        self.stdin.flush()?;
-        let line = read_line_timeout(&mut self.stdout, std::time::Duration::from_secs(30))?;
-        let value: Value = serde_json::from_str(&line)
-            .with_context(|| format!("invalid Loogle response: {}", clean_line(&line)))?;
+        let mut value = self.query_value(&query)?;
+        if value.get("error").is_some()
+            && let Some(suggestion) = value
+                .get("suggestions")
+                .and_then(Value::as_array)
+                .and_then(|suggestions| suggestions.first())
+                .and_then(Value::as_str)
+            && suggestion != query
+        {
+            value = self.query_value(suggestion)?;
+        }
         if value.get("error").is_some() {
             return Ok(Vec::new());
         }
@@ -1162,6 +1462,15 @@ impl LoogleWorker {
                 })
             })
             .collect())
+    }
+
+    fn query_value(&mut self, query: &str) -> Result<Value> {
+        self.stdin.write_all(query.as_bytes())?;
+        self.stdin.write_all(b"\n")?;
+        self.stdin.flush()?;
+        let line = read_line_timeout(&mut self.stdout, std::time::Duration::from_secs(30))?;
+        serde_json::from_str(&line)
+            .with_context(|| format!("invalid Loogle response: {}", clean_line(&line)))
     }
 
     fn alive(&mut self) -> bool {
@@ -1365,7 +1674,7 @@ fn parse_source(source: &str, module: &str) -> Vec<SourceEntry> {
             .and_then(|next| next.get(0))
             .map(|next| next.start())
             .unwrap_or(source.len());
-        let block = source[complete.start()..end].trim();
+        let block = declaration_block(&source[complete.start()..end]);
         let header_end = declaration_header_end(block);
         let header = block[..header_end].trim();
         let name_end = raw_name
@@ -1420,7 +1729,10 @@ fn parse_source(source: &str, module: &str) -> Vec<SourceEntry> {
     let imports = source
         .lines()
         .enumerate()
-        .filter(|(_, line)| line.trim_start().starts_with("import "))
+        .filter(|(_, line)| {
+            let line = line.trim_start();
+            line.starts_with("import ") || line.starts_with("public import ")
+        })
         .collect::<Vec<_>>();
     if let Some((first, _)) = imports.first() {
         entries.push(SourceEntry {
@@ -1496,6 +1808,19 @@ fn declaration_header_end(block: &str) -> usize {
     block.find('\n').unwrap_or(block.len())
 }
 
+fn declaration_block(block: &str) -> &str {
+    let end = block
+        .match_indices('\n')
+        .map(|(index, _)| index + 1)
+        .find(|start| {
+            let line = block[*start..].lines().next().unwrap_or_default();
+            let trimmed = line.trim_start();
+            line.len() == trimmed.len() && (trimmed == "end" || trimmed.starts_with("end "))
+        })
+        .unwrap_or(block.len());
+    block[..end].trim()
+}
+
 fn namespaces_by_line(source: &str) -> Vec<Vec<String>> {
     let mut scopes: Vec<Option<Vec<String>>> = Vec::new();
     let mut result = Vec::new();
@@ -1538,11 +1863,10 @@ fn ambient_contexts_by_line(source: &str) -> Vec<Vec<String>> {
             .collect();
         result.push(flattened);
         let trimmed = line.trim();
-        if trimmed.starts_with("namespace ")
-            || trimmed == "section"
-            || trimmed.starts_with("section ")
-        {
+        if trimmed.starts_with("namespace ") {
             scopes.push(Vec::new());
+        } else if trimmed == "section" || trimmed.starts_with("section ") {
+            scopes.push(vec![single_line(trimmed)]);
         } else if trimmed == "end" || trimmed.starts_with("end ") {
             if scopes.len() > 1 {
                 scopes.pop();
@@ -1741,6 +2065,34 @@ fn query_tokens(query: &str) -> Vec<String> {
         .collect()
 }
 
+fn specific_query_tokens(query: &str) -> Vec<String> {
+    query
+        .split(|character: char| {
+            !character.is_alphanumeric() && character != '_' && character != '.'
+        })
+        .map(|token| token.trim_matches('.'))
+        .filter(|token| token.len() >= 8)
+        .filter(|token| token.contains(['.', '_']) || token.chars().skip(1).any(char::is_uppercase))
+        .map(str::to_lowercase)
+        .collect()
+}
+
+fn source_specific_query_tokens(query: &str) -> Vec<String> {
+    query
+        .split(|character: char| {
+            !character.is_alphanumeric() && character != '_' && character != '.'
+        })
+        .map(|token| token.trim_matches('.'))
+        .filter(|token| token.len() >= 8)
+        .filter(|token| {
+            token.contains(['.', '_'])
+                || (token.chars().next().is_some_and(char::is_lowercase)
+                    && token.chars().skip(1).any(char::is_uppercase))
+        })
+        .map(str::to_lowercase)
+        .collect()
+}
+
 fn meaningful_query_tokens(query: &str) -> Vec<String> {
     let mut tokens = query_tokens(query);
     let generic = [
@@ -1762,8 +2114,140 @@ fn meaningful_query_tokens(query: &str) -> Vec<String> {
     }
     if tokens.len() > 1 {
         tokens.retain(|token| token.chars().count() >= 2);
+        tokens.retain(|token| {
+            !matches!(
+                token.as_str(),
+                "and" | "for" | "from" | "in" | "of" | "on" | "or" | "the" | "to" | "with"
+            )
+        });
     }
+    if query_requests_proof_body(query) {
+        tokens.retain(|token| {
+            !matches!(
+                token.as_str(),
+                "body" | "implementation" | "proof" | "source"
+            )
+        });
+    }
+    let aliases = tokens
+        .iter()
+        .filter_map(|token| match token.as_str() {
+            "addition" => Some("add"),
+            "continuity" => Some("continuous"),
+            "multiplication" => Some("mul"),
+            "projection" => Some("proj"),
+            "scaling" => Some("smul"),
+            _ => None,
+        })
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    tokens.extend(aliases);
+    let mut seen = HashSet::new();
+    tokens.retain(|token| seen.insert(token.clone()));
     tokens
+}
+
+fn promote_query_coverage(ranked: &mut Vec<RankedHit>, tokens: &[String]) {
+    if ranked.len() <= 1 || tokens.len() <= 1 {
+        return;
+    }
+    let mut remaining = std::mem::take(ranked);
+    let mut promoted: Vec<RankedHit> = Vec::new();
+    let qualified = tokens.iter().filter(|token| token.contains('.')).count();
+    if qualified >= 2 {
+        for token in tokens.iter().filter(|token| token.contains('.')) {
+            if let Some(position) = remaining
+                .iter()
+                .position(|candidate| candidate.hit.name.eq_ignore_ascii_case(token))
+            {
+                promoted.push(remaining.remove(position));
+            }
+        }
+    }
+    if promoted.len() < SUMMARY_LIMIT && !remaining.is_empty() {
+        promoted.push(remaining.remove(0));
+    }
+    for token in tokens.iter().filter(|token| token.len() >= 3) {
+        if promoted
+            .iter()
+            .any(|candidate| hit_name_matches(&candidate.hit.name, token))
+        {
+            continue;
+        }
+        let eligible = |candidate: &RankedHit| {
+            !matches!(candidate.hit.kind.as_str(), "file" | "imports")
+                || matches!(token.as_str(), "import" | "imports")
+        };
+        if let Some(position) = remaining
+            .iter()
+            .enumerate()
+            .filter(|(_, candidate)| {
+                eligible(candidate) && hit_name_matches(&candidate.hit.name, token)
+            })
+            .max_by_key(|(_, candidate)| {
+                candidate
+                    .hit
+                    .name
+                    .split(['.', '_'])
+                    .filter(|segment| tokens.iter().any(|facet| words_match(segment, facet)))
+                    .count()
+            })
+            .map(|(position, _)| position)
+        {
+            promoted.push(remaining.remove(position));
+        } else if token.len() >= 6
+            && !promoted
+                .iter()
+                .any(|candidate| hit_matches_token(&candidate.hit, token))
+            && let Some(position) = remaining.iter().position(|candidate| {
+                eligible(candidate) && hit_matches_token(&candidate.hit, token)
+            })
+        {
+            promoted.push(remaining.remove(position));
+        }
+        if promoted.len() == SUMMARY_LIMIT {
+            break;
+        }
+    }
+    promoted.extend(remaining);
+    *ranked = promoted;
+}
+
+fn hit_name_matches(name: &str, token: &str) -> bool {
+    if name.eq_ignore_ascii_case(token) {
+        return true;
+    }
+    let leaf = token.rsplit('.').next().unwrap_or(token);
+    name.split(['.', '_'])
+        .any(|segment| words_match(segment, leaf))
+}
+
+fn hit_matches_token(hit: &SearchHit, token: &str) -> bool {
+    hit_name_matches(&hit.name, token)
+        || hit
+            .source
+            .as_deref()
+            .is_some_and(|source| text_matches_token(&source.to_lowercase(), token))
+}
+
+fn text_matches_token(text: &str, token: &str) -> bool {
+    text.contains(token)
+        || token
+            .strip_suffix('s')
+            .filter(|singular| singular.len() >= 4)
+            .is_some_and(|singular| text.contains(singular))
+}
+
+fn words_match(left: &str, right: &str) -> bool {
+    left.eq_ignore_ascii_case(right)
+        || right
+            .strip_suffix('s')
+            .filter(|singular| singular.len() >= 4)
+            .is_some_and(|singular| left.eq_ignore_ascii_case(singular))
+        || left
+            .strip_suffix('s')
+            .filter(|singular| singular.len() >= 4)
+            .is_some_and(|singular| singular.eq_ignore_ascii_case(right))
 }
 
 fn lexical_score(query: &str, tokens: &[String], row: &IndexedRow) -> f64 {
@@ -1825,6 +2309,24 @@ fn type_shaped(query: &str) -> bool {
         || query.contains('⊢')
         || query.contains("∀")
         || query.contains("fun ")
+}
+
+fn conclusion_query(query: &str) -> bool {
+    let query = query.trim_start();
+    query.starts_with('⊢') || query.starts_with("|-")
+}
+
+fn apply_import_context(candidate: &mut RankedHit, context: &ImportContext) {
+    if candidate.hit.module.is_empty() {
+        return;
+    }
+    if context.accessible.contains(&candidate.hit.module) {
+        candidate.score += 30.0;
+        candidate.hit.required_import = None;
+    } else if context.complete {
+        candidate.score -= 10.0;
+        candidate.hit.required_import = Some(candidate.hit.module.clone());
+    }
 }
 
 fn structural_type_score(pattern: &str, signature: &str) -> f64 {
@@ -2075,8 +2577,14 @@ fn fallback_source_hits(
     };
     let direct_paths = direct_module_paths(&workspace, packages.as_deref(), query);
     let direct_path_set = direct_paths.iter().cloned().collect::<HashSet<_>>();
+    let specific_paths = source_scan_paths(
+        &workspace,
+        packages.as_deref(),
+        &source_specific_query_tokens(query),
+    )?;
     let mut paths = direct_paths
         .into_iter()
+        .chain(specific_paths)
         .chain(
             declaration_paths
                 .iter()
@@ -2156,10 +2664,9 @@ fn fallback_source_hits(
             let exact_name = query_tokens.iter().any(|token| {
                 (token.contains('.') && token == &name)
                     || (!is_file
-                        && token.len() >= 12
+                        && token.len() >= 4
                         && !token.contains('.')
                         && token.as_str() == base)
-                    || (query_tokens.len() == 1 && token.as_str() == base)
             });
             let qualified_leaf = query_tokens.iter().any(|token| {
                 token
@@ -2176,6 +2683,19 @@ fn fallback_source_hits(
                 .map(|(index, _)| if index == 0 { 2 } else { 1 })
                 .sum::<usize>();
             let is_class = entry.kind == "class";
+            let is_owner = matches!(entry.kind.as_str(), "structure" | "class");
+            let member_owner_score = if is_owner {
+                query_tokens
+                    .iter()
+                    .filter(|token| {
+                        token.len() >= 8
+                            && !text_matches_token(&name, token)
+                            && text_matches_token(&searchable, token)
+                    })
+                    .count()
+            } else {
+                0
+            };
             let is_imports = entry.kind == "imports";
             ranked.push(RankedHit {
                 hit: SearchHit {
@@ -2188,6 +2708,8 @@ fn fallback_source_hits(
                     doc: nonempty(entry.docs),
                     source: excerpt,
                     usages: Vec::new(),
+                    applicable: false,
+                    required_import: None,
                 },
                 score: 35.0
                     + score as f64 * 8.0
@@ -2197,7 +2719,8 @@ fn fallback_source_hits(
                     + if exact_name { 80.0 } else { 0.0 }
                     + if qualified_leaf { 60.0 } else { 0.0 }
                     + qualified_owner_score as f64 * 250.0
-                    + if is_direct_path { 200.0 } else { 0.0 }
+                    + member_owner_score as f64 * 160.0
+                    + if is_direct_path { 400.0 } else { 0.0 }
                     + if is_imports && imports_query {
                         200.0
                     } else {
@@ -2205,7 +2728,7 @@ fn fallback_source_hits(
                     }
                     + if is_class && class_query { 40.0 } else { 0.0 }
                     + if is_file {
-                        -40.0
+                        -220.0
                     } else {
                         20.0 + file_coverage as f64 * 4.0
                     },
@@ -2218,6 +2741,7 @@ fn fallback_source_hits(
             .partial_cmp(&left.score)
             .unwrap_or(Ordering::Equal)
     });
+    promote_query_coverage(&mut ranked, query_tokens);
     ranked.truncate(RESULT_LIMIT);
     Ok(ranked)
 }
@@ -2246,8 +2770,9 @@ fn direct_module_paths(workspace: &Path, packages: Option<&Path>, query: &str) -
         .split(|character: char| {
             !character.is_alphanumeric() && character != '_' && character != '.'
         })
-        .filter(|token| token.contains('.'));
-    for token in tokens {
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    for token in tokens.iter().filter(|token| token.contains('.')) {
         let relative = if token.ends_with(".lean") {
             PathBuf::from(token)
         } else {
@@ -2257,6 +2782,19 @@ fn direct_module_paths(workspace: &Path, packages: Option<&Path>, query: &str) -
             let candidate = root.join(&relative);
             if candidate.is_file()
                 && let Ok(candidate) = fs::canonicalize(candidate)
+                && !paths.contains(&candidate)
+            {
+                paths.push(candidate);
+            }
+        }
+    }
+    for path in project_lean_files(workspace) {
+        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        if tokens.iter().any(|token| stem.eq_ignore_ascii_case(token)) {
+            let candidate = workspace.join(path);
+            if let Ok(candidate) = fs::canonicalize(candidate)
                 && !paths.contains(&candidate)
             {
                 paths.push(candidate);
@@ -2318,7 +2856,18 @@ fn render_summary(run: &SearchRun) -> String {
             output.push_str(&truncate_line(&single_line(signature), 240));
         }
         output.push_str(&format!("  {}:{}", hit.path, hit.line));
+        if hit.applicable {
+            output.push_str("  applicable");
+        }
+        if let Some(module) = &hit.required_import {
+            output.push_str(&format!("\n  import {module}"));
+        }
+        let explicitly_named = !matches!(hit.kind.as_str(), "file" | "imports")
+            && query_tokens(&run.query)
+                .iter()
+                .any(|token| hit_name_matches(&hit.name, token));
         if (index == 0
+            || explicitly_named
             || (index < 3 && matches!(hit.kind.as_str(), "class" | "inductive" | "structure")))
             && let Some(source) = &hit.source
         {
@@ -2329,7 +2878,7 @@ fn render_summary(run: &SearchRun) -> String {
                     "class" | "inductive" | "structure" => 48,
                     "imports" => 64,
                     "location" => 16,
-                    _ => 3,
+                    _ => 8,
                 }
             };
             for line in source.lines().take(source_lines) {
@@ -2351,11 +2900,14 @@ fn render_summary(run: &SearchRun) -> String {
 }
 
 fn query_requests_proof_body(query: &str) -> bool {
-    query
+    let normalized = query
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
-        .contains(":= by")
+        .to_lowercase();
+    normalized.contains(":= by")
+        || normalized.contains("proof body")
+        || normalized.contains("implementation body")
 }
 
 fn single_line(value: &str) -> String {
@@ -2595,6 +3147,17 @@ end Demo
         assert!(boxed.body.contains("universe u"));
         assert!(boxed.body.contains("variable {α : Type u} [Group α]"));
         assert!(!boxed.body.contains("variable [TopologicalSpace α]"));
+
+        let grouped = parse_source(
+            "namespace Demo\nsection Adapter\nvariable {α : Type} [Group α]\ntheorem useful : True := by trivial\nend Adapter\nend Demo\n",
+            "Demo",
+        );
+        let useful = grouped
+            .iter()
+            .find(|entry| entry.name == "Demo.useful")
+            .unwrap();
+        assert!(useful.body.contains("section Adapter"));
+        assert!(!useful.body.contains("end Adapter"));
     }
 
     #[test]
@@ -2603,8 +3166,27 @@ end Demo
         assert!(!type_shaped("injective function"));
         assert!(!type_shaped("norm_inner_le_norm"));
         assert!(structural_type_score("_ → Injective _", "Bijective f → Injective f") > 0.0);
+        assert!(conclusion_query("⊢ _ → Injective _"));
+        assert!(!conclusion_query("_ → Injective _"));
         assert_eq!(fts_query("List.map"), "\"list.map\"*");
         assert_eq!(meaningful_query_tokens("precomp (L :=)"), vec!["precomp"]);
+        assert_eq!(
+            meaningful_query_tokens("finite_trivialization_cover proof body"),
+            vec!["finite_trivialization_cover"]
+        );
+        assert_eq!(
+            meaningful_query_tokens("adapter weights to complex"),
+            vec!["adapter", "weights", "complex"]
+        );
+        assert_eq!(
+            source_specific_query_tokens("ContinuousMap IsUnit unitsLift"),
+            vec!["unitslift"]
+        );
+        assert!(words_match("weight", "weights"));
+        assert!(hit_name_matches(
+            "Matrix.conjTranspose_mul",
+            "matrix.conjtranspose_mul"
+        ));
         let summary = render_summary(&SearchRun {
             reference: "q1".into(),
             workspace_ref: "w1".into(),
@@ -2616,6 +3198,41 @@ end Demo
             created_at: 0,
         });
         assert_eq!(summary, "q1 no results");
+    }
+
+    #[test]
+    fn import_context_marks_only_unavailable_results() {
+        let hit = |module: &str| RankedHit {
+            hit: SearchHit {
+                name: format!("{module}.useful"),
+                kind: "theorem".into(),
+                signature: Some("True".into()),
+                module: module.into(),
+                path: format!("{}.lean", module.replace('.', "/")),
+                line: 1,
+                doc: None,
+                source: None,
+                usages: Vec::new(),
+                applicable: false,
+                required_import: None,
+            },
+            score: 10.0,
+        };
+        let context = ImportContext {
+            accessible: HashSet::from(["Demo.Available".into()]),
+            complete: true,
+        };
+        let mut available = hit("Demo.Available");
+        apply_import_context(&mut available, &context);
+        assert_eq!(available.score, 40.0);
+        assert!(available.hit.required_import.is_none());
+
+        let mut unavailable = hit("Demo.Extra");
+        apply_import_context(&mut unavailable, &context);
+        assert_eq!(
+            unavailable.hit.required_import.as_deref(),
+            Some("Demo.Extra")
+        );
     }
 
     #[test]
@@ -2740,6 +3357,33 @@ end Demo
         let hits =
             fallback_source_hits(directory.path(), query, &meaningful_query_tokens(query)).unwrap();
         assert!(hits.iter().any(|hit| hit.hit.name == "support_fact"));
+    }
+
+    #[test]
+    fn fallback_keeps_lower_camel_declarations_in_broad_queries() {
+        let directory = tempfile::tempdir().unwrap();
+        let package = directory
+            .path()
+            .join(".lake/packages/mathlib/Mathlib/Topology/ContinuousMap");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(
+            package.join("Units.lean"),
+            "namespace ContinuousMap\ndef unitsLift : True := trivial\ntheorem isUnit_iff_forall_isUnit : True := trivial\nend ContinuousMap\n",
+        )
+        .unwrap();
+        let query = "ContinuousMap pointwise IsUnit iff global IsUnit and unitsLift construction";
+        let hits =
+            fallback_source_hits(directory.path(), query, &meaningful_query_tokens(query)).unwrap();
+        assert!(
+            hits.iter()
+                .take(5)
+                .any(|hit| hit.hit.name == "ContinuousMap.unitsLift")
+        );
+        assert!(
+            hits.iter()
+                .take(5)
+                .any(|hit| hit.hit.name == "ContinuousMap.isUnit_iff_forall_isUnit")
+        );
     }
 
     #[test]

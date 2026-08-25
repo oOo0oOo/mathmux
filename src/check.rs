@@ -275,7 +275,7 @@ impl Checker {
             warnings: warnings.clone(),
             linters: linters.clone(),
             diagnostics: diagnostics.clone(),
-            profile: include_profile.then(|| CheckProfile {
+            profile: include_profile.then_some(CheckProfile {
                 planning_ms,
                 files: file_profiles,
             }),
