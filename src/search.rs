@@ -20,7 +20,9 @@ use crate::git::{dirty_lean_files, lake_command, lake_executable, project_lean_f
 use crate::issue::{TelemetryOperation, TelemetryStore, development_enabled};
 use crate::repo::Repo;
 use crate::state::{SearchHit, SearchRun, SearchUsage, State, Workspace};
-use crate::util::{clean_line, hash_bytes, now_unix_ms};
+use crate::util::{
+    clean_line, hash_bytes, now_unix_ms, query_requests_proof_body, single_line, truncate_line,
+};
 
 const RESULT_LIMIT: usize = 24;
 const SUMMARY_LIMIT: usize = 5;
@@ -3225,33 +3227,6 @@ fn render_summary(run: &SearchRun) -> String {
     if let Some(note) = &run.note {
         output.push_str(&format!("\n{note}"));
     }
-    output
-}
-
-fn query_requests_proof_body(query: &str) -> bool {
-    let normalized = query
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase();
-    normalized.contains(":= by")
-        || normalized.contains("proof body")
-        || normalized.contains("implementation body")
-}
-
-fn single_line(value: &str) -> String {
-    value.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn truncate_line(value: &str, limit: usize) -> String {
-    if value.chars().count() <= limit {
-        return value.to_owned();
-    }
-    let mut output = value
-        .chars()
-        .take(limit.saturating_sub(1))
-        .collect::<String>();
-    output.push('…');
     output
 }
 

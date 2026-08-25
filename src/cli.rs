@@ -276,9 +276,9 @@ pub fn run() -> Result<u8> {
         TopCommand::Sync => Command::Sync,
         TopCommand::Submit { message } => Command::Submit { message },
         TopCommand::Show { reference, all } => Command::Show { reference, all },
-        TopCommand::Issue { .. } => unreachable!(),
-        TopCommand::Telemetry { .. } => unreachable!(),
-        TopCommand::Daemon { .. } => unreachable!(),
+        TopCommand::Issue { .. } | TopCommand::Telemetry { .. } | TopCommand::Daemon { .. } => {
+            unreachable!()
+        }
     };
     let request = Request {
         build: crate::util::build_id().to_owned(),

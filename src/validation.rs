@@ -13,7 +13,7 @@ use crate::git::{lake_command, project_lean_files};
 use crate::issue::{TelemetryOperation, TelemetryStore, development_enabled};
 use crate::repo::Repo;
 use crate::state::{State, Submission, ValidationReport};
-use crate::util::{run_checked, run_output};
+use crate::util::{command_detail, run_checked, run_output};
 
 #[derive(Clone)]
 pub struct ValidationQueue {
@@ -453,15 +453,6 @@ fn token_end(bytes: &[u8], index: usize) -> bool {
 
 fn identifier_byte(byte: u8) -> bool {
     matches!(byte, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'\'')
-}
-
-fn command_detail(output: &std::process::Output) -> String {
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    if stderr.is_empty() {
-        String::from_utf8_lossy(&output.stdout).trim().to_owned()
-    } else {
-        stderr
-    }
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 use std::fs::{self, File};
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail, ensure};
 use fs2::FileExt;
@@ -9,7 +9,7 @@ use walkdir::WalkDir;
 
 use crate::repo::Repo;
 use crate::state::{State, Workspace};
-use crate::util::{canonical, run_checked, run_output};
+use crate::util::{canonical, command_detail, run_checked, run_output};
 
 pub fn workspace_limit() -> usize {
     if let Some(limit) = std::env::var("MATHMUX_MAX_WORKSPACES")
@@ -366,15 +366,6 @@ fn validate_name(name: &str) -> Result<()> {
         });
     ensure!(valid, "workspace names use letters, digits, '-' and '_'");
     Ok(())
-}
-
-fn command_detail(output: &Output) -> String {
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    if stderr.is_empty() {
-        String::from_utf8_lossy(&output.stdout).trim().to_owned()
-    } else {
-        stderr
-    }
 }
 
 #[cfg(test)]

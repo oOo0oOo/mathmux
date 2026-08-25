@@ -11,7 +11,7 @@ use crate::git::{dirty_paths, head};
 use crate::protocol::{Request, Response};
 use crate::repo::Repo;
 use crate::state::State;
-use crate::util::{build_id, hash_bytes, now_unix_ms, resident_memory_kib};
+use crate::util::{build_id, format_duration, hash_bytes, now_unix_ms, resident_memory_kib};
 
 const SNAPSHOT_LIMIT: usize = 256 * 1024;
 const LOG_LINES: usize = 80;
@@ -679,9 +679,9 @@ fn render_aggregate(verb: &str, events: &[&TelemetryEvent]) -> String {
         "{} {} avg:{} p50:{} p95:{} err:{}",
         verb,
         events.len(),
-        format_milliseconds(average),
-        format_milliseconds(percentile(&durations, 50)),
-        format_milliseconds(percentile(&durations, 95)),
+        format_duration(average),
+        format_duration(percentile(&durations, 50)),
+        format_duration(percentile(&durations, 95)),
         errors
     );
     if let Some(rss) = rss {
@@ -706,7 +706,7 @@ fn render_event_line(event: &TelemetryEvent) -> String {
         "e{} {} {} {}{}",
         event.id,
         event.verb,
-        format_milliseconds(event.client_ms),
+        format_duration(event.client_ms),
         status,
         reference
     )
@@ -723,8 +723,8 @@ fn render_event(event: &TelemetryEvent, all: bool) -> String {
             event.created_at,
             event.build,
             event.project,
-            format_milliseconds(event.client_ms),
-            format_milliseconds(event.daemon_ms),
+            format_duration(event.client_ms),
+            format_duration(event.daemon_ms),
             event.request_bytes,
             event.response_bytes,
         ));
@@ -740,14 +740,6 @@ fn render_event(event: &TelemetryEvent, all: bool) -> String {
         ));
     }
     output
-}
-
-fn format_milliseconds(milliseconds: u64) -> String {
-    if milliseconds < 1000 {
-        format!("{milliseconds}ms")
-    } else {
-        format!("{:.1}s", milliseconds as f64 / 1000.0)
-    }
 }
 
 fn format_memory(kib: u64) -> String {

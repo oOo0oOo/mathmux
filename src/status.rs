@@ -8,7 +8,7 @@ use anyhow::{Result, ensure};
 use crate::git::{dirty_paths, head};
 use crate::repo::Repo;
 use crate::state::{ActivityMetrics, State, Workspace};
-use crate::util::{run_checked, run_output};
+use crate::util::{run_checked, run_output, short_hash};
 
 const HOUR_SECS: i64 = 60 * 60;
 const DAY_SECS: i64 = 24 * HOUR_SECS;
@@ -324,10 +324,6 @@ fn format_average(milliseconds: Option<f64>) -> String {
         Some(milliseconds) if milliseconds < 1000.0 => format!("{milliseconds:.0}ms"),
         Some(milliseconds) => format!("{:.1}s", milliseconds / 1000.0),
     }
-}
-
-fn short_hash(hash: &str) -> &str {
-    hash.get(..8).unwrap_or(hash)
 }
 
 #[cfg(test)]

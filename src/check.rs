@@ -856,10 +856,9 @@ fn deduplicate_diagnostics(mut response: WorkerResponse) -> WorkerResponse {
 }
 
 fn invalidates_worker(path: &Path, target: &Path) -> bool {
-    !path
-        .components()
+    path.components()
         .next()
-        .is_some_and(|component| component.as_os_str() == ".lake")
+        .is_none_or(|component| component.as_os_str() != ".lake")
         && path
             .extension()
             .is_some_and(|extension| extension == "lean")

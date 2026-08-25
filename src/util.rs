@@ -47,6 +47,15 @@ where
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
+pub fn command_detail(output: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    if stderr.is_empty() {
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    } else {
+        stderr
+    }
+}
+
 pub fn hash_bytes(bytes: &[u8]) -> String {
     blake3::hash(bytes).to_hex().to_string()
 }
@@ -73,6 +82,41 @@ pub fn build_id() -> &'static str {
 
 pub fn clean_line(value: &str) -> String {
     value.replace(['\r', '\n'], " ").trim().to_owned()
+}
+
+pub fn single_line(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+pub fn truncate_line(value: &str, limit: usize) -> String {
+    if value.chars().count() <= limit {
+        return value.to_owned();
+    }
+    let mut output = value
+        .chars()
+        .take(limit.saturating_sub(1))
+        .collect::<String>();
+    output.push('…');
+    output
+}
+
+pub fn query_requests_proof_body(query: &str) -> bool {
+    let normalized = single_line(query).to_lowercase();
+    normalized.contains(":= by")
+        || normalized.contains("proof body")
+        || normalized.contains("implementation body")
+}
+
+pub fn format_duration(milliseconds: u64) -> String {
+    if milliseconds < 1000 {
+        format!("{milliseconds}ms")
+    } else {
+        format!("{:.1}s", milliseconds as f64 / 1000.0)
+    }
+}
+
+pub fn short_hash(hash: &str) -> &str {
+    hash.get(..8).unwrap_or(hash)
 }
 
 pub fn resident_memory_kib() -> Option<u64> {
