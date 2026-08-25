@@ -6,7 +6,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail, ensure};
@@ -15,7 +15,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 use walkdir::WalkDir;
 
-use crate::git::lake_command;
+use crate::git::{lake_command, lake_executable};
 use crate::issue::{TelemetryOperation, TelemetryStore, development_enabled};
 use crate::repo::Repo;
 use crate::state::{SearchHit, SearchRun, SearchUsage, State, Workspace};
@@ -29,7 +29,7 @@ const SEARCH_INDEX_VERSION: i64 = 1;
 pub struct Searcher {
     repo: Repo,
     state: State,
-    index_lock: Mutex<()>,
+    index_lock: Arc<Mutex<()>>,
     loogle: Mutex<LoogleState>,
     base: Mutex<HashMap<String, BaseState>>,
 }
@@ -106,7 +106,7 @@ impl Searcher {
         let searcher = Self {
             repo,
             state,
-            index_lock: Mutex::new(()),
+            index_lock: Arc::new(Mutex::new(())),
             loogle: Mutex::new(LoogleState::Empty),
             base: Mutex::new(HashMap::new()),
         };
@@ -328,7 +328,7 @@ impl Searcher {
     }
 
     fn base_scopes(&self, workspace: &Workspace) -> (HashSet<String>, bool) {
-        let key = format!("{}:{}", workspace.reference, base_input_id(&workspace.path));
+        let key = base_input_id(&workspace.path);
         let mut states = self
             .base
             .lock()
@@ -368,11 +368,17 @@ impl Searcher {
                 let repo = self.repo.clone();
                 let state = self.state.clone();
                 let workspace = workspace.clone();
+                let index_lock = self.index_lock.clone();
                 std::thread::spawn(move || {
                     let started = Instant::now();
-                    let result = Searcher::new(repo.clone(), state)
-                        .and_then(|searcher| searcher.refresh_base(&workspace))
-                        .map_err(|error| format!("{error:#}"));
+                    let result = {
+                        let _guard = index_lock
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        Searcher::new(repo.clone(), state)
+                            .and_then(|searcher| searcher.refresh_base(&workspace))
+                            .map_err(|error| format!("{error:#}"))
+                    };
                     if development_enabled()
                         && let Ok(store) = TelemetryStore::global()
                     {
@@ -405,6 +411,7 @@ impl Searcher {
         let mut scopes = HashSet::new();
         let packages = workspace.path.join(".lake/packages");
         if packages.is_dir() {
+            let packages = fs::canonicalize(packages)?;
             let owner = shared_owner("packages", &packages);
             self.refresh_sources(
                 &SourceRoot {
@@ -861,7 +868,9 @@ impl Searcher {
         let timeout = format!("{:.3}s", GOAL_TIMEOUT_MS as f64 / 1000.0);
         let mut command = std::process::Command::new("timeout");
         command
-            .args(["--signal=KILL", &timeout, "lake", "env", "lean"])
+            .args(["--signal=KILL", &timeout])
+            .arg(lake_executable())
+            .args(["env", "lean"])
             .arg(&temporary)
             .current_dir(&workspace.path)
             .env("LAKE_ARTIFACT_CACHE", "true")
@@ -1093,7 +1102,9 @@ fn prepare_loogle(repo: &Repo, workspace: &Path) -> Result<PathBuf> {
         let source = root.join(relative);
         let output = source.with_extension("olean");
         let result = std::process::Command::new("timeout")
-            .args(["--signal=KILL", "180s", "lake", "env", "lean"])
+            .args(["--signal=KILL", "180s"])
+            .arg(lake_executable())
+            .args(["env", "lean"])
             .arg("-R")
             .arg(&root)
             .arg("-o")

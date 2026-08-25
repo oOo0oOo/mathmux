@@ -334,7 +334,7 @@ pub fn lake_command(repo: &Repo, root: &Path) -> Command {
     command
 }
 
-fn lake_executable() -> PathBuf {
+pub(crate) fn lake_executable() -> PathBuf {
     if let Some(path) = std::env::var_os("MATHMUX_LAKE") {
         return PathBuf::from(path);
     }

@@ -103,6 +103,7 @@ fn validate(repo: &Repo, submission: &Submission) -> Result<ValidationReport> {
     let output = lake_command(repo, &root)
         .arg("build")
         .args(&roots)
+        .env("LAKE_RESTORE_ARTIFACTS", "true")
         .output()
         .context("cannot start validation build")?;
     let build_output = combined_output(&output);
