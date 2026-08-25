@@ -696,7 +696,9 @@ fn render_search_run(run: &SearchRun, all: bool) -> String {
             if let Some(source) = &hit.source {
                 output.push_str("\n   source:");
                 let source_lines =
-                    if matches!(hit.kind.as_str(), "class" | "inductive" | "structure") {
+                    if matches!(hit.kind.as_str(), "class" | "inductive" | "structure")
+                        || (index == 0 && query_requests_proof_body(&run.query))
+                    {
                         48
                     } else {
                         8
@@ -720,6 +722,14 @@ fn render_search_run(run: &SearchRun, all: bool) -> String {
         ));
     }
     output
+}
+
+fn query_requests_proof_body(query: &str) -> bool {
+    query
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .contains(":= by")
 }
 
 fn single_line(value: &str) -> String {
@@ -1015,6 +1025,38 @@ mod tests {
         assert_eq!(State::new(&path).unwrap().next_ref('c').unwrap(), "c2");
         assert!(state.show("check:c2", false).is_err());
         assert!(state.show("", false).is_err());
+    }
+
+    #[test]
+    fn explicit_proof_queries_show_the_top_declaration_body() {
+        let hit = SearchHit {
+            name: "Demo.proof".into(),
+            kind: "theorem".into(),
+            signature: Some("True".into()),
+            module: "Demo".into(),
+            path: "Demo.lean".into(),
+            line: 1,
+            doc: None,
+            source: Some(
+                (1..=12)
+                    .map(|line| format!("proof line {line}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+            usages: Vec::new(),
+        };
+        let run = |query: &str| SearchRun {
+            reference: "q1".into(),
+            workspace_ref: "w1".into(),
+            query: query.into(),
+            inference: "hybrid".into(),
+            hits: vec![hit.clone()],
+            note: None,
+            duration_ms: 0,
+            created_at: 0,
+        };
+        assert!(!render_search_run(&run("Demo.proof"), false).contains("proof line 9"));
+        assert!(render_search_run(&run("Demo.proof :=   by"), false).contains("proof line 12"));
     }
 
     #[test]

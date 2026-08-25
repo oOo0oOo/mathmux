@@ -1871,12 +1871,13 @@ fn nonempty(value: String) -> Option<String> {
     (!value.trim().is_empty()).then_some(value)
 }
 
-fn source_excerpt(
+fn source_excerpt_with_limit(
     source: &str,
     query: &str,
     tokens: &[String],
     declaration_line: u64,
     file_hit: bool,
+    line_limit: usize,
 ) -> (Option<String>, u64) {
     if source.trim().is_empty() {
         return (None, declaration_line);
@@ -1901,7 +1902,7 @@ fn source_excerpt(
         })
         .unwrap_or(0);
     let start = matched.saturating_sub(2);
-    let excerpt = lines[start..lines.len().min(start + 8)].join("\n");
+    let excerpt = lines[start..lines.len().min(start + line_limit)].join("\n");
     let line = if file_hit {
         matched as u64 + 1
     } else {
@@ -1936,7 +1937,14 @@ fn detailed_source_excerpt(
         let excerpt = body.lines().take(64).collect::<Vec<_>>().join("\n");
         return (nonempty(excerpt), declaration_line);
     }
-    source_excerpt(body, query, tokens, declaration_line, kind == "file")
+    source_excerpt_with_limit(
+        body,
+        query,
+        tokens,
+        declaration_line,
+        kind == "file",
+        DECLARATION_DETAIL_LINES,
+    )
 }
 
 fn fallback_source_hits(
@@ -2641,7 +2649,7 @@ end Demo
             .collect::<Vec<_>>()
             .join("\n");
         let (excerpt, line) =
-            source_excerpt(&source, "exact_match", &["exact_match".into()], 1, true);
+            source_excerpt_with_limit(&source, "exact_match", &["exact_match".into()], 1, true, 8);
         let excerpt = excerpt.unwrap();
         assert_eq!(line, 12);
         assert!(excerpt.starts_with("-- line 10"));
@@ -2655,6 +2663,14 @@ end Demo
         let excerpt = excerpt.unwrap();
         assert!(excerpt.contains("third : Bool"));
         assert!(!excerpt.contains("next declaration"));
+
+        let proof = (1..=20)
+            .map(|line| format!("proof line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (excerpt, _) =
+            detailed_source_excerpt(&proof, "proof line 1", &["proof".into()], 1, "theorem");
+        assert_eq!(excerpt.unwrap().lines().count(), 20);
     }
 
     #[test]
