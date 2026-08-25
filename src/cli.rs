@@ -58,6 +58,11 @@ enum TopCommand {
         #[command(subcommand)]
         command: WsCommand,
     },
+    /// Show project state and recent progress.
+    ///
+    /// Summarizes the managed main revision, validation queue, workspace changes
+    /// and latest checks, and recent submissions.
+    Status,
     /// Certify one Lean file, or every dirty Lean file.
     ///
     /// With FILE, synchronously certifies that file and its source dependencies.
@@ -253,6 +258,7 @@ pub fn run() -> Result<u8> {
             WsCommand::List => Command::WsList,
             WsCommand::Delete { name } => Command::WsDelete { name },
         },
+        TopCommand::Status => Command::Status,
         TopCommand::Check { file, profile } => Command::Check {
             file: file.map(|path| {
                 let path = if path.is_absolute() {

@@ -26,6 +26,7 @@ pub enum Command {
     Search {
         query: String,
     },
+    Status,
     Sync,
     Submit {
         message: Option<String>,
@@ -44,6 +45,7 @@ impl Command {
             Self::WsDelete { .. } => "ws_delete",
             Self::Check { .. } => "check",
             Self::Search { .. } => "search",
+            Self::Status => "status",
             Self::Sync => "sync",
             Self::Submit { .. } => "submit",
             Self::Show { .. } => "show",
@@ -54,6 +56,7 @@ impl Command {
         matches!(
             self,
             Self::WsList
+                | Self::Status
                 | Self::Check { .. }
                 | Self::Search { .. }
                 | Self::Sync
@@ -126,6 +129,7 @@ mod tests {
     #[test]
     fn only_idempotent_commands_are_transport_retry_safe() {
         assert!(Command::Sync.transport_retry_safe());
+        assert!(Command::Status.transport_retry_safe());
         assert!(
             Command::Check {
                 file: None,

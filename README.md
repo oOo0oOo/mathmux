@@ -25,6 +25,13 @@
 
 Repeat step 2 for each parallel workspace.
 
+Inspect the managed main revision, validation queue, workspace changes, latest
+checks, and recent submissions at any time:
+
+```sh
+mathmux status
+```
+
 ## Development build
 
 Build mathmux directly from the local checkout:
@@ -39,7 +46,7 @@ The binary is written to `target/release/mathmux`.
 
 ### mathmux will do
 
-- manage isolated git worktrees, commits, and merges
+- manage isolated git worktrees, commits, merges, and project progress
 - check Lean files, build targets, and audit axioms
 
 ### mathmux might eventually do

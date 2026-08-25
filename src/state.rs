@@ -458,6 +458,22 @@ impl State {
             .map_err(Into::into)
     }
 
+    pub fn latest_check_run(&self, workspace_ref: &str) -> Result<Option<CheckRun>> {
+        self.open()?
+            .query_row(
+                "SELECT ref, workspace_ref, status, files_json, passed_json, failed,
+                        not_checked_json, warnings_json, linters_json, diagnostics_json,
+                        profile_json, duration_ms, created_at
+                 FROM check_runs WHERE workspace_ref = ?1
+                 ORDER BY created_at DESC, CAST(substr(ref, 2) AS INTEGER) DESC
+                 LIMIT 1",
+                [workspace_ref],
+                check_run_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
     pub fn checks_for_workspace(&self, workspace_ref: &str) -> Result<Vec<CheckRecord>> {
         let connection = self.open()?;
         let mut statement = connection.prepare(
@@ -519,6 +535,36 @@ impl State {
                 submission_from_row,
             )
             .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn recent_submissions(&self, limit: usize) -> Result<Vec<Submission>> {
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            "SELECT ref, workspace_ref, workspace_commit, main_commit, base_commit, checks_json,
+                    validation_status, validation_detail, build_output, axioms_json,
+                    sorries_json, validation_duration_ms, validated_by, created_at
+             FROM submissions
+             ORDER BY created_at DESC, CAST(substr(ref, 2) AS INTEGER) DESC
+             LIMIT ?1",
+        )?;
+        let rows = statement.query_map([limit as i64], submission_from_row)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn pending_submissions(&self) -> Result<Vec<Submission>> {
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            "SELECT ref, workspace_ref, workspace_commit, main_commit, base_commit, checks_json,
+                    validation_status, validation_detail, build_output, axioms_json,
+                    sorries_json, validation_duration_ms, validated_by, created_at
+             FROM submissions WHERE validation_status IN ('queued', 'running')
+             ORDER BY CASE validation_status WHEN 'running' THEN 0 ELSE 1 END,
+                      created_at, CAST(substr(ref, 2) AS INTEGER)",
+        )?;
+        let rows = statement.query_map([], submission_from_row)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)
     }
 
