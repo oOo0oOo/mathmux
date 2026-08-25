@@ -34,6 +34,17 @@ impl Command {
             Self::Show { .. } => "show",
         }
     }
+
+    pub fn transport_retry_safe(&self) -> bool {
+        matches!(
+            self,
+            Self::WsList
+                | Self::Check { .. }
+                | Self::Search { .. }
+                | Self::Sync
+                | Self::Show { .. }
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,5 +106,18 @@ mod tests {
             serde_json::from_str(r#"{"build":"old","ok":true,"summary":"ok"}"#).unwrap();
         assert!(!response.retry);
         assert!(Response::retry().retry);
+    }
+
+    #[test]
+    fn only_idempotent_commands_are_transport_retry_safe() {
+        assert!(Command::Sync.transport_retry_safe());
+        assert!(Command::Check { file: None }.transport_retry_safe());
+        assert!(!Command::Submit { message: None }.transport_retry_safe());
+        assert!(
+            !Command::WsCreate {
+                name: "agent".into()
+            }
+            .transport_retry_safe()
+        );
     }
 }

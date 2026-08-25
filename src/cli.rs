@@ -273,8 +273,23 @@ pub fn run() -> Result<u8> {
     };
     let client_started = Instant::now();
     let mut handoffs = 0;
+    let mut transport_retries = 0;
     let response = loop {
-        let response = exchange(connect_or_start(&repo, development)?, &request)?;
+        let response = match connect_or_start(&repo, development)
+            .and_then(|stream| exchange(stream, &request))
+        {
+            Ok(response) => response,
+            Err(error)
+                if transport_retries == 0
+                    && request.command.transport_retry_safe()
+                    && transient_transport_error(&error) =>
+            {
+                transport_retries += 1;
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         if !response.retry {
             break response;
         }
@@ -307,8 +322,27 @@ fn exchange(mut stream: UnixStream, request: &Request) -> Result<Response> {
     stream.write_all(b"\n")?;
     stream.flush()?;
     let mut line = String::new();
-    BufReader::new(stream).read_line(&mut line)?;
+    let bytes = BufReader::new(stream).read_line(&mut line)?;
+    if bytes == 0 {
+        return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
+    }
     serde_json::from_str(&line).context("invalid daemon response")
+}
+
+fn transient_transport_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause.downcast_ref::<std::io::Error>().is_some_and(|error| {
+            matches!(
+                error.kind(),
+                std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::ConnectionRefused
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::NotConnected
+                    | std::io::ErrorKind::UnexpectedEof
+            )
+        })
+    })
 }
 
 fn wait_for_daemon_exit(repo: &Repo) -> Result<()> {
