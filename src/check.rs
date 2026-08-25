@@ -5,7 +5,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::sync::{Arc, Mutex, Weak};
-use std::time::Instant;
+use std::time::{Instant, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -303,6 +303,9 @@ impl Checker {
             });
         }
         let dependencies = transitive_dependencies(&workspace.path, target)?;
+        if let Some(cached) = self.cached_check(workspace, target, &dependencies, reference)? {
+            return Ok(cached);
+        }
         let mut environment = self.worker_environment(workspace, target, &dependencies)?;
         let setup_path = match self.current_setup(workspace, target, &environment) {
             Some(path) => path,
@@ -341,6 +344,37 @@ impl Checker {
             diagnostics,
             ok: response.ok,
         })
+    }
+
+    fn cached_check(
+        &self,
+        workspace: &Workspace,
+        target: &Path,
+        dependencies: &[PathBuf],
+        reference: &str,
+    ) -> Result<Option<FileCheck>> {
+        let fingerprint = self.full_fingerprint(workspace, target, dependencies)?;
+        let target_name = target.to_string_lossy();
+        let certificate = self
+            .state
+            .checks_for_workspace(&workspace.reference)?
+            .into_iter()
+            .find(|check| check.target == target_name && check.fingerprint == fingerprint);
+        let Some(mut certificate) = certificate else {
+            return Ok(None);
+        };
+        let Some(run) = self.state.check_run(&certificate.reference)? else {
+            return Ok(None);
+        };
+        certificate.reference = reference.to_owned();
+        certificate.created_at = now_unix_ms();
+        Ok(Some(FileCheck {
+            certificate,
+            warnings: run.warnings,
+            linters: run.linters,
+            diagnostics: Vec::new(),
+            ok: true,
+        }))
     }
 
     fn run_worker(
@@ -973,10 +1007,16 @@ fn setup_artifact_fingerprint(path: &Path) -> Result<String> {
     let mut material = bytes;
     for artifact in paths {
         material.extend_from_slice(artifact.to_string_lossy().as_bytes());
-        if artifact.is_file() {
-            material.extend_from_slice(hash_file(&artifact)?.as_bytes());
-        } else {
-            material.extend_from_slice(b"<missing-artifact>");
+        match fs::metadata(&artifact) {
+            Ok(metadata) if metadata.is_file() => {
+                let modified = metadata
+                    .modified()?
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos();
+                material.extend_from_slice(format!("{}:{modified}", metadata.len()).as_bytes());
+            }
+            _ => material.extend_from_slice(b"<missing-artifact>"),
         }
     }
     Ok(hash_bytes(&material))
@@ -1102,6 +1142,23 @@ mod tests {
         .unwrap();
         let after =
             certificate_fingerprint(directory.path(), Path::new("Proof.lean"), &[]).unwrap();
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn setup_artifact_metadata_invalidates_certificates() {
+        let directory = tempdir().unwrap();
+        let artifact = directory.path().join("Dependency.olean");
+        fs::write(&artifact, "one").unwrap();
+        let setup = directory.path().join("setup.json");
+        fs::write(
+            &setup,
+            serde_json::to_vec(&serde_json::json!({ "path": artifact })).unwrap(),
+        )
+        .unwrap();
+        let before = setup_artifact_fingerprint(&setup).unwrap();
+        fs::write(&artifact, "different size").unwrap();
+        let after = setup_artifact_fingerprint(&setup).unwrap();
         assert_ne!(before, after);
     }
 
