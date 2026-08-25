@@ -2047,7 +2047,7 @@ fn fallback_source_hits(
                 .filter_map(|(index, token)| {
                     token.rsplit_once('.').map(|(owner, _)| (index, owner))
                 })
-                .filter(|(_, owner)| *owner == name)
+                .filter(|(_, owner)| *owner == name || name.ends_with(&format!(".{owner}")))
                 .map(|(index, _)| if index == 0 { 2 } else { 1 })
                 .sum::<usize>();
             let is_class = entry.kind == "class";
@@ -2637,6 +2637,28 @@ end Demo
                 .as_deref()
                 .unwrap()
                 .contains("InnerProductSpace.Core.toPreInnerProductSpaceCore")
+        );
+    }
+
+    #[test]
+    fn fallback_includes_root_qualified_member_owner_structure() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("Metric.lean"),
+            "namespace AtiyahSinger\nstructure HermitianBundleMetric where\n  inner : True\n  continuous : True\nnamespace HermitianBundleMetric\ntheorem pos_inner : True := trivial\nend HermitianBundleMetric\nend AtiyahSinger\n",
+        )
+        .unwrap();
+        let query = "HermitianBundleMetric.pos_inner continuity WhitneySquare";
+        let hits =
+            fallback_source_hits(directory.path(), query, &meaningful_query_tokens(query)).unwrap();
+        assert_eq!(hits[0].hit.name, "AtiyahSinger.HermitianBundleMetric");
+        assert!(
+            hits[0]
+                .hit
+                .source
+                .as_deref()
+                .unwrap()
+                .contains("continuous : True")
         );
     }
 }
