@@ -982,6 +982,7 @@ impl Searcher {
         scopes: &HashSet<String>,
         base_warming: bool,
     ) -> Result<SearchResult> {
+        let query = explicit_declaration_name(query).unwrap_or(query);
         let type_search = type_search_enabled() && type_shaped(query);
         let query_tokens = meaningful_query_tokens(query);
         let rows = self.candidates(query, &query_tokens, type_search)?;
@@ -1029,6 +1030,7 @@ impl Searcher {
                 .is_some()
             {
                 let mut resolved = merge_exact_candidates(exact);
+                self.enrich_exact_source(&mut resolved.hit, scopes)?;
                 resolved.hit.usages = self.usages(&resolved.hit.name, scopes, workspace)?;
                 if let Some(context) = &import_context {
                     apply_import_context(&mut resolved, context);
@@ -1126,6 +1128,7 @@ impl Searcher {
                     },
                     score: 900.0,
                 };
+                self.enrich_exact_source(&mut resolved.hit, scopes)?;
                 if let Some(context) = &import_context {
                     apply_import_context(&mut resolved, context);
                 }
@@ -1227,6 +1230,7 @@ impl Searcher {
                     .filter(|candidate| candidate.hit.name.to_lowercase() == exact_name)
                     .collect::<Vec<_>>();
                 let mut resolved = merge_exact_candidates(exact);
+                self.enrich_exact_source(&mut resolved.hit, scopes)?;
                 resolved.hit.usages = self.usages(&resolved.hit.name, scopes, workspace)?;
                 if let Some(context) = &import_context {
                     apply_import_context(&mut resolved, context);
@@ -1570,6 +1574,54 @@ impl Searcher {
                 Ok(candidate.hit)
             })
             .collect()
+    }
+
+    fn enrich_exact_source(&self, hit: &mut SearchHit, scopes: &HashSet<String>) -> Result<()> {
+        if hit.source.is_some() && hit.signature.is_some() {
+            return Ok(());
+        }
+        let leaf = hit.name.rsplit('.').next().unwrap_or(&hit.name);
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0
+             FROM search_fts WHERE search_fts MATCH ?1 LIMIT 128",
+        )?;
+        let query = format!("name : \"{}\"", leaf.replace('"', "\"\""));
+        let rows = statement
+            .query_map([query], indexed_row_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let Some(row) = rows.into_iter().find(|row| {
+            scopes.contains(&row.owner)
+                && row.module == hit.module
+                && row.line == hit.line
+                && row.name.rsplit('.').next() == Some(leaf)
+                && (!row.body.is_empty() || !row.signature.is_empty())
+        }) else {
+            return Ok(());
+        };
+        let (source, line) = detailed_source_excerpt(
+            &row.body,
+            leaf,
+            &[leaf.to_lowercase()],
+            row.line,
+            &row.kind,
+            &row.name,
+        );
+        let mut source_hit = SearchHit {
+            name: hit.name.clone(),
+            kind: row.kind,
+            signature: nonempty(row.signature),
+            module: row.module,
+            path: row.path,
+            line,
+            doc: nonempty(row.docs),
+            source,
+            usages: Vec::new(),
+            applicable: false,
+            required_import: None,
+        };
+        merge_duplicate_hit(hit, &mut source_hit);
+        Ok(())
     }
 
     fn usages(
@@ -2728,6 +2780,26 @@ fn declaration_name_query(query: &str) -> bool {
         && query
             .chars()
             .all(|character| character.is_alphanumeric() || matches!(character, '_' | '.' | '\''))
+}
+
+fn explicit_declaration_name(query: &str) -> Option<&str> {
+    let mut terms = query.split_whitespace();
+    let kind = terms.next()?;
+    if !matches!(kind.to_ascii_lowercase().as_str(), "def" | "lemma" | "theorem") {
+        return None;
+    }
+    let name = terms.next()?;
+    if !declaration_name_query(name)
+        || !terms.all(|term| {
+            matches!(
+                term.to_ascii_lowercase().as_str(),
+                "body" | "implementation" | "proof" | "source"
+            )
+        })
+    {
+        return None;
+    }
+    Some(name)
 }
 
 fn declaration_glob_query(query: &str) -> bool {
@@ -4283,6 +4355,15 @@ end Demo
         assert!(declaration_name_query("Ring.inverse_eq_inv'"));
         assert!(declaration_name_query("transportAmbient"));
         assert!(!declaration_name_query("Finsupp.sum add"));
+        assert_eq!(
+            explicit_declaration_name("theorem Bundle.Trivialization.apply_mk_symm"),
+            Some("Bundle.Trivialization.apply_mk_symm")
+        );
+        assert_eq!(
+            explicit_declaration_name("def Demo.useful proof body"),
+            Some("Demo.useful")
+        );
+        assert_eq!(explicit_declaration_name("theorem search terms"), None);
         assert_eq!(more_search_reference("q4246 MORE"), Some("q4246"));
         assert_eq!(more_search_reference("q4246 comp"), None);
         assert!(declaration_glob_query("FiberBundle.*equiv"));
