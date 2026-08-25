@@ -2721,11 +2721,13 @@ fn detailed_source_excerpt(
         .filter(|token| token.as_str() != name && token.as_str() != leaf)
         .cloned()
         .collect::<Vec<_>>();
-    let focused_tokens = if focused_tokens.is_empty() {
-        tokens
-    } else {
-        &focused_tokens
-    };
+    let body_lines = body.lines().collect::<Vec<_>>();
+    let focused_tokens =
+        if focused_tokens.is_empty() || best_source_match(&body_lines, &focused_tokens).is_none() {
+            tokens
+        } else {
+            &focused_tokens
+        };
     source_excerpt_with_limit(
         body,
         query,
@@ -3687,6 +3689,26 @@ end Demo
         assert!(excerpt.contains("have hpush"));
         assert!(excerpt.contains("Finsupp.sum_add_index"));
         assert!(excerpt.contains("smul_eq_mul"));
+
+        let ambient = (1..=20)
+            .map(|line| format!("variable (ambient{line} : Nat)"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let source =
+            format!("-- ambient context\n{ambient}\n\ndef requestedDefinition : Nat :=\n  42");
+        let query = "missingLocalTerm requestedDefinition";
+        let tokens = meaningful_query_tokens(query);
+        let (excerpt, _) = detailed_source_excerpt(
+            &source,
+            query,
+            &tokens,
+            1,
+            "def",
+            "Demo.requestedDefinition",
+        );
+        let excerpt = excerpt.unwrap();
+        assert!(excerpt.contains("def requestedDefinition"));
+        assert!(excerpt.contains("42"));
     }
 
     #[test]
