@@ -1334,8 +1334,9 @@ impl Searcher {
         let mut ranked = deduplicated;
         if explicit_declaration.is_some() {
             ranked.sort_by_key(|candidate| !qualified_name_matches(&candidate.hit.name, query));
+        } else {
+            promote_query_coverage(&mut ranked, &query_tokens);
         }
-        promote_query_coverage(&mut ranked, &query_tokens);
         ranked.truncate(RESULT_LIMIT);
         for candidate in &mut ranked {
             if candidate.hit.usages.is_empty()
