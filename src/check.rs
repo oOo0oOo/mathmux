@@ -891,16 +891,24 @@ fn partition_diagnostics(
 }
 
 fn attach_source_context(diagnostics: &mut [Diagnostic], target: &Path, source: &str) {
-    let target = target.to_string_lossy();
-    let basename = target.rsplit('/').next().unwrap_or(&target);
+    let target_path = target.to_string_lossy();
+    let basename = target_path.rsplit('/').next().unwrap_or(&target_path);
+    let module = target
+        .with_extension("")
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .collect::<Vec<_>>()
+        .join(".");
     let lines = source.lines().collect::<Vec<_>>();
     for diagnostic in diagnostics {
         let first = diagnostic.text.lines().next().unwrap_or_default();
-        let rest = [target.as_ref(), basename].iter().find_map(|prefix| {
-            first
-                .strip_prefix(prefix)
-                .and_then(|rest| rest.strip_prefix(':'))
-        });
+        let rest = [target_path.as_ref(), basename, module.as_str()]
+            .iter()
+            .find_map(|prefix| {
+                first
+                    .strip_prefix(prefix)
+                    .and_then(|rest| rest.strip_prefix(':'))
+            });
         let Some(line) = rest
             .and_then(|rest| rest.split(':').next())
             .and_then(|line| line.parse::<usize>().ok())
@@ -1326,6 +1334,20 @@ mod tests {
             Some(
                 "     1 | first\n     2 | second\n>    3 | problem\n     4 | fourth\n     5 | fifth"
             )
+        );
+
+        errors[0].text = "Demo.Nested.Proof:3:1: error: type mismatch".into();
+        errors[0].context = None;
+        attach_source_context(
+            &mut errors,
+            Path::new("Demo/Nested/Proof.lean"),
+            "first\nsecond\nproblem\nfourth\nfifth\n",
+        );
+        assert!(
+            errors[0]
+                .context
+                .as_deref()
+                .is_some_and(|context| context.contains(">    3 | problem"))
         );
     }
 
