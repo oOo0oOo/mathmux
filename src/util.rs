@@ -2,6 +2,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
@@ -53,6 +54,21 @@ pub fn hash_bytes(bytes: &[u8]) -> String {
 pub fn hash_file(path: &Path) -> Result<String> {
     let bytes = fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
     Ok(hash_bytes(&bytes))
+}
+
+pub fn build_id() -> &'static str {
+    static BUILD_ID: OnceLock<String> = OnceLock::new();
+    BUILD_ID.get_or_init(|| {
+        let hash = std::env::current_exe()
+            .ok()
+            .and_then(|path| hash_file(&path).ok())
+            .unwrap_or_else(|| "unknown".into());
+        format!(
+            "{}+{}",
+            env!("CARGO_PKG_VERSION"),
+            &hash[..hash.len().min(12)]
+        )
+    })
 }
 
 pub fn clean_line(value: &str) -> String {

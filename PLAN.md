@@ -33,6 +33,24 @@ which always requires a reference. `show --all` includes full diagnostics, build
 locations.
 References use a bare type prefix and sequence number, such as `w12`, `c72`, `s18`, and `u31`.
 
+### Local development issues
+
+The same binary exposes a local development inbox when `MATHMUX_DEVELOPMENT=1` is set or the hidden
+global `--development` flag is passed:
+
+```text
+mathmux issue report <summary> [--ref <ref>]
+mathmux issue list [--status <open|resolved|all>]
+mathmux issue resolve <issue> [--fixed-by <commit>] [-m <note>]
+```
+
+Without this opt-in, the `issue` namespace is absent from help and refuses commands. Reports receive
+global user-local references such as `i12`; `show [--all] i12` works from any directory under the same
+opt-in. The inbox has only open and resolved states. Repeated open summaries increment an occurrence
+count. Each request and response carries its CLI or daemon binary hash. Reports record those exact
+exchanges, the related reference, repository and toolchain metadata, recent daemon output, and bounded
+snapshots of relevant dirty files. This data remains on the local machine.
+
 ### Workspaces
 
 `ws create` creates a managed branch and isolated Git worktree. `ws list` reports compact state.

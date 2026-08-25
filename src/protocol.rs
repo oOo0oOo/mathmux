@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
+    #[serde(default)]
+    pub build: String,
     pub cwd: String,
     pub command: Command,
 }
@@ -20,6 +22,8 @@ pub enum Command {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Response {
+    #[serde(default)]
+    pub build: String,
     pub ok: bool,
     pub summary: String,
 }
@@ -27,6 +31,7 @@ pub struct Response {
 impl Response {
     pub fn ok(summary: impl Into<String>) -> Self {
         Self {
+            build: crate::util::build_id().to_owned(),
             ok: true,
             summary: summary.into(),
         }
@@ -34,6 +39,7 @@ impl Response {
 
     pub fn error(summary: impl Into<String>) -> Self {
         Self {
+            build: crate::util::build_id().to_owned(),
             ok: false,
             summary: summary.into(),
         }
