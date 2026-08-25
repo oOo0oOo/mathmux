@@ -108,16 +108,20 @@ struct SourceRoot {
 
 impl Searcher {
     pub fn new(repo: Repo, state: State) -> Result<Self> {
-        let searcher = Self {
+        let searcher = Self::initialized(repo, state);
+        searcher.migrate()?;
+        Ok(searcher)
+    }
+
+    fn initialized(repo: Repo, state: State) -> Self {
+        Self {
             repo,
             state,
             index_lock: Mutex::new(()),
             base_lock: Arc::new(Mutex::new(())),
             loogle: Mutex::new(LoogleState::Empty),
             base: Mutex::new(HashMap::new()),
-        };
-        searcher.migrate()?;
-        Ok(searcher)
+        }
     }
 
     pub fn search(&self, workspace: &Workspace, cwd: &Path, query: &str) -> Result<String> {
@@ -402,8 +406,8 @@ impl Searcher {
                         let _guard = base_lock
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        Searcher::new(repo.clone(), state)
-                            .and_then(|searcher| searcher.refresh_base(&workspace))
+                        Searcher::initialized(repo.clone(), state)
+                            .refresh_base(&workspace)
                             .map_err(|error| format!("{error:#}"))
                     };
                     if development_enabled(&repo)
