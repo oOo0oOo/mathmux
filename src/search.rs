@@ -858,6 +858,7 @@ impl Searcher {
                         &query_tokens,
                         row.line,
                         &row.kind,
+                        &row.name,
                     );
                     RankedHit {
                         hit: SearchHit {
@@ -1020,8 +1021,14 @@ impl Searcher {
                 continue;
             }
             let usages = self.usages(&row.name, scopes, workspace)?;
-            let (source, matched_line) =
-                detailed_source_excerpt(&row.body, query, &query_tokens, row.line, &row.kind);
+            let (source, matched_line) = detailed_source_excerpt(
+                &row.body,
+                query,
+                &query_tokens,
+                row.line,
+                &row.kind,
+                &row.name,
+            );
             let score = lexical
                 + type_score
                 + (usages.len() as f64 + 1.0).ln()
@@ -1481,8 +1488,14 @@ fn project_source_hits(
                 .iter()
                 .filter(|token| hit_name_matches(&name, token))
                 .count();
-            let (source, line) =
-                detailed_source_excerpt(&entry.body, query, query_tokens, entry.line, &entry.kind);
+            let (source, line) = detailed_source_excerpt(
+                &entry.body,
+                query,
+                query_tokens,
+                entry.line,
+                &entry.kind,
+                &entry.name,
+            );
             let is_file_like = matches!(entry.kind.as_str(), "file" | "imports");
             let import_query = query_tokens
                 .iter()
@@ -2628,19 +2641,7 @@ fn source_excerpt_with_limit(
     let matched = lines
         .iter()
         .position(|line| line.to_lowercase().contains(&query))
-        .or_else(|| {
-            lines
-                .iter()
-                .enumerate()
-                .map(|(index, line)| {
-                    let line = line.to_lowercase();
-                    let score = tokens.iter().filter(|token| line.contains(*token)).count();
-                    (index, score)
-                })
-                .filter(|(_, score)| *score > 0)
-                .max_by_key(|(_, score)| *score)
-                .map(|(index, _)| index)
-        })
+        .or_else(|| best_source_match(&lines, tokens))
         .unwrap_or(0);
     let start = matched.saturating_sub(2);
     let excerpt = lines[start..lines.len().min(start + line_limit)].join("\n");
@@ -2652,12 +2653,37 @@ fn source_excerpt_with_limit(
     (nonempty(excerpt), line)
 }
 
+fn best_source_match(lines: &[&str], tokens: &[String]) -> Option<usize> {
+    const MATCH_CONTEXT_LINES: usize = 16;
+    let lowered = lines
+        .iter()
+        .map(|line| line.to_lowercase())
+        .collect::<Vec<_>>();
+    let mut best = None;
+    for (index, line) in lowered.iter().enumerate() {
+        if !tokens.iter().any(|token| line.contains(token)) {
+            continue;
+        }
+        let start = index.saturating_sub(2);
+        let end = lowered.len().min(start + MATCH_CONTEXT_LINES);
+        let score = tokens
+            .iter()
+            .filter(|token| lowered[start..end].iter().any(|line| line.contains(*token)))
+            .count();
+        if best.is_none_or(|(_, best_score)| score > best_score) {
+            best = Some((index, score));
+        }
+    }
+    best.map(|(index, _)| index)
+}
+
 fn detailed_source_excerpt(
     body: &str,
     query: &str,
     tokens: &[String],
     declaration_line: u64,
     kind: &str,
+    name: &str,
 ) -> (Option<String>, u64) {
     if matches!(kind, "class" | "inductive" | "structure") {
         let declaration = body
@@ -2678,10 +2704,22 @@ fn detailed_source_excerpt(
         let excerpt = body.lines().take(64).collect::<Vec<_>>().join("\n");
         return (nonempty(excerpt), declaration_line);
     }
+    let name = name.to_lowercase();
+    let leaf = name.rsplit('.').next().unwrap_or(&name);
+    let focused_tokens = tokens
+        .iter()
+        .filter(|token| token.as_str() != name && token.as_str() != leaf)
+        .cloned()
+        .collect::<Vec<_>>();
+    let focused_tokens = if focused_tokens.is_empty() {
+        tokens
+    } else {
+        &focused_tokens
+    };
     source_excerpt_with_limit(
         body,
         query,
-        tokens,
+        focused_tokens,
         declaration_line,
         kind == "file",
         DECLARATION_DETAIL_LINES,
@@ -2877,8 +2915,14 @@ fn fallback_source_hits(
             if score == 0 {
                 continue;
             }
-            let (excerpt, matched_line) =
-                detailed_source_excerpt(&entry.body, query, &terms, entry.line, &entry.kind);
+            let (excerpt, matched_line) = detailed_source_excerpt(
+                &entry.body,
+                query,
+                &terms,
+                entry.line,
+                &entry.kind,
+                &entry.name,
+            );
             let name_score = terms
                 .iter()
                 .filter(|term| entry.name.to_lowercase().contains(*term))
@@ -3567,8 +3611,14 @@ end Demo
         assert_eq!(excerpt.lines().count(), 8);
 
         let structure = "structure Config where\n  first : Nat\n  second : String\n  third : Bool\n\n/-- The next declaration. -/\ndef next := 1\n";
-        let (excerpt, line) =
-            detailed_source_excerpt(structure, "Config", &["config".into()], 10, "structure");
+        let (excerpt, line) = detailed_source_excerpt(
+            structure,
+            "Config",
+            &["config".into()],
+            10,
+            "structure",
+            "Demo.Config",
+        );
         assert_eq!(line, 10);
         let excerpt = excerpt.unwrap();
         assert!(excerpt.contains("third : Bool"));
@@ -3578,9 +3628,28 @@ end Demo
             .map(|line| format!("proof line {line}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let (excerpt, _) =
-            detailed_source_excerpt(&proof, "proof line 1", &["proof".into()], 1, "theorem");
+        let (excerpt, _) = detailed_source_excerpt(
+            &proof,
+            "proof line 1",
+            &["proof".into()],
+            1,
+            "theorem",
+            "Demo.proof",
+        );
         assert_eq!(excerpt.unwrap().lines().count(), 20);
+    }
+
+    #[test]
+    fn source_excerpts_prefer_local_context_covering_the_query() {
+        let source = "rw [Finsupp.sum_add_index]\nsimp [smul_eq_mul]\ntheorem Demo.outer : True := by\n  step 1\n  step 2\n  step 3\n  step 4\n  step 5\n  step 6\n  step 7\n  step 8\n  step 9\n  step 10\n  step 11\n  step 12\n  step 13\n  step 14\n  step 15\n  step 16\n  have hpush (q : α) : True := by\n    rw [Finsupp.sum_add_index]\n    simp\n    simp [smul_eq_mul]\n  exact hpush q\n  simp_rw [hpush]\n";
+        let query = "Demo.outer hpush Finsupp.sum_add_index smul_eq_mul";
+        let tokens = meaningful_query_tokens(query);
+        let (excerpt, _) =
+            detailed_source_excerpt(source, query, &tokens, 1, "theorem", "Demo.outer");
+        let excerpt = excerpt.unwrap();
+        assert!(excerpt.contains("have hpush"));
+        assert!(excerpt.contains("Finsupp.sum_add_index"));
+        assert!(excerpt.contains("smul_eq_mul"));
     }
 
     #[test]
