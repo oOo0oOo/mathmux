@@ -1312,7 +1312,11 @@ fn parse_source(source: &str, module: &str) -> Vec<SourceEntry> {
             .find(raw_name)
             .map(|start| start + raw_name.len())
             .unwrap_or(header.len());
-        let signature = header[name_end..].trim().trim_start_matches(':').trim();
+        let mut signature = header[name_end..]
+            .trim()
+            .trim_start_matches(':')
+            .trim()
+            .to_owned();
         let namespace = namespaces
             .get(line.saturating_sub(1))
             .cloned()
@@ -1322,14 +1326,20 @@ fn parse_source(source: &str, module: &str) -> Vec<SourceEntry> {
         } else {
             format!("{}.{}", namespace.join("."), raw_name)
         };
+        let kind = capture
+            .name("kind")
+            .map(|value| value.as_str())
+            .unwrap_or("declaration");
+        if matches!(kind, "class" | "structure")
+            && let Some(projection) = generated_parent_projection(&name, &signature)
+        {
+            signature.push_str(&format!("; generated parent projection: {projection}"));
+        }
         entries.push(SourceEntry {
             line: line as u64,
             name,
-            kind: capture
-                .name("kind")
-                .map(|value| value.as_str().to_owned())
-                .unwrap_or_else(|| "declaration".into()),
-            signature: single_line(signature),
+            kind: kind.to_owned(),
+            signature: single_line(&signature),
             docs: preceding_doc(source, complete.start()).unwrap_or_default(),
             body: block.chars().take(16_000).collect(),
         });
@@ -1343,6 +1353,17 @@ fn parse_source(source: &str, module: &str) -> Vec<SourceEntry> {
         body: source.chars().take(256_000).collect(),
     });
     entries
+}
+
+fn generated_parent_projection(name: &str, signature: &str) -> Option<String> {
+    let parent = signature.split_once("extends ")?.1.trim_start();
+    let parent = parent
+        .split(|character: char| !(character.is_alphanumeric() || matches!(character, '_' | '.')))
+        .next()?;
+    if parent.is_empty() {
+        return None;
+    }
+    Some(format!("{name}.to{}", parent.replace('.', "")))
 }
 
 fn declaration_regex() -> &'static Regex {
@@ -2103,7 +2124,12 @@ fn render_summary(run: &SearchRun) -> String {
         if run.hits.first().is_some_and(|first| first.name == hit.name)
             && let Some(source) = &hit.source
         {
-            for line in source.lines().take(3) {
+            let source_lines = if matches!(hit.kind.as_str(), "class" | "inductive" | "structure") {
+                8
+            } else {
+                3
+            };
+            for line in source.lines().take(source_lines) {
                 output.push_str(&format!("\n  | {}", truncate_line(line.trim(), 200)));
             }
         }
@@ -2308,6 +2334,14 @@ end Demo
         assert!(priority_instance.iter().any(|entry| {
             entry.kind == "instance" && entry.name == "VectorBundle.trivialization_linear"
         }));
+
+        let structure = parse_source(
+            "structure InnerProductSpace.Core extends PreInnerProductSpace.Core where\n  definite : True\n",
+            "InnerProductSpace",
+        );
+        assert!(structure[0].signature.contains(
+            "generated parent projection: InnerProductSpace.Core.toPreInnerProductSpaceCore"
+        ));
     }
 
     #[test]
