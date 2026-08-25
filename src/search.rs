@@ -163,6 +163,9 @@ impl Searcher {
         query: &str,
         all: bool,
     ) -> Result<String> {
+        if let Some(reference) = more_search_reference(query.trim()) {
+            return self.state.show(reference, true);
+        }
         let query = self.expand_reference_query(query.trim())?;
         let query = query.trim();
         ensure!(!query.is_empty(), "search query is empty");
@@ -1702,6 +1705,16 @@ impl Searcher {
             ok: true,
         })
     }
+}
+
+fn more_search_reference(query: &str) -> Option<&str> {
+    let (reference, modifier) = query.split_once(char::is_whitespace)?;
+    let reference = reference.trim();
+    (modifier.trim().eq_ignore_ascii_case("more")
+        && reference
+            .strip_prefix('q')
+            .is_some_and(|digits| !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())))
+    .then_some(reference)
 }
 
 fn diagnostic_search_query(diagnostic: &str) -> String {
@@ -4190,6 +4203,8 @@ end Demo
         assert!(declaration_name_query("Ring.inverse_eq_inv'"));
         assert!(declaration_name_query("transportAmbient"));
         assert!(!declaration_name_query("Finsupp.sum add"));
+        assert_eq!(more_search_reference("q4246 MORE"), Some("q4246"));
+        assert_eq!(more_search_reference("q4246 comp"), None);
         assert!(declaration_glob_query("FiberBundle.*equiv"));
         assert!(declaration_glob_matches(
             "Demo.FiberBundle.local_equiv",
