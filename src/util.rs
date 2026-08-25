@@ -86,6 +86,19 @@ pub fn build_id() -> &'static str {
     })
 }
 
+pub fn build_generation() -> u64 {
+    static GENERATION: OnceLock<u64> = OnceLock::new();
+    *GENERATION.get_or_init(|| {
+        std::env::current_exe()
+            .ok()
+            .and_then(|path| fs::metadata(path).ok())
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_nanos() as u64)
+            .unwrap_or_default()
+    })
+}
+
 pub fn clean_line(value: &str) -> String {
     value.replace(['\r', '\n'], " ").trim().to_owned()
 }

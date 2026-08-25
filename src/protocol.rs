@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 pub struct Request {
     #[serde(default)]
     pub build: String,
+    #[serde(default)]
+    pub generation: u64,
     pub cwd: String,
     pub command: Command,
 }
@@ -114,6 +116,15 @@ mod tests {
             serde_json::from_str(r#"{"build":"old","ok":true,"summary":"ok"}"#).unwrap();
         assert!(!response.retry);
         assert!(Response::retry().retry);
+    }
+
+    #[test]
+    fn legacy_requests_have_no_build_generation() {
+        let request: Request = serde_json::from_str(
+            r#"{"build":"old","cwd":"/project","command":{"verb":"ws_list"}}"#,
+        )
+        .unwrap();
+        assert_eq!(request.generation, 0);
     }
 
     #[test]

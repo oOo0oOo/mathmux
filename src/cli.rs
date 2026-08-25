@@ -280,6 +280,7 @@ pub fn run() -> Result<u8> {
     };
     let request = Request {
         build: crate::util::build_id().to_owned(),
+        generation: crate::util::build_generation(),
         cwd: cwd.to_string_lossy().into_owned(),
         command,
     };

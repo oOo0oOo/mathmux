@@ -18,7 +18,9 @@ use crate::repo::Repo;
 use crate::search::Searcher;
 use crate::state::{State, Submission};
 use crate::status;
-use crate::util::{build_id, clean_line, now_unix_ms, resident_memory_kib, truncate_middle};
+use crate::util::{
+    build_generation, build_id, clean_line, now_unix_ms, resident_memory_kib, truncate_middle,
+};
 use crate::validation::ValidationQueue;
 
 pub fn run(repo: Repo) -> Result<()> {
@@ -112,26 +114,14 @@ fn serve_client(mut stream: UnixStream, service: &Service) -> Result<()> {
     let mut line = String::new();
     BufReader::new(stream.try_clone()?).read_line(&mut line)?;
     let mut response = match serde_json::from_str::<Request>(&line) {
-        Ok(request)
-            if service.retiring.load(Ordering::SeqCst)
-                || (!request.build.is_empty() && request.build != build_id()) =>
-        {
-            service.retiring.store(true, Ordering::SeqCst);
-            if request.command.transport_retry_safe()
-                && service.state.has_running_validation().unwrap_or(false)
-            {
-                match service.handle(request) {
-                    Ok(summary) => Response::ok(summary),
-                    Err(error) => Response::error(format!("{error:#}")),
-                }
-            } else {
-                Response::retry()
-            }
+        Ok(request) if service.retiring.load(Ordering::SeqCst) => {
+            retiring_response(service, request)
         }
-        Ok(request) => match service.handle(request) {
-            Ok(summary) => Response::ok(summary),
-            Err(error) => Response::error(format!("{error:#}")),
-        },
+        Ok(request) if client_build_is_newer(&request) => {
+            service.retiring.store(true, Ordering::SeqCst);
+            retiring_response(service, request)
+        }
+        Ok(request) => handled_response(service, request),
         Err(error) => Response::error(format!("invalid request: {error}")),
     };
     response.daemon_ms = started.elapsed().as_millis() as u64;
@@ -140,6 +130,41 @@ fn serve_client(mut stream: UnixStream, service: &Service) -> Result<()> {
     stream.write_all(b"\n")?;
     stream.flush()?;
     Ok(())
+}
+
+fn client_build_is_newer(request: &Request) -> bool {
+    build_precedes(
+        build_id(),
+        build_generation(),
+        &request.build,
+        request.generation,
+    )
+}
+
+fn build_precedes(
+    current: &str,
+    current_generation: u64,
+    other: &str,
+    other_generation: u64,
+) -> bool {
+    !other.is_empty() && other != current && other_generation > current_generation
+}
+
+fn retiring_response(service: &Service, request: Request) -> Response {
+    if request.command.transport_retry_safe()
+        && service.state.has_running_validation().unwrap_or(false)
+    {
+        handled_response(service, request)
+    } else {
+        Response::retry()
+    }
+}
+
+fn handled_response(service: &Service, request: Request) -> Response {
+    match service.handle(request) {
+        Ok(summary) => Response::ok(summary),
+        Err(error) => Response::error(format!("{error:#}")),
+    }
 }
 
 struct Service {
@@ -400,5 +425,13 @@ mod tests {
         assert!(summary.contains("final target"));
         assert!(summary.contains(">    3 | failing tactic"));
         assert!(summary.contains("full diagnostic: show c1"));
+    }
+
+    #[test]
+    fn only_newer_clients_retire_a_mismatched_daemon() {
+        assert!(build_precedes("old", 10, "new", 11));
+        assert!(!build_precedes("new", 11, "old", 10));
+        assert!(!build_precedes("same", 10, "same", 11));
+        assert!(!build_precedes("new", 11, "old", 0));
     }
 }
