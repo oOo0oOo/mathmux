@@ -321,15 +321,19 @@ unsafe def main : IO UInt32 := do
   let context : Core.Context := {{ fileName := "<mathmux-audit>", fileMap := default }}
   let state : Core.State := {{ env }}
   let mut failures : Array (Name × Name) := #[]
-  for (name, _) in env.constants.toList do
-    if let some index := env.getModuleIdxFor? name then
-      let origin := env.header.moduleNames[index.toNat]!
-      if projectModules.contains origin then
-        let action : CoreM (Array Name) := collectAxioms name
-        let (axioms, _) ← action.toIO context state
-        for axiomName in axioms do
-          unless axiomName == `sorryAx || allowed.contains axiomName do
-            failures := failures.push (axiomName, name)
+  let projectConstants := env.checked.get.constants.foldStage2
+    (fun names name _ =>
+      match env.getModuleIdxFor? name with
+      | some index =>
+          let origin := env.header.moduleNames[index.toNat]!
+          if projectModules.contains origin then names.push name else names
+      | none => names) #[]
+  for name in projectConstants do
+    let action : CoreM (Array Name) := collectAxioms name
+    let (axioms, _) ← action.toIO context state
+    for axiomName in axioms do
+      unless axiomName == `sorryAx || allowed.contains axiomName do
+        failures := failures.push (axiomName, name)
   for (axiomName, name) in failures do
     IO.println s!"MATHMUX_AXIOM\t{{axiomName}}\t{{name}}"
   return if failures.isEmpty then 0 else 1
