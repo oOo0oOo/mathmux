@@ -27,6 +27,8 @@ pub enum Command {
     },
     Search {
         query: String,
+        #[serde(default)]
+        all: bool,
     },
     Status,
     Sync,
@@ -125,6 +127,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(request.generation, 0);
+    }
+
+    #[test]
+    fn legacy_search_requests_are_compact() {
+        let request: Request = serde_json::from_str(
+            r#"{"cwd":"/project","command":{"verb":"search","query":"demo"}}"#,
+        )
+        .unwrap();
+        let Command::Search { all, .. } = request.command else {
+            panic!("expected search command");
+        };
+        assert!(!all);
     }
 
     #[test]

@@ -82,8 +82,11 @@ enum TopCommand {
     /// search. Full results and references are stored under the returned reference.
     Search {
         /// Search terms, a Lean type pattern, or FILE:LINE[:COLUMN].
-        #[arg(required = true, num_args = 1.., trailing_var_arg = true)]
+        #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
+        /// Return complete stored results instead of the compact preview.
+        #[arg(long)]
+        all: bool,
     },
     /// Bring managed main into the current workspace.
     ///
@@ -268,8 +271,9 @@ pub fn run() -> Result<u8> {
             }),
             profile,
         },
-        TopCommand::Search { query } => Command::Search {
+        TopCommand::Search { query, all } => Command::Search {
             query: query.join(" "),
+            all,
         },
         TopCommand::Sync => Command::Sync,
         TopCommand::Submit { message } => Command::Submit { message },
@@ -287,10 +291,13 @@ pub fn run() -> Result<u8> {
     let client_started = Instant::now();
     let mut handoffs = 0;
     let mut transport_retries = 0;
+    let mut handoff_stream = None;
     let response = loop {
-        let response = match connect_or_start(&repo, project_development)
-            .and_then(|stream| exchange(stream, &request))
-        {
+        let stream = match handoff_stream.take() {
+            Some(stream) => Ok(stream),
+            None => connect_or_start(&repo, project_development),
+        };
+        let response = match stream.and_then(|stream| exchange(stream, &request)) {
             Ok(response) => response,
             Err(error)
                 if transport_retries == 0
@@ -311,7 +318,7 @@ pub fn run() -> Result<u8> {
             "daemon build changed repeatedly; retry command"
         );
         handoffs += 1;
-        wait_for_daemon_exit(&repo)?;
+        handoff_stream = Some(replace_daemon(&repo, project_development)?);
     };
     if project_development {
         let _ = crate::issue::record_exchange(
@@ -416,13 +423,29 @@ fn connect_or_start(repo: &Repo, development: bool) -> Result<UnixStream> {
     if let Ok(stream) = UnixStream::connect(&repo.socket_path) {
         return Ok(stream);
     }
-    let startup_lock = OpenOptions::new()
+    let startup_lock = startup_lock(repo)?;
+    startup_lock.lock_exclusive()?;
+    connect_or_start_locked(repo, development)
+}
+
+fn replace_daemon(repo: &Repo, development: bool) -> Result<UnixStream> {
+    let startup_lock = startup_lock(repo)?;
+    startup_lock.lock_exclusive()?;
+    wait_for_daemon_exit(repo)?;
+    connect_or_start_locked(repo, development)
+}
+
+fn startup_lock(repo: &Repo) -> Result<File> {
+    OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
-        .open(&repo.startup_lock)?;
-    startup_lock.lock_exclusive()?;
+        .open(&repo.startup_lock)
+        .map_err(Into::into)
+}
+
+fn connect_or_start_locked(repo: &Repo, development: bool) -> Result<UnixStream> {
     if let Ok(stream) = UnixStream::connect(&repo.socket_path) {
         return Ok(stream);
     }
@@ -496,5 +519,18 @@ mod tests {
     fn daemon_launch_uses_a_stable_running_image() {
         let executable = daemon_executable().unwrap();
         assert!(executable.is_file());
+    }
+
+    #[test]
+    fn search_all_is_an_option_not_a_query_term() {
+        let matches = command_line(false)
+            .try_get_matches_from(["mathmux", "search", "LinearEquiv.ofFinrankEq", "--all"])
+            .unwrap();
+        let args = Args::from_arg_matches(&matches).unwrap();
+        let TopCommand::Search { query, all } = args.command else {
+            panic!("expected search command");
+        };
+        assert_eq!(query, ["LinearEquiv.ofFinrankEq"]);
+        assert!(all);
     }
 }

@@ -150,7 +150,13 @@ impl Searcher {
         }
     }
 
-    pub fn search(&self, workspace: &Workspace, cwd: &Path, query: &str) -> Result<String> {
+    pub fn search(
+        &self,
+        workspace: &Workspace,
+        cwd: &Path,
+        query: &str,
+        all: bool,
+    ) -> Result<String> {
         let query = query.trim();
         ensure!(!query.is_empty(), "search query is empty");
         let reference = self.state.next_ref('q')?;
@@ -179,7 +185,11 @@ impl Searcher {
         };
         self.state.add_search(&run)?;
         self.state.touch_workspace(&workspace.reference)?;
-        Ok(render_summary(&run))
+        if all {
+            self.state.show(&run.reference, true)
+        } else {
+            Ok(render_summary(&run))
+        }
     }
 
     pub fn evict_idle_worker(&self, idle_for: std::time::Duration) -> bool {
@@ -863,7 +873,7 @@ impl Searcher {
             let mut exact = rows
                 .iter()
                 .filter(|row| {
-                    scopes.contains(&row.owner) && row.name.eq_ignore_ascii_case(query.trim())
+                    scopes.contains(&row.owner) && qualified_name_matches(&row.name, query)
                 })
                 .map(|row| {
                     let (source, matched_line) = detailed_source_excerpt(
@@ -898,7 +908,11 @@ impl Searcher {
                     }
                 })
                 .collect::<Vec<_>>();
-            if !exact.is_empty() {
+            let exact_names = exact
+                .iter()
+                .map(|candidate| candidate.hit.name.to_lowercase())
+                .collect::<HashSet<_>>();
+            if exact_names.len() == 1 {
                 exact.sort_by(|left, right| {
                     right
                         .score
@@ -974,10 +988,14 @@ impl Searcher {
         } else if name_search {
             let (mut loogle_hits, is_warming) = self.loogle_hits(workspace, query);
             warming |= is_warming;
-            if let Some(position) = loogle_hits
+            let exact_positions = loogle_hits
                 .iter()
-                .position(|hit| hit.name.eq_ignore_ascii_case(query.trim()))
-            {
+                .enumerate()
+                .filter(|(_, hit)| qualified_name_matches(&hit.name, query))
+                .map(|(position, _)| position)
+                .collect::<Vec<_>>();
+            if let [position] = exact_positions.as_slice() {
+                let position = *position;
                 let hit = loogle_hits.remove(position);
                 let usages = self.usages(&hit.name, scopes, workspace)?;
                 let mut resolved = RankedHit {
@@ -2296,6 +2314,15 @@ fn qualified_name_query(query: &str) -> bool {
             .all(|character| character.is_alphanumeric() || matches!(character, '_' | '.' | '\''))
 }
 
+fn qualified_name_matches(name: &str, query: &str) -> bool {
+    let name = name.to_lowercase();
+    let query = query.trim().to_lowercase();
+    name == query
+        || name
+            .strip_suffix(&query)
+            .is_some_and(|prefix| prefix.ends_with('.'))
+}
+
 fn specific_query_tokens(query: &str) -> Vec<String> {
     query
         .split(|character: char| {
@@ -3497,6 +3524,14 @@ end Demo
         assert!(qualified_name_query("Finsupp.sum_add_index"));
         assert!(qualified_name_query("Ring.inverse_eq_inv'"));
         assert!(!qualified_name_query("Finsupp.sum add"));
+        assert!(qualified_name_matches(
+            "AtiyahSinger.ComplexVectorSubbundle.transportAmbient",
+            "ComplexVectorSubbundle.transportAmbient"
+        ));
+        assert!(!qualified_name_matches(
+            "AtiyahSinger.ComplexVectorSubbundle.transportAmbient",
+            "VectorSubbundle.transportAmbient"
+        ));
         assert_eq!(meaningful_query_tokens("precomp (L :=)"), vec!["precomp"]);
         assert_eq!(
             meaningful_query_tokens("LinearEquiv.ofFinrankEq --all"),
