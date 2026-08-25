@@ -787,7 +787,12 @@ impl Searcher {
                 score,
             });
         }
-        if base_warming || ranked.len() < 3 || query.contains('|') || query_tokens.len() > 1 {
+        if base_warming
+            || ranked.len() < 3
+            || query.contains('|')
+            || query_tokens.len() > 1
+            || !named_argument_terms(query).is_empty()
+        {
             match fallback_source_hits(&workspace.path, query, &query_tokens) {
                 Ok(hits) => ranked.extend(hits),
                 Err(error) => append_log(
@@ -1702,6 +1707,9 @@ fn meaningful_query_tokens(query: &str) -> Vec<String> {
     {
         tokens.retain(|token| !generic.contains(&token.as_str()));
     }
+    if tokens.len() > 1 {
+        tokens.retain(|token| token.chars().count() >= 2);
+    }
     tokens
 }
 
@@ -2506,6 +2514,7 @@ end Demo
         assert!(!type_shaped("norm_inner_le_norm"));
         assert!(structural_type_score("_ → Injective _", "Bijective f → Injective f") > 0.0);
         assert_eq!(fts_query("List.map"), "\"list.map\"*");
+        assert_eq!(meaningful_query_tokens("precomp (L :=)"), vec!["precomp"]);
     }
 
     #[test]
