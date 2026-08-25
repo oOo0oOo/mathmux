@@ -24,7 +24,7 @@ use crate::util::{clean_line, hash_bytes, now_unix_ms};
 const RESULT_LIMIT: usize = 24;
 const SUMMARY_LIMIT: usize = 5;
 const GOAL_TIMEOUT_MS: u64 = 2_000;
-const SEARCH_INDEX_VERSION: i64 = 1;
+const SEARCH_INDEX_VERSION: i64 = 2;
 
 pub struct Searcher {
     repo: Repo,
@@ -1251,10 +1251,7 @@ fn parse_source(source: &str, module: &str) -> Vec<SourceEntry> {
             .map(|next| next.start())
             .unwrap_or(source.len());
         let block = source[complete.start()..end].trim();
-        let header_end = block
-            .find(":=")
-            .or_else(|| block.find(" where"))
-            .unwrap_or_else(|| block.find('\n').unwrap_or(block.len()));
+        let header_end = declaration_header_end(block);
         let header = block[..header_end].trim();
         let name_end = header
             .find(raw_name)
@@ -1301,6 +1298,34 @@ fn declaration_regex() -> &'static Regex {
         )
         .expect("valid declaration regex")
     })
+}
+
+fn declaration_header_end(block: &str) -> usize {
+    let mut delimiters = Vec::new();
+    for (index, character) in block.char_indices() {
+        match character {
+            '(' | '[' | '{' => delimiters.push(character),
+            ')' | ']' | '}' => {
+                delimiters.pop();
+            }
+            ':' if delimiters.is_empty() && block[index..].starts_with(":=") => return index,
+            'w' if delimiters.is_empty()
+                && block[index..].starts_with("where")
+                && block[..index]
+                    .chars()
+                    .next_back()
+                    .is_some_and(char::is_whitespace)
+                && block[index + "where".len()..]
+                    .chars()
+                    .next()
+                    .is_none_or(char::is_whitespace) =>
+            {
+                return index;
+            }
+            _ => {}
+        }
+    }
+    block.find('\n').unwrap_or(block.len())
 }
 
 fn namespaces_by_line(source: &str) -> Vec<Vec<String>> {
@@ -1798,6 +1823,11 @@ end Demo
                 .iter()
                 .any(|entry| entry.name == "Demo.pairValue" && entry.signature.contains('×'))
         );
+        let named_argument = parse_source(
+            "theorem configured (x : α) : f (R := 𝕜) x = x := by simp\n",
+            "Demo",
+        );
+        assert_eq!(named_argument[0].signature, "(x : α) : f (R := 𝕜) x = x");
     }
 
     #[test]
