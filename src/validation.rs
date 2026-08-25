@@ -6,6 +6,7 @@ use std::thread;
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail, ensure};
+use fs2::FileExt;
 
 use crate::check::{parse_imports, project_module_name};
 use crate::git::{lake_command, project_lean_files};
@@ -97,6 +98,13 @@ fn validation_loop(
 
 fn validate(repo: &Repo, submission: &Submission) -> Result<ValidationReport> {
     let started = Instant::now();
+    let validation_lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&repo.validation_lock)?;
+    validation_lock.lock_exclusive()?;
     let root = prepare_worktree(repo, &submission.main_commit)?;
     let sorries = find_sorries(&root)?;
     let (roots, project_modules) = deliverable_modules(&root);

@@ -16,6 +16,7 @@ pub struct Repo {
     pub log_path: PathBuf,
     pub cache_dir: PathBuf,
     pub integration_lock: PathBuf,
+    pub validation_lock: PathBuf,
     pub startup_lock: PathBuf,
 }
 
@@ -50,6 +51,7 @@ impl Repo {
             log_path: state_dir.join("daemon.log"),
             cache_dir: state_dir.join("lake-cache"),
             integration_lock: state_dir.join("integration.lock"),
+            validation_lock: state_dir.join("validation.lock"),
             startup_lock: state_dir.join("startup.lock"),
             state_dir,
             common_git_dir,
