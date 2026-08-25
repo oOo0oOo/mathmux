@@ -570,6 +570,7 @@ impl TelemetryStore {
                 "SELECT request_json, response_json
                  FROM telemetry_events
                  WHERE project = ?1 AND (?2 IS NULL OR workspace = ?2)
+                   AND request_json <> '{}'
                  ORDER BY created_at DESC, id DESC LIMIT 1",
                 params![project.to_string_lossy(), workspace],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),

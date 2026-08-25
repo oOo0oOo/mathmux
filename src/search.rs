@@ -76,9 +76,12 @@ enum LoogleState {
 }
 
 enum BaseState {
-    Starting(std::sync::mpsc::Receiver<std::result::Result<HashSet<String>, String>>),
+    Starting(
+        std::sync::mpsc::Receiver<std::result::Result<HashSet<String>, String>>,
+        HashSet<String>,
+    ),
     Ready(HashSet<String>),
-    Failed,
+    Failed(HashSet<String>),
 }
 
 struct LoogleWorker {
@@ -301,7 +304,7 @@ impl Searcher {
     }
 
     fn open(&self) -> Result<Connection> {
-        let connection = Connection::open(&self.repo.db_path)?;
+        let connection = Connection::open(&self.repo.search_db_path)?;
         connection.busy_timeout(std::time::Duration::from_secs(10))?;
         Ok(connection)
     }
@@ -313,16 +316,32 @@ impl Searcher {
             kind: SourceKind::Project,
         }];
 
-        let mut scopes = HashSet::new();
-        for root in &roots {
-            scopes.insert(root.owner.clone());
-            self.refresh_sources(root, &workspace.path)?;
-        }
+        let mut scopes = roots
+            .iter()
+            .map(|root| root.owner.clone())
+            .collect::<HashSet<_>>();
         let project_artifacts = workspace.path.join(".lake/build/lib/lean");
         if project_artifacts.is_dir() {
-            let owner = format!("artifacts:{}", workspace.reference);
-            scopes.insert(owner.clone());
-            self.refresh_ileans(&owner, &project_artifacts)?;
+            scopes.insert(format!("artifacts:{}", workspace.reference));
+        }
+        if let Ok(_base_guard) = self.base_lock.try_lock() {
+            for root in &roots {
+                if let Err(error) = self.refresh_sources(root, &workspace.path) {
+                    append_log(
+                        &self.repo,
+                        &format!("workspace source refresh deferred: {error:#}"),
+                    );
+                }
+            }
+            if project_artifacts.is_dir() {
+                let owner = format!("artifacts:{}", workspace.reference);
+                if let Err(error) = self.refresh_ileans(&owner, &project_artifacts) {
+                    append_log(
+                        &self.repo,
+                        &format!("workspace artifact refresh deferred: {error:#}"),
+                    );
+                }
+            }
         }
         let (base_scopes, warming) = self.base_scopes(workspace);
         scopes.extend(base_scopes);
@@ -341,11 +360,12 @@ impl Searcher {
                 states.insert(key, BaseState::Ready(scopes));
                 (result, false)
             }
-            Some(BaseState::Failed) => {
-                states.insert(key, BaseState::Failed);
-                (HashSet::new(), false)
+            Some(BaseState::Failed(scopes)) => {
+                let result = scopes.clone();
+                states.insert(key, BaseState::Failed(scopes));
+                (result, false)
             }
-            Some(BaseState::Starting(receiver)) => match receiver.try_recv() {
+            Some(BaseState::Starting(receiver, partial)) => match receiver.try_recv() {
                 Ok(Ok(scopes)) => {
                     let result = scopes.clone();
                     states.insert(key, BaseState::Ready(scopes));
@@ -353,16 +373,19 @@ impl Searcher {
                 }
                 Ok(Err(error)) => {
                     append_log(&self.repo, &format!("source index unavailable: {error}"));
-                    states.insert(key, BaseState::Failed);
-                    (HashSet::new(), false)
+                    let result = partial.clone();
+                    states.insert(key, BaseState::Failed(partial));
+                    (result, false)
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    states.insert(key, BaseState::Failed);
-                    (HashSet::new(), false)
+                    let result = partial.clone();
+                    states.insert(key, BaseState::Failed(partial));
+                    (result, false)
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    states.insert(key, BaseState::Starting(receiver));
-                    (HashSet::new(), true)
+                    let result = partial.clone();
+                    states.insert(key, BaseState::Starting(receiver, partial));
+                    (result, true)
                 }
             },
             None => {
@@ -371,6 +394,7 @@ impl Searcher {
                 let state = self.state.clone();
                 let workspace = workspace.clone();
                 let base_lock = self.base_lock.clone();
+                let partial = package_scopes(&workspace.path);
                 std::thread::spawn(move || {
                     let started = Instant::now();
                     let result = {
@@ -403,8 +427,8 @@ impl Searcher {
                     }
                     let _ = sender.send(result);
                 });
-                states.insert(key, BaseState::Starting(receiver));
-                (HashSet::new(), true)
+                states.insert(key, BaseState::Starting(receiver, partial.clone()));
+                (partial, true)
             }
         }
     }
@@ -415,6 +439,9 @@ impl Searcher {
         if packages.is_dir() {
             let packages = fs::canonicalize(packages)?;
             let owner = shared_owner("packages", &packages);
+            let artifact_owner = shared_owner("artifact-packages", &packages);
+            self.refresh_ileans(&artifact_owner, &packages)?;
+            scopes.insert(artifact_owner);
             self.refresh_sources(
                 &SourceRoot {
                     owner: owner.clone(),
@@ -424,9 +451,6 @@ impl Searcher {
                 &workspace.path,
             )?;
             scopes.insert(owner);
-            let artifact_owner = shared_owner("artifact-packages", &packages);
-            self.refresh_ileans(&artifact_owner, &packages)?;
-            scopes.insert(artifact_owner);
         }
         if let Some(stdlib) = lean_source_root(&self.repo, &workspace.path) {
             let owner = shared_owner("stdlib", &stdlib);
@@ -455,19 +479,19 @@ impl Searcher {
                 continue;
             };
             match state {
-                BaseState::Starting(receiver) => match receiver.try_recv() {
+                BaseState::Starting(receiver, partial) => match receiver.try_recv() {
                     Ok(Ok(scopes)) => {
                         states.insert(key, BaseState::Ready(scopes));
                     }
                     Ok(Err(error)) => {
                         append_log(&self.repo, &format!("source index unavailable: {error}"));
-                        states.insert(key, BaseState::Failed);
+                        states.insert(key, BaseState::Failed(partial));
                     }
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        states.insert(key, BaseState::Failed);
+                        states.insert(key, BaseState::Failed(partial));
                     }
                     Err(std::sync::mpsc::TryRecvError::Empty) => {
-                        states.insert(key, BaseState::Starting(receiver));
+                        states.insert(key, BaseState::Starting(receiver, partial));
                         running = true;
                     }
                 },
@@ -671,7 +695,7 @@ impl Searcher {
         let type_search = type_search_enabled() && type_shaped(query);
         let rows = self.candidates(query, type_search)?;
         let query_lower = query.to_lowercase();
-        let query_tokens = query_tokens(query);
+        let query_tokens = meaningful_query_tokens(query);
         let mut ranked = Vec::new();
         let mut warming = false;
         if type_search {
@@ -739,6 +763,15 @@ impl Searcher {
                 },
                 score,
             });
+        }
+        if base_warming || ranked.len() < 3 || query.contains('|') || query_tokens.len() > 1 {
+            match fallback_source_hits(&workspace.path, query, &query_tokens) {
+                Ok(hits) => ranked.extend(hits),
+                Err(error) => append_log(
+                    &self.repo,
+                    &format!("source fallback unavailable: {error:#}"),
+                ),
+            }
         }
         ranked.sort_by(|left, right| {
             right
@@ -1427,6 +1460,18 @@ fn shared_owner(label: &str, root: &Path) -> String {
     format!("{label}:{}", hash_bytes(root.to_string_lossy().as_bytes()))
 }
 
+fn package_scopes(workspace: &Path) -> HashSet<String> {
+    let Ok(packages) = fs::canonicalize(workspace.join(".lake/packages")) else {
+        return HashSet::new();
+    };
+    [
+        shared_owner("packages", &packages),
+        shared_owner("artifact-packages", &packages),
+    ]
+    .into_iter()
+    .collect()
+}
+
 fn lean_source_root(repo: &Repo, root: &Path) -> Option<PathBuf> {
     let output = lake_command(repo, root)
         .args(["env", "lean", "--print-prefix"])
@@ -1492,7 +1537,7 @@ fn reference_display_path(module: &str, workspace: &Workspace) -> String {
 }
 
 fn fts_query(query: &str) -> String {
-    query_tokens(query)
+    meaningful_query_tokens(query)
         .into_iter()
         .filter(|token| token != "_")
         .map(|token| format!("\"{}\"*", token.replace('"', "\"\"")))
@@ -1508,6 +1553,28 @@ fn query_tokens(query: &str) -> Vec<String> {
         .map(|token| token.trim_matches('.').to_lowercase())
         .filter(|token| !token.is_empty())
         .collect()
+}
+
+fn meaningful_query_tokens(query: &str) -> Vec<String> {
+    let mut tokens = query_tokens(query);
+    let generic = [
+        "class",
+        "constructor",
+        "constructors",
+        "def",
+        "instance",
+        "lemma",
+        "structure",
+        "theorem",
+    ];
+    if tokens.len() > 1
+        && tokens
+            .iter()
+            .any(|token| !generic.contains(&token.as_str()))
+    {
+        tokens.retain(|token| !generic.contains(&token.as_str()));
+    }
+    tokens
 }
 
 fn lexical_score(query: &str, tokens: &[String], row: &IndexedRow) -> f64 {
@@ -1636,6 +1703,164 @@ fn source_excerpt(
         declaration_line
     };
     (nonempty(excerpt), line)
+}
+
+fn fallback_source_hits(
+    workspace: &Path,
+    query: &str,
+    query_tokens: &[String],
+) -> Result<Vec<RankedHit>> {
+    let workspace = fs::canonicalize(workspace)?;
+    let packages = fs::canonicalize(workspace.join(".lake/packages")).ok();
+    let generic = [
+        "class",
+        "constructor",
+        "constructors",
+        "def",
+        "instance",
+        "lemma",
+        "structure",
+        "theorem",
+    ];
+    let mut terms = query_tokens
+        .iter()
+        .flat_map(|token| [token.as_str(), token.rsplit('.').next().unwrap_or(token)])
+        .map(str::to_lowercase)
+        .filter(|term| term.len() >= 3 && !generic.contains(&term.as_str()))
+        .collect::<Vec<_>>();
+    terms.sort();
+    terms.dedup();
+    if terms.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut strong_terms = query
+        .split('|')
+        .map(str::trim)
+        .filter(|term| term.len() >= 3)
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>();
+    strong_terms.extend(
+        query_tokens
+            .iter()
+            .filter_map(|token| token.rsplit_once('.').map(|(_, base)| base.to_lowercase())),
+    );
+    let mut rare_terms = terms.clone();
+    rare_terms.sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
+    strong_terms.extend(rare_terms.into_iter().take(2));
+    strong_terms.sort();
+    strong_terms.dedup();
+    let mut paths = source_scan_paths(&workspace, packages.as_deref(), &strong_terms)?;
+    let mut seen_paths = paths.iter().cloned().collect::<HashSet<_>>();
+    for path in source_scan_paths(&workspace, packages.as_deref(), &terms)? {
+        if seen_paths.insert(path.clone()) {
+            paths.push(path);
+        }
+    }
+    let mut ranked = Vec::new();
+    let class_query = query
+        .split('|')
+        .map(str::trim)
+        .any(|part| part.to_lowercase().starts_with("class "));
+    for path in paths.into_iter().take(96) {
+        let path = if path.is_absolute() {
+            path
+        } else {
+            workspace.join(path)
+        };
+        let source = fs::read_to_string(&path)?;
+        let (root, kind) = packages
+            .as_ref()
+            .filter(|packages| path.starts_with(packages))
+            .map(|packages| (packages.as_path(), SourceKind::Dependency))
+            .unwrap_or((workspace.as_path(), SourceKind::Project));
+        let module = module_name(&path, root, kind);
+        for entry in parse_source(&source, &module) {
+            let searchable =
+                format!("{} {} {}", entry.name, entry.signature, entry.body).to_lowercase();
+            let score = terms
+                .iter()
+                .filter(|term| searchable.contains(*term))
+                .count();
+            if score == 0 {
+                continue;
+            }
+            let (excerpt, matched_line) =
+                source_excerpt(&entry.body, query, &terms, entry.line, entry.kind == "file");
+            let name_score = terms
+                .iter()
+                .filter(|term| entry.name.to_lowercase().contains(*term))
+                .count();
+            let name = entry.name.to_lowercase();
+            let base = name.rsplit('.').next().unwrap_or(&name);
+            let exact_name = terms.iter().any(|term| term == &name || term == base);
+            let is_class = entry.kind == "class";
+            ranked.push(RankedHit {
+                hit: SearchHit {
+                    name: entry.name,
+                    kind: entry.kind,
+                    signature: nonempty(entry.signature),
+                    module: module.clone(),
+                    path: display_path(&path, &workspace, root, kind),
+                    line: matched_line,
+                    doc: nonempty(entry.docs),
+                    source: excerpt,
+                    usages: Vec::new(),
+                },
+                score: 35.0
+                    + score as f64 * 8.0
+                    + name_score as f64 * 20.0
+                    + if exact_name { 80.0 } else { 0.0 }
+                    + if is_class && class_query { 40.0 } else { 0.0 },
+            });
+        }
+    }
+    ranked.sort_by(|left, right| {
+        right
+            .score
+            .partial_cmp(&left.score)
+            .unwrap_or(Ordering::Equal)
+    });
+    ranked.truncate(RESULT_LIMIT);
+    Ok(ranked)
+}
+
+fn source_scan_paths(
+    workspace: &Path,
+    packages: Option<&Path>,
+    terms: &[String],
+) -> Result<Vec<PathBuf>> {
+    if terms.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut command = std::process::Command::new("timeout");
+    command.args([
+        "--signal=KILL",
+        "2s",
+        "rg",
+        "-l",
+        "-i",
+        "-F",
+        "--glob",
+        "*.lean",
+    ]);
+    for term in terms {
+        command.args(["-e", term]);
+    }
+    command.arg(workspace);
+    if let Some(packages) = packages {
+        command.arg(packages);
+    }
+    let output = command.stdin(Stdio::null()).output()?;
+    if !output.status.success() && !matches!(output.status.code(), Some(1 | 124 | 137)) {
+        bail!(
+            "local source scan failed: {}",
+            clean_line(&String::from_utf8_lossy(&output.stderr))
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(PathBuf::from)
+        .collect())
 }
 
 fn render_summary(run: &SearchRun) -> String {
@@ -1880,5 +2105,26 @@ end Demo
         assert!(excerpt.starts_with("-- line 10"));
         assert!(excerpt.contains("theorem exact_match"));
         assert_eq!(excerpt.lines().count(), 8);
+    }
+
+    #[test]
+    fn warming_fallback_finds_local_dependency_declarations() {
+        let directory = tempfile::tempdir().unwrap();
+        let package = directory.path().join(".lake/packages/demo/Demo");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(
+            package.join("Api.lean"),
+            "namespace Bundle.ContinuousLinearMap\n\nclass topologicalSpaceTotalSpace : Prop where\n  value : True\n\nend Bundle.ContinuousLinearMap\n",
+        )
+        .unwrap();
+        let hits = fallback_source_hits(
+            directory.path(),
+            "Bundle.ContinuousLinearMap.topologicalSpaceTotalSpace",
+            &["bundle.continuouslinearmap.topologicalspacetotalspace".into()],
+        )
+        .unwrap();
+        assert!(hits.iter().any(|hit| {
+            hit.hit.name == "Bundle.ContinuousLinearMap.topologicalSpaceTotalSpace"
+        }));
     }
 }
