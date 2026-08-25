@@ -5,7 +5,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Instant;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 
 use crate::check::{parse_imports, project_module_name};
 use crate::git::{lake_command, project_lean_files};
@@ -103,7 +103,6 @@ fn validate(repo: &Repo, submission: &Submission) -> Result<ValidationReport> {
     let output = lake_command(repo, &root)
         .arg("build")
         .args(&roots)
-        .env("LAKE_RESTORE_ARTIFACTS", "true")
         .output()
         .context("cannot start validation build")?;
     let build_output = combined_output(&output);
@@ -117,6 +116,7 @@ fn validate(repo: &Repo, submission: &Submission) -> Result<ValidationReport> {
             duration_ms: started.elapsed().as_millis() as u64,
         });
     }
+    restore_project_oleans(&repo.cache_dir, &root, &project_modules)?;
     let axioms = match run_axiom_audit(repo, &root, &roots, &project_modules) {
         Ok(axioms) => axioms,
         Err(error) => {
@@ -150,6 +150,39 @@ fn validate(repo: &Repo, submission: &Submission) -> Result<ValidationReport> {
         sorries,
         duration_ms: started.elapsed().as_millis() as u64,
     })
+}
+
+fn restore_project_oleans(cache_dir: &Path, root: &Path, modules: &[String]) -> Result<()> {
+    for module in modules {
+        let artifact = root
+            .join(".lake/build/lib/lean")
+            .join(module.replace('.', "/"))
+            .with_extension("olean");
+        if artifact.is_file() {
+            continue;
+        }
+        let hash_path = artifact.with_extension("olean.hash");
+        let hash = fs::read_to_string(&hash_path)
+            .with_context(|| format!("missing artifact hash for {module}"))?;
+        let hash = hash.trim();
+        ensure!(
+            hash.len() == 16 && hash.chars().all(|character| character.is_ascii_hexdigit()),
+            "invalid artifact hash for {module}"
+        );
+        let cached = cache_dir.join("artifacts").join(format!("{hash}.olean"));
+        ensure!(cached.is_file(), "cached artifact missing for {module}");
+        if let Some(parent) = artifact.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        if let Err(error) = fs::hard_link(&cached, &artifact) {
+            fs::copy(&cached, &artifact).with_context(|| {
+                format!(
+                    "cannot restore cached artifact for {module} after hard-link failed: {error}"
+                )
+            })?;
+        }
+    }
+    Ok(())
 }
 
 fn combined_output(output: &std::process::Output) -> String {
@@ -428,5 +461,25 @@ mod tests {
     fn sorry_locations_ignore_comments_strings_and_longer_names() {
         let source = "-- sorry\n/- outer /- sorry -/ -/\ndef a : True := by\n  sorry\ndef sorryAx := \"sorry\"\n";
         assert_eq!(sorry_positions(source), vec![(4, 3)]);
+    }
+
+    #[test]
+    fn only_project_oleans_are_restored_from_the_artifact_cache() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("worktree");
+        let cache = directory.path().join("cache");
+        let hash = "0123456789abcdef";
+        let artifact = root.join(".lake/build/lib/lean/Demo/Result.olean");
+        fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+        fs::write(artifact.with_extension("olean.hash"), hash).unwrap();
+        fs::create_dir_all(cache.join("artifacts")).unwrap();
+        fs::write(
+            cache.join("artifacts").join(format!("{hash}.olean")),
+            "olean",
+        )
+        .unwrap();
+
+        restore_project_oleans(&cache, &root, &["Demo.Result".into()]).unwrap();
+        assert_eq!(fs::read_to_string(artifact).unwrap(), "olean");
     }
 }
