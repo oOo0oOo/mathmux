@@ -1612,6 +1612,13 @@ fn lexical_score(query: &str, tokens: &[String], row: &IndexedRow) -> f64 {
     } else {
         0.0
     };
+    if row.kind != "file"
+        && tokens
+            .iter()
+            .any(|token| token == &name || (!token.contains('.') && token.as_str() == base))
+    {
+        score += 100.0;
+    }
     for token in tokens {
         if name.contains(token) {
             score += 12.0;
@@ -1830,8 +1837,8 @@ fn fallback_source_hits(
             let right_dependency = packages
                 .as_ref()
                 .is_some_and(|packages| right_path.starts_with(packages));
-            right_dependency
-                .cmp(&left_dependency)
+            left_dependency
+                .cmp(&right_dependency)
                 .then_with(|| left_path.cmp(right_path))
         })
     });
@@ -1909,9 +1916,11 @@ fn fallback_source_hits(
                 .iter()
                 .filter(|term| name_segments.contains(term.as_str()))
                 .count();
+            let is_file = entry.kind == "file";
             let exact_name = query_tokens.iter().any(|token| {
                 (token.contains('.') && token == &name)
-                    || (query_tokens.len() == 1 && !token.contains('.') && token.as_str() == base)
+                    || (!is_file && !token.contains('.') && token.as_str() == base)
+                    || (query_tokens.len() == 1 && token.as_str() == base)
             });
             let qualified_leaf = query_tokens.iter().any(|token| {
                 token
@@ -1919,7 +1928,6 @@ fn fallback_source_hits(
                     .is_some_and(|(_, leaf)| name_segments.contains(leaf))
             });
             let is_class = entry.kind == "class";
-            let is_file = entry.kind == "file";
             ranked.push(RankedHit {
                 hit: SearchHit {
                     name: entry.name,
@@ -2347,5 +2355,28 @@ end Demo
         let hits =
             fallback_source_hits(directory.path(), query, &meaningful_query_tokens(query)).unwrap();
         assert!(hits.iter().any(|hit| hit.hit.name == "support_fact"));
+    }
+
+    #[test]
+    fn fallback_reserves_tied_coverage_for_project_sources() {
+        let directory = tempfile::tempdir().unwrap();
+        let dependencies = directory.path().join(".lake/packages/demo/Mathlib");
+        fs::create_dir_all(&dependencies).unwrap();
+        for index in 0..100 {
+            fs::write(
+                dependencies.join(format!("Noise{index}.lean")),
+                format!("theorem noise{index} : True := by trivial\n-- finite continuous sum\n"),
+            )
+            .unwrap();
+        }
+        fs::write(
+            directory.path().join("Metric.lean"),
+            "theorem project_weightedSum : True := by trivial\n-- finite continuous sum\n",
+        )
+        .unwrap();
+        let query = "finite continuous sum";
+        let hits =
+            fallback_source_hits(directory.path(), query, &meaningful_query_tokens(query)).unwrap();
+        assert!(hits.iter().any(|hit| hit.hit.name == "project_weightedSum"));
     }
 }
