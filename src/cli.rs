@@ -429,7 +429,7 @@ fn connect_or_start(repo: &Repo, development: bool) -> Result<UnixStream> {
 }
 
 fn start_daemon(repo: &Repo, development: bool) -> Result<()> {
-    let executable = std::env::current_exe()?;
+    let executable = daemon_executable()?;
     let log = File::options()
         .create(true)
         .append(true)
@@ -458,6 +458,15 @@ fn start_daemon(repo: &Repo, development: bool) -> Result<()> {
     Ok(())
 }
 
+fn daemon_executable() -> Result<PathBuf> {
+    let running_image = PathBuf::from("/proc/self/exe");
+    if running_image.is_file() {
+        Ok(running_image)
+    } else {
+        std::env::current_exe().map_err(Into::into)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -472,5 +481,11 @@ mod tests {
         assert!(development.contains("telemetry"));
         assert!(normal.contains("Do not run git, lean, lake build"));
         assert!(normal.contains("Keep each file focused on one coherent module"));
+    }
+
+    #[test]
+    fn daemon_launch_uses_a_stable_running_image() {
+        let executable = daemon_executable().unwrap();
+        assert!(executable.is_file());
     }
 }
