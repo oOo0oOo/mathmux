@@ -28,6 +28,14 @@ pub struct TelemetryStore {
     path: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+pub struct ContextEvent {
+    pub created_at: i64,
+    pub workspace: String,
+    pub reference: Option<String>,
+    pub response_bytes: u64,
+}
+
 pub struct TelemetryOperation<'a> {
     pub workspace: Option<&'a str>,
     pub verb: &'a str,
@@ -418,6 +426,30 @@ impl TelemetryStore {
         prune_telemetry(&transaction, now)?;
         transaction.commit()?;
         Ok(format!("e{id}"))
+    }
+
+    pub fn context_events(&self, repo: &Repo, since: i64) -> Result<Vec<ContextEvent>> {
+        let connection = self.open_db()?;
+        let mut statement = connection.prepare(
+            "SELECT created_at, workspace, reference, response_bytes
+             FROM telemetry_events
+             WHERE project = ?1 AND created_at >= ?2 AND workspace IS NOT NULL
+               AND json_type(request_json, '$.command') = 'object'
+             ORDER BY created_at, id",
+        )?;
+        let rows = statement.query_map(
+            params![repo.root.to_string_lossy().as_ref(), since],
+            |row| {
+                Ok(ContextEvent {
+                    created_at: row.get(0)?,
+                    workspace: row.get(1)?,
+                    reference: row.get(2)?,
+                    response_bytes: row.get::<_, i64>(3)?.max(0) as u64,
+                })
+            },
+        )?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 
     pub fn record_operation(

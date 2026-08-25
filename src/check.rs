@@ -144,6 +144,7 @@ pub struct CheckOutcome {
     pub ok: bool,
     pub elapsed_ms: u64,
     pub warnings: Vec<Diagnostic>,
+    pub linters: Vec<Diagnostic>,
     pub diagnostics: Vec<Diagnostic>,
     pub profile: Option<CheckProfile>,
 }
@@ -300,6 +301,7 @@ impl Checker {
             ok,
             elapsed_ms,
             warnings,
+            linters,
             diagnostics,
             profile: run.profile,
         })

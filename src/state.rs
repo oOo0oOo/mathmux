@@ -85,6 +85,16 @@ pub struct ActivityMetrics {
     pub average_build_ms: Option<f64>,
 }
 
+#[derive(Debug, Clone)]
+pub struct SubmissionInterval {
+    pub reference: String,
+    pub workspace_ref: String,
+    pub workspace_commit: String,
+    pub created_at: i64,
+    pub previous_reference: Option<String>,
+    pub previous_created_at: i64,
+}
+
 impl CheckProfile {
     pub fn render(&self) -> String {
         let mut output = format!("profile:\n  planning {}ms", self.planning_ms);
@@ -458,6 +468,40 @@ impl State {
             builds,
             average_build_ms,
         })
+    }
+
+    pub fn submission_intervals(&self, since: i64) -> Result<Vec<SubmissionInterval>> {
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            "WITH ordered AS (
+                 SELECT ref, workspace_ref, workspace_commit, created_at,
+                        LAG(ref) OVER (
+                            PARTITION BY workspace_ref ORDER BY created_at, ref
+                        ) AS previous_reference,
+                        LAG(created_at) OVER (
+                            PARTITION BY workspace_ref ORDER BY created_at, ref
+                        ) AS previous_created_at
+                 FROM submissions
+             )
+             SELECT ordered.ref, ordered.workspace_ref, ordered.workspace_commit,
+                    ordered.created_at, ordered.previous_reference,
+                    COALESCE(ordered.previous_created_at, workspaces.created_at)
+             FROM ordered JOIN workspaces ON workspaces.ref = ordered.workspace_ref
+             WHERE ordered.created_at >= ?1
+             ORDER BY ordered.created_at, ordered.ref",
+        )?;
+        let rows = statement.query_map([since], |row| {
+            Ok(SubmissionInterval {
+                reference: row.get(0)?,
+                workspace_ref: row.get(1)?,
+                workspace_commit: row.get(2)?,
+                created_at: row.get(3)?,
+                previous_reference: row.get(4)?,
+                previous_created_at: row.get(5)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 
     pub fn add_check_run(&self, run: &CheckRun, certificates: &[CheckRecord]) -> Result<()> {

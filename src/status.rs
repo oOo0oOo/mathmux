@@ -7,8 +7,9 @@ use std::time::UNIX_EPOCH;
 use anyhow::{Result, ensure};
 
 use crate::git::{dirty_paths, head};
+use crate::issue::{ContextEvent, TelemetryStore, development_enabled};
 use crate::repo::Repo;
-use crate::state::{ActivityMetrics, State, Workspace};
+use crate::state::{ActivityMetrics, State, SubmissionInterval, Workspace};
 use crate::util::{now_unix_ms, run_checked, run_output, short_hash};
 
 const HOUR_SECS: i64 = 60 * 60;
@@ -31,6 +32,14 @@ struct CodeMetrics {
     lines: u64,
 }
 
+#[derive(Default)]
+struct SubmissionContext {
+    created_at: i64,
+    lines: u64,
+    calls: u64,
+    output_bytes: u64,
+}
+
 pub fn render(repo: &Repo, state: &State) -> Result<String> {
     let now = now_unix_ms() / 1000;
     let project = repo
@@ -46,6 +55,7 @@ pub fn render(repo: &Repo, state: &State) -> Result<String> {
         .collect::<HashMap<_, _>>();
     let agents = project_agents(&workspaces, &activity, now);
     let code = current_code(&repo.root)?;
+    let context = submission_context(repo, state, (now - DAY_SECS) * 1000);
 
     let mut output = format!("{project} {}", short_hash(&revision));
     render_agents(&mut output, &agents, now)?;
@@ -70,6 +80,14 @@ pub fn render(repo: &Repo, state: &State) -> Result<String> {
                 output,
                 "  {:+.1}/agent-h ({agent_hours:.1} agent-h)",
                 lines as f64 / agent_hours
+            )?;
+        }
+        if let Some(metrics) = context_per_loc(&context, (now - seconds) * 1000) {
+            write!(
+                output,
+                "  context/loc {:.2} mux calls + {} output",
+                metrics.calls as f64 / metrics.lines as f64,
+                format_bytes(metrics.output_bytes as f64 / metrics.lines as f64)
             )?;
         }
     }
@@ -302,6 +320,127 @@ fn net_lean_lines(root: &Path, since: i64) -> Result<i64> {
             _ => total,
         }
     }))
+}
+
+fn submission_context(repo: &Repo, state: &State, since: i64) -> Vec<SubmissionContext> {
+    if !development_enabled(repo) {
+        return Vec::new();
+    }
+    let Ok(submissions) = state.submission_intervals(since) else {
+        return Vec::new();
+    };
+    let Some(earliest) = submissions
+        .iter()
+        .map(|submission| submission.previous_created_at)
+        .min()
+    else {
+        return Vec::new();
+    };
+    let Ok(events) =
+        TelemetryStore::global().and_then(|store| store.context_events(repo, earliest))
+    else {
+        return Vec::new();
+    };
+    let Ok(lines) = submitted_lean_lines(&repo.root, &submissions) else {
+        return Vec::new();
+    };
+    submissions
+        .iter()
+        .map(|submission| {
+            let start = event_time(&events, submission.previous_reference.as_deref())
+                .unwrap_or(submission.previous_created_at);
+            let end =
+                event_time(&events, Some(&submission.reference)).unwrap_or(submission.created_at);
+            let relevant = events.iter().filter(|event| {
+                event.workspace == submission.workspace_ref
+                    && event.created_at > start
+                    && event.created_at <= end
+            });
+            let (calls, output_bytes) = relevant.fold((0_u64, 0_u64), |total, event| {
+                (total.0 + 1, total.1 + event.response_bytes)
+            });
+            SubmissionContext {
+                created_at: submission.created_at,
+                lines: lines
+                    .get(&submission.workspace_commit)
+                    .copied()
+                    .unwrap_or_default(),
+                calls,
+                output_bytes,
+            }
+        })
+        .collect()
+}
+
+fn event_time(events: &[ContextEvent], reference: Option<&str>) -> Option<i64> {
+    let reference = reference?;
+    events
+        .iter()
+        .find(|event| event.reference.as_deref() == Some(reference))
+        .map(|event| event.created_at)
+}
+
+fn submitted_lean_lines(
+    root: &Path,
+    submissions: &[SubmissionInterval],
+) -> Result<HashMap<String, u64>> {
+    let mut arguments = vec![
+        "show".to_owned(),
+        "--format=@@%H".to_owned(),
+        "--numstat".to_owned(),
+        "--no-renames".to_owned(),
+    ];
+    arguments.extend(
+        submissions
+            .iter()
+            .map(|submission| submission.workspace_commit.clone()),
+    );
+    arguments.extend(["--".to_owned(), "*.lean".to_owned()]);
+    let output = run_checked("git", arguments, root)?;
+    let mut result = HashMap::new();
+    let mut commit = None;
+    for line in output.lines() {
+        if let Some(hash) = line.strip_prefix("@@") {
+            commit = Some(hash.to_owned());
+            result.entry(hash.to_owned()).or_insert(0);
+            continue;
+        }
+        let Some(hash) = &commit else {
+            continue;
+        };
+        let Some(added) = line
+            .split('\t')
+            .next()
+            .and_then(|value| value.parse::<u64>().ok())
+        else {
+            continue;
+        };
+        *result.entry(hash.clone()).or_default() += added;
+    }
+    Ok(result)
+}
+
+fn context_per_loc(context: &[SubmissionContext], since: i64) -> Option<SubmissionContext> {
+    let metrics = context
+        .iter()
+        .filter(|metrics| metrics.created_at >= since)
+        .fold(SubmissionContext::default(), |total, metrics| {
+            SubmissionContext {
+                created_at: 0,
+                lines: total.lines + metrics.lines,
+                calls: total.calls + metrics.calls,
+                output_bytes: total.output_bytes + metrics.output_bytes,
+            }
+        });
+    (metrics.lines > 0).then_some(metrics)
+}
+
+fn format_bytes(bytes: f64) -> String {
+    if bytes < 1024.0 {
+        format!("{bytes:.0}B")
+    } else {
+        format!("{:.1}KiB", bytes / 1024.0)
+    }
 }
 
 fn physical_lines(source: &[u8]) -> usize {

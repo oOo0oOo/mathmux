@@ -314,6 +314,13 @@ fn check_summary(outcome: &CheckOutcome) -> String {
             outcome.reference
         ));
     }
+    if outcome.ok && !outcome.linters.is_empty() {
+        output.push_str(&format!(
+            "\nlinters: {}; show {} --all",
+            outcome.linters.len(),
+            outcome.reference
+        ));
+    }
     if !outcome.ok {
         if let Some(diagnostic) = outcome.diagnostics.first() {
             let detail = clean_line(&diagnostic.text);
@@ -416,6 +423,7 @@ mod tests {
             ok: false,
             elapsed_ms: 10,
             warnings: Vec::new(),
+            linters: Vec::new(),
             diagnostics: vec![Diagnostic {
                 kind: "error".into(),
                 text: diagnostic,
@@ -427,6 +435,24 @@ mod tests {
         assert!(summary.contains("final target"));
         assert!(summary.contains(">    3 | failing tactic"));
         assert!(summary.contains("full diagnostic: show c1"));
+    }
+
+    #[test]
+    fn passed_check_summary_exposes_stored_linters() {
+        let summary = check_summary(&CheckOutcome {
+            reference: "c1".into(),
+            ok: true,
+            elapsed_ms: 10,
+            warnings: Vec::new(),
+            linters: vec![Diagnostic {
+                kind: "warning".into(),
+                text: "unused variable".into(),
+                context: None,
+            }],
+            diagnostics: Vec::new(),
+            profile: None,
+        });
+        assert!(summary.contains("linters: 1; show c1 --all"));
     }
 
     #[test]
