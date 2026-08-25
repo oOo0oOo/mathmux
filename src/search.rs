@@ -27,6 +27,7 @@ use crate::util::{
 
 const RESULT_LIMIT: usize = 24;
 const SUMMARY_LIMIT: usize = 5;
+const LOCATION_PREVIEW_LINES: usize = 32;
 const GOAL_STATE_BEGIN: &str = "MATHMUX_GOAL_BEGIN";
 const GOAL_STATE_END: &str = "MATHMUX_GOAL_END";
 const SEARCH_INDEX_VERSION: i64 = 6;
@@ -3615,7 +3616,7 @@ fn render_summary(run: &SearchRun) -> String {
                 match hit.kind.as_str() {
                     "class" | "inductive" | "structure" => 16,
                     "imports" => 64,
-                    "location" => 16,
+                    "location" => LOCATION_PREVIEW_LINES,
                     _ => SOURCE_PREVIEW_LINES,
                 }
             };
@@ -3730,7 +3731,15 @@ fn source_location_result(
             path: relative,
             line: location.line,
             doc: None,
-            source: nonempty(location_source_excerpt(source, location.line)),
+            source: nonempty(location_source_excerpt(
+                source,
+                location.line,
+                if location.tail {
+                    SOURCE_PREVIEW_LINES
+                } else {
+                    LOCATION_PREVIEW_LINES
+                },
+            )),
             usages: Vec::new(),
             applicable: false,
             required_import: None,
@@ -3741,7 +3750,7 @@ fn source_location_result(
     }
 }
 
-fn location_source_excerpt(source: &str, requested_line: u64) -> String {
+fn location_source_excerpt(source: &str, requested_line: u64, line_limit: usize) -> String {
     let lines = source.lines().collect::<Vec<_>>();
     if lines.is_empty() {
         return String::new();
@@ -3749,8 +3758,10 @@ fn location_source_excerpt(source: &str, requested_line: u64) -> String {
     let target = requested_line
         .saturating_sub(1)
         .min(lines.len().saturating_sub(1) as u64) as usize;
-    let start = target.saturating_sub(6).min(lines.len().saturating_sub(16));
-    let end = lines.len().min(start + 16);
+    let start = target
+        .saturating_sub(6)
+        .min(lines.len().saturating_sub(line_limit));
+    let end = lines.len().min(start + line_limit);
     lines[start..end]
         .iter()
         .enumerate()
@@ -4196,9 +4207,9 @@ end Demo
             .map(|line| format!("line {line}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let excerpt = location_source_excerpt(&source, 15);
+        let excerpt = location_source_excerpt(&source, 15, LOCATION_PREVIEW_LINES);
         assert!(excerpt.contains("   15 | line 15"));
-        assert_eq!(excerpt.lines().count(), 16);
+        assert_eq!(excerpt.lines().count(), 30);
 
         let directory = tempfile::tempdir().unwrap();
         fs::write(directory.path().join("Demo.lean"), &source).unwrap();
@@ -4207,7 +4218,7 @@ end Demo
             .unwrap();
         assert_eq!(location.line, 30);
         assert!(location.tail);
-        let tail = location_source_excerpt(&source, location.line);
+        let tail = location_source_excerpt(&source, location.line, SOURCE_PREVIEW_LINES);
         assert_eq!(tail.lines().count(), 16);
         assert!(tail.contains("   30 | line 30"));
     }
