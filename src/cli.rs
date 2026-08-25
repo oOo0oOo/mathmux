@@ -58,10 +58,10 @@ enum TopCommand {
         #[command(subcommand)]
         command: WsCommand,
     },
-    /// Show project state and recent progress.
+    /// Show formalization activity, throughput, and tooling performance.
     ///
-    /// Summarizes the managed main revision, validation queue, workspace changes
-    /// and latest checks, and recent submissions.
+    /// Summarizes live project agents, Lean code size and growth, agent-normalized
+    /// throughput, and recent check, build, and submission statistics.
     Status,
     /// Certify one Lean file, or every dirty Lean file.
     ///

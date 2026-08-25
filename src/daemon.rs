@@ -17,6 +17,7 @@ use crate::protocol::{Command, Request, Response};
 use crate::repo::Repo;
 use crate::search::Searcher;
 use crate::state::{State, Submission};
+use crate::status;
 use crate::util::{build_id, clean_line, now_unix_ms, resident_memory_kib};
 use crate::validation::ValidationQueue;
 
@@ -186,7 +187,7 @@ impl Service {
                     .collect::<Vec<_>>()
                     .join("\n"))
             }
-            Command::Status => self.project_status(&cwd),
+            Command::Status => status::render(&self.repo, &self.state),
             Command::WsDelete { name } => {
                 let _guard = self.mutations.lock().expect("mutation lock poisoned");
                 let workspace = self
@@ -269,124 +270,6 @@ impl Service {
             }
             Command::Show { reference, all } => self.state.show(&reference, all),
         }
-    }
-
-    fn project_status(&self, cwd: &Path) -> Result<String> {
-        let workspaces = self.state.list_workspaces()?;
-        let current = fs::canonicalize(cwd).ok();
-        let project = self
-            .repo
-            .root
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("project");
-        let head = git::head(&self.repo.root)?;
-        let mut output = format!("{project} {}", short_hash(&head));
-
-        let pending = self.state.pending_submissions()?;
-        if pending.is_empty() {
-            output.push_str("\nvalidation idle");
-        } else {
-            output.push_str("\nvalidation");
-            for submission in &pending {
-                output.push_str(&format!(
-                    " {} {} {}",
-                    submission.reference, submission.validation_status, submission.workspace_ref
-                ));
-            }
-        }
-
-        output.push_str(&format!("\nworkspaces {}", workspaces.len()));
-        for workspace in &workspaces {
-            let marker = if current
-                .as_ref()
-                .is_some_and(|cwd| cwd.starts_with(&workspace.path))
-            {
-                '*'
-            } else {
-                ' '
-            };
-            let dirty = dirty_paths(&workspace.path);
-            output.push_str(&format!(
-                "\n{marker} {} {}",
-                workspace.reference, workspace.name
-            ));
-            match dirty {
-                Ok(paths) if paths.is_empty() => output.push_str(" clean"),
-                Ok(paths) => {
-                    output.push_str(&format!(" dirty:{}", paths.len()));
-                    for path in paths.iter().take(2) {
-                        output.push_str(&format!(" {}", path.display()));
-                    }
-                    if paths.len() > 2 {
-                        output.push_str(&format!(" +{}", paths.len() - 2));
-                    }
-                }
-                Err(_) => output.push_str(" unavailable"),
-            }
-            if let Some(check) = self.state.latest_check_run(&workspace.reference)? {
-                output.push_str(&format!(
-                    "  {} {} {}",
-                    check.reference,
-                    check.status,
-                    format_duration(check.duration_ms)
-                ));
-            }
-        }
-
-        output.push_str("\nrecent submissions");
-        let submissions = self.state.recent_submissions(5)?;
-        if submissions.is_empty() {
-            output.push_str(" none");
-        }
-        for submission in submissions {
-            output.push_str(&format!(
-                "\n{} {} {} {}",
-                submission.reference,
-                submission.workspace_ref,
-                submission.validation_status,
-                short_hash(&submission.main_commit)
-            ));
-            if let Some(duration) = submission.validation_duration_ms {
-                output.push_str(&format!(" {}", format_duration(duration)));
-            }
-            if let Ok(subject) = git::commit_subject(&self.repo.root, &submission.main_commit) {
-                output.push_str(&format!(" {}", truncate_text(&subject, 100)));
-            }
-            if submission.validation_status == "skipped"
-                && let Some(validated_by) = submission.validated_by
-            {
-                output.push_str(&format!(" covered-by:{validated_by}"));
-            }
-        }
-        Ok(output)
-    }
-}
-
-fn format_duration(milliseconds: u64) -> String {
-    if milliseconds < 1000 {
-        format!("{milliseconds}ms")
-    } else {
-        format!("{:.1}s", milliseconds as f64 / 1000.0)
-    }
-}
-
-fn short_hash(hash: &str) -> &str {
-    hash.get(..8).unwrap_or(hash)
-}
-
-fn truncate_text(value: &str, limit: usize) -> String {
-    let value = clean_line(value);
-    if value.chars().count() <= limit {
-        value
-    } else {
-        format!(
-            "{}…",
-            value
-                .chars()
-                .take(limit.saturating_sub(1))
-                .collect::<String>()
-        )
     }
 }
 
