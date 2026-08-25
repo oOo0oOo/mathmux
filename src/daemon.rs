@@ -350,6 +350,9 @@ impl Service {
             if let Some(duration) = submission.validation_duration_ms {
                 output.push_str(&format!(" {}", format_duration(duration)));
             }
+            if let Ok(subject) = git::commit_subject(&self.repo.root, &submission.main_commit) {
+                output.push_str(&format!(" {}", truncate_text(&subject, 100)));
+            }
             if submission.validation_status == "skipped"
                 && let Some(validated_by) = submission.validated_by
             {
@@ -370,6 +373,21 @@ fn format_duration(milliseconds: u64) -> String {
 
 fn short_hash(hash: &str) -> &str {
     hash.get(..8).unwrap_or(hash)
+}
+
+fn truncate_text(value: &str, limit: usize) -> String {
+    let value = clean_line(value);
+    if value.chars().count() <= limit {
+        value
+    } else {
+        format!(
+            "{}…",
+            value
+                .chars()
+                .take(limit.saturating_sub(1))
+                .collect::<String>()
+        )
+    }
 }
 
 fn check_summary(outcome: &CheckOutcome) -> String {

@@ -212,6 +212,10 @@ pub fn head(root: &Path) -> Result<String> {
     run_checked("git", ["rev-parse", "HEAD"], root)
 }
 
+pub fn commit_subject(root: &Path, revision: &str) -> Result<String> {
+    run_checked("git", ["show", "-s", "--format=%s", revision], root)
+}
+
 pub fn reconcile_integration(repo: &Repo) -> Result<()> {
     if run_checked(
         "git",
