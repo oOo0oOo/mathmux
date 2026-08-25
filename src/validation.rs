@@ -190,6 +190,7 @@ fn prepare_worktree(repo: &Repo, commit: &str) -> Result<PathBuf> {
         run_checked("git", ["reset", "--hard", commit], &path)?;
         run_checked("git", ["clean", "-fd"], &path)?;
     }
+    crate::git::prepare_workspace(repo, &path)?;
     Ok(path)
 }
 

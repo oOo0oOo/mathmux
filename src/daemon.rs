@@ -41,6 +41,7 @@ pub fn run(repo: Repo) -> Result<()> {
     let validation = ValidationQueue::start(repo.clone(), state.clone(), retiring.clone())?;
     let watcher = WorkspaceWatcher::new(state.clone(), checker.clone())?;
     for workspace in state.list_workspaces()? {
+        git::prepare_workspace(&repo, &workspace.path)?;
         watcher.watch(&workspace.path)?;
     }
     let service = Arc::new(Service {
@@ -189,6 +190,7 @@ impl Service {
             }
             Command::Check { file } => {
                 let workspace = self.state.workspace_for_path(&cwd)?;
+                git::prepare_workspace(&self.repo, &workspace.path)?;
                 let outcome = self
                     .checker
                     .check(&workspace, file.as_deref().map(Path::new))?;
@@ -201,6 +203,7 @@ impl Service {
             }
             Command::Search { query } => {
                 let workspace = self.state.workspace_for_path(&cwd)?;
+                git::prepare_workspace(&self.repo, &workspace.path)?;
                 self.searcher.search(&workspace, &cwd, &query)
             }
             Command::Sync => {

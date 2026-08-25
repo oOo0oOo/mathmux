@@ -1,4 +1,5 @@
 use std::fs::{self, File};
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -74,7 +75,9 @@ pub fn create_workspace(repo: &Repo, state: &State, name: &str) -> Result<Worksp
         path: canonical(&path)?,
         branch,
     };
-    if let Err(error) = state.add_workspace(&workspace) {
+    if let Err(error) =
+        prepare_workspace(repo, &workspace.path).and_then(|()| state.add_workspace(&workspace))
+    {
         let _ = run_output(
             "git",
             [
@@ -88,6 +91,30 @@ pub fn create_workspace(repo: &Repo, state: &State, name: &str) -> Result<Worksp
         return Err(error);
     }
     Ok(workspace)
+}
+
+pub fn prepare_workspace(repo: &Repo, workspace: &Path) -> Result<()> {
+    let shared = repo.root.join(".lake/packages");
+    if !shared.is_dir() {
+        return Ok(());
+    }
+    let target = workspace.join(".lake/packages");
+    match fs::symlink_metadata(&target) {
+        Ok(metadata) if metadata.is_dir() => return Ok(()),
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            ensure!(
+                canonical(&target)? == canonical(&shared)?,
+                "workspace dependency link points outside managed main"
+            );
+            return Ok(());
+        }
+        Ok(_) => bail!("workspace dependency path is not a directory"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    fs::create_dir_all(workspace.join(".lake"))?;
+    symlink(canonical(shared)?, target)?;
+    Ok(())
 }
 
 pub fn delete_workspace(repo: &Repo, state: &State, name: &str) -> Result<Workspace> {
@@ -297,7 +324,7 @@ pub fn submit(repo: &Repo, workspace: &Workspace, message: &str) -> Result<Submi
 }
 
 pub fn lake_command(repo: &Repo, root: &Path) -> Command {
-    let mut command = Command::new("lake");
+    let mut command = Command::new(lake_executable());
     command
         .current_dir(root)
         .env("LAKE_ARTIFACT_CACHE", "true")
@@ -305,6 +332,26 @@ pub fn lake_command(repo: &Repo, root: &Path) -> Command {
         .env("LAKE_RESTORE_ARTIFACTS", "false")
         .stdin(Stdio::null());
     command
+}
+
+fn lake_executable() -> PathBuf {
+    if let Some(path) = std::env::var_os("MATHMUX_LAKE") {
+        return PathBuf::from(path);
+    }
+    if let Some(path) = std::env::var_os("PATH").and_then(|value| {
+        std::env::split_paths(&value)
+            .map(|directory| directory.join("lake"))
+            .find(|path| path.is_file())
+    }) {
+        return path;
+    }
+    let elan_home = std::env::var_os("ELAN_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".elan")));
+    elan_home
+        .map(|home| home.join("bin/lake"))
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| PathBuf::from("lake"))
 }
 
 fn merge_in_progress(root: &Path) -> bool {
@@ -361,6 +408,8 @@ mod tests {
             &root,
         )
         .unwrap();
+        fs::write(root.join(".gitignore"), ".lake\n").unwrap();
+        fs::create_dir_all(root.join(".lake/packages/mathlib")).unwrap();
         fs::write(root.join("Proof.lean"), "def value := 0\n").unwrap();
         run_checked("git", ["add", "."], &root).unwrap();
         run_checked("git", ["commit", "-m", "initial"], &root).unwrap();
@@ -368,6 +417,10 @@ mod tests {
         let repo = Repo::discover(&root).unwrap();
         let state = State::new(&repo.db_path).unwrap();
         let workspace = create_workspace(&repo, &state, "agent").unwrap();
+        assert_eq!(
+            canonical(workspace.path.join(".lake/packages")).unwrap(),
+            canonical(root.join(".lake/packages")).unwrap()
+        );
         fs::write(root.join("Proof.lean"), "def value := 1\n").unwrap();
         run_checked("git", ["add", "."], &root).unwrap();
         run_checked("git", ["commit", "-m", "main change"], &root).unwrap();
