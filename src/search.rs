@@ -1113,6 +1113,10 @@ impl Searcher {
                     bm25(search_fts, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 7.0, 3.0, 1.0)
              FROM search_fts WHERE search_fts MATCH ?1 LIMIT 32",
         )?;
+        let mut named_contains = connection.prepare(
+            "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0
+             FROM search_fts WHERE name LIKE ?1 COLLATE NOCASE LIMIT 32",
+        )?;
         for token in tokens
             .iter()
             .filter(|token| token.len() >= 4 && token.as_str() != "_")
@@ -1123,6 +1127,13 @@ impl Searcher {
                     .query_map([query], indexed_row_from_row)?
                     .collect::<rusqlite::Result<Vec<_>>>()?,
             );
+            if token.len() >= 8 || token.contains(['.', '_']) {
+                rows.extend(
+                    named_contains
+                        .query_map([format!("%{token}%")], indexed_row_from_row)?
+                        .collect::<rusqlite::Result<Vec<_>>>()?,
+                );
+            }
         }
         Ok(rows)
     }
