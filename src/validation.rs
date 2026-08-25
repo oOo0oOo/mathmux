@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
 use fs2::FileExt;
@@ -13,11 +13,13 @@ use crate::git::{lake_command, project_lean_files};
 use crate::issue::{TelemetryOperation, TelemetryStore, development_enabled};
 use crate::repo::Repo;
 use crate::state::{State, Submission, ValidationReport};
-use crate::util::{command_detail, run_checked, run_output};
+use crate::util::{command_detail, output_text, run_checked, run_output};
+
+type ValidationSignal = Arc<(Mutex<bool>, Condvar)>;
 
 #[derive(Clone)]
 pub struct ValidationQueue {
-    signal: Arc<(Mutex<bool>, Condvar)>,
+    signal: ValidationSignal,
 }
 
 impl ValidationQueue {
@@ -40,12 +42,7 @@ impl ValidationQueue {
     }
 }
 
-fn validation_loop(
-    repo: Repo,
-    state: State,
-    signal: Arc<(Mutex<bool>, Condvar)>,
-    retiring: Arc<AtomicBool>,
-) {
+fn validation_loop(repo: Repo, state: State, signal: ValidationSignal, retiring: Arc<AtomicBool>) {
     loop {
         if retiring.load(Ordering::SeqCst) {
             return;
@@ -56,14 +53,12 @@ fn validation_loop(
                 let result = validate(&repo, &submission);
                 let report = match result {
                     Ok(report) => report,
-                    Err(error) => ValidationReport {
-                        passed: false,
-                        detail: format!("validation failed: {error:#}"),
-                        build_output: String::new(),
-                        axioms: Vec::new(),
-                        sorries: Vec::new(),
-                        duration_ms: started.elapsed().as_millis() as u64,
-                    },
+                    Err(error) => failed_report(
+                        started,
+                        format!("validation failed: {error:#}"),
+                        String::new(),
+                        Vec::new(),
+                    ),
                 };
                 let _ = state.finish_validation(&submission.reference, &report);
                 if development_enabled(&repo)
@@ -87,12 +82,10 @@ fn validation_loop(
                 let (lock, condition) = &*signal;
                 let pending = lock.lock().expect("validation signal poisoned");
                 let _ = condition
-                    .wait_timeout_while(pending, std::time::Duration::from_secs(30), |value| {
-                        !*value
-                    })
+                    .wait_timeout_while(pending, Duration::from_secs(30), |value| !*value)
                     .map(|(mut pending, _)| *pending = false);
             }
-            Err(_) => thread::sleep(std::time::Duration::from_secs(1)),
+            Err(_) => thread::sleep(Duration::from_secs(1)),
         }
     }
 }
@@ -116,27 +109,23 @@ fn validate(repo: &Repo, submission: &Submission) -> Result<ValidationReport> {
         .context("cannot start validation build")?;
     let build_output = combined_output(&output);
     if !output.status.success() {
-        return Ok(ValidationReport {
-            passed: false,
-            detail: "build failed".into(),
+        return Ok(failed_report(
+            started,
+            "build failed",
             build_output,
-            axioms: Vec::new(),
             sorries,
-            duration_ms: started.elapsed().as_millis() as u64,
-        });
+        ));
     }
     restore_project_oleans(&repo.cache_dir, &root, &project_modules)?;
     let axioms = match run_axiom_audit(repo, &root, &roots, &project_modules) {
         Ok(axioms) => axioms,
         Err(error) => {
-            return Ok(ValidationReport {
-                passed: false,
-                detail: format!("axiom audit failed: {error:#}"),
+            return Ok(failed_report(
+                started,
+                format!("axiom audit failed: {error:#}"),
                 build_output,
-                axioms: Vec::new(),
                 sorries,
-                duration_ms: started.elapsed().as_millis() as u64,
-            });
+            ));
         }
     };
     let passed = axioms.is_empty();
@@ -159,6 +148,22 @@ fn validate(repo: &Repo, submission: &Submission) -> Result<ValidationReport> {
         sorries,
         duration_ms: started.elapsed().as_millis() as u64,
     })
+}
+
+fn failed_report(
+    started: Instant,
+    detail: impl Into<String>,
+    build_output: String,
+    sorries: Vec<String>,
+) -> ValidationReport {
+    ValidationReport {
+        passed: false,
+        detail: detail.into(),
+        build_output,
+        axioms: Vec::new(),
+        sorries,
+        duration_ms: started.elapsed().as_millis() as u64,
+    }
 }
 
 fn restore_project_oleans(cache_dir: &Path, root: &Path, modules: &[String]) -> Result<()> {
@@ -215,8 +220,8 @@ fn project_olean_hash(artifact: &Path) -> Result<String> {
 }
 
 fn combined_output(output: &std::process::Output) -> String {
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    let stdout = output_text(&output.stdout);
+    let stderr = output_text(&output.stderr);
     if stdout.is_empty() {
         stderr
     } else if stderr.is_empty() {

@@ -81,33 +81,23 @@ pub struct Response {
 
 impl Response {
     pub fn ok(summary: impl Into<String>) -> Self {
-        Self {
-            build: crate::util::build_id().to_owned(),
-            retry: false,
-            ok: true,
-            summary: summary.into(),
-            daemon_ms: 0,
-            rss_kib: None,
-        }
+        Self::new(true, false, summary)
     }
 
     pub fn error(summary: impl Into<String>) -> Self {
-        Self {
-            build: crate::util::build_id().to_owned(),
-            retry: false,
-            ok: false,
-            summary: summary.into(),
-            daemon_ms: 0,
-            rss_kib: None,
-        }
+        Self::new(false, false, summary)
     }
 
     pub fn retry() -> Self {
+        Self::new(false, true, "daemon build changed")
+    }
+
+    fn new(ok: bool, retry: bool, summary: impl Into<String>) -> Self {
         Self {
             build: crate::util::build_id().to_owned(),
-            retry: true,
-            ok: false,
-            summary: "daemon build changed".into(),
+            retry,
+            ok,
+            summary: summary.into(),
             daemon_ms: 0,
             rss_kib: None,
         }

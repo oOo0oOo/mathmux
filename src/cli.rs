@@ -237,17 +237,15 @@ pub fn run() -> Result<u8> {
         return Ok(0);
     }
     if let TopCommand::Show { reference, all } = &args.command
-        && reference.starts_with('i')
+        && matches!(reference.as_bytes().first(), Some(b'i' | b'e'))
     {
         ensure!(development, "development commands are disabled");
-        println!("{}", IssueStore::global()?.show(reference, *all)?);
-        return Ok(0);
-    }
-    if let TopCommand::Show { reference, all } = &args.command
-        && reference.starts_with('e')
-    {
-        ensure!(development, "development commands are disabled");
-        println!("{}", TelemetryStore::global()?.show(reference, *all)?);
+        let summary = if reference.starts_with('i') {
+            IssueStore::global()?.show(reference, *all)?
+        } else {
+            TelemetryStore::global()?.show(reference, *all)?
+        };
+        println!("{summary}");
         return Ok(0);
     }
     let repo = Repo::discover(&cwd)?;

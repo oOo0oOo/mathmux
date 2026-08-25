@@ -1,14 +1,15 @@
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 use anyhow::{Result, ensure};
 
 use crate::git::{dirty_paths, head};
 use crate::repo::Repo;
 use crate::state::{ActivityMetrics, State, Workspace};
-use crate::util::{run_checked, run_output, short_hash};
+use crate::util::{now_unix_ms, run_checked, run_output, short_hash};
 
 const HOUR_SECS: i64 = 60 * 60;
 const DAY_SECS: i64 = 24 * HOUR_SECS;
@@ -31,7 +32,7 @@ struct CodeMetrics {
 }
 
 pub fn render(repo: &Repo, state: &State) -> Result<String> {
-    let now = now_unix_seconds();
+    let now = now_unix_ms() / 1000;
     let project = repo
         .root
         .file_name()
@@ -47,26 +48,29 @@ pub fn render(repo: &Repo, state: &State) -> Result<String> {
     let code = current_code(&repo.root)?;
 
     let mut output = format!("{project} {}", short_hash(&revision));
-    render_agents(&mut output, &agents, now);
-    output.push_str(&format!(
+    render_agents(&mut output, &agents, now)?;
+    write!(
+        output,
         "\ncode {:>7} Lean lines in {} files",
         code.lines, code.files
-    ));
+    )?;
 
     output.push_str("\nmerged progress");
     for (label, seconds) in [("1h", HOUR_SECS), ("24h", DAY_SECS)] {
         let lines = net_lean_lines(&repo.root, now - seconds)?;
         let wall_hours = seconds as f64 / HOUR_SECS as f64;
         let agent_hours = agent_hours(&agents, now - seconds, now);
-        output.push_str(&format!(
+        write!(
+            output,
             "\n{label:>3} {lines:+} lines  {:+.1}/h",
             lines as f64 / wall_hours
-        ));
+        )?;
         if agent_hours > 0.0 {
-            output.push_str(&format!(
+            write!(
+                output,
                 "  {:+.1}/agent-h ({agent_hours:.1} agent-h)",
                 lines as f64 / agent_hours
-            ));
+            )?;
         }
     }
 
@@ -74,7 +78,7 @@ pub fn render(repo: &Repo, state: &State) -> Result<String> {
     for (label, seconds) in [("1h", HOUR_SECS), ("24h", DAY_SECS)] {
         let metrics = state.activity_metrics((now - seconds) * 1000)?;
         output.push_str(&format!("\n{label:>3} "));
-        render_tooling(&mut output, &metrics);
+        render_tooling(&mut output, &metrics)?;
     }
 
     let pending = state.pending_submissions()?;
@@ -83,43 +87,48 @@ pub fn render(repo: &Repo, state: &State) -> Result<String> {
     } else {
         output.push_str("\nvalidation");
         for submission in pending {
-            output.push_str(&format!(
+            write!(
+                output,
                 " {}:{}",
                 submission.reference, submission.validation_status
-            ));
+            )?;
         }
     }
     Ok(output)
 }
 
-fn render_agents(output: &mut String, agents: &[AgentStatus], now: i64) {
+fn render_agents(output: &mut String, agents: &[AgentStatus], now: i64) -> std::fmt::Result {
     let active = agents
         .iter()
         .filter(|agent| agent.state == "active")
         .count();
     let idle = agents.iter().filter(|agent| agent.state == "idle").count();
-    output.push_str(&format!(
+    write!(
+        output,
         "\nagents {} ({active} active, {idle} idle)",
         agents.len()
-    ));
+    )?;
     for agent in agents {
-        output.push_str(&format!(
+        write!(
+            output,
             "\n{:>3} {:<10} {:<16} {:<7} last {}",
             agent.id,
             agent.workspace,
             agent.model,
             agent.state,
             format_age(now.saturating_sub(agent.last_active))
-        ));
+        )?;
         if agent.dirty > 0 {
-            output.push_str(&format!(" dirty:{}", agent.dirty));
+            write!(output, " dirty:{}", agent.dirty)?;
         }
     }
+    Ok(())
 }
 
-fn render_tooling(output: &mut String, metrics: &ActivityMetrics) {
+fn render_tooling(output: &mut String, metrics: &ActivityMetrics) -> std::fmt::Result {
     let passed = metrics.checks.saturating_sub(metrics.failed_checks);
-    output.push_str(&format!(
+    write!(
+        output,
         "checks {} ({passed} ok/{} err) avg {}  builds {} avg {}  submits {}",
         metrics.checks,
         metrics.failed_checks,
@@ -127,7 +136,7 @@ fn render_tooling(output: &mut String, metrics: &ActivityMetrics) {
         metrics.builds,
         format_average(metrics.average_build_ms),
         metrics.submissions
-    ));
+    )
 }
 
 fn project_agents(
@@ -143,59 +152,81 @@ fn project_agents(
     };
     let mut agents = entries
         .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let id = entry.path().file_stem()?.to_str()?.parse::<u64>().ok()?;
-            let values = read_agent_state(&entry.path())?;
-            if !agent_is_live(values.get("scope").map(String::as_str)) {
-                return None;
-            }
-            let cwd = Path::new(values.get("cwd")?);
-            let workspace = workspaces
-                .iter()
-                .find(|workspace| cwd.starts_with(&workspace.path))?;
-            let started_at = parse_epoch(values.get("started_at"));
-            let mut last_active = started_at;
-            last_active = last_active.max(parse_epoch(values.get("last_user_send_at")));
-            last_active = last_active.max(
-                activity
-                    .get(&workspace.reference)
-                    .copied()
-                    .unwrap_or_default()
-                    / 1000,
-            );
-            if let Some(path) = values.get("session_jsonl")
-                && !path.is_empty()
-            {
-                last_active = last_active.max(modified_at(Path::new(path)));
-            }
-            let dirty_paths = dirty_paths(&workspace.path).unwrap_or_default();
-            for path in &dirty_paths {
-                last_active = last_active.max(modified_at(&workspace.path.join(path)));
-            }
-            let recorded = values.get("state").map(String::as_str).unwrap_or("working");
-            let agent_state = if recorded != "working" {
-                recorded.to_owned()
-            } else if now.saturating_sub(last_active) <= ACTIVE_SECS {
-                "active".into()
-            } else {
-                "idle".into()
-            };
-            Some(AgentStatus {
-                id,
-                workspace: workspace.name.clone(),
-                model: values
-                    .get("model")
-                    .cloned()
-                    .unwrap_or_else(|| "agent".into()),
-                state: agent_state,
-                started_at,
-                last_active,
-                dirty: dirty_paths.len(),
-            })
-        })
+        .filter_map(|entry| agent_status(&entry.path(), workspaces, activity, now))
         .collect::<Vec<_>>();
     agents.sort_by_key(|agent| agent.id);
     agents
+}
+
+fn agent_status(
+    path: &Path,
+    workspaces: &[Workspace],
+    activity: &HashMap<String, i64>,
+    now: i64,
+) -> Option<AgentStatus> {
+    let id = path.file_stem()?.to_str()?.parse::<u64>().ok()?;
+    let values = read_agent_state(path)?;
+    if !agent_is_live(values.get("scope").map(String::as_str)) {
+        return None;
+    }
+    let cwd = Path::new(values.get("cwd")?);
+    let workspace = workspaces
+        .iter()
+        .find(|workspace| cwd.starts_with(&workspace.path))?;
+    let started_at = parse_epoch(values.get("started_at"));
+    let paths = dirty_paths(&workspace.path).unwrap_or_default();
+    let last_active = agent_last_active(&values, workspace, activity, &paths, started_at);
+    let recorded = values.get("state").map(String::as_str).unwrap_or("working");
+    let state = match recorded {
+        "working" if now.saturating_sub(last_active) <= ACTIVE_SECS => "active".into(),
+        "working" => "idle".into(),
+        state => state.to_owned(),
+    };
+    Some(AgentStatus {
+        id,
+        workspace: workspace.name.clone(),
+        model: values
+            .get("model")
+            .cloned()
+            .unwrap_or_else(|| "agent".into()),
+        state,
+        started_at,
+        last_active,
+        dirty: paths.len(),
+    })
+}
+
+fn agent_last_active(
+    values: &HashMap<String, String>,
+    workspace: &Workspace,
+    activity: &HashMap<String, i64>,
+    dirty: &[PathBuf],
+    started_at: i64,
+) -> i64 {
+    let session_activity = values
+        .get("session_jsonl")
+        .filter(|path| !path.is_empty())
+        .map_or(0, |path| modified_at(Path::new(path)));
+    let workspace_activity = activity
+        .get(&workspace.reference)
+        .copied()
+        .unwrap_or_default()
+        / 1000;
+    let file_activity = dirty
+        .iter()
+        .map(|path| modified_at(&workspace.path.join(path)))
+        .max()
+        .unwrap_or_default();
+    [
+        started_at,
+        parse_epoch(values.get("last_user_send_at")),
+        session_activity,
+        workspace_activity,
+        file_activity,
+    ]
+    .into_iter()
+    .max()
+    .unwrap_or_default()
 }
 
 fn agent_is_live(scope: Option<&str>) -> bool {
@@ -234,21 +265,19 @@ fn read_agent_state(path: &Path) -> Option<HashMap<String, String>> {
 fn current_code(root: &Path) -> Result<CodeMetrics> {
     let output = run_output("git", ["ls-files", "-z", "--", "*.lean"], root)?;
     ensure!(output.status.success(), "cannot list tracked Lean files");
-    let files = output
+    let mut files = 0;
+    let mut lines = 0;
+    for path in output
         .stdout
         .split(|byte| *byte == 0)
         .filter(|path| !path.is_empty())
-        .collect::<Vec<_>>();
-    let mut lines = 0;
-    for path in &files {
+    {
+        files += 1;
         lines += physical_lines(&fs::read(
             root.join(String::from_utf8_lossy(path).as_ref()),
         )?) as u64;
     }
-    Ok(CodeMetrics {
-        files: files.len(),
-        lines,
-    })
+    Ok(CodeMetrics { files, lines })
 }
 
 fn net_lean_lines(root: &Path, since: i64) -> Result<i64> {
@@ -300,13 +329,6 @@ fn modified_at(path: &Path) -> i64 {
         .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
         .map(|duration| duration.as_secs() as i64)
         .unwrap_or_default()
-}
-
-fn now_unix_seconds() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
 }
 
 fn format_age(seconds: i64) -> String {

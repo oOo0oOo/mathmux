@@ -41,21 +41,25 @@ where
 {
     let output = run_output(program, args, cwd)?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        let stderr = output_text(&output.stderr);
+        let stdout = output_text(&output.stdout);
         let detail = if stderr.is_empty() { stdout } else { stderr };
         bail!("command failed: {detail}");
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    Ok(output_text(&output.stdout))
 }
 
 pub fn command_detail(output: &Output) -> String {
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    let stderr = output_text(&output.stderr);
     if stderr.is_empty() {
-        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        output_text(&output.stdout)
     } else {
         stderr
     }
+}
+
+pub(crate) fn output_text(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).trim().to_owned()
 }
 
 pub fn hash_bytes(bytes: &[u8]) -> String {
