@@ -21,7 +21,8 @@ use crate::issue::{TelemetryOperation, TelemetryStore, development_enabled};
 use crate::repo::Repo;
 use crate::state::{SearchHit, SearchRun, SearchUsage, State, Workspace};
 use crate::util::{
-    clean_line, hash_bytes, now_unix_ms, query_requests_proof_body, single_line, truncate_line,
+    SOURCE_PREVIEW_LINES, clean_line, hash_bytes, now_unix_ms, query_requests_proof_body,
+    single_line, truncate_line,
 };
 
 const RESULT_LIMIT: usize = 24;
@@ -3209,7 +3210,7 @@ fn render_summary(run: &SearchRun) -> String {
                     "class" | "inductive" | "structure" => 16,
                     "imports" => 64,
                     "location" => 16,
-                    _ => 8,
+                    _ => SOURCE_PREVIEW_LINES,
                 }
             };
             for line in source.lines().take(source_lines) {
@@ -3529,6 +3530,36 @@ end Demo
             created_at: 0,
         });
         assert_eq!(summary, "q1 no results");
+    }
+
+    #[test]
+    fn search_summary_keeps_definition_body_after_ambient_context() {
+        let summary = render_summary(&SearchRun {
+            reference: "q2".into(),
+            workspace_ref: "w1".into(),
+            query: "matrixLaurentShift".into(),
+            inference: "hybrid".into(),
+            hits: vec![SearchHit {
+                name: "Demo.matrixLaurentShift".into(),
+                kind: "def".into(),
+                signature: Some("Nat → Nat".into()),
+                module: "Demo".into(),
+                path: "Demo.lean".into(),
+                line: 10,
+                doc: None,
+                source: Some(
+                    "-- ambient context\nuniverse u\nvariable {B : Type u}\nsection\nvariable (n : Nat)\n\ndef matrixLaurentShift : Nat :=\n  n + 1"
+                        .into(),
+                ),
+                usages: Vec::new(),
+                applicable: false,
+                required_import: None,
+            }],
+            note: None,
+            duration_ms: 1,
+            created_at: 0,
+        });
+        assert!(summary.contains("  | n + 1"));
     }
 
     #[test]

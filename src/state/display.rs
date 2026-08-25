@@ -4,7 +4,8 @@ use anyhow::{Result, bail};
 
 use super::{CheckRun, Diagnostic, SearchRun, Submission};
 use crate::util::{
-    format_duration, query_requests_proof_body, short_hash, single_line, truncate_line,
+    SOURCE_PREVIEW_LINES, format_duration, query_requests_proof_body, short_hash, single_line,
+    truncate_line,
 };
 
 pub(super) fn render_search_run(run: &SearchRun, all: bool) -> String {
@@ -49,7 +50,7 @@ pub(super) fn render_search_run(run: &SearchRun, all: bool) -> String {
                     {
                         48
                     } else {
-                        8
+                        SOURCE_PREVIEW_LINES
                     };
                 for line in source.trim().lines().take(source_lines) {
                     output.push_str(&format!("\n     {}", truncate_line(line, 240)));
