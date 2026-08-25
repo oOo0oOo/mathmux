@@ -677,28 +677,32 @@ fn render_search_run(run: &SearchRun, all: bool) -> String {
         output.push_str("\nno results");
         return output;
     }
-    for (index, hit) in run.hits.iter().enumerate() {
+    let hit_limit = if all { 8 } else { 5 };
+    for (index, hit) in run.hits.iter().take(hit_limit).enumerate() {
         output.push_str(&format!("\n{}. {}", index + 1, hit.name));
         if let Some(signature) = &hit.signature {
-            output.push_str(&format!(" : {}", single_line(signature)));
+            output.push_str(&format!(
+                " : {}",
+                truncate_line(&single_line(signature), 300)
+            ));
         }
         output.push_str(&format!("\n   {}:{}", hit.path, hit.line));
         if !hit.usages.is_empty() {
             output.push_str(&format!("  refs:{}", hit.usages.len()));
         }
-        if all {
+        if all || index < 3 {
             if let Some(doc) = &hit.doc {
-                for line in doc.trim().lines() {
-                    output.push_str(&format!("\n   doc: {}", line.trim()));
+                for line in doc.trim().lines().take(3) {
+                    output.push_str(&format!("\n   doc: {}", truncate_line(line.trim(), 240)));
                 }
             }
             if let Some(source) = &hit.source {
                 output.push_str("\n   source:");
-                for line in source.trim().lines().take(20) {
-                    output.push_str(&format!("\n     {line}"));
+                for line in source.trim().lines().take(8) {
+                    output.push_str(&format!("\n     {}", truncate_line(line, 240)));
                 }
             }
-            for usage in &hit.usages {
+            for usage in hit.usages.iter().take(5) {
                 output.push_str(&format!("\n   used: {}:{}", usage.path, usage.line));
                 if let Some(context) = &usage.context {
                     output.push_str(&format!(" in {context}"));
@@ -706,11 +710,29 @@ fn render_search_run(run: &SearchRun, all: bool) -> String {
             }
         }
     }
+    if run.hits.len() > hit_limit {
+        output.push_str(&format!(
+            "\n+{} results omitted; refine the query",
+            run.hits.len() - hit_limit
+        ));
+    }
     output
 }
 
 fn single_line(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn truncate_line(value: &str, limit: usize) -> String {
+    if value.chars().count() <= limit {
+        return value.to_owned();
+    }
+    let mut output = value
+        .chars()
+        .take(limit.saturating_sub(1))
+        .collect::<String>();
+    output.push('…');
+    output
 }
 
 fn validate_reference(reference: &str) -> Result<char> {

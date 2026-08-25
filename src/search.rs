@@ -29,7 +29,8 @@ const SEARCH_INDEX_VERSION: i64 = 1;
 pub struct Searcher {
     repo: Repo,
     state: State,
-    index_lock: Arc<Mutex<()>>,
+    index_lock: Mutex<()>,
+    base_lock: Arc<Mutex<()>>,
     loogle: Mutex<LoogleState>,
     base: Mutex<HashMap<String, BaseState>>,
 }
@@ -106,7 +107,8 @@ impl Searcher {
         let searcher = Self {
             repo,
             state,
-            index_lock: Arc::new(Mutex::new(())),
+            index_lock: Mutex::new(()),
+            base_lock: Arc::new(Mutex::new(())),
             loogle: Mutex::new(LoogleState::Empty),
             base: Mutex::new(HashMap::new()),
         };
@@ -368,11 +370,11 @@ impl Searcher {
                 let repo = self.repo.clone();
                 let state = self.state.clone();
                 let workspace = workspace.clone();
-                let index_lock = self.index_lock.clone();
+                let base_lock = self.base_lock.clone();
                 std::thread::spawn(move || {
                     let started = Instant::now();
                     let result = {
-                        let _guard = index_lock
+                        let _guard = base_lock
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
                         Searcher::new(repo.clone(), state)
@@ -707,6 +709,13 @@ impl Searcher {
                 continue;
             }
             let usages = self.usages(&row.name, scopes, workspace)?;
+            let (source, matched_line) = source_excerpt(
+                &row.body,
+                query,
+                &query_tokens,
+                row.line,
+                row.kind == "file",
+            );
             let score = lexical
                 + type_score
                 + (usages.len() as f64 + 1.0).ln()
@@ -723,9 +732,9 @@ impl Searcher {
                     signature: nonempty(row.signature),
                     module: row.module,
                     path: row.path,
-                    line: row.line,
+                    line: matched_line,
                     doc: nonempty(row.docs),
-                    source: nonempty(row.body),
+                    source,
                     usages,
                 },
                 score,
@@ -1565,6 +1574,45 @@ fn nonempty(value: String) -> Option<String> {
     (!value.trim().is_empty()).then_some(value)
 }
 
+fn source_excerpt(
+    source: &str,
+    query: &str,
+    tokens: &[String],
+    declaration_line: u64,
+    file_hit: bool,
+) -> (Option<String>, u64) {
+    if source.trim().is_empty() {
+        return (None, declaration_line);
+    }
+    let lines = source.lines().collect::<Vec<_>>();
+    let query = query.to_lowercase();
+    let matched = lines
+        .iter()
+        .position(|line| line.to_lowercase().contains(&query))
+        .or_else(|| {
+            lines
+                .iter()
+                .enumerate()
+                .map(|(index, line)| {
+                    let line = line.to_lowercase();
+                    let score = tokens.iter().filter(|token| line.contains(*token)).count();
+                    (index, score)
+                })
+                .filter(|(_, score)| *score > 0)
+                .max_by_key(|(_, score)| *score)
+                .map(|(index, _)| index)
+        })
+        .unwrap_or(0);
+    let start = matched.saturating_sub(2);
+    let excerpt = lines[start..lines.len().min(start + 8)].join("\n");
+    let line = if file_hit {
+        matched as u64 + 1
+    } else {
+        declaration_line
+    };
+    (nonempty(excerpt), line)
+}
+
 fn render_summary(run: &SearchRun) -> String {
     let mut output = run.reference.clone();
     if run.hits.is_empty() {
@@ -1575,9 +1623,16 @@ fn render_summary(run: &SearchRun) -> String {
         output.push_str(&hit.name);
         if let Some(signature) = &hit.signature {
             output.push_str(" : ");
-            output.push_str(&single_line(signature));
+            output.push_str(&truncate_line(&single_line(signature), 240));
         }
         output.push_str(&format!("  {}:{}", hit.path, hit.line));
+        if run.hits.first().is_some_and(|first| first.name == hit.name)
+            && let Some(source) = &hit.source
+        {
+            for line in source.lines().take(3) {
+                output.push_str(&format!("\n  | {}", truncate_line(line.trim(), 200)));
+            }
+        }
     }
     if run.hits.len() > SUMMARY_LIMIT {
         output.push_str(&format!(
@@ -1595,6 +1650,18 @@ fn render_summary(run: &SearchRun) -> String {
 
 fn single_line(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn truncate_line(value: &str, limit: usize) -> String {
+    if value.chars().count() <= limit {
+        return value.to_owned();
+    }
+    let mut output = value
+        .chars()
+        .take(limit.saturating_sub(1))
+        .collect::<String>();
+    output.push('…');
+    output
 }
 
 struct GoalLocation {
@@ -1762,5 +1829,26 @@ end Demo
         assert!(dependency_sources_missing(directory.path()));
         fs::create_dir_all(directory.path().join(".lake/packages")).unwrap();
         assert!(!dependency_sources_missing(directory.path()));
+    }
+
+    #[test]
+    fn source_excerpts_center_the_match_and_report_file_lines() {
+        let source = (1..=20)
+            .map(|line| {
+                if line == 12 {
+                    "theorem exact_match := by simp".to_owned()
+                } else {
+                    format!("-- line {line}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (excerpt, line) =
+            source_excerpt(&source, "exact_match", &["exact_match".into()], 1, true);
+        let excerpt = excerpt.unwrap();
+        assert_eq!(line, 12);
+        assert!(excerpt.starts_with("-- line 10"));
+        assert!(excerpt.contains("theorem exact_match"));
+        assert_eq!(excerpt.lines().count(), 8);
     }
 }
