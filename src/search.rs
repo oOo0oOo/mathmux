@@ -26,6 +26,7 @@ const SUMMARY_LIMIT: usize = 5;
 const GOAL_TIMEOUT_MS: u64 = 2_000;
 const SEARCH_INDEX_VERSION: i64 = 6;
 const DECLARATION_DETAIL_LINES: usize = 48;
+const INDEX_COMMIT_BATCH: usize = 64;
 
 pub struct Searcher {
     repo: Repo,
@@ -521,43 +522,49 @@ impl Searcher {
             })
             .collect::<Vec<_>>();
         self.remove_missing(&source_root.owner, "source", &files)?;
-        let mut connection = self.open()?;
+        let mut changed = Vec::new();
         for path in files {
-            if !self.file_changed(&source_root.owner, &path, "source")? {
-                continue;
+            if self.file_changed(&source_root.owner, &path, "source")? {
+                changed.push(path);
             }
-            let source = fs::read_to_string(&path)
-                .with_context(|| format!("cannot index {}", path.display()))?;
-            let display = display_path(&path, workspace_root, &source_root.root, source_root.kind);
-            let module = module_name(&path, &source_root.root, source_root.kind);
-            let entries = parse_source(&source, &module);
+        }
+        let mut connection = self.open()?;
+        for batch in changed.chunks(INDEX_COMMIT_BATCH) {
             let transaction = connection.transaction()?;
-            transaction.execute(
-                "DELETE FROM search_fts WHERE owner = ?1 AND origin = ?2",
-                params![source_root.owner, path.to_string_lossy()],
-            )?;
-            {
-                let mut insert = transaction.prepare_cached(
-                    "INSERT INTO search_fts(
-                        owner, origin, file, module, line, name, kind, signature, docs, body
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            for path in batch {
+                let source = fs::read_to_string(path)
+                    .with_context(|| format!("cannot index {}", path.display()))?;
+                let display =
+                    display_path(path, workspace_root, &source_root.root, source_root.kind);
+                let module = module_name(path, &source_root.root, source_root.kind);
+                let entries = parse_source(&source, &module);
+                transaction.execute(
+                    "DELETE FROM search_fts WHERE owner = ?1 AND origin = ?2",
+                    params![source_root.owner, path.to_string_lossy()],
                 )?;
-                for entry in entries {
-                    insert.execute(params![
-                        source_root.owner,
-                        path.to_string_lossy(),
-                        display,
-                        module,
-                        entry.line,
-                        entry.name,
-                        entry.kind,
-                        entry.signature,
-                        entry.docs,
-                        entry.body,
-                    ])?;
+                {
+                    let mut insert = transaction.prepare_cached(
+                        "INSERT INTO search_fts(
+                            owner, origin, file, module, line, name, kind, signature, docs, body
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    )?;
+                    for entry in entries {
+                        insert.execute(params![
+                            source_root.owner,
+                            path.to_string_lossy(),
+                            display,
+                            module,
+                            entry.line,
+                            entry.name,
+                            entry.kind,
+                            entry.signature,
+                            entry.docs,
+                            entry.body,
+                        ])?;
+                    }
                 }
+                record_file(&transaction, &source_root.owner, path, "source")?;
             }
-            record_file(&transaction, &source_root.owner, &path, "source")?;
             transaction.commit()?;
         }
         Ok(())
@@ -578,68 +585,81 @@ impl Searcher {
             })
             .collect::<Vec<_>>();
         self.remove_missing(owner, "ilean", &files)?;
-        let mut connection = self.open()?;
+        let mut changed = Vec::new();
         for path in files {
-            if !self.file_changed(owner, &path, "ilean")? {
-                continue;
+            if self.file_changed(owner, &path, "ilean")? {
+                changed.push(path);
             }
-            let value: Value = serde_json::from_slice(&fs::read(&path)?)
-                .with_context(|| format!("cannot index {}", path.display()))?;
-            let module = value
-                .get("module")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let source_path = format!("{}.lean", module.replace('.', "/"));
+        }
+        let mut connection = self.open()?;
+        for batch in changed.chunks(INDEX_COMMIT_BATCH) {
             let transaction = connection.transaction()?;
-            let artifact = path.to_string_lossy();
-            transaction.execute(
-                "DELETE FROM search_fts WHERE owner = ?1 AND origin = ?2",
-                params![owner, artifact],
-            )?;
-            transaction.execute(
-                "DELETE FROM search_references WHERE owner = ?1 AND file = ?2",
-                params![owner, artifact],
-            )?;
-            if let Some(declarations) = value.get("decls").and_then(Value::as_object) {
-                let mut insert = transaction.prepare_cached(
-                    "INSERT INTO search_fts(
-                        owner, origin, file, module, line, name, kind, signature, docs, body
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'declaration', '', '', '')",
+            for path in batch {
+                let value: Value = serde_json::from_slice(&fs::read(path)?)
+                    .with_context(|| format!("cannot index {}", path.display()))?;
+                let module = value
+                    .get("module")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let source_path = format!("{}.lean", module.replace('.', "/"));
+                let artifact = path.to_string_lossy();
+                transaction.execute(
+                    "DELETE FROM search_fts WHERE owner = ?1 AND origin = ?2",
+                    params![owner, artifact],
                 )?;
-                for (name, range) in declarations {
-                    let line = range
-                        .as_array()
-                        .and_then(|range| range.get(4).or_else(|| range.first()))
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0)
-                        + 1;
-                    insert.execute(params![owner, artifact, source_path, module, line, name])?;
-                }
-            }
-            if let Some(references) = value.get("references").and_then(Value::as_object) {
-                let mut insert = transaction.prepare_cached(
-                    "INSERT INTO search_references(
-                        owner, file, target, source_module, line, context
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                transaction.execute(
+                    "DELETE FROM search_references WHERE owner = ?1 AND file = ?2",
+                    params![owner, artifact],
                 )?;
-                for (encoded, reference) in references {
-                    let Some(target) = reference_name(encoded) else {
-                        continue;
-                    };
-                    let Some(usages) = reference.get("usages").and_then(Value::as_array) else {
-                        continue;
-                    };
-                    for usage in usages {
-                        let Some(parts) = usage.as_array() else {
-                            continue;
-                        };
-                        let line = parts.first().and_then(Value::as_u64).unwrap_or(0) + 1;
-                        let context = parts.get(4).and_then(Value::as_str);
-                        insert.execute(params![owner, artifact, target, module, line, context])?;
+                if let Some(declarations) = value.get("decls").and_then(Value::as_object) {
+                    let mut insert = transaction.prepare_cached(
+                        "INSERT INTO search_fts(
+                            owner, origin, file, module, line, name, kind, signature, docs, body
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'declaration', '', '', '')",
+                    )?;
+                    for (name, range) in declarations {
+                        let line = range
+                            .as_array()
+                            .and_then(|range| range.get(4).or_else(|| range.first()))
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0)
+                            + 1;
+                        insert.execute(params![
+                            owner,
+                            artifact,
+                            source_path,
+                            module,
+                            line,
+                            name
+                        ])?;
                     }
                 }
+                if let Some(references) = value.get("references").and_then(Value::as_object) {
+                    let mut insert = transaction.prepare_cached(
+                        "INSERT INTO search_references(
+                            owner, file, target, source_module, line, context
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    )?;
+                    for (encoded, reference) in references {
+                        let Some(target) = reference_name(encoded) else {
+                            continue;
+                        };
+                        let Some(usages) = reference.get("usages").and_then(Value::as_array) else {
+                            continue;
+                        };
+                        for usage in usages {
+                            let Some(parts) = usage.as_array() else {
+                                continue;
+                            };
+                            let line = parts.first().and_then(Value::as_u64).unwrap_or(0) + 1;
+                            let context = parts.get(4).and_then(Value::as_str);
+                            insert
+                                .execute(params![owner, artifact, target, module, line, context])?;
+                        }
+                    }
+                }
+                record_file(&transaction, owner, path, "ilean")?;
             }
-            record_file(&transaction, owner, &path, "ilean")?;
             transaction.commit()?;
         }
         Ok(())
