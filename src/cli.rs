@@ -15,12 +15,31 @@ use crate::issue::IssueStore;
 use crate::protocol::{Command, Request, Response};
 use crate::repo::Repo;
 
+const WORKFLOW_HELP: &str = r#"WORKFLOW
+  Work only in the current mathmux workspace. Use mathmux for all repository
+  coordination and certification. Do not run git, lean, lake build, or equivalent
+  commands directly. Do not enter managed main or another workspace.
+
+  Check the smallest relevant file while editing. A bare check certifies all dirty
+  Lean files. Use show <REF> for detail instead of rerunning commands. Use sync to
+  bring managed main into the workspace and submit to integrate certified work.
+
+LEAN
+  Keep each file focused on one coherent module. Split files when unrelated edits
+  cause costly suffix re-elaboration. Use the module system consistently, keep
+  imports explicit and narrow, and use public import only for module API.
+
+  Align module names, namespaces, and paths. Keep foundational modules stable and
+  avoid broad umbrella imports. sorry is tracked and allowed during development;
+  extra axioms fail submission validation. Do not edit .lake or generated artifacts."#;
+
 #[derive(Parser)]
 #[command(
     name = "mathmux",
     version,
     disable_help_subcommand = true,
-    about = "Fast local Lean checks in isolated worktrees"
+    about = "Fast local Lean checks in isolated worktrees",
+    after_help = WORKFLOW_HELP
 )]
 struct Args {
     #[arg(long, global = true, hide = true)]
@@ -32,22 +51,45 @@ struct Args {
 #[derive(Subcommand)]
 enum TopCommand {
     /// Manage isolated workspaces.
+    ///
+    /// Create, list, or delete mathmux-owned branches and worktrees. Work from the
+    /// assigned workspace and let mathmux manage main.
     Ws {
         #[command(subcommand)]
         command: WsCommand,
     },
     /// Certify one Lean file, or every dirty Lean file.
-    Check { file: Option<PathBuf> },
+    ///
+    /// With FILE, synchronously certifies that file and its source dependencies.
+    /// Without FILE, certifies every dirty Lean file. Stops at the first error and
+    /// stores full diagnostics under the returned reference.
+    Check {
+        /// Lean file to certify; omit to certify all dirty Lean files.
+        file: Option<PathBuf>,
+    },
     /// Bring managed main into the current workspace.
+    ///
+    /// Merges mathmux-managed main into the current workspace and reports conflicts
+    /// without moving work into main.
     Sync,
     /// Integrate a certified change and queue validation.
+    ///
+    /// Requires current check coverage for the dirty Lean files. Integrates the
+    /// change into managed main, queues build and axiom validation, then returns a
+    /// submission reference without waiting for validation.
     Submit {
+        /// Optional integration commit message.
         #[arg(short = 'm')]
         message: Option<String>,
     },
     /// Show full details for a short reference.
+    ///
+    /// Shows stored check, sync, or submission detail. Use --all for complete
+    /// diagnostics, linter output, build output, axioms, and sorry locations.
     Show {
+        /// Short check, sync, or submission reference.
         reference: String,
+        /// Include complete stored detail.
         #[arg(long)]
         all: bool,
     },
@@ -67,11 +109,17 @@ enum TopCommand {
 #[derive(Subcommand)]
 enum WsCommand {
     /// Create a managed branch and worktree.
-    Create { name: String },
+    Create {
+        /// Unique workspace name.
+        name: String,
+    },
     /// List managed workspaces.
     List,
     /// Delete a clean workspace.
-    Delete { name: String },
+    Delete {
+        /// Workspace name.
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -314,5 +362,7 @@ mod tests {
         let development = command_line(true).render_help().to_string();
         assert!(!normal.contains("issue"));
         assert!(development.contains("issue"));
+        assert!(normal.contains("Do not run git, lean, lake build"));
+        assert!(normal.contains("Keep each file focused on one coherent module"));
     }
 }
