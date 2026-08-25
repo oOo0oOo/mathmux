@@ -536,12 +536,14 @@ impl Searcher {
                 "DELETE FROM search_fts WHERE owner = ?1 AND origin = ?2",
                 params![source_root.owner, path.to_string_lossy()],
             )?;
-            for entry in entries {
-                transaction.execute(
+            {
+                let mut insert = transaction.prepare_cached(
                     "INSERT INTO search_fts(
                         owner, origin, file, module, line, name, kind, signature, docs, body
                      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-                    params![
+                )?;
+                for entry in entries {
+                    insert.execute(params![
                         source_root.owner,
                         path.to_string_lossy(),
                         display,
@@ -552,8 +554,8 @@ impl Searcher {
                         entry.signature,
                         entry.docs,
                         entry.body,
-                    ],
-                )?;
+                    ])?;
+                }
             }
             record_file(&transaction, &source_root.owner, &path, "source")?;
             transaction.commit()?;
@@ -599,6 +601,11 @@ impl Searcher {
                 params![owner, artifact],
             )?;
             if let Some(declarations) = value.get("decls").and_then(Value::as_object) {
+                let mut insert = transaction.prepare_cached(
+                    "INSERT INTO search_fts(
+                        owner, origin, file, module, line, name, kind, signature, docs, body
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'declaration', '', '', '')",
+                )?;
                 for (name, range) in declarations {
                     let line = range
                         .as_array()
@@ -606,15 +613,15 @@ impl Searcher {
                         .and_then(Value::as_u64)
                         .unwrap_or(0)
                         + 1;
-                    transaction.execute(
-                        "INSERT INTO search_fts(
-                            owner, origin, file, module, line, name, kind, signature, docs, body
-                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'declaration', '', '', '')",
-                        params![owner, artifact, source_path, module, line, name],
-                    )?;
+                    insert.execute(params![owner, artifact, source_path, module, line, name])?;
                 }
             }
             if let Some(references) = value.get("references").and_then(Value::as_object) {
+                let mut insert = transaction.prepare_cached(
+                    "INSERT INTO search_references(
+                        owner, file, target, source_module, line, context
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                )?;
                 for (encoded, reference) in references {
                     let Some(target) = reference_name(encoded) else {
                         continue;
@@ -628,12 +635,7 @@ impl Searcher {
                         };
                         let line = parts.first().and_then(Value::as_u64).unwrap_or(0) + 1;
                         let context = parts.get(4).and_then(Value::as_str);
-                        transaction.execute(
-                            "INSERT INTO search_references(
-                                owner, file, target, source_module, line, context
-                             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                            params![owner, artifact, target, module, line, context],
-                        )?;
+                        insert.execute(params![owner, artifact, target, module, line, context])?;
                     }
                 }
             }
