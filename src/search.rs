@@ -1609,9 +1609,9 @@ fn lexical_score(query: &str, tokens: &[String], row: &IndexedRow) -> f64 {
         0.0
     };
     if row.kind != "file"
-        && tokens
-            .iter()
-            .any(|token| token == &name || (!token.contains('.') && token.as_str() == base))
+        && tokens.iter().any(|token| {
+            token == &name || (token.len() >= 12 && !token.contains('.') && token.as_str() == base)
+        })
     {
         score += 100.0;
     }
@@ -1940,7 +1940,10 @@ fn fallback_source_hits(
             let is_file = entry.kind == "file";
             let exact_name = query_tokens.iter().any(|token| {
                 (token.contains('.') && token == &name)
-                    || (!is_file && !token.contains('.') && token.as_str() == base)
+                    || (!is_file
+                        && token.len() >= 12
+                        && !token.contains('.')
+                        && token.as_str() == base)
                     || (query_tokens.len() == 1 && token.as_str() == base)
             });
             let qualified_leaf = query_tokens.iter().any(|token| {
