@@ -25,7 +25,7 @@ const RESULT_LIMIT: usize = 24;
 const SUMMARY_LIMIT: usize = 5;
 const GOAL_TIMEOUT_MS: u64 = 2_000;
 const SEARCH_INDEX_VERSION: i64 = 6;
-const SOURCE_INDEX_KIND: &str = "source-v2";
+const SOURCE_INDEX_KIND: &str = "source-v3";
 const DECLARATION_DETAIL_LINES: usize = 48;
 const INDEX_COMMIT_BATCH: usize = 64;
 
@@ -1323,6 +1323,13 @@ fn parse_source(source: &str, module: &str) -> Vec<SourceEntry> {
             .trim_start_matches(':')
             .trim()
             .to_owned();
+        if signature.is_empty()
+            && matches!(kind, "abbrev" | "def")
+            && let Some(value) = block[header_end..].strip_prefix(":=")
+            && let Some(value) = value.lines().next()
+        {
+            signature = format!(":= {}", value.trim());
+        }
         let namespace = namespaces
             .get(line.saturating_sub(1))
             .cloned()
@@ -1345,6 +1352,25 @@ fn parse_source(source: &str, module: &str) -> Vec<SourceEntry> {
             signature: single_line(&signature),
             docs: preceding_doc(source, complete.start()).unwrap_or_default(),
             body: block.chars().take(16_000).collect(),
+        });
+    }
+    let imports = source
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| line.trim_start().starts_with("import "))
+        .collect::<Vec<_>>();
+    if let Some((first, _)) = imports.first() {
+        entries.push(SourceEntry {
+            line: (*first + 1) as u64,
+            name: format!("{module}.imports"),
+            kind: "imports".into(),
+            signature: format!("{} imports", imports.len()),
+            docs: String::new(),
+            body: imports
+                .into_iter()
+                .map(|(_, line)| line.trim())
+                .collect::<Vec<_>>()
+                .join("\n"),
         });
     }
     entries.push(SourceEntry {
@@ -1801,6 +1827,10 @@ fn detailed_source_excerpt(
             .join("\n");
         return (nonempty(excerpt), declaration_line);
     }
+    if kind == "imports" {
+        let excerpt = body.lines().take(64).collect::<Vec<_>>().join("\n");
+        return (nonempty(excerpt), declaration_line);
+    }
     source_excerpt(body, query, tokens, declaration_line, kind == "file")
 }
 
@@ -1923,6 +1953,7 @@ fn fallback_source_hits(
         .collect::<Vec<_>>();
     let strong_set = strong_paths.iter().collect::<HashSet<_>>();
     let direct_paths = direct_module_paths(&workspace, packages.as_deref(), query);
+    let direct_path_set = direct_paths.iter().cloned().collect::<HashSet<_>>();
     let mut paths = direct_paths
         .into_iter()
         .chain(
@@ -1950,6 +1981,9 @@ fn fallback_source_hits(
         .split('|')
         .map(str::trim)
         .any(|part| part.to_lowercase().starts_with("class "));
+    let imports_query = query_tokens
+        .iter()
+        .any(|token| matches!(token.as_str(), "import" | "imports"));
     for path in paths.into_iter().take(96) {
         let path = if path.is_absolute() {
             path
@@ -1993,6 +2027,7 @@ fn fallback_source_hits(
                 .filter(|term| name_segments.contains(term.as_str()))
                 .count();
             let is_file = entry.kind == "file";
+            let is_direct_path = direct_path_set.contains(&path);
             let exact_name = query_tokens.iter().any(|token| {
                 (token.contains('.') && token == &name)
                     || (!is_file
@@ -2016,6 +2051,7 @@ fn fallback_source_hits(
                 .map(|(index, _)| if index == 0 { 2 } else { 1 })
                 .sum::<usize>();
             let is_class = entry.kind == "class";
+            let is_imports = entry.kind == "imports";
             ranked.push(RankedHit {
                 hit: SearchHit {
                     name: entry.name,
@@ -2035,6 +2071,12 @@ fn fallback_source_hits(
                     + if exact_name { 80.0 } else { 0.0 }
                     + if qualified_leaf { 60.0 } else { 0.0 }
                     + qualified_owner_score as f64 * 250.0
+                    + if is_direct_path { 200.0 } else { 0.0 }
+                    + if is_imports && imports_query {
+                        200.0
+                    } else {
+                        0.0
+                    }
                     + if is_class && class_query { 40.0 } else { 0.0 }
                     + if is_file {
                         -40.0
@@ -2068,7 +2110,11 @@ fn direct_module_paths(workspace: &Path, packages: Option<&Path>, query: &str) -
         })
         .filter(|token| token.contains('.'));
     for token in tokens {
-        let relative = PathBuf::from(format!("{}.lean", token.replace('.', "/")));
+        let relative = if token.ends_with(".lean") {
+            PathBuf::from(token)
+        } else {
+            PathBuf::from(format!("{}.lean", token.replace('.', "/")))
+        };
         for root in &roots {
             let candidate = root.join(&relative);
             if candidate.is_file()
@@ -2137,10 +2183,10 @@ fn render_summary(run: &SearchRun) -> String {
         if run.hits.first().is_some_and(|first| first.name == hit.name)
             && let Some(source) = &hit.source
         {
-            let source_lines = if matches!(hit.kind.as_str(), "class" | "inductive" | "structure") {
-                48
-            } else {
-                3
+            let source_lines = match hit.kind.as_str() {
+                "class" | "inductive" | "structure" => 48,
+                "imports" => 64,
+                _ => 3,
             };
             for line in source.lines().take(source_lines) {
                 output.push_str(&format!("\n  | {}", truncate_line(line.trim(), 200)));
@@ -2316,6 +2362,9 @@ end Demo
             "Demo",
         );
         assert_eq!(named_argument[0].signature, "(x : α) : f (R := 𝕜) x = x");
+        let inferred_abbrev =
+            parse_source("abbrev ZeroFiber := EuclideanSpace ℂ (Fin 0)\n", "Demo");
+        assert_eq!(inferred_abbrev[0].signature, ":= EuclideanSpace ℂ (Fin 0)");
 
         let sectioned = parse_source(
             "namespace Outer\nsection First\ndef before := 1\nend First\nsection Second\ndef after := 2\nend Second\nend Outer\n",
@@ -2483,6 +2532,24 @@ end Demo
         let hits =
             fallback_source_hits(directory.path(), query, &meaningful_query_tokens(query)).unwrap();
         assert!(hits.iter().any(|hit| hit.hit.name == "support_fact"));
+    }
+
+    #[test]
+    fn fallback_opens_explicit_lean_file_import_lists() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("Root.lean"),
+            "import Demo.One\nimport Demo.Two\n",
+        )
+        .unwrap();
+        let query = "root Root.lean import list";
+        let hits =
+            fallback_source_hits(directory.path(), query, &meaningful_query_tokens(query)).unwrap();
+        assert_eq!(hits[0].hit.name, "Root.imports");
+        assert_eq!(
+            hits[0].hit.source.as_deref(),
+            Some("import Demo.One\nimport Demo.Two")
+        );
     }
 
     #[test]
