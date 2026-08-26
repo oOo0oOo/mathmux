@@ -1812,16 +1812,37 @@ fn attach_source_context(diagnostics: &mut [Diagnostic], target: &Path, source: 
         };
         let start = line.saturating_sub(2).max(1);
         let end = (line + 2).min(lines.len());
+        let ambient = diagnostic
+            .text
+            .contains("failed to synthesize instance of type class")
+            .then(|| {
+                let lower = start.saturating_sub(33);
+                let nearest = (lower..start.saturating_sub(1))
+                    .rev()
+                    .find(|index| lines[*index].trim_start().starts_with("variable "))?;
+                let first = (lower..=nearest)
+                    .rev()
+                    .take_while(|index| lines[*index].trim_start().starts_with("variable "))
+                    .last()
+                    .unwrap_or(nearest);
+                Some((first..=nearest).rev().take(4).collect::<Vec<_>>())
+            })
+            .flatten()
+            .unwrap_or_default();
+        let render = |current: usize| {
+            format!(
+                "{} {:>4} | {}",
+                if current + 1 == line { ">" } else { " " },
+                current + 1,
+                lines[current]
+            )
+        };
         diagnostic.context = Some(
-            (start..=end)
-                .map(|current| {
-                    format!(
-                        "{} {:>4} | {}",
-                        if current == line { ">" } else { " " },
-                        current,
-                        lines[current - 1]
-                    )
-                })
+            ambient
+                .into_iter()
+                .rev()
+                .map(render)
+                .chain((start - 1..end).map(render))
                 .collect::<Vec<_>>()
                 .join("\n"),
         );
@@ -2477,6 +2498,21 @@ noncomputable def second : Nat := 2
                 "     1 | first\n     2 | second\n>    3 | problem\n     4 | fourth\n     5 | fifth"
             )
         );
+
+        let mut instance_error = vec![Diagnostic {
+            kind: "lean.synthInstanceFailed".into(),
+            text: "Proof.lean:9:1: error: failed to synthesize instance of type class\n  Nonempty B".into(),
+            context: None,
+        }];
+        attach_source_context(
+            &mut instance_error,
+            Path::new("Proof.lean"),
+            "namespace Demo\nvariable {B : Type}\nvariable [TopologicalSpace B]\n\ntheorem prior : True := by trivial\n\ntheorem current : True := by\n  have := True.intro\n  exact this\n",
+        );
+        let context = instance_error[0].context.as_deref().unwrap();
+        assert!(context.contains("2 | variable {B : Type}"));
+        assert!(context.contains("3 | variable [TopologicalSpace B]"));
+        assert!(context.contains(">    9 |   exact this"));
 
         let (_, _, _, notation_errors) = partition_diagnostics(&[WorkerDiagnostic {
             severity: "error".into(),
