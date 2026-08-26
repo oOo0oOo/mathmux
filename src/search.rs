@@ -706,6 +706,23 @@ impl Searcher {
     }
 
     fn loogle_hits(&self, workspace: &Workspace, query: &str) -> (Vec<LoogleHit>, bool) {
+        self.loogle_hits_with_suggestions(workspace, query, true)
+    }
+
+    fn loogle_exact_name_hits(
+        &self,
+        workspace: &Workspace,
+        query: &str,
+    ) -> (Vec<LoogleHit>, bool) {
+        self.loogle_hits_with_suggestions(workspace, query, false)
+    }
+
+    fn loogle_hits_with_suggestions(
+        &self,
+        workspace: &Workspace,
+        query: &str,
+        accept_suggestions: bool,
+    ) -> (Vec<LoogleHit>, bool) {
         if !type_search_enabled() || !workspace.path.join(".lake/packages/mathlib").is_dir() {
             return (Vec::new(), false);
         }
@@ -770,7 +787,7 @@ impl Searcher {
         let LoogleState::Running(worker) = &mut *state else {
             return (Vec::new(), false);
         };
-        match worker.query(query) {
+        match worker.query(query, accept_suggestions) {
             Ok(hits) => (hits, false),
             Err(error) => {
                 append_log(&self.repo, &format!("Loogle query failed: {error:#}"));
@@ -2033,7 +2050,7 @@ impl Searcher {
             }
         }
         let name_pattern = format!("\"{}\"", query.replace('"', "\\\""));
-        let (mut hits, warming) = self.loogle_hits(workspace, &name_pattern);
+        let (mut hits, warming) = self.loogle_exact_name_hits(workspace, &name_pattern);
         let positions = hits
             .iter()
             .enumerate()
@@ -2899,11 +2916,12 @@ impl LoogleWorker {
         })
     }
 
-    fn query(&mut self, query: &str) -> Result<Vec<LoogleHit>> {
+    fn query(&mut self, query: &str, accept_suggestions: bool) -> Result<Vec<LoogleHit>> {
         self.last_used = Instant::now();
         let query = query.lines().collect::<Vec<_>>().join(" ");
         let mut value = self.query_value(&query)?;
-        if value.get("error").is_some()
+        if accept_suggestions
+            && value.get("error").is_some()
             && let Some(suggestion) = value
                 .get("suggestions")
                 .and_then(Value::as_array)
