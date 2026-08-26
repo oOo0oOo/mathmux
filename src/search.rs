@@ -1028,6 +1028,17 @@ impl Searcher {
         if !type_search && declaration_name_query(query) {
             let mut exact_query = query.to_owned();
             let mut exact_rows = self.exact_candidates(query, scopes)?;
+            if exact_rows.is_empty()
+                && let Some(result) = self.generated_exact_result(
+                    workspace,
+                    query,
+                    scopes,
+                    import_context.as_ref(),
+                    base_warming,
+                )?
+            {
+                return Ok(result);
+            }
             let continuations = if exact_rows.is_empty()
                 && declaration_suffix_base(query).is_some()
             {
@@ -1466,6 +1477,60 @@ impl Searcher {
             },
             ok: true,
         })
+    }
+
+    fn generated_exact_result(
+        &self,
+        workspace: &Workspace,
+        query: &str,
+        scopes: &HashSet<String>,
+        import_context: Option<&ImportContext>,
+        base_warming: bool,
+    ) -> Result<Option<SearchResult>> {
+        let name_pattern = format!("\"{}\"", query.replace('"', "\\\""));
+        let (mut hits, warming) = self.loogle_hits(workspace, &name_pattern);
+        let positions = hits
+            .iter()
+            .enumerate()
+            .filter(|(_, hit)| qualified_name_matches(&hit.name, query))
+            .map(|(position, _)| position)
+            .collect::<Vec<_>>();
+        let [position] = positions.as_slice() else {
+            return Ok(None);
+        };
+        let hit = hits.remove(*position);
+        let usages = self.usages(&hit.name, scopes, workspace)?;
+        let mut resolved = RankedHit {
+            hit: SearchHit {
+                path: format!("{}.lean", hit.module.replace('.', "/")),
+                line: 1,
+                kind: "declaration".into(),
+                signature: nonempty(hit.signature),
+                doc: hit.doc,
+                source: None,
+                usages,
+                name: hit.name,
+                module: hit.module,
+                applicable: false,
+                required_import: None,
+            },
+            score: 900.0,
+        };
+        self.enrich_exact_source(&mut resolved.hit, scopes)?;
+        if let Some(context) = import_context {
+            apply_import_context(&mut resolved, context);
+        }
+        let mut hits = vec![resolved.hit];
+        hits.extend(self.api_neighborhood(
+            &hits[0],
+            scopes,
+            workspace,
+            import_context,
+        )?);
+        Ok(Some(exact_search_result(
+            hits,
+            base_warming || warming,
+        )))
     }
 
     fn import_context(
