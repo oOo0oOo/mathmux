@@ -19,6 +19,7 @@ const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 struct AgentStatus {
     id: u64,
+    workspace_ref: String,
     workspace: String,
     model: String,
     state: String,
@@ -56,6 +57,15 @@ pub fn render(repo: &Repo, state: &State) -> Result<String> {
     let agents = project_agents(&workspaces, &activity, now);
     let code = current_code(&repo.root)?;
     let context = submission_context(repo, state, (now - DAY_SECS) * 1000);
+    let activity_events = development_enabled(repo)
+        .then(|| {
+            TelemetryStore::global().and_then(|store| {
+                store.context_events(repo, (now - DAY_SECS - ACTIVE_SECS) * 1000)
+            })
+        })
+        .transpose()
+        .ok()
+        .flatten();
 
     let mut output = format!("{project} {}", short_hash(&revision));
     render_agents(&mut output, &agents, now)?;
@@ -69,7 +79,12 @@ pub fn render(repo: &Repo, state: &State) -> Result<String> {
     for (label, seconds) in [("1h", HOUR_SECS), ("24h", DAY_SECS)] {
         let lines = net_lean_lines(&repo.root, now - seconds)?;
         let wall_hours = seconds as f64 / HOUR_SECS as f64;
-        let agent_hours = agent_hours(&agents, now - seconds, now);
+        let agent_hours = agent_hours(
+            &agents,
+            activity_events.as_deref(),
+            now - seconds,
+            now,
+        );
         write!(
             output,
             "\n{label:>3} {lines:+} lines  {:+.1}/h",
@@ -202,6 +217,7 @@ fn agent_status(
     };
     Some(AgentStatus {
         id,
+        workspace_ref: workspace.reference.clone(),
         workspace: workspace.name.clone(),
         model: values
             .get("model")
@@ -448,11 +464,53 @@ fn physical_lines(source: &[u8]) -> usize {
         + usize::from(!source.is_empty() && !source.ends_with(b"\n"))
 }
 
-fn agent_hours(agents: &[AgentStatus], since: i64, now: i64) -> f64 {
-    agents
-        .iter()
-        .map(|agent| now.saturating_sub(agent.started_at.max(since)) as f64 / HOUR_SECS as f64)
-        .sum()
+fn agent_hours(
+    agents: &[AgentStatus],
+    events: Option<&[ContextEvent]>,
+    since: i64,
+    now: i64,
+) -> f64 {
+    let Some(events) = events else {
+        return agents
+            .iter()
+            .map(|agent| now.saturating_sub(agent.started_at.max(since)) as f64)
+            .sum::<f64>()
+            / HOUR_SECS as f64;
+    };
+    let active_seconds = agents.iter().fold(0_i64, |total, agent| {
+        let mut intervals = events
+            .iter()
+            .filter(|event| event.workspace == agent.workspace_ref)
+            .map(|event| {
+                let completed = event.created_at / 1000;
+                let duration = event.client_ms.div_ceil(1000) as i64;
+                (completed.saturating_sub(duration), completed + ACTIVE_SECS)
+            })
+            .filter(|(_, end)| *end >= agent.started_at)
+            .collect::<Vec<_>>();
+        intervals.extend([
+            (agent.started_at, agent.started_at + ACTIVE_SECS),
+            (agent.last_active, agent.last_active + ACTIVE_SECS),
+        ]);
+        intervals.sort_unstable();
+        let intervals = intervals.into_iter().filter_map(|(start, end)| {
+            let start = start.max(agent.started_at).max(since);
+            let end = end.min(now);
+            (start < end).then_some((start, end))
+        });
+        let (seconds, _) =
+            intervals.fold((0_i64, None), |(seconds, end), (start, next_end)| {
+                match end {
+                    Some(end) if start <= end => (
+                        seconds + next_end.saturating_sub(end),
+                        Some(next_end.max(end)),
+                    ),
+                    _ => (seconds + next_end.saturating_sub(start), Some(next_end)),
+                }
+            });
+        total + seconds
+    });
+    active_seconds as f64 / HOUR_SECS as f64
 }
 
 fn parse_epoch(value: Option<&String>) -> i64 {
@@ -502,6 +560,7 @@ mod tests {
     fn agent_hours_only_count_the_window_overlap() {
         let agent = |started_at| AgentStatus {
             id: 1,
+            workspace_ref: "w1".into(),
             workspace: "demo".into(),
             model: "agent".into(),
             state: "active".into(),
@@ -509,6 +568,32 @@ mod tests {
             last_active: 0,
             dirty: 0,
         };
-        assert_eq!(agent_hours(&[agent(0), agent(5_400)], 3_600, 7_200), 1.5);
+        assert_eq!(
+            agent_hours(&[agent(0), agent(5_400)], None, 3_600, 7_200),
+            1.5
+        );
+    }
+
+    #[test]
+    fn agent_hours_merge_recent_activity_intervals() {
+        let agent = AgentStatus {
+            id: 1,
+            workspace_ref: "w1".into(),
+            workspace: "demo".into(),
+            model: "agent".into(),
+            state: "idle".into(),
+            started_at: 3_600,
+            last_active: 4_800,
+            dirty: 0,
+        };
+        let event = |created_at| ContextEvent {
+            created_at,
+            client_ms: 0,
+            workspace: "w1".into(),
+            reference: None,
+            response_bytes: 0,
+        };
+        let events = [event(3_600_000), event(3_780_000), event(4_200_000)];
+        assert_eq!(agent_hours(&[agent], Some(&events), 3_600, 7_200), 0.3);
     }
 }

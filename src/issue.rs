@@ -31,6 +31,7 @@ pub struct TelemetryStore {
 #[derive(Debug, Clone)]
 pub struct ContextEvent {
     pub created_at: i64,
+    pub client_ms: u64,
     pub workspace: String,
     pub reference: Option<String>,
     pub response_bytes: u64,
@@ -431,7 +432,7 @@ impl TelemetryStore {
     pub fn context_events(&self, repo: &Repo, since: i64) -> Result<Vec<ContextEvent>> {
         let connection = self.open_db()?;
         let mut statement = connection.prepare(
-            "SELECT created_at, workspace, reference, response_bytes
+            "SELECT created_at, client_ms, workspace, reference, response_bytes
              FROM telemetry_events
              WHERE project = ?1 AND created_at >= ?2 AND workspace IS NOT NULL
                AND json_type(request_json, '$.command') = 'object'
@@ -442,9 +443,10 @@ impl TelemetryStore {
             |row| {
                 Ok(ContextEvent {
                     created_at: row.get(0)?,
-                    workspace: row.get(1)?,
-                    reference: row.get(2)?,
-                    response_bytes: row.get::<_, i64>(3)?.max(0) as u64,
+                    client_ms: row.get::<_, i64>(1)?.max(0) as u64,
+                    workspace: row.get(2)?,
+                    reference: row.get(3)?,
+                    response_bytes: row.get::<_, i64>(4)?.max(0) as u64,
                 })
             },
         )?;
