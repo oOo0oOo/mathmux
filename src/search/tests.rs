@@ -1269,7 +1269,7 @@ fn goal_and_source_query_regressions() {
     );
     assert_eq!(
         diagnostic_search_query(
-            "Demo:12:4: error: Type mismatch: After simplification, term\n  LinearEquiv.apply_symm_apply e x\nhas type\n  e (e.symm x) = x\nbut is expected to have type\n  e.toContinuousLinearEquiv (e.symm.toContinuousLinearEquiv x) = x"
+            "Demo:12:4: error: Type mismatch: After simplification, term\n  LinearEquiv.apply_symm_apply e x\n has type\n  e (e.symm x) = x\n but is expected to have type\n  e.toContinuousLinearEquiv (e.symm.toContinuousLinearEquiv x) = x"
         ),
         "ContinuousLinearEquiv.apply_symm_apply LinearEquiv.apply_symm_apply e.symm e.toContinuousLinearEquiv e.symm.toContinuousLinearEquiv"
     );

@@ -424,9 +424,10 @@ pub(super) fn diagnostic_goal_query(goal: &str, locals: &HashSet<&str>) -> Strin
 }
 
 pub(super) fn diagnostic_relation_query(diagnostic: &str) -> Option<String> {
+    let lines = diagnostic.lines().map(str::trim).collect::<Vec<_>>();
     let relational = (diagnostic.contains("left-hand side")
         && diagnostic.contains("right-hand side"))
-        || (diagnostic.contains("\nhas type\n") && diagnostic.contains("expected to have type"));
+        || (lines.contains(&"has type") && lines.contains(&"but is expected to have type"));
     if !relational {
         return None;
     }
