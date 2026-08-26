@@ -847,7 +847,10 @@ fn source_outline_lists_declarations_without_structure_fields() {
     )
     .unwrap();
     assert_eq!(result.hits[0].kind, "outline");
-    assert_eq!(result.hits[0].signature.as_deref(), Some("3 declarations"));
+    assert_eq!(
+        result.hits[0].signature.as_deref(),
+        Some("3 declarations, 9 lines")
+    );
     let outline = result.hits[0].source.as_deref().unwrap();
     assert!(outline.contains("    3  def Demo.alpha : Nat"));
     assert!(outline.contains("    5  structure Demo.Config"));
@@ -863,7 +866,7 @@ fn source_outline_lists_declarations_without_structure_fields() {
         duration_ms: 1,
         created_at: 0,
     });
-    assert!(summary.contains("outline : 3 declarations  Outline.lean:3"));
+    assert!(summary.contains("outline : 3 declarations, 9 lines  Outline.lean:3"));
     assert!(!summary.contains("source:"));
 }
 

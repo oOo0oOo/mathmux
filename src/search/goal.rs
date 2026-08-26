@@ -341,6 +341,7 @@ fn source_outline_result(
         .collect::<Vec<_>>();
     entries.sort_by_key(|entry| entry.line);
     let total = entries.len();
+    let source_lines = source.lines().count();
     let outline = entries
         .iter()
         .take(SOURCE_OCCURRENCE_ALL_LIMIT)
@@ -370,7 +371,7 @@ fn source_outline_result(
         .then(|| SearchHit {
             name: "outline".into(),
             kind: "outline".into(),
-            signature: Some(format!("{total} declarations")),
+            signature: Some(format!("{total} declarations, {source_lines} lines")),
             module,
             path: relative,
             line: entries.first().map_or(1, |entry| entry.line),
