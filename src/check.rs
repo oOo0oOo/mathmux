@@ -783,7 +783,7 @@ impl Checker {
             bail!(
                 "dependency setup failed for {}: {}",
                 target.display(),
-                String::from_utf8_lossy(&output.stderr).trim()
+                compact_dependency_failure(&output.stderr)
             );
         }
         let setup: LakeSetup = serde_json::from_slice(&output.stdout)
@@ -935,6 +935,85 @@ fn reap_stale_workers(worker_path: &Path) -> usize {
         }
     }
     groups.len()
+}
+
+fn compact_dependency_failure(stderr: &[u8]) -> String {
+    const BLOCK_LINES: usize = 32;
+
+    let output = String::from_utf8_lossy(stderr);
+    let lines = output.lines().collect::<Vec<_>>();
+    let warning_count = lines
+        .iter()
+        .filter(|line| line.trim_start().starts_with("warning:"))
+        .count();
+    let error_start = lines.iter().position(|line| {
+        let line = line.trim_start();
+        line.starts_with("error:") || line.contains(": error:")
+    });
+    let mut selected = if let Some(start) = error_start {
+        let end = lines[start + 1..]
+            .iter()
+            .position(|line| {
+                let line = line.trim_start();
+                line.starts_with("warning:")
+                    || line.starts_with("error:")
+                    || line.contains(": error:")
+                    || line.starts_with("Some required targets")
+                    || line.starts_with("Failed to build")
+            })
+            .map_or(lines.len(), |offset| start + 1 + offset);
+        let block = &lines[start..end];
+        if block.len() <= BLOCK_LINES {
+            block.iter().map(|line| (*line).to_owned()).collect()
+        } else {
+            let head = BLOCK_LINES / 2;
+            let tail = BLOCK_LINES - head - 1;
+            let mut compact = block[..head]
+                .iter()
+                .map(|line| (*line).to_owned())
+                .collect::<Vec<_>>();
+            compact.push(format!(
+                "... {} diagnostic lines omitted ...",
+                block.len() - head - tail
+            ));
+            compact.extend(
+                block[block.len() - tail..]
+                    .iter()
+                    .map(|line| (*line).to_owned()),
+            );
+            compact
+        }
+    } else {
+        lines
+            .iter()
+            .rev()
+            .filter(|line| !line.trim().is_empty())
+            .take(BLOCK_LINES)
+            .map(|line| (*line).to_owned())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect()
+    };
+    if warning_count > 0 {
+        selected.push(format!("{warning_count} warnings omitted"));
+    }
+    let mut required_targets = false;
+    for line in &lines {
+        let trimmed = line.trim();
+        if trimmed.starts_with("Some required targets") {
+            required_targets = true;
+            selected.push((*line).to_owned());
+        } else if required_targets && trimmed.starts_with("- ") {
+            selected.push((*line).to_owned());
+        } else if trimmed.starts_with("Failed to build") {
+            required_targets = false;
+            selected.push((*line).to_owned());
+        } else if required_targets && !trimmed.is_empty() {
+            required_targets = false;
+        }
+    }
+    selected.join("\n")
 }
 
 fn setup_fingerprint_path(setup_path: &Path) -> PathBuf {
@@ -1639,6 +1718,31 @@ mod tests {
 
         fs::write(setup_fingerprint_path(&setup), "current").unwrap();
         assert!(setup_is_current(&setup, "current"));
+    }
+
+    #[test]
+    fn dependency_failures_keep_errors_and_drop_warning_floods() {
+        let warnings = (1..=50)
+            .map(|index| format!("warning: old warning {index}\n  detail {index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let context = (1..=60)
+            .map(|index| format!("context line {index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let stderr = format!(
+            "{warnings}\nerror: Demo.lean:12:3: type mismatch\n{context}\nwarning: trailing warning\nSome required targets logged failures:\n- Demo\nFailed to build module dependencies.\n"
+        );
+        let compact = compact_dependency_failure(stderr.as_bytes());
+        assert!(compact.contains("error: Demo.lean:12:3: type mismatch"));
+        assert!(compact.contains("context line 1"));
+        assert!(compact.contains("context line 60"));
+        assert!(compact.contains("30 diagnostic lines omitted"));
+        assert!(compact.contains("51 warnings omitted"));
+        assert!(compact.contains("Some required targets logged failures:\n- Demo"));
+        assert!(compact.contains("Failed to build module dependencies."));
+        assert!(!compact.contains("old warning"));
+        assert!(compact.lines().count() <= 36);
     }
 
     #[test]
