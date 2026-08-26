@@ -35,7 +35,7 @@ const RELATED_RESULT_LIMIT: usize = 8;
 const GOAL_STATE_BEGIN: &str = "MATHMUX_GOAL_BEGIN";
 const GOAL_STATE_END: &str = "MATHMUX_GOAL_END";
 const SEARCH_INDEX_VERSION: i64 = 7;
-const SOURCE_INDEX_KIND: &str = "source-v7";
+const SOURCE_INDEX_KIND: &str = "source-v8";
 const DECLARATION_DETAIL_LINES: usize = 48;
 const INDEX_COMMIT_BATCH: usize = 64;
 const SEARCH_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
@@ -3463,6 +3463,13 @@ fn parse_source(source: &str, module: &str) -> Vec<SourceEntry> {
             docs: preceding_doc(source, complete.start()).unwrap_or_default(),
             body: body.chars().take(16_000).collect(),
         });
+        if matches!(kind, "class" | "structure") {
+            entries.extend(parse_structure_fields(
+                block,
+                &entries.last().expect("structure entry").name,
+                line as u64,
+            ));
+        }
     }
     entries.extend(parse_notations(source, &lines, &namespaces));
     let imports = source
@@ -3496,6 +3503,113 @@ fn parse_source(source: &str, module: &str) -> Vec<SourceEntry> {
         body: source.chars().take(256_000).collect(),
     });
     entries
+}
+
+fn parse_structure_fields(block: &str, structure: &str, structure_line: u64) -> Vec<SourceEntry> {
+    let header_end = declaration_header_end(block);
+    let Some(body_start) = block[header_end..]
+        .strip_prefix("where")
+        .map(|_| header_end + "where".len())
+    else {
+        return Vec::new();
+    };
+    let body_end = block[body_start..]
+        .match_indices('\n')
+        .filter_map(|(newline, _)| {
+            let offset = body_start + newline + 1;
+            let line = block[offset..].lines().next().unwrap_or_default();
+            (!line.trim().is_empty() && line.len() == line.trim_start().len()).then_some(offset)
+        })
+        .next()
+        .unwrap_or(block.len());
+    let field_block = &block[..body_end];
+    let mut fields = field_block[body_start..]
+        .match_indices('\n')
+        .filter_map(|(newline, _)| {
+            let offset = body_start + newline + 1;
+            let line = block[offset..].lines().next().unwrap_or_default();
+            structure_field_header(line)
+                .map(|(indent, name_end, name)| (offset, indent, name_end, name.to_owned()))
+        })
+        .collect::<Vec<_>>();
+    let Some(field_indent) = fields.iter().map(|(_, indent, _, _)| *indent).min() else {
+        return Vec::new();
+    };
+    fields.retain(|(_, indent, _, _)| *indent == field_indent);
+    fields
+        .iter()
+        .enumerate()
+        .map(|(index, (offset, _, name_end, name))| {
+            let end = fields
+                .get(index + 1)
+                .map(|(offset, _, _, _)| *offset)
+                .unwrap_or(field_block.len());
+            let mut field = field_block[*offset..end].trim_end();
+            if let Some(doc) = field.rfind("/--")
+                && field[doc..].contains("-/")
+            {
+                field = field[..doc].trim_end();
+            }
+            let signature = field
+                .get(*name_end..)
+                .unwrap_or_default()
+                .trim()
+                .trim_start_matches(':')
+                .trim();
+            SourceEntry {
+                line: structure_line + block[..*offset].matches('\n').count() as u64,
+                name: format!("{structure}.{name}"),
+                kind: "field".into(),
+                signature: single_line(signature),
+                docs: preceding_doc(block, *offset).unwrap_or_default(),
+                body: field.to_owned(),
+            }
+        })
+        .collect()
+}
+
+fn structure_field_header(line: &str) -> Option<(usize, usize, &str)> {
+    let indent = line.len() - line.trim_start_matches([' ', '\t']).len();
+    if indent == 0 {
+        return None;
+    }
+    let mut start = indent;
+    while line[start..].starts_with("@[") {
+        start += line[start..].find(']')? + 1;
+        start += line[start..].len() - line[start..].trim_start().len();
+    }
+    if let Some(rest) = line[start..].strip_prefix("protected ") {
+        start = line.len() - rest.len();
+    }
+    let rest = &line[start..];
+    let mut characters = rest.char_indices();
+    let (_, first) = characters.next()?;
+    if !(first.is_alphabetic() || first == '_') {
+        return None;
+    }
+    let name_end = characters
+        .find(|(_, character)| {
+            !(character.is_alphanumeric() || matches!(character, '_' | '\''))
+        })
+        .map(|(offset, _)| offset)
+        .unwrap_or(rest.len());
+    let name = &rest[..name_end];
+    let mut depth = 0usize;
+    let mut has_type = false;
+    for (offset, character) in rest[name_end..].char_indices() {
+        match character {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            ':' if depth == 0
+                && !rest[name_end + offset..].starts_with(":=") =>
+            {
+                has_type = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+    has_type.then_some((indent, start + name_end, name))
 }
 
 fn parse_notations(
@@ -6231,6 +6345,20 @@ end Demo
         assert!(!infix_parent[0]
             .signature
             .contains("generated parent projection"));
+
+        let bundle_hom = parse_source(
+            "namespace Demo\nstructure BundleHom (E₁ E₂ : B → Type*) where\n  toFun : ∀ b, E₁ b → E₂ b\n  /-- The maps vary continuously. -/\n  continuous_toFun :\n    Continuous (fun b ↦ toFun b)\n\nnamespace BundleHom\ntheorem use : True := trivial\nend BundleHom\nend Demo\n",
+            "Demo",
+        );
+        let continuous = bundle_hom
+            .iter()
+            .find(|entry| entry.name == "Demo.BundleHom.continuous_toFun")
+            .unwrap();
+        assert_eq!(continuous.kind, "field");
+        assert_eq!(continuous.line, 5);
+        assert_eq!(continuous.docs, "The maps vary continuously.");
+        assert_eq!(continuous.signature, "Continuous (fun b ↦ toFun b)");
+        assert!(!continuous.body.contains("namespace BundleHom"));
 
         let contextual = parse_source(
             "namespace Demo\nuniverse u\nvariable {α : Type u} [Group α]\nsection Closed\nvariable [TopologicalSpace α]\nend Closed\nstructure Box where\n  value : α\nend Demo\n",
