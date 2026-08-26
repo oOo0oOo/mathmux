@@ -79,7 +79,9 @@ pub(super) fn parse_source(source: &str, module: &str) -> Vec<SourceEntry> {
             .cloned()
             .unwrap_or_default();
         let name = match raw_name {
-            Some(raw_name) if raw_name.contains('.') || namespace.is_empty() => raw_name.to_owned(),
+            Some(raw_name) if raw_name.starts_with("_root_.") || namespace.is_empty() => {
+                raw_name.to_owned()
+            }
             Some(raw_name) => format!("{}.{}", namespace.join("."), raw_name),
             None if namespace.is_empty() => format!("instance@{line}"),
             None => format!("{}.instance@{line}", namespace.join(".")),

@@ -47,6 +47,21 @@ end Demo
             .any(|entry| entry.name == "LinearMap.mkContinuous₂")
     );
 
+    let dotted = parse_source(
+        "namespace Outer\ndef Inner.relative := 1\ndef _root_.Inner.absolute := 2\nend Outer\n",
+        "Demo",
+    );
+    assert!(
+        dotted
+            .iter()
+            .any(|entry| entry.name == "Outer.Inner.relative")
+    );
+    assert!(
+        dotted
+            .iter()
+            .any(|entry| entry.name == "_root_.Inner.absolute")
+    );
+
     let additive_doc = parse_source(
         "/-- Multiplicative support. -/\n@[to_additive /-- Additive support around zero. -/]\ntheorem mulSupportFact : True := trivial\n",
         "Demo",
