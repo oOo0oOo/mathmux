@@ -116,6 +116,8 @@ pub fn run(repo: Repo) -> Result<()> {
                 }
                 Err(error) => return Err(error.into()),
             }
+        } else {
+            thread::sleep(Duration::from_millis(50));
         }
         let active_clients = clients.load(Ordering::SeqCst);
         if retiring.load(Ordering::SeqCst) && listener.take().is_some() {
