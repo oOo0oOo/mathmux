@@ -35,6 +35,7 @@ const SEARCH_INDEX_VERSION: i64 = 6;
 const SOURCE_INDEX_KIND: &str = "source-v6";
 const DECLARATION_DETAIL_LINES: usize = 48;
 const INDEX_COMMIT_BATCH: usize = 64;
+const SEARCH_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 
 pub struct Searcher {
     repo: Repo,
@@ -42,6 +43,7 @@ pub struct Searcher {
     checker: Arc<Checker>,
     index_lock: Mutex<()>,
     last_refresh: Mutex<HashMap<String, Instant>>,
+    dirty_cache: Mutex<HashMap<String, (Instant, Vec<PathBuf>)>>,
     base_lock: Arc<Mutex<()>>,
     loogle: Mutex<LoogleState>,
     base: Mutex<HashMap<String, BaseState>>,
@@ -152,6 +154,7 @@ impl Searcher {
             checker,
             index_lock: Mutex::new(()),
             last_refresh: Mutex::new(HashMap::new()),
+            dirty_cache: Mutex::new(HashMap::new()),
             base_lock: Arc::new(Mutex::new(())),
             loogle: Mutex::new(LoogleState::Empty),
             base: Mutex::new(HashMap::new()),
@@ -534,7 +537,7 @@ impl Searcher {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&workspace.reference)
-            .is_none_or(|last| last.elapsed() >= std::time::Duration::from_millis(500));
+            .is_none_or(|last| last.elapsed() >= SEARCH_REFRESH_INTERVAL);
         if refresh_due && let Ok(_base_guard) = self.base_lock.try_lock() {
             match search_index_writer_lock(&self.repo) {
                 Ok(_process_guard) => {
@@ -1390,7 +1393,7 @@ impl Searcher {
         if base_warming {
             return None;
         }
-        let dirty = dirty_lean_files(&workspace.path).ok()?;
+        let dirty = self.dirty_lean_files(workspace)?;
         let nested = dirty
             .iter()
             .filter(|path| path.components().count() > 1)
@@ -1437,6 +1440,24 @@ impl Searcher {
             accessible,
             complete: !base_warming,
         })
+    }
+
+    fn dirty_lean_files(&self, workspace: &Workspace) -> Option<Vec<PathBuf>> {
+        let mut cache = self
+            .dirty_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((updated, paths)) = cache.get(&workspace.reference)
+            && updated.elapsed() < SEARCH_REFRESH_INTERVAL
+        {
+            return Some(paths.clone());
+        }
+        let paths = dirty_lean_files(&workspace.path).ok()?;
+        cache.insert(
+            workspace.reference.clone(),
+            (Instant::now(), paths.clone()),
+        );
+        Some(paths)
     }
 
     fn candidates(
