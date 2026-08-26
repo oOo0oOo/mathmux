@@ -38,6 +38,8 @@ impl std::fmt::Display for CheckTimeout {
                 formatter,
                 "Lean elaboration exceeded five minutes; split the file or simplify the current declaration"
             )
+        } else if self.0 < Duration::from_secs(1) {
+            write!(formatter, "Lean probe exceeded {}ms", self.0.as_millis())
         } else {
             write!(formatter, "Lean probe exceeded {} seconds", self.0.as_secs())
         }
