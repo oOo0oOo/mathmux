@@ -1619,17 +1619,9 @@ fn partition_diagnostics(
     let mut suggestions = Vec::new();
     let mut errors = Vec::new();
     for diagnostic in diagnostics {
-        let mut text = diagnostic.text.clone();
-        if diagnostic.severity == "error"
-            && text.contains("elaboration function for `Mathlib.Tactic.subscriptTerm` has not been implemented")
-        {
-            text.push_str(
-                "\nhint: this notation is not active; open its scoped notation or use the named declaration",
-            );
-        }
         let value = Diagnostic {
             kind: diagnostic.kind.clone(),
-            text,
+            text: enriched_diagnostic_text(diagnostic),
             context: None,
         };
         match diagnostic.severity.as_str() {
@@ -1657,6 +1649,23 @@ fn partition_diagnostics(
         );
     }
     (warnings, linters, suggestions, errors)
+}
+
+fn enriched_diagnostic_text(diagnostic: &WorkerDiagnostic) -> String {
+    let mut text = diagnostic.text.clone();
+    if diagnostic.severity != "error" {
+        return text;
+    }
+    if text.contains(
+        "elaboration function for `Mathlib.Tactic.subscriptTerm` has not been implemented",
+    ) {
+        text.push_str(
+            "\nhint: this notation is not active; open its scoped notation or use the named declaration",
+        );
+    } else if text.contains("failed to synthesize instance of type class\n  DecidableEq ") {
+        text.push_str("\nhint: add `classical` locally or provide the `DecidableEq` instance");
+    }
+    text
 }
 
 fn is_syntax_diagnostic(diagnostic: &Diagnostic) -> bool {
@@ -2329,6 +2338,13 @@ mod tests {
                 .into(),
         }]);
         assert!(notation_errors[0].text.contains("open its scoped notation"));
+
+        let (_, _, _, decidable_errors) = partition_diagnostics(&[WorkerDiagnostic {
+            severity: "error".into(),
+            kind: "lean.synthInstanceFailed".into(),
+            text: "Proof.lean:7:1: error: failed to synthesize instance of type class\n  DecidableEq α".into(),
+        }]);
+        assert!(decidable_errors[0].text.contains("add `classical` locally"));
 
         errors[1].text = "Demo.Nested.Proof:3:1: error: type mismatch".into();
         errors[1].context = None;
