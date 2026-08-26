@@ -15,54 +15,49 @@ use crate::issue::{IssueStore, TelemetryStore, development_enabled, enable_devel
 use crate::protocol::{Command, Request, Response};
 use crate::repo::Repo;
 
-const WORKFLOW_HELP: &str = r#"WORKFLOW
-  Work only in the current mathmux workspace. Use mathmux for repository search,
-  coordination, and certification. Do not run git, lean, lake build, or equivalent
-  commands directly. Do not enter managed main or another workspace.
+const WORKFLOW_HELP: &str = r#"AGENT RULES
+  Assigned workspace only; never enter managed main or another workspace.
+  Use mathmux, never git, lean, lake build, or equivalent commands directly.
+  Search first; edit -> check FILE -> check -> submit. Use sync to update.
+  Use show REF for stored detail; do not rerun a command only for more output.
+  Use Lean modules with explicit narrow imports and aligned module/namespace/path.
+  Keep public imports to module API; split unrelated files with costly elaboration.
+  sorry is tracked during development; new axioms fail validation.
+  Do not edit .lake or generated artifacts."#;
 
-  Check the smallest relevant file while editing. A bare check certifies all dirty
-  Lean files. Use show <REF> for detail instead of rerunning commands. Use sync to
-  bring managed main into the workspace and submit to integrate certified work.
-
-LEAN
-  Use Lean's module system. Keep each file coherent, imports explicit and narrow,
-  and public imports limited to module API. Align module names, namespaces, and
-  paths. Split files when unrelated edits cause costly suffix re-elaboration.
-
-  sorry is tracked and allowed during development; extra axioms fail submission
-  validation. Do not edit .lake or generated artifacts."#;
-
-const SEARCH_HELP: &str = r#"Search local Lean declarations, types, source, and goals.
-
-Query forms are inferred in this order:
-  cREF [TERMS]                  search a diagnostic; add repair to test tactics
+const SEARCH_HELP: &str = r#"QUERY FORMS (inferred)
+  cREF [TERMS]                  diagnostic plus related API
+  cREF repair                   test bounded repairs for eligible unsolved goals
   qREF TERMS                    refine a stored search
-  qREF MORE                     show complete stored results
-  sREF [TERMS]                  search a submission
+  qREF FACET                    FACET: fields|constructors|coercions|lemmas|usages
+  qREF more                     print complete stored results
+  sREF [TERMS]                  declarations added by a submission
 
-  FILE:LINE[:COLUMN]            elaborate the goal at a position
-  FILE:LINE MORE                show larger bounded source context
-  FILE:tail                     show bounded end-of-file context
-  FILE:START-END                show a bounded source range
-  FILE[:START-END] A|B          find literal source occurrences
-  FILE outline|declarations     list declarations, lines, and signatures
+  FILE:LINE[:COLUMN]            goal and tested suggestions, or labelled source only
+  FILE:LINE more                larger bounded source context
+  FILE:tail                     bounded end-of-file context
+  FILE:START-END                bounded source range
+  FILE[:START-END] A|B          literal source occurrences
+  FILE outline|declarations     declarations with lines and signatures
 
   NAME                          exact declaration plus nearby API
-  KIND NAME [body|proof|source] declaration-directed lookup
+  KIND NAME [body|proof|source] declaration lookup
+  KIND = abbrev|class|def|inductive|instance|lemma|structure|theorem
   NAME*                         declaration-name glob
   STRUCTURE fields              complete field inventory
   TYPE or WORDS                 type, name, concept, and source search
-  A|B                           alternatives with short-circuiting
+  A|B                           alternatives; stop after the first useful branch
 
-Lean forms such as #check, #print, #synth, and @NAME are accepted. Search is
-import-aware and stores complete results under the returned qREF."#;
+Also accepts #check, #print, #synth, @NAME, and _root_.NAME. Ranking respects
+imports when a target file is known. Every result is stored under qREF. Default
+output is compact; --all prints the complete current result."#;
 
 #[derive(Parser)]
 #[command(
     name = "mathmux",
     version,
     disable_help_subcommand = true,
-    about = "Fast local Lean development in isolated worktrees",
+    about = "Managed Lean workspaces, search, checking, and integration",
     after_help = WORKFLOW_HELP
 )]
 struct Args {
@@ -74,92 +69,87 @@ struct Args {
 
 #[derive(Subcommand)]
 enum TopCommand {
-    /// Manage isolated workspaces.
+    /// Create, list, or delete managed workspaces.
     ///
-    /// Create, list, or delete mathmux-owned branches and worktrees. Work from the
-    /// assigned workspace and let mathmux manage main.
+    /// Work only in the assigned workspace; mathmux owns its branch, worktree, and main.
     Ws {
         #[command(subcommand)]
         command: WsCommand,
     },
-    /// Show formalization activity, throughput, and tooling performance.
+    /// Show the live formalization dashboard.
     ///
-    /// Summarizes live project agents, Lean code size and growth, agent-normalized
-    /// throughput, and recent check, build, and submission statistics.
+    /// Reports agents, Lean size and growth, throughput, tool use, and validation.
     Status {
-        /// Print publication metadata as a partially generated formalization.yaml draft.
+        /// Emit a schema-valid formalization.yaml v0.4 publication draft.
         #[arg(long)]
         formalization_yaml: bool,
     },
-    /// Certify one Lean file, or every dirty Lean file.
+    /// Check one Lean file, or certify all dirty Lean files.
     ///
-    /// With FILE, synchronously certifies that file and its source dependencies.
-    /// Without FILE, certifies every dirty Lean file. Stops at the first error and
-    /// stores full diagnostics under the returned reference.
+    /// FILE checks that file and its source dependencies. No FILE checks every dirty
+    /// Lean file. Stops at the first error; full diagnostics are stored under cREF.
     Check {
-        /// Lean file to certify; omit to certify all dirty Lean files.
+        /// Lean file; omit to certify all dirty Lean files.
         file: Option<PathBuf>,
-        /// Report dependency, cache, setup, and elaboration timings.
+        /// Show dependency, cache, setup, and elaboration timings.
         #[arg(long)]
         profile: bool,
     },
-    /// Search local Lean declarations, types, source, and goals.
+    /// Search Lean declarations, types, source, diagnostics, and goals.
     #[command(long_about = SEARCH_HELP)]
     Search {
-        /// One inferred query; see the forms above.
+        /// Query terms; the query form is inferred as documented above.
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
-        /// Return complete results for this query instead of the compact preview.
+        /// Print the complete result instead of its compact preview.
         #[arg(long)]
         all: bool,
     },
-    /// Bring managed main into the current workspace, or publish managed main.
+    /// Update the workspace from managed main, or push managed main.
     ///
-    /// Merges mathmux-managed main into the current workspace and reports conflicts
-    /// without moving work into main. With --push, publishes managed main through
-    /// its configured Git remote instead of changing the workspace.
+    /// Default: merge managed main into this workspace. --push publishes managed main
+    /// through its configured remote and does not change this workspace.
     Sync {
-        /// Push managed main through its configured Git remote.
+        /// Push managed main through its configured remote.
         #[arg(long)]
         push: bool,
     },
     /// Integrate a certified change and queue validation.
     ///
-    /// Requires current check coverage for the dirty Lean files. Integrates the
-    /// change into managed main, queues build and axiom validation, then returns a
-    /// submission reference without waiting for validation.
+    /// Requires current check coverage for all dirty Lean files. Integrates into
+    /// managed main, queues build and axiom validation, and returns sREF immediately.
     Submit {
-        /// Optional integration commit message.
+        /// Integration commit message.
         #[arg(short = 'm')]
         message: Option<String>,
     },
-    /// Show full details for a short reference.
+    /// Show stored detail for a short reference.
     ///
-    /// Shows stored check, sync, or submission detail. Use --all for complete
-    /// diagnostics, linter output, build output, axioms, and sorry locations.
+    /// Accepts cREF, qREF, sREF, uREF, or wREF. --all includes every stored diagnostic,
+    /// result, linter message, build line, axiom, and sorry location.
     Show {
-        /// Short check, sync, or submission reference.
+        /// Stored cREF, qREF, sREF, uREF, or wREF.
         reference: String,
         /// Include complete stored detail.
         #[arg(long)]
         all: bool,
     },
-    /// Use the local development issue inbox.
+    /// Report or triage mathmux tooling issues.
     #[command(hide = true)]
     Issue {
         #[command(subcommand)]
         command: IssueCommand,
     },
-    /// Inspect local development telemetry.
+    /// Summarize mathmux development telemetry.
     #[command(hide = true)]
     Telemetry {
         /// Time window such as 30m, 24h, 7d, or all.
         #[arg(long, default_value = "24h")]
         since: String,
-        /// Restrict results to one command verb.
+        /// Restrict to one recorded verb.
         #[arg(long)]
         verb: Option<String>,
-        /// Show the N slowest events instead of aggregates.
+        /// Show N slowest events instead of aggregates.
         #[arg(long)]
         slow: Option<usize>,
     },
@@ -172,17 +162,21 @@ enum TopCommand {
 
 #[derive(Subcommand)]
 enum WsCommand {
-    /// Create a managed branch and worktree.
+    /// Create a managed workspace.
+    ///
+    /// Branches from managed main, prepares the worktree, and prints wREF and path.
     Create {
         /// Unique workspace name.
         name: String,
-        /// Model assigned to this workspace, for persistent attribution.
+        /// Model identifier for persistent attribution.
         #[arg(long)]
         model: Option<String>,
     },
-    /// List managed workspaces.
+    /// List workspace references, names, dirty counts, and model labels.
     List,
-    /// Delete a clean workspace.
+    /// Delete a clean managed workspace.
+    ///
+    /// Refuses dirty workspaces, then removes the worktree and its branch.
     Delete {
         /// Workspace name.
         name: String,
@@ -191,27 +185,34 @@ enum WsCommand {
 
 #[derive(Subcommand)]
 enum IssueCommand {
-    /// Record a tool-related issue with local context.
+    /// Record a mathmux issue with local command context.
     Report {
+        /// Concise tooling defect or inefficiency.
         summary: String,
+        /// Related cREF, qREF, sREF, uREF, or eREF.
         #[arg(long = "ref")]
         reference: Option<String>,
     },
-    /// List issues from the local development inbox.
+    /// List recorded mathmux issues.
     List {
+        /// Issue status to include.
         #[arg(long, default_value = "open")]
         status: IssueFilter,
     },
-    /// Mark an issue resolved.
+    /// Mark an issue fixed.
     Resolve {
+        /// Issue reference.
         issue: String,
+        /// Fix commit or release identifier.
         #[arg(long)]
         fixed_by: Option<String>,
+        /// Resolution note.
         #[arg(short = 'm')]
         note: Option<String>,
     },
     /// Dismiss an issue that is not an actionable tooling defect.
     Dismiss {
+        /// Issue reference.
         issue: String,
         /// Why the issue is not actionable.
         #[arg(short = 'm', long = "reason")]
@@ -623,8 +624,8 @@ mod tests {
         assert!(!normal.contains("telemetry"));
         assert!(development.contains("issue"));
         assert!(development.contains("telemetry"));
-        assert!(normal.contains("Do not run git, lean, lake build"));
-        assert!(normal.contains("Use Lean's module system"));
+        assert!(normal.contains("never git, lean, lake build"));
+        assert!(normal.contains("Use Lean modules"));
     }
 
     #[test]
