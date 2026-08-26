@@ -58,6 +58,22 @@ struct SearchResult {
     ok: bool,
 }
 
+struct ExpandedQuery {
+    query: String,
+    context: Vec<SearchHit>,
+    import_target: Option<PathBuf>,
+}
+
+impl ExpandedQuery {
+    fn plain(query: impl Into<String>) -> Self {
+        Self {
+            query: query.into(),
+            context: Vec::new(),
+            import_target: None,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct RankedHit {
     hit: SearchHit,
@@ -184,13 +200,13 @@ impl Searcher {
         if let Some(reference) = more_search_reference(query.trim()) {
             return self.state.show(reference, true);
         }
-        let expanded = self.expand_reference_query(query.trim())?;
-        let location = parse_goal_location(&workspace.path, cwd, &expanded)?;
-        let query = strip_search_modifiers(&expanded);
+        let started = Instant::now();
+        let expanded = self.expand_reference_query(workspace, query.trim())?;
+        let location = parse_goal_location(&workspace.path, cwd, &expanded.query)?;
+        let query = strip_search_modifiers(&expanded.query);
         let query = query.as_str();
         ensure!(!query.is_empty(), "search query is empty");
         let reference = self.state.next_ref('q')?;
-        let started = Instant::now();
         let result = if let Some(location) = location {
             self.goal_search(workspace, location)?
         } else if let Some(location) =
@@ -208,8 +224,18 @@ impl Searcher {
                     self.current_scopes(workspace)
                 }
             };
-            self.combined_search(workspace, query, &scopes, base_warming)?
+            self.combined_search(
+                workspace,
+                query,
+                &scopes,
+                base_warming,
+                expanded.import_target.as_deref(),
+            )?
         };
+        let mut result = result;
+        if !expanded.context.is_empty() {
+            result.hits.splice(0..0, expanded.context);
+        }
         let run = SearchRun {
             reference: reference.clone(),
             workspace_ref: workspace.reference.clone(),
@@ -231,7 +257,7 @@ impl Searcher {
         if ok { Ok(rendered) } else { bail!(rendered) }
     }
 
-    fn expand_reference_query(&self, query: &str) -> Result<String> {
+    fn expand_reference_query(&self, workspace: &Workspace, query: &str) -> Result<ExpandedQuery> {
         let mut parts = query.splitn(2, char::is_whitespace);
         let reference = parts.next().unwrap_or_default();
         let refinement = parts.next().unwrap_or_default().trim();
@@ -251,13 +277,21 @@ impl Searcher {
                     .find(|hit| hit.kind == "goal-state")
                     .and_then(|hit| hit.source.as_deref())
             {
-                return Ok(goal_refinement_query(goal, refinement));
+                return Ok(ExpandedQuery::plain(goal_refinement_query(
+                    goal, refinement,
+                )));
             }
-            return Ok([prior.query.as_str(), refinement]
-                .into_iter()
-                .filter(|part| !part.is_empty())
-                .collect::<Vec<_>>()
-                .join(" "));
+            let base = if search_refinement_facet(refinement) {
+                prior
+                    .hits
+                    .iter()
+                    .find(|hit| !matches!(hit.kind.as_str(), "goal-state" | "diagnostic-context"))
+                    .map(|hit| hit.name.as_str())
+                    .unwrap_or(&prior.query)
+            } else {
+                &prior.query
+            };
+            return Ok(ExpandedQuery::plain(refined_search_query(base, refinement)));
         }
         if reference
             .strip_prefix('c')
@@ -270,11 +304,10 @@ impl Searcher {
             let diagnostic = run
                 .diagnostics
                 .first()
-                .or_else(|| run.warnings.first())
-                .map(|diagnostic| diagnostic.text.as_str())
-                .unwrap_or_default();
-            let mut diagnostic_query = diagnostic_search_query(diagnostic);
-            if diagnostic.contains("Invalid field")
+                .or_else(|| run.warnings.first());
+            let diagnostic_text = diagnostic.map(|value| value.text.as_str()).unwrap_or_default();
+            let mut diagnostic_query = diagnostic_search_query(diagnostic_text);
+            if diagnostic_text.contains("Invalid field")
                 && let Some(nearest) = self.nearest_field_declaration(&diagnostic_query)?
             {
                 diagnostic_query = nearest;
@@ -283,13 +316,46 @@ impl Searcher {
                 !diagnostic_query.is_empty() || !refinement.is_empty(),
                 "{reference} has no diagnostic to search"
             );
-            return Ok([diagnostic_query.as_str(), refinement]
-                .into_iter()
-                .filter(|part| !part.is_empty())
-                .collect::<Vec<_>>()
-                .join(" "));
+            let target = run.failed.as_deref().map(PathBuf::from);
+            let mut context = diagnostic.into_iter().map(|diagnostic| {
+                let (path, line) = diagnostic_position(&diagnostic.text, run.failed.as_deref());
+                SearchHit {
+                    name: "diagnostic context".into(),
+                    kind: "diagnostic-context".into(),
+                    signature: None,
+                    module: String::new(),
+                    path: path.unwrap_or_else(|| run.failed.clone().unwrap_or_default()),
+                    line,
+                    doc: None,
+                    source: Some(diagnostic_context(
+                        &diagnostic.text,
+                        diagnostic.context.as_deref(),
+                    )),
+                    usages: Vec::new(),
+                    applicable: false,
+                    required_import: None,
+                }
+            }).collect::<Vec<_>>();
+            if diagnostic_text.contains("unsolved goals")
+                && let Some(target) = target.as_deref()
+            {
+                context.extend(self.diagnostic_probe_hits(
+                    workspace,
+                    target,
+                    diagnostic_text,
+                ));
+            }
+            return Ok(ExpandedQuery {
+                query: [diagnostic_query.as_str(), refinement]
+                    .into_iter()
+                    .filter(|part| !part.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                context,
+                import_target: target.filter(|path| workspace.path.join(path).is_file()),
+            });
         }
-        Ok(query.to_owned())
+        Ok(ExpandedQuery::plain(query))
     }
 
     fn nearest_field_declaration(&self, missing: &str) -> Result<Option<String>> {
@@ -313,6 +379,60 @@ impl Searcher {
         Ok(closest
             .filter(|(distance, _, _)| *distance <= 2.max(leaf.chars().count() / 3))
             .map(|(_, _, name)| name))
+    }
+
+    fn diagnostic_probe_hits(
+        &self,
+        workspace: &Workspace,
+        target: &Path,
+        diagnostic: &str,
+    ) -> Vec<SearchHit> {
+        let (_, line) = diagnostic_position(diagnostic, target.to_str());
+        let absolute = workspace.path.join(target);
+        let Ok(source) = fs::read_to_string(&absolute) else {
+            return Vec::new();
+        };
+        let mut suggestions = Vec::new();
+        if let Some(probe) = append_goal_tactic(
+            &source,
+            line,
+            "first | exact? | aesop? | simp? | apply? | rw?",
+        ) && let Ok((_, rendered)) = self.checker.probe_source(workspace, &absolute, &probe)
+        {
+            suggestions.extend(try_this_suggestions(&rendered));
+        }
+        if suggestions.is_empty() {
+            for candidate in local_method_candidates(diagnostic).into_iter().take(3) {
+                let Some(probe) = append_goal_tactic(&source, line, &candidate) else {
+                    break;
+                };
+                if self
+                    .checker
+                    .probe_source(workspace, &absolute, &probe)
+                    .is_ok_and(|(ok, _)| ok)
+                {
+                    suggestions.push(candidate);
+                    break;
+                }
+            }
+        }
+        suggestions
+            .into_iter()
+            .take(3)
+            .map(|suggestion| SearchHit {
+                name: clean_line(&suggestion),
+                kind: "diagnostic-repair".into(),
+                signature: None,
+                module: String::new(),
+                path: target.to_string_lossy().into_owned(),
+                line,
+                doc: Some("verified in the checked file context".into()),
+                source: Some(suggestion),
+                usages: Vec::new(),
+                applicable: true,
+                required_import: None,
+            })
+            .collect()
     }
 
     pub fn evict_idle_worker(&self, idle_for: std::time::Duration) -> bool {
@@ -1046,12 +1166,13 @@ impl Searcher {
         query: &str,
         scopes: &HashSet<String>,
         base_warming: bool,
+        import_target: Option<&Path>,
     ) -> Result<SearchResult> {
         let explicit_declaration = explicit_declaration_name(query);
         let query = explicit_declaration.unwrap_or(query);
         let type_search = type_search_enabled() && type_shaped(query);
         let query_tokens = meaningful_query_tokens(query);
-        let import_context = self.import_context(workspace, scopes, base_warming);
+        let import_context = self.import_context(workspace, scopes, base_warming, import_target);
         if !type_search
             && let Some((anchor, refinement_tokens, requested_terms)) = anchored_api_query(query)
         {
@@ -1629,6 +1750,7 @@ impl Searcher {
         workspace: &Workspace,
         scopes: &HashSet<String>,
         base_warming: bool,
+        requested: Option<&Path>,
     ) -> Option<ImportContext> {
         if base_warming {
             return None;
@@ -1638,13 +1760,15 @@ impl Searcher {
             .iter()
             .filter(|path| path.components().count() > 1)
             .collect::<Vec<_>>();
-        let target = if nested.len() == 1 {
-            nested[0]
-        } else if dirty.len() == 1 {
-            &dirty[0]
-        } else {
-            return None;
-        };
+        let target = requested.or_else(|| {
+            if nested.len() == 1 {
+                Some(nested[0].as_path())
+            } else if dirty.len() == 1 {
+                Some(dirty[0].as_path())
+            } else {
+                None
+            }
+        })?;
         let source = fs::read_to_string(workspace.path.join(target)).ok()?;
         let module = project_module_name(&workspace.path, target);
         let mut graph: HashMap<String, Vec<String>> = HashMap::new();
@@ -2213,6 +2337,82 @@ fn strip_search_modifiers(query: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn refined_search_query(base: &str, refinement: &str) -> String {
+    let refinement = refinement.trim();
+    let facet = refinement.to_ascii_lowercase();
+    let refinement = match facet.as_str() {
+        "usage" | "usages" | "references" | "field" | "fields" | "projection"
+        | "projections" => "",
+        "constructor" | "constructors" => "mk",
+        "coercion" | "coercions" => "coe",
+        "lemma" | "lemmas" => "theorem",
+        _ => refinement,
+    };
+    [base, refinement]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn search_refinement_facet(refinement: &str) -> bool {
+    matches!(
+        refinement.trim().to_ascii_lowercase().as_str(),
+        "usage"
+            | "usages"
+            | "references"
+            | "field"
+            | "fields"
+            | "projection"
+            | "projections"
+            | "constructor"
+            | "constructors"
+            | "coercion"
+            | "coercions"
+            | "lemma"
+            | "lemmas"
+    )
+}
+
+fn diagnostic_position(diagnostic: &str, fallback: Option<&str>) -> (Option<String>, u64) {
+    static LOCATION: OnceLock<Regex> = OnceLock::new();
+    let location = LOCATION.get_or_init(|| {
+        Regex::new(r"^(?P<path>.+\.lean):(?P<line>[0-9]+)(?::[0-9]+)?(?::|$)")
+            .expect("valid diagnostic location regex")
+    });
+    let parsed = diagnostic
+        .lines()
+        .next()
+        .and_then(|line| location.captures(line));
+    let path = parsed
+        .as_ref()
+        .and_then(|captures| captures.name("path"))
+        .map(|path| path.as_str().to_owned())
+        .or_else(|| fallback.map(str::to_owned));
+    let line = parsed
+        .as_ref()
+        .and_then(|captures| captures.name("line"))
+        .and_then(|line| line.as_str().parse().ok())
+        .unwrap_or(1);
+    (path, line)
+}
+
+fn diagnostic_context(diagnostic: &str, source_context: Option<&str>) -> String {
+    let mut lines = diagnostic.lines().collect::<Vec<_>>();
+    if lines.len() > 16 {
+        lines.truncate(16);
+    }
+    let mut rendered = lines.join("\n");
+    if let Some(context) = source_context {
+        let context = context.lines().take(7).collect::<Vec<_>>().join("\n");
+        if !context.is_empty() {
+            rendered.push('\n');
+            rendered.push_str(&context);
+        }
+    }
+    rendered
 }
 
 fn diagnostic_search_query(diagnostic: &str) -> String {
@@ -5194,6 +5394,61 @@ fn goal_probe(source: &str, requested_line: u64) -> Option<(usize, usize, bool, 
     None
 }
 
+fn append_goal_tactic(source: &str, requested_line: u64, tactic: &str) -> Option<String> {
+    let starts = line_starts(source);
+    let requested = requested_line.saturating_sub(1) as usize;
+    let line_text = |line: usize| {
+        let start = *starts.get(line)?;
+        let end = starts.get(line + 1).copied().unwrap_or(source.len());
+        Some(&source[start..end])
+    };
+    let is_tactic_start = |line: usize| {
+        let text = line_text(line).unwrap_or_default().trim_end();
+        text == "by" || text.ends_with(":= by") || text.ends_with(" where")
+    };
+    let forward_end = (requested + 20).min(starts.len().saturating_sub(1));
+    let tactic_line = (requested..=forward_end)
+        .find(|line| is_tactic_start(*line))
+        .or_else(|| {
+            (requested.saturating_sub(80)..requested)
+                .rev()
+                .find(|line| is_tactic_start(*line))
+        })?;
+    let command = line_text(tactic_line)?;
+    let command_indent = command
+        .chars()
+        .take_while(|character| character.is_whitespace())
+        .count();
+    let mut insertion = source.len();
+    for (line, start) in starts.iter().enumerate().skip(tactic_line + 1) {
+        let text = line_text(line)?;
+        if text.trim().is_empty() {
+            continue;
+        }
+        let indent = text
+            .chars()
+            .take_while(|character| character.is_whitespace())
+            .count();
+        if indent <= command_indent {
+            insertion = *start;
+            break;
+        }
+    }
+    let indentation = command
+        .chars()
+        .take_while(|character| character.is_whitespace())
+        .collect::<String>();
+    let indent = format!("{indentation}  ");
+    let mut probe = source.to_owned();
+    let separator = if insertion > 0 && !source[..insertion].ends_with('\n') {
+        "\n"
+    } else {
+        ""
+    };
+    probe.insert_str(insertion, &format!("{separator}{indent}{tactic}\n"));
+    Some(probe)
+}
+
 fn goal_probe_replacement(in_tactic: bool, indent: &str, tactic: &str) -> String {
     if in_tactic {
         format!(
@@ -5831,6 +6086,25 @@ end Demo
             "Continuous.comp"
         );
         assert_eq!(edit_distance("compp", "comp"), 1);
+        assert_eq!(refined_search_query("Homeomorph", "constructors"), "Homeomorph mk");
+        assert_eq!(refined_search_query("Homeomorph", "usages"), "Homeomorph");
+        assert_eq!(
+            diagnostic_position(
+                "Demo/Proof.lean:42:7: error: unsolved goals",
+                Some("Fallback.lean")
+            ),
+            (Some("Demo/Proof.lean".into()), 42)
+        );
+        assert!(diagnostic_context("error: mismatch", Some(">   42 | bad")).contains("42 | bad"));
+        assert_eq!(
+            append_goal_tactic(
+                "example (h : True) : True := by\n  skip\n\nexample : True := by\n  trivial\n",
+                1,
+                "exact h"
+            )
+            .unwrap(),
+            "example (h : True) : True := by\n  skip\n\n  exact h\nexample : True := by\n  trivial\n"
+        );
         assert_eq!(
             diagnostic_search_query(
                 "error: unsolved goals\nX : Type\nf g : X → X\nhf : Continuous f\n⊢ Continuous (f ∘ g)\n   3 | example"
