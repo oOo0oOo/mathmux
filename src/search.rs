@@ -2444,7 +2444,7 @@ fn diagnostic_search_query(diagnostic: &str) -> String {
             .flat_map(str::split_whitespace)
             .filter(|name| declaration_name_query(name))
             .collect::<HashSet<_>>();
-        return truncate_line(&single_line(&anonymize_goal(&goal, &locals)), 600);
+        return diagnostic_goal_query(&goal, &locals);
     }
     if let Some(query) = diagnostic_relation_query(diagnostic) {
         return query;
@@ -2482,6 +2482,39 @@ fn diagnostic_search_query(diagnostic: &str) -> String {
         truncate_line(&single_line(diagnostic), 240)
     } else {
         selected.join(" ")
+    }
+}
+
+fn diagnostic_goal_query(goal: &str, locals: &HashSet<&str>) -> String {
+    let anonymized = single_line(&anonymize_goal(goal, locals));
+    let target = anonymized.trim_start().strip_prefix('⊢').unwrap_or(&anonymized).trim();
+    let mut focused = Vec::new();
+    for token in target.split(|character: char| {
+        character.is_whitespace()
+            || matches!(
+                character,
+                '⊢' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ':' | '='
+            )
+    }) {
+        let token = token.trim_matches(|character: char| {
+            !character.is_alphanumeric() && !matches!(character, '_' | '.' | '\'')
+        });
+        if token.chars().count() >= 4
+            && declaration_name_query(token)
+            && (token.contains(['.', '_'])
+                || token.chars().next().is_some_and(char::is_uppercase))
+            && !focused.iter().any(|seen: &String| seen.eq_ignore_ascii_case(token))
+        {
+            focused.push(token.to_owned());
+        }
+        if focused.len() == 6 {
+            break;
+        }
+    }
+    if focused.len() >= 2 {
+        focused.join(" ")
+    } else {
+        truncate_line(&format!("⊢ {target}"), 600)
     }
 }
 
@@ -6089,6 +6122,13 @@ end Demo
             "Continuous.comp"
         );
         assert_eq!(edit_distance("compp", "comp"), 1);
+        assert_eq!(
+            diagnostic_goal_query(
+                "⊢ Continuous fun a => Matrix.fromBlocks (A a) 0 0 (D a) (finSumFinEquiv.symm i)",
+                &HashSet::from(["a", "A", "D", "i"])
+            ),
+            "Continuous Matrix.fromBlocks finSumFinEquiv.symm"
+        );
         assert_eq!(refined_search_query("Homeomorph", "constructors"), "Homeomorph mk");
         assert_eq!(refined_search_query("Homeomorph", "usages"), "Homeomorph");
         assert_eq!(
