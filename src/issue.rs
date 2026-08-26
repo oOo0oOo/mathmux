@@ -390,9 +390,9 @@ impl TelemetryStore {
     ) -> Result<String> {
         let request_json = serde_json::to_string(request)?;
         let response_json = serde_json::to_string(response)?;
-        let workspace = State::new(&repo.db_path)
+        let workspace = State::existing(&repo.db_path)
+            .workspace_for_path(Path::new(&request.cwd))
             .ok()
-            .and_then(|state| state.workspace_for_path(Path::new(&request.cwd)).ok())
             .map(|workspace| workspace.reference);
         let reference = response_reference(&response.summary);
         let error_class = (!response.ok).then(|| error_class(&response.summary));
@@ -871,14 +871,13 @@ fn capture_context(cwd: &Path, related_ref: Option<&str>) -> Result<IssueContext
         .ok()
         .map(|value| value.trim().to_owned());
     let mut worktree = repo.root.clone();
-    if let Ok(state) = State::new(&repo.db_path) {
-        if let Ok(workspace) = state.workspace_for_path(cwd) {
-            context.workspace = Some(workspace.reference);
-            worktree = workspace.path;
-        }
-        if let Some(reference) = related_ref {
-            context.related_detail = Some(state.show(reference, true)?);
-        }
+    let state = State::existing(&repo.db_path);
+    if let Ok(workspace) = state.workspace_for_path(cwd) {
+        context.workspace = Some(workspace.reference);
+        worktree = workspace.path;
+    }
+    if let Some(reference) = related_ref {
+        context.related_detail = Some(state.show(reference, true)?);
     }
     if let Ok(store) = TelemetryStore::global() {
         context.exchange = store

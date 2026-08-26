@@ -191,6 +191,37 @@ fn search_rowids_advance_past_fts_and_origin_mappings() {
 }
 
 #[test]
+fn legacy_reference_storage_migrates_to_file_ids() {
+    let connection = Connection::open_in_memory().unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE search_references (
+                owner TEXT, file TEXT, target TEXT, source_module TEXT,
+                line INTEGER, context TEXT
+             );
+             CREATE INDEX search_references_target ON search_references(target);
+             CREATE INDEX search_references_file ON search_references(owner, file);
+             INSERT INTO search_references VALUES ('old', '/long/path', 'Demo.use', 'Demo', 1, NULL);",
+        )
+        .unwrap();
+    assert!(migrate_reference_schema(&connection).unwrap());
+    let columns = connection
+        .prepare("PRAGMA table_info(search_references)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(columns, ["file_id", "target", "line", "context"]);
+    assert_eq!(
+        connection
+            .query_row("SELECT count(*) FROM search_references", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
 fn lean_inspection_syntax_normalizes_to_search_terms() {
     assert_eq!(
         normalize_lean_inspection_query("@Demo.useful"),
@@ -879,7 +910,7 @@ fn source_outline_summary_is_bounded_but_all_detail_is_complete() {
         hits: vec![hit],
         note: None,
         duration_ms: 1,
-        created_at: 0,
+        created_at: now_unix_ms(),
     };
     let summary = render_summary(&run);
     assert!(summary.contains("item64"));

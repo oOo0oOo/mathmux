@@ -9,6 +9,9 @@ use crate::util::now_unix_ms;
 mod display;
 use display::{render_check_run, render_search_run, render_submission, validate_reference};
 
+const SEARCH_HISTORY_LIMIT: i64 = 20_000;
+const SEARCH_HISTORY_AGE_MS: i64 = 48 * 60 * 60 * 1000;
+
 #[derive(Debug, Clone)]
 pub struct State {
     path: PathBuf,
@@ -164,10 +167,14 @@ pub struct SearchRun {
 }
 
 impl State {
-    pub fn new(path: impl AsRef<Path>) -> Result<Self> {
-        let state = Self {
+    pub fn existing(path: impl AsRef<Path>) -> Self {
+        Self {
             path: path.as_ref().to_path_buf(),
-        };
+        }
+    }
+
+    pub fn new(path: impl AsRef<Path>) -> Result<Self> {
+        let state = Self::existing(path);
         state.migrate()?;
         Ok(state)
     }
@@ -176,7 +183,7 @@ impl State {
         let connection = Connection::open(&self.path)
             .with_context(|| format!("cannot open {}", self.path.display()))?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
-        connection.busy_timeout(std::time::Duration::from_secs(10))?;
+        connection.busy_timeout(std::time::Duration::from_secs(60))?;
         Ok(connection)
     }
 
@@ -273,7 +280,9 @@ impl State {
                 note TEXT,
                 duration_ms INTEGER NOT NULL,
                 created_at INTEGER NOT NULL
-             );",
+             );
+             CREATE INDEX IF NOT EXISTS searches_created
+                ON searches(created_at DESC);",
         )?;
         let _ = connection.execute("ALTER TABLE workspaces ADD COLUMN deleted_at INTEGER", []);
         let _ = connection.execute(
@@ -741,7 +750,11 @@ impl State {
     }
 
     pub fn add_search(&self, run: &SearchRun) -> Result<()> {
-        self.open()?.execute(
+        let hits_json = serde_json::to_string(&run.hits)?;
+        let mut connection = self.open()?;
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        transaction.execute(
             "INSERT INTO searches(
                 ref, workspace_ref, query, inference, hits_json, note, duration_ms, created_at
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -750,12 +763,30 @@ impl State {
                 run.workspace_ref,
                 run.query,
                 run.inference,
-                serde_json::to_string(&run.hits)?,
+                hits_json,
                 run.note,
                 run.duration_ms,
                 run.created_at,
             ],
         )?;
+        let sequence = run
+            .reference
+            .strip_prefix('q')
+            .and_then(|value| value.parse::<u64>().ok());
+        if sequence.is_some_and(|value| value % 64 == 0) {
+            transaction.execute(
+                "DELETE FROM searches WHERE created_at < ?1",
+                [now_unix_ms() - SEARCH_HISTORY_AGE_MS],
+            )?;
+            transaction.execute(
+                "DELETE FROM searches WHERE ref IN (
+                    SELECT ref FROM searches
+                    ORDER BY created_at DESC, ref DESC LIMIT -1 OFFSET ?1
+                 )",
+                [SEARCH_HISTORY_LIMIT],
+            )?;
+        }
+        transaction.commit()?;
         Ok(())
     }
 

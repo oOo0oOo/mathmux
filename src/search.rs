@@ -139,6 +139,57 @@ fn install_active_scopes(connection: &Connection, scopes: &HashSet<String>) -> R
     Ok(())
 }
 
+fn delete_search_references(connection: &Connection, owner: &str, file: &str) -> Result<()> {
+    connection.execute(
+        "DELETE FROM search_references
+         WHERE file_id IN (
+            SELECT id FROM search_reference_files WHERE owner = ?1 AND file = ?2
+         )",
+        params![owner, file],
+    )?;
+    connection.execute(
+        "DELETE FROM search_reference_files WHERE owner = ?1 AND file = ?2",
+        params![owner, file],
+    )?;
+    Ok(())
+}
+
+fn migrate_reference_schema(connection: &Connection) -> Result<bool> {
+    let normalized = connection
+        .prepare("PRAGMA table_info(search_references)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .iter()
+        .any(|column| column == "file_id");
+    if !normalized {
+        connection.execute_batch(
+            "DROP INDEX IF EXISTS search_references_target;
+             DROP INDEX IF EXISTS search_references_file;
+             DROP TABLE IF EXISTS search_references;",
+        )?;
+    }
+    connection.execute_batch(
+        "CREATE TABLE IF NOT EXISTS search_reference_files (
+            id INTEGER PRIMARY KEY,
+            owner TEXT NOT NULL,
+            file TEXT NOT NULL,
+            source_module TEXT NOT NULL,
+            UNIQUE(owner, file)
+         );
+         CREATE TABLE IF NOT EXISTS search_references (
+            file_id INTEGER NOT NULL,
+            target TEXT NOT NULL,
+            line INTEGER NOT NULL,
+            context TEXT
+         );
+         CREATE INDEX IF NOT EXISTS search_references_target
+            ON search_references(target);
+         CREATE INDEX IF NOT EXISTS search_references_file
+            ON search_references(file_id);",
+    )?;
+    Ok(!normalized)
+}
+
 fn name_contains_candidates(
     connection: &Connection,
     tokens: &[String],
@@ -731,18 +782,6 @@ impl Searcher {
              );
              CREATE INDEX IF NOT EXISTS search_origins_origin
                 ON search_origins(owner, origin);
-             CREATE TABLE IF NOT EXISTS search_references (
-                owner TEXT NOT NULL,
-                file TEXT NOT NULL,
-                target TEXT NOT NULL,
-                source_module TEXT NOT NULL,
-                line INTEGER NOT NULL,
-                context TEXT
-             );
-             CREATE INDEX IF NOT EXISTS search_references_target
-                ON search_references(target);
-             CREATE INDEX IF NOT EXISTS search_references_file
-                ON search_references(owner, file);
              CREATE TABLE IF NOT EXISTS search_imports (
                 owner TEXT NOT NULL,
                 origin TEXT NOT NULL,
@@ -757,6 +796,9 @@ impl Searcher {
                 value INTEGER NOT NULL
              );",
         )?;
+        if migrate_reference_schema(&connection)? {
+            connection.execute("DELETE FROM search_files WHERE kind = 'ilean'", [])?;
+        }
         let version = connection
             .query_row(
                 "SELECT value FROM search_meta WHERE key = 'version'",
@@ -770,6 +812,7 @@ impl Searcher {
                  DELETE FROM search_fts;
                  DELETE FROM search_origins;
                  DELETE FROM search_references;
+                 DELETE FROM search_reference_files;
                  DELETE FROM search_imports;
                  DELETE FROM search_meta WHERE key = 'origins_mapped';",
             )?;
@@ -849,12 +892,50 @@ impl Searcher {
                     ON CONFLICT(key) DO UPDATE SET value = excluded.value;",
             )?;
         }
+        let active_workspaces = self
+            .state
+            .list_workspaces()?
+            .into_iter()
+            .flat_map(|workspace| {
+                [
+                    format!("workspace:{}", workspace.reference),
+                    format!("artifacts:{}", workspace.reference),
+                ]
+            })
+            .collect::<HashSet<_>>();
+        let mut statement = connection.prepare(
+            "SELECT owner FROM search_files
+             WHERE owner LIKE 'workspace:%' OR owner LIKE 'artifacts:%'
+             UNION
+             SELECT owner FROM search_reference_files
+             WHERE owner LIKE 'workspace:%' OR owner LIKE 'artifacts:%'",
+        )?;
+        let stale_owners = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .filter(|owner| !active_workspaces.contains(owner))
+            .collect::<Vec<_>>();
+        drop(statement);
+        for owner in stale_owners {
+            connection.execute(
+                "DELETE FROM search_references WHERE file_id IN (
+                    SELECT id FROM search_reference_files WHERE owner = ?1
+                 )",
+                [&owner],
+            )?;
+            connection.execute("DELETE FROM search_reference_files WHERE owner = ?1", [&owner])?;
+            connection.execute("DELETE FROM search_fts WHERE owner = ?1", [&owner])?;
+            connection.execute("DELETE FROM search_origins WHERE owner = ?1", [&owner])?;
+            connection.execute("DELETE FROM search_imports WHERE owner = ?1", [&owner])?;
+            connection.execute("DELETE FROM search_files WHERE owner = ?1", [&owner])?;
+        }
         Ok(())
     }
 
     fn open(&self) -> Result<Connection> {
         let connection = Connection::open(&self.repo.search_db_path)?;
-        connection.busy_timeout(std::time::Duration::from_secs(10))?;
+        connection.busy_timeout(std::time::Duration::from_secs(60))?;
         Ok(connection)
     }
 
@@ -1217,10 +1298,7 @@ impl Searcher {
                 let source_path = format!("{}.lean", module.replace('.', "/"));
                 let artifact = path.to_string_lossy();
                 delete_search_origin(&transaction, owner, artifact.as_ref())?;
-                transaction.execute(
-                    "DELETE FROM search_references WHERE owner = ?1 AND file = ?2",
-                    params![owner, artifact],
-                )?;
+                delete_search_references(&transaction, owner, artifact.as_ref())?;
                 if let Some(declarations) = value.get("decls").and_then(Value::as_object) {
                     let mut insert = transaction.prepare_cached(
                         "INSERT INTO search_fts(
@@ -1256,10 +1334,23 @@ impl Searcher {
                     }
                 }
                 if let Some(references) = value.get("references").and_then(Value::as_object) {
+                    transaction.execute(
+                        "INSERT INTO search_reference_files(owner, file, source_module)
+                         VALUES (?1, ?2, ?3)
+                         ON CONFLICT(owner, file) DO UPDATE SET
+                            source_module = excluded.source_module",
+                        params![owner, artifact, module],
+                    )?;
+                    let file_id = transaction.query_row(
+                        "SELECT id FROM search_reference_files
+                         WHERE owner = ?1 AND file = ?2",
+                        params![owner, artifact],
+                        |row| row.get::<_, i64>(0),
+                    )?;
                     let mut insert = transaction.prepare_cached(
                         "INSERT INTO search_references(
-                            owner, file, target, source_module, line, context
-                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                            file_id, target, line, context
+                         ) VALUES (?1, ?2, ?3, ?4)",
                     )?;
                     for (encoded, reference) in references {
                         let Some(target) = reference_name(encoded) else {
@@ -1274,8 +1365,7 @@ impl Searcher {
                             };
                             let line = parts.first().and_then(Value::as_u64).unwrap_or(0) + 1;
                             let context = parts.get(4).and_then(Value::as_str);
-                            insert
-                                .execute(params![owner, artifact, target, module, line, context])?;
+                            insert.execute(params![file_id, target, line, context])?;
                         }
                     }
                 }
@@ -1322,10 +1412,7 @@ impl Searcher {
                 params![owner, missing],
             )?;
             if kind == "ilean" {
-                connection.execute(
-                    "DELETE FROM search_references WHERE owner = ?1 AND file = ?2",
-                    params![owner, missing],
-                )?;
+                delete_search_references(&connection, owner, &missing)?;
             }
         }
         Ok(())
@@ -2509,8 +2596,10 @@ impl Searcher {
     ) -> Result<Vec<SearchUsage>> {
         let connection = self.open()?;
         let mut statement = connection.prepare(
-            "SELECT owner, source_module, line, context
-             FROM search_references WHERE target = ?1 LIMIT 100",
+            "SELECT files.owner, files.source_module, refs.line, refs.context
+             FROM search_references refs
+             JOIN search_reference_files files ON files.id = refs.file_id
+             WHERE refs.target = ?1 LIMIT 100",
         )?;
         let rows = statement.query_map([name], |row| {
             Ok((
