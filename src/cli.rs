@@ -32,6 +32,31 @@ LEAN
   sorry is tracked and allowed during development; extra axioms fail submission
   validation. Do not edit .lake or generated artifacts."#;
 
+const SEARCH_HELP: &str = r#"Search local Lean declarations, types, source, and goals.
+
+Query forms are inferred in this order:
+  cREF [TERMS]                  search a check diagnostic
+  qREF TERMS                    refine a stored search
+  qREF MORE                     show complete stored results
+  sREF [TERMS]                  search a submission
+
+  FILE:LINE[:COLUMN]            elaborate the goal at a position
+  FILE:LINE MORE                show larger bounded source context
+  FILE:tail                     show bounded end-of-file context
+  FILE:START-END                show an exact source range
+  FILE[:START-END] A|B          find literal source occurrences
+  FILE outline|declarations     list declarations, lines, and signatures
+
+  NAME                          exact declaration plus nearby API
+  KIND NAME [body|proof|source] declaration-directed lookup
+  NAME*                         declaration-name glob
+  STRUCTURE fields              complete field inventory
+  TYPE or WORDS                 type, name, concept, and source search
+  A|B                           alternatives with short-circuiting
+
+Lean forms such as #check, #print, #synth, and @NAME are accepted. Search is
+import-aware and stores complete results under the returned qREF."#;
+
 #[derive(Parser)]
 #[command(
     name = "mathmux",
@@ -75,18 +100,12 @@ enum TopCommand {
         profile: bool,
     },
     /// Search local Lean declarations, types, source, and goals.
-    ///
-    /// Query forms are inferred. FILE:LINE[:COLUMN] searches the goal at that
-    /// position, while FILE:tail shows bounded source context at the end of a file.
-    /// A check reference searches its diagnostic context; a search reference plus
-    /// more terms refines that search. Exact declarations include their nearby API.
-    /// Every other query combines declaration, type, and source search. Full results
-    /// and references are stored under the returned reference.
+    #[command(long_about = SEARCH_HELP)]
     Search {
-        /// Terms, a type, FILE:LINE, cREF, or qREF followed by refinements.
+        /// One inferred query; see the forms above.
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
-        /// Return complete stored results instead of the compact preview.
+        /// Return complete results for this query instead of the compact preview.
         #[arg(long)]
         all: bool,
     },
@@ -555,5 +574,24 @@ mod tests {
         };
         assert_eq!(query, ["LinearEquiv.ofFinrankEq"]);
         assert!(all);
+    }
+
+    #[test]
+    fn search_help_lists_inferred_query_forms() {
+        let mut command = command_line(false);
+        let help = command
+            .find_subcommand_mut("search")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        for form in [
+            "cREF [TERMS]",
+            "FILE:LINE[:COLUMN]",
+            "FILE outline|declarations",
+            "STRUCTURE fields",
+            "A|B",
+        ] {
+            assert!(help.contains(form), "missing search form {form}");
+        }
     }
 }
