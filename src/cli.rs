@@ -16,9 +16,10 @@ use crate::protocol::{Command, Request, Response};
 use crate::repo::Repo;
 
 const WORKFLOW_HELP: &str = r#"AGENT RULES
-  Assigned workspace only; never enter managed main or another workspace.
+  Workspace is preassigned; do not run ws or enter main/another workspace.
   Use mathmux, never git, lean, lake build, or equivalent commands directly.
-  Search first; edit -> check FILE -> check -> submit. Use sync to update.
+  Search first; edit -> check -> submit. Use check FILE only to isolate one of
+  several dirty Lean files. Use sync to update.
   Use show REF for stored detail; do not rerun a command only for more output.
   Use Lean modules with explicit narrow imports and aligned module/namespace/path.
   Keep public imports to module API; split unrelated files with costly elaboration.
@@ -69,9 +70,10 @@ struct Args {
 
 #[derive(Subcommand)]
 enum TopCommand {
-    /// Create, list, or delete managed workspaces.
+    /// Manage workspaces (operator only).
     ///
-    /// Work only in the assigned workspace; mathmux owns its branch, worktree, and main.
+    /// Creates, lists, or deletes managed worktrees. Proving agents already have an
+    /// assigned workspace and should not use this command.
     Ws {
         #[command(subcommand)]
         command: WsCommand,
@@ -80,16 +82,16 @@ enum TopCommand {
     ///
     /// Reports agents, Lean size and growth, throughput, tool use, and validation.
     Status {
-        /// Emit a schema-valid formalization.yaml v0.4 publication draft.
+        /// Emit publication metadata as formalization.yaml v0.4.
         #[arg(long)]
         formalization_yaml: bool,
     },
-    /// Check one Lean file, or certify all dirty Lean files.
+    /// Check all dirty Lean files, or restrict to one file.
     ///
-    /// FILE checks that file and its source dependencies. No FILE checks every dirty
-    /// Lean file. Stops at the first error; full diagnostics are stored under cREF.
+    /// No FILE is the normal form and checks every dirty Lean file. Use FILE only to
+    /// isolate one of several dirty files. Stops at the first error and returns cREF.
     Check {
-        /// Lean file; omit to certify all dirty Lean files.
+        /// Restrict checking to this Lean file and its source dependencies.
         file: Option<PathBuf>,
         /// Show dependency, cache, setup, and elaboration timings.
         #[arg(long)]
