@@ -2,11 +2,38 @@ use std::collections::HashSet;
 
 use anyhow::{Result, bail};
 
-use super::{CheckRun, Diagnostic, SearchRun, Submission};
+use super::{CheckProfile, CheckRun, Diagnostic, SearchRun, Submission};
 use crate::util::{
     SOURCE_PREVIEW_LINES, format_duration, query_requests_proof_body, short_hash, single_line,
     truncate_line,
 };
+
+impl CheckProfile {
+    pub fn render(&self) -> String {
+        let mut output = format!("profile:\n  planning {}ms", self.planning_ms);
+        for file in self.files.iter().take(32) {
+            let reuse = file
+                .reused_prefix_lines
+                .map(|lines| format!(", reused {lines} lines"))
+                .unwrap_or_default();
+            output.push_str(&format!(
+                "\n  {} {} {}ms (dependencies {}ms, cache {}ms, setup {}ms, elaborate {}ms{})",
+                file.target,
+                file.mode,
+                file.total_ms,
+                file.dependencies_ms,
+                file.cache_ms,
+                file.setup_ms,
+                file.elaborate_ms,
+                reuse,
+            ));
+        }
+        if self.files.len() > 32 {
+            output.push_str(&format!("\n  +{} files", self.files.len() - 32));
+        }
+        output
+    }
+}
 
 pub(super) fn render_search_run(run: &SearchRun, all: bool) -> String {
     let mut output = format!("{}\nquery: {}", run.reference, run.query);

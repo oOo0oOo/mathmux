@@ -1,0 +1,118 @@
+import Lean.Language.Lean
+import Lean.Setup
+
+open Lean Lean.Elab
+
+structure Request where
+  source : String
+  version : Nat
+deriving FromJson
+
+structure Diagnostic where
+  severity : String
+  kind : String
+  text : String
+deriving ToJson
+
+structure Response where
+  ok : Bool
+  diagnostics : Array Diagnostic
+  version : Nat
+deriving ToJson
+
+def setupImports (setup : ModuleSetup) (stx : HeaderSyntax) :
+    Language.ProcessingT IO
+      (Except Language.Lean.HeaderProcessedSnapshot Language.Lean.SetupImportsResult) := do
+  let header := stx.toModuleHeader
+  return .ok {
+    mainModuleName := setup.name
+    isModule := setup.isModule || header.isModule
+    imports := setup.imports?.getD header.imports
+    opts := Elab.async.setIfNotSet setup.options.toOptions true
+    importArts := setup.importArts
+    plugins := setup.plugins
+  }
+
+partial def collectTree (tree : Language.SnapshotTree) : BaseIO MessageLog := do
+  let mut messages := tree.element.diagnostics.msgLog
+  for child in tree.children do
+    messages := messages ++ (← collectTree child.get)
+  return messages
+
+partial def firstErrorOrFinal (task : Language.SnapshotTask Language.Lean.CommandParsedSnapshot) :
+    BaseIO (Bool × MessageLog) := do
+  let command := task.get
+  let result := command.elabSnap.resultSnap.get
+  if result.cmdState.messages.hasErrors then
+    command.elabSnap.elabSnap.cancelRec
+    command.elabSnap.infoTreeSnap.cancelRec
+    command.elabSnap.reportSnap.cancelRec
+    if let some next := command.nextCmdSnap? then next.cancelRec
+    return (true, result.cmdState.messages)
+  if let some next := command.nextCmdSnap? then
+    firstErrorOrFinal next
+  else
+    return (false, result.cmdState.messages)
+
+def renderMessages (messages : MessageLog) : BaseIO (Array Diagnostic) := do
+  let mut output := #[]
+  for message in messages.reportedPlusUnreported do
+    output := output.push {
+      severity := message.severity.toString
+      kind := message.kind.toString
+      text := ← message.toString
+    }
+  return output
+
+def failureResponse (detail : String) (version : Nat) : Response :=
+  { ok := false,
+    diagnostics := #[{ severity := "error", kind := "mathmux", text := detail }],
+    version := version }
+
+def processSnapshot (snapshot : Language.Lean.InitialSnapshot) (version : Nat) : BaseIO Response := do
+  let some header := snapshot.result? | return ← failureWithDiagnostics snapshot "header parsing failed" version
+  let processed := header.processedSnap.get
+  let some processed := processed.result? | return ← failureWithDiagnostics snapshot "import processing failed" version
+  let (failed, commandMessages) ← firstErrorOrFinal processed.firstCmdSnap
+  let messages ← if failed then pure commandMessages else collectTree (Language.toSnapshotTree snapshot)
+  let diagnostics ← renderMessages messages
+  return { ok := !messages.hasErrors, diagnostics, version := version }
+
+where
+  failureWithDiagnostics (snapshot : Language.Lean.InitialSnapshot) (detail : String)
+      (version : Nat) : BaseIO Response := do
+    let messages ← collectTree (Language.toSnapshotTree snapshot)
+    let diagnostics ← renderMessages messages
+    if diagnostics.isEmpty then
+      return failureResponse detail version
+    return { ok := false, diagnostics, version := version }
+
+def writeResponse (response : Response) : IO Unit := do
+  let stdout ← IO.getStdout
+  stdout.putStrLn (toJson response).compress
+  stdout.flush
+
+unsafe def runServer (setup : ModuleSetup) : IO Unit := do
+  enableInitializersExecution
+  setup.dynlibs.forM loadDynlib
+  let processor ← Language.mkIncrementalProcessor (Language.Lean.process (setupImports setup))
+  let stdin ← IO.getStdin
+  let rec loop : IO Unit := do
+    let line ← stdin.getLine
+    if line.isEmpty then return
+    if line.trimAscii.isEmpty then loop else
+    match Json.parse line >>= fromJson? with
+    | .error error =>
+      writeResponse (failureResponse error 0)
+      loop
+    | .ok (request : Request) =>
+      let snapshot ← processor (Parser.mkInputContext request.source setup.name.toString)
+      writeResponse (← processSnapshot snapshot request.version)
+      loop
+  loop
+
+unsafe def main (args : List String) : IO UInt32 := do
+  initSearchPath (← findSysroot)
+  match args with
+  | [setupPath] => runServer (← ModuleSetup.load setupPath); return 0
+  | _ => IO.eprintln "usage: MathmuxWorker SETUP_JSON"; return 2

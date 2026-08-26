@@ -20,125 +20,7 @@ use crate::state::{
 };
 use crate::util::{hash_bytes, hash_file, now_unix_ms};
 
-const WORKER_SOURCE: &str = r#"import Lean.Language.Lean
-import Lean.Setup
-
-open Lean Lean.Elab
-
-structure Request where
-  source : String
-  version : Nat
-deriving FromJson
-
-structure Diagnostic where
-  severity : String
-  kind : String
-  text : String
-deriving ToJson
-
-structure Response where
-  ok : Bool
-  diagnostics : Array Diagnostic
-  version : Nat
-deriving ToJson
-
-def setupImports (setup : ModuleSetup) (stx : HeaderSyntax) :
-    Language.ProcessingT IO
-      (Except Language.Lean.HeaderProcessedSnapshot Language.Lean.SetupImportsResult) := do
-  let header := stx.toModuleHeader
-  return .ok {
-    mainModuleName := setup.name
-    isModule := setup.isModule || header.isModule
-    imports := setup.imports?.getD header.imports
-    opts := Elab.async.setIfNotSet setup.options.toOptions true
-    importArts := setup.importArts
-    plugins := setup.plugins
-  }
-
-partial def collectTree (tree : Language.SnapshotTree) : BaseIO MessageLog := do
-  let mut messages := tree.element.diagnostics.msgLog
-  for child in tree.children do
-    messages := messages ++ (← collectTree child.get)
-  return messages
-
-partial def firstErrorOrFinal (task : Language.SnapshotTask Language.Lean.CommandParsedSnapshot) :
-    BaseIO (Bool × MessageLog) := do
-  let command := task.get
-  let result := command.elabSnap.resultSnap.get
-  if result.cmdState.messages.hasErrors then
-    command.elabSnap.elabSnap.cancelRec
-    command.elabSnap.infoTreeSnap.cancelRec
-    command.elabSnap.reportSnap.cancelRec
-    if let some next := command.nextCmdSnap? then next.cancelRec
-    return (true, result.cmdState.messages)
-  if let some next := command.nextCmdSnap? then
-    firstErrorOrFinal next
-  else
-    return (false, result.cmdState.messages)
-
-def renderMessages (messages : MessageLog) : BaseIO (Array Diagnostic) := do
-  let mut output := #[]
-  for message in messages.reportedPlusUnreported do
-    output := output.push {
-      severity := message.severity.toString
-      kind := message.kind.toString
-      text := ← message.toString
-    }
-  return output
-
-def failureResponse (detail : String) (version : Nat) : Response :=
-  { ok := false,
-    diagnostics := #[{ severity := "error", kind := "mathmux", text := detail }],
-    version := version }
-
-def processSnapshot (snapshot : Language.Lean.InitialSnapshot) (version : Nat) : BaseIO Response := do
-  let some header := snapshot.result? | return ← failureWithDiagnostics snapshot "header parsing failed" version
-  let processed := header.processedSnap.get
-  let some processed := processed.result? | return ← failureWithDiagnostics snapshot "import processing failed" version
-  let (failed, commandMessages) ← firstErrorOrFinal processed.firstCmdSnap
-  let messages ← if failed then pure commandMessages else collectTree (Language.toSnapshotTree snapshot)
-  let diagnostics ← renderMessages messages
-  return { ok := !messages.hasErrors, diagnostics, version := version }
-
-where
-  failureWithDiagnostics (snapshot : Language.Lean.InitialSnapshot) (detail : String)
-      (version : Nat) : BaseIO Response := do
-    let messages ← collectTree (Language.toSnapshotTree snapshot)
-    let diagnostics ← renderMessages messages
-    if diagnostics.isEmpty then
-      return failureResponse detail version
-    return { ok := false, diagnostics, version := version }
-
-def writeResponse (response : Response) : IO Unit := do
-  let stdout ← IO.getStdout
-  stdout.putStrLn (toJson response).compress
-  stdout.flush
-
-unsafe def runServer (setup : ModuleSetup) : IO Unit := do
-  enableInitializersExecution
-  setup.dynlibs.forM loadDynlib
-  let processor ← Language.mkIncrementalProcessor (Language.Lean.process (setupImports setup))
-  let stdin ← IO.getStdin
-  let rec loop : IO Unit := do
-    let line ← stdin.getLine
-    if line.isEmpty then return
-    if line.trimAscii.isEmpty then loop else
-    match Json.parse line >>= fromJson? with
-    | .error error =>
-      writeResponse (failureResponse error 0)
-      loop
-    | .ok (request : Request) =>
-      let snapshot ← processor (Parser.mkInputContext request.source setup.name.toString)
-      writeResponse (← processSnapshot snapshot request.version)
-      loop
-  loop
-
-unsafe def main (args : List String) : IO UInt32 := do
-  initSearchPath (← findSysroot)
-  match args with
-  | [setupPath] => runServer (← ModuleSetup.load setupPath); return 0
-  | _ => IO.eprintln "usage: MathmuxWorker SETUP_JSON"; return 2
-"#;
+const WORKER_SOURCE: &str = include_str!("MathmuxWorker.lean");
 const CHECK_RESULT_VERSION: &[u8] = b"check-result-v2";
 
 #[derive(Debug, Clone)]
@@ -194,10 +76,6 @@ struct FileCheck {
 #[derive(Debug, Deserialize)]
 struct LakeSetup {
     name: String,
-}
-
-struct FileSetup {
-    path: PathBuf,
 }
 
 type WorkerKey = (String, PathBuf);
@@ -727,10 +605,10 @@ impl Checker {
             Some(path) => path,
             None if setup_is_current(&persisted_setup, &setup_input) => persisted_setup,
             None => {
-                let setup =
+                let path =
                     self.prepare_setup(workspace, target, &setup_input, !dependencies.is_empty())?;
                 environment = self.worker_environment_from_base(workspace, target, &setup_input)?;
-                setup.path
+                path
             }
         };
         Ok((setup_path, environment))
@@ -815,7 +693,7 @@ impl Checker {
         target: &Path,
         input_fingerprint: &str,
         has_project_dependencies: bool,
-    ) -> Result<FileSetup> {
+    ) -> Result<PathBuf> {
         let build_lock = has_project_dependencies.then(|| {
             let mut locks = self.setup_locks.lock().expect("setup lock map poisoned");
             locks.retain(|_, lock| lock.strong_count() > 0);
@@ -834,7 +712,7 @@ impl Checker {
             .map(|lock| lock.lock().expect("dependency build lock poisoned"));
         let path = self.setup_path(workspace, target);
         if setup_is_current(&path, input_fingerprint) {
-            return Ok(FileSetup { path });
+            return Ok(path);
         }
         let output = lake_command(&self.repo, &workspace.path)
             .arg("setup-file")
@@ -864,7 +742,7 @@ impl Checker {
         fs::create_dir_all(&directory)?;
         fs::write(&path, &output.stdout)?;
         fs::write(setup_fingerprint_path(&path), input_fingerprint)?;
-        Ok(FileSetup { path })
+        Ok(path)
     }
 
     fn setup_path(&self, workspace: &Workspace, target: &Path) -> PathBuf {
@@ -878,14 +756,7 @@ impl Checker {
             ))
     }
 
-    pub fn invalidate_workspace(&self, workspace_ref: &str) {
-        self.workers
-            .lock()
-            .expect("worker map poisoned")
-            .retain(|(reference, _), _| reference != workspace_ref);
-    }
-
-    pub fn evict_worker(&self, workspace_ref: &str) {
+    pub fn evict_workspace_workers(&self, workspace_ref: &str) {
         self.workers
             .lock()
             .expect("worker map poisoned")
@@ -894,7 +765,7 @@ impl Checker {
 
     pub fn handle_filesystem_change(&self, workspace: &Workspace, path: &Path) {
         let Ok(relative) = path.strip_prefix(&workspace.path) else {
-            self.evict_worker(&workspace.reference);
+            self.evict_workspace_workers(&workspace.reference);
             return;
         };
         self.workers

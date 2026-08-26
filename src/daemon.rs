@@ -220,7 +220,7 @@ impl Service {
                     .workspace_named(&name)?
                     .with_context(|| format!("unknown workspace {name}"))?;
                 self.watcher.unwatch(&workspace.path);
-                self.checker.evict_worker(&workspace.reference);
+                self.checker.evict_workspace_workers(&workspace.reference);
                 git::delete_workspace(&self.repo, &self.state, &name)?;
                 Ok(format!("{} deleted", workspace.reference))
             }
@@ -246,7 +246,7 @@ impl Service {
                 let _guard = self.mutations.lock().expect("mutation lock poisoned");
                 let workspace = self.state.workspace_for_path(&cwd)?;
                 let result = git::sync(&self.repo, &workspace)?;
-                self.checker.invalidate_workspace(&workspace.reference);
+                self.checker.evict_workspace_workers(&workspace.reference);
                 let status = if result.clean { "clean" } else { "conflict" };
                 let reference =
                     self.state

@@ -98,33 +98,6 @@ pub struct SubmissionInterval {
     pub previous_created_at: i64,
 }
 
-impl CheckProfile {
-    pub fn render(&self) -> String {
-        let mut output = format!("profile:\n  planning {}ms", self.planning_ms);
-        for file in self.files.iter().take(32) {
-            let reuse = file
-                .reused_prefix_lines
-                .map(|lines| format!(", reused {lines} lines"))
-                .unwrap_or_default();
-            output.push_str(&format!(
-                "\n  {} {} {}ms (dependencies {}ms, cache {}ms, setup {}ms, elaborate {}ms{})",
-                file.target,
-                file.mode,
-                file.total_ms,
-                file.dependencies_ms,
-                file.cache_ms,
-                file.setup_ms,
-                file.elaborate_ms,
-                reuse,
-            ));
-        }
-        if self.files.len() > 32 {
-            output.push_str(&format!("\n  +{} files", self.files.len() - 32));
-        }
-        output
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Submission {
     pub reference: String,
