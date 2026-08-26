@@ -3589,6 +3589,9 @@ fn fallback_source_hits(
         .map(str::to_lowercase)
         .filter(|term| term.len() >= 3 && !generic.contains(&term.as_str()))
         .collect::<Vec<_>>();
+    if let Some(symbolic) = symbolic_source_term(query) {
+        terms.push(symbolic);
+    }
     let named_argument_terms = named_argument_terms(query);
     terms.extend(named_argument_terms.iter().cloned());
     let generated_suffixes = ["_symm_apply", "_apply"];
@@ -3871,6 +3874,15 @@ fn fallback_source_hits(
     promote_query_coverage(&mut ranked, query_tokens);
     ranked.truncate(RESULT_LIMIT);
     Ok(ranked)
+}
+
+fn symbolic_source_term(query: &str) -> Option<String> {
+    let query = query.trim();
+    (!query.is_empty()
+        && !query.chars().any(char::is_whitespace)
+        && (query.chars().count() > 1 || !query.is_ascii())
+        && query.chars().any(|character| !character.is_alphanumeric()))
+    .then(|| query.to_lowercase())
 }
 
 fn named_argument_terms(query: &str) -> Vec<String> {
@@ -4543,6 +4555,11 @@ end Demo
             Some("q4246")
         );
         assert_eq!(more_search_reference("q4246 comp"), None);
+        assert_eq!(symbolic_source_term("*ᵥ"), Some("*ᵥ".to_owned()));
+        assert_eq!(symbolic_source_term("≤"), Some("≤".to_owned()));
+        assert_eq!(symbolic_source_term("*"), None);
+        assert_eq!(symbolic_source_term("ordinary"), None);
+        assert_eq!(symbolic_source_term("A *ᵥ x"), None);
         assert!(declaration_glob_query("FiberBundle.*equiv"));
         assert!(declaration_glob_matches(
             "Demo.FiberBundle.local_equiv",
