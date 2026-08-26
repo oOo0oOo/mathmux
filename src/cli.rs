@@ -97,7 +97,8 @@ enum TopCommand {
     /// Check all dirty Lean files, or restrict to one file.
     ///
     /// No FILE is the normal form and checks every dirty Lean file. Use FILE only to
-    /// isolate one of several dirty files. Stops at the first error and returns cREF.
+    /// isolate one of several dirty files. Stops at the first failing file and returns
+    /// cREF. Keep a running check open; reruns only queue a duplicate.
     Check {
         /// Restrict checking to this Lean file and its source dependencies.
         file: Option<PathBuf>,
