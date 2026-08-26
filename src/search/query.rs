@@ -1052,9 +1052,15 @@ pub(super) fn promote_query_coverage(ranked: &mut Vec<RankedHit>, tokens: &[Stri
             !matches!(candidate.hit.kind.as_str(), "file" | "imports")
                 || matches!(token.as_str(), "import" | "imports")
         };
-        let exact_leaf = remaining.iter().position(|candidate| {
-            eligible(candidate) && qualified_name_matches(&candidate.hit.name, token)
-        });
+        let exact_leaves = remaining
+            .iter()
+            .enumerate()
+            .filter(|(_, candidate)| {
+                eligible(candidate) && qualified_name_matches(&candidate.hit.name, token)
+            })
+            .map(|(position, _)| position)
+            .collect::<Vec<_>>();
+        let exact_leaf = (exact_leaves.len() == 1).then(|| exact_leaves[0]);
         if let Some(position) = exact_leaf.or_else(|| {
             remaining
                 .iter()
@@ -1063,12 +1069,20 @@ pub(super) fn promote_query_coverage(ranked: &mut Vec<RankedHit>, tokens: &[Stri
                     eligible(candidate) && hit_name_matches(&candidate.hit.name, token)
                 })
                 .max_by_key(|(_, candidate)| {
-                    candidate
-                        .hit
-                        .name
-                        .split(['.', '_'])
-                        .filter(|segment| tokens.iter().any(|facet| words_match(segment, facet)))
-                        .count()
+                    let facets = tokens
+                        .iter()
+                        .filter(|facet| hit_name_matches(&candidate.hit.name, facet))
+                        .count();
+                    let bridges = tokens
+                        .iter()
+                        .filter(|facet| {
+                            hit_name_matches(&candidate.hit.name, facet)
+                                && promoted.iter().any(|prior| {
+                                    hit_name_matches(&prior.hit.name, facet)
+                                })
+                        })
+                        .count();
+                    (facets, bridges)
                 })
                 .map(|(position, _)| position)
         })
