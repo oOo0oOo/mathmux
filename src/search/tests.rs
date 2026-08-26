@@ -721,6 +721,19 @@ fn explicit_body_query_keeps_alternatives_compact() {
     assert!(summary.contains("Demo.proof : True"));
     assert!(summary.contains("Other.proof : True"));
     assert!(!summary.contains("alternative body"));
+
+    let related = render_summary(&SearchRun {
+        reference: "q-related".into(),
+        workspace_ref: "w1".into(),
+        query: "Demo.missingProof".into(),
+        inference: "hybrid".into(),
+        hits: vec![hit("Demo.closestProof", "unrelated proof body")],
+        note: Some("related results (no exact match)".into()),
+        duration_ms: 1,
+        created_at: 0,
+    });
+    assert!(related.contains("Demo.closestProof : True"));
+    assert!(!related.contains("unrelated proof body"));
 }
 
 #[test]

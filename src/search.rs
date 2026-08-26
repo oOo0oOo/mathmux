@@ -2920,6 +2920,10 @@ fn git_file_at(root: &Path, commit: &str, path: &str) -> Result<Option<String>> 
 fn render_summary(run: &SearchRun) -> String {
     let mut output = run.reference.clone();
     let proof_body_requested = query_requests_proof_body(&run.query);
+    let related_results = run
+        .note
+        .as_deref()
+        .is_some_and(|note| note.contains("related results"));
     if run.hits.is_empty() {
         output.push_str(" no results");
     }
@@ -2927,14 +2931,15 @@ fn render_summary(run: &SearchRun) -> String {
         output.push('\n');
         output.push_str(&hit.name);
         let displayed_source = hit.source.as_deref().filter(|_| {
-            index == 0
+            !related_results
+                && (index == 0
                 || (!proof_body_requested
                     && (declaration_leaf_matches(&hit.name, &run.query)
                         || (index < 3
                             && matches!(
                                 hit.kind.as_str(),
                                 "class" | "inductive" | "structure"
-                            ))))
+                            )))))
         });
         if let Some(signature) = &hit.signature
             && !displayed_source
