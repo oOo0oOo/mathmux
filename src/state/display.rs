@@ -37,6 +37,7 @@ impl CheckProfile {
 
 pub(super) fn render_search_run(run: &SearchRun, all: bool) -> String {
     let mut output = format!("{}\nquery: {}", run.reference, run.query);
+    let mut shown_ambient_contexts = HashSet::new();
     if let Some(note) = &run.note {
         output.push_str(&format!("\n{note}"));
     }
@@ -75,6 +76,7 @@ pub(super) fn render_search_run(run: &SearchRun, all: bool) -> String {
                 }
             }
             if index < 3 && let Some(source) = &hit.source {
+                let source = without_repeated_ambient_context(source, &mut shown_ambient_contexts);
                 if !matches!(hit.kind.as_str(), "fields" | "location") {
                     output.push_str("\n   source:");
                 }
@@ -108,6 +110,17 @@ pub(super) fn render_search_run(run: &SearchRun, all: bool) -> String {
         ));
     }
     output
+}
+
+fn without_repeated_ambient_context<'a>(source: &'a str, shown: &mut HashSet<String>) -> &'a str {
+    let Some((ambient, declaration)) = source.split_once("\n\n") else {
+        return source;
+    };
+    if !ambient.starts_with("-- ambient context") || shown.insert(ambient.to_owned()) {
+        source
+    } else {
+        declaration
+    }
 }
 
 pub(super) fn validate_reference(reference: &str) -> Result<char> {

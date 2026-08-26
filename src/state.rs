@@ -1138,6 +1138,42 @@ mod tests {
     }
 
     #[test]
+    fn expanded_search_deduplicates_identical_ambient_context() {
+        let hit = |name: &str, body: &str| SearchHit {
+            name: name.into(),
+            kind: "theorem".into(),
+            signature: Some("True".into()),
+            module: "Demo".into(),
+            path: "Demo.lean".into(),
+            line: 1,
+            doc: None,
+            source: Some(format!(
+                "-- ambient context\nvariable {{α : Type*}}\n\n{body}"
+            )),
+            usages: Vec::new(),
+            applicable: false,
+            required_import: None,
+        };
+        let run = SearchRun {
+            reference: "q1".into(),
+            workspace_ref: "w1".into(),
+            query: "Demo".into(),
+            inference: "hybrid".into(),
+            hits: vec![
+                hit("Demo.first", "theorem first : True"),
+                hit("Demo.second", "theorem second : True"),
+            ],
+            note: None,
+            duration_ms: 0,
+            created_at: 0,
+        };
+        let rendered = render_search_run(&run, true);
+        assert_eq!(rendered.matches("-- ambient context").count(), 1);
+        assert!(rendered.contains("theorem first : True"));
+        assert!(rendered.contains("theorem second : True"));
+    }
+
+    #[test]
     fn passed_validation_summarizes_build_warnings_by_default() {
         let submission = Submission {
             reference: "s1".into(),
