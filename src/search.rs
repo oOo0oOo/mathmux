@@ -41,6 +41,7 @@ pub struct Searcher {
     state: State,
     checker: Arc<Checker>,
     index_lock: Mutex<()>,
+    last_refresh: Mutex<HashMap<String, Instant>>,
     base_lock: Arc<Mutex<()>>,
     loogle: Mutex<LoogleState>,
     base: Mutex<HashMap<String, BaseState>>,
@@ -150,6 +151,7 @@ impl Searcher {
             state,
             checker,
             index_lock: Mutex::new(()),
+            last_refresh: Mutex::new(HashMap::new()),
             base_lock: Arc::new(Mutex::new(())),
             loogle: Mutex::new(LoogleState::Empty),
             base: Mutex::new(HashMap::new()),
@@ -527,7 +529,13 @@ impl Searcher {
         if project_artifacts.is_dir() {
             scopes.insert(format!("artifacts:{}", workspace.reference));
         }
-        if let Ok(_base_guard) = self.base_lock.try_lock() {
+        let refresh_due = self
+            .last_refresh
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&workspace.reference)
+            .is_none_or(|last| last.elapsed() >= std::time::Duration::from_millis(500));
+        if refresh_due && let Ok(_base_guard) = self.base_lock.try_lock() {
             match search_index_writer_lock(&self.repo) {
                 Ok(_process_guard) => {
                     for root in &roots {
@@ -547,6 +555,10 @@ impl Searcher {
                             );
                         }
                     }
+                    self.last_refresh
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(workspace.reference.clone(), Instant::now());
                 }
                 Err(error) => {
                     append_log(
