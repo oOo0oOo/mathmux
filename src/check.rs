@@ -24,6 +24,7 @@ use crate::util::{hash_bytes, hash_file, now_unix_ms};
 const WORKER_SOURCE: &str = include_str!("MathmuxWorker.lean");
 const CHECK_RESULT_VERSION: &[u8] = b"check-result-v2";
 const CHECK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const SLOW_CHECK_PROFILE_MS: u64 = 5_000;
 
 #[derive(Debug)]
 struct CheckTimeout(Duration);
@@ -207,6 +208,11 @@ impl Checker {
             .and_then(|target| files.iter().position(|file| file == target))
             .map(|index| files[index + 1..].to_vec())
             .unwrap_or_default();
+        let profile = CheckProfile {
+            planning_ms,
+            files: file_profiles,
+        };
+        let displayed_profile = include_profile.then(|| profile.clone());
         let run = CheckRun {
             reference: reference.clone(),
             workspace_ref: workspace.reference.clone(),
@@ -219,10 +225,7 @@ impl Checker {
             linters: linters.clone(),
             suggestions: suggestions.clone(),
             diagnostics: diagnostics.clone(),
-            profile: include_profile.then_some(CheckProfile {
-                planning_ms,
-                files: file_profiles,
-            }),
+            profile: (include_profile || elapsed_ms >= SLOW_CHECK_PROFILE_MS).then_some(profile),
             duration_ms: elapsed_ms,
             created_at: now_unix_ms(),
         };
@@ -238,7 +241,7 @@ impl Checker {
             linters,
             suggestions,
             diagnostics,
-            profile: run.profile,
+            profile: displayed_profile,
             repetition,
         })
     }
