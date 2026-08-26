@@ -279,33 +279,34 @@ impl Checker {
         let Some(primary) = current.diagnostics.first() else {
             return Ok(None);
         };
-        let primary_fingerprint = diagnostic_fingerprint(&primary.text);
-        let mut fingerprints = vec![primary_fingerprint];
+        let primary_fingerprint = repetition_fingerprint(primary);
+        let mut fingerprints = vec![(primary_fingerprint, primary.text.contains("deterministic timeout"))];
         fingerprints.extend(
             current
                 .diagnostics
                 .iter()
                 .skip(1)
-                .map(|diagnostic| diagnostic_fingerprint(&diagnostic.text))
-                .filter(|fingerprint| fingerprint.contains("deterministic timeout")),
+                .filter(|diagnostic| diagnostic.text.contains("deterministic timeout"))
+                .map(|diagnostic| (repetition_fingerprint(diagnostic), true)),
         );
-        fingerprints.retain(|fingerprint| !fingerprint.is_empty());
-        fingerprints.dedup();
+        fingerprints.retain(|(fingerprint, _)| !fingerprint.is_empty());
+        let mut seen = HashSet::new();
+        fingerprints.retain(|(fingerprint, _)| seen.insert(fingerprint.clone()));
 
         let recent = self
             .state
             .recent_failed_checks(&current.workspace_ref, 64)?;
-        let Some((fingerprint, matches)) = fingerprints.into_iter().find_map(|fingerprint| {
+        let Some((deterministic_timeout, matches)) = fingerprints.into_iter().find_map(|(fingerprint, timeout)| {
             let matches = recent
                 .iter()
                 .filter(|run| run.failed.as_deref() == Some(target))
                 .filter(|run| {
                     run.diagnostics.iter().any(|diagnostic| {
-                        diagnostic_fingerprint(&diagnostic.text) == fingerprint
+                        repetition_fingerprint(diagnostic) == fingerprint
                     })
                 })
                 .collect::<Vec<_>>();
-            (matches.len() >= 3).then_some((fingerprint, matches))
+            (matches.len() >= 3).then_some((timeout, matches))
         }) else {
             return Ok(None);
         };
@@ -320,7 +321,7 @@ impl Checker {
                 .find(|run| run.reference != current.reference)
                 .map(|run| run.reference.clone())
                 .unwrap_or_else(|| current.reference.clone()),
-            deterministic_timeout: fingerprint.contains("deterministic timeout"),
+            deterministic_timeout,
         }))
     }
 
@@ -1640,6 +1641,23 @@ fn diagnostic_fingerprint(diagnostic: &str) -> String {
     without_daggers.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn repetition_fingerprint(diagnostic: &Diagnostic) -> String {
+    let mut fingerprint = diagnostic_fingerprint(&diagnostic.text);
+    if let Some(source) = diagnostic.context.as_deref().and_then(|context| {
+        context.lines().find_map(|line| {
+            line.trim_start()
+                .strip_prefix('>')?
+                .split_once('|')
+                .map(|(_, source)| source.split_whitespace().collect::<Vec<_>>().join(" "))
+        })
+    }) && !source.is_empty()
+    {
+        fingerprint.push_str(" | ");
+        fingerprint.push_str(&source);
+    }
+    fingerprint
+}
+
 fn invalidates_worker(root: &Path, path: &Path, target: &Path) -> bool {
     let other_lean_file = path
         .components()
@@ -2337,6 +2355,19 @@ noncomputable def second : Nat := 2
             diagnostic_fingerprint(
                 "Demo.Proof:30:9: error: Type mismatch\n ?m.42 x✝² has type A"
             )
+        );
+        let at = |line, source| Diagnostic {
+            kind: "error".into(),
+            text: format!("Demo.Proof:{line}:1: error: `simp` made no progress"),
+            context: Some(format!("> {line} | {source}")),
+        };
+        assert_eq!(
+            repetition_fingerprint(&at(3, "simp [first]")),
+            repetition_fingerprint(&at(30, "simp [first]"))
+        );
+        assert_ne!(
+            repetition_fingerprint(&at(3, "simp [first]")),
+            repetition_fingerprint(&at(3, "simp [second]"))
         );
         let ordinary = WorkerDiagnostic {
             severity: "warning".into(),
