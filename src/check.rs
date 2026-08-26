@@ -695,7 +695,9 @@ impl Checker {
             )),
             Err(error) => {
                 let timed_out = error.downcast_ref::<CheckTimeout>().is_some();
-                self.record_worker_failure(&format!("request: {error:#}"));
+                if !(timed_out && matches!(run, WorkerRun::Probe(_))) {
+                    self.record_worker_failure(&format!("request: {error:#}"));
+                }
                 drop(worker_guard);
                 self.remove_worker(&key, &worker);
                 if timed_out {
