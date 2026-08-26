@@ -183,7 +183,7 @@ impl Searcher {
             return self.state.show(reference, true);
         }
         let query = self.expand_reference_query(query.trim())?;
-        let query = query.trim();
+        let query = strip_trailing_more(&query);
         ensure!(!query.is_empty(), "search query is empty");
         let reference = self.state.next_ref('q')?;
         let started = Instant::now();
@@ -1943,6 +1943,18 @@ fn more_search_reference(query: &str) -> Option<&str> {
             .strip_prefix('q')
             .is_some_and(|digits| !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())))
     .then_some(reference)
+}
+
+fn strip_trailing_more(query: &str) -> &str {
+    let query = query.trim();
+    let Some((prefix, modifier)) = query.rsplit_once(char::is_whitespace) else {
+        return query;
+    };
+    if modifier.eq_ignore_ascii_case("more") {
+        prefix.trim_end()
+    } else {
+        query
+    }
 }
 
 fn diagnostic_search_query(diagnostic: &str) -> String {
@@ -4690,6 +4702,10 @@ end Demo
             Some("q4246")
         );
         assert_eq!(more_search_reference("q4246 comp"), None);
+        assert_eq!(strip_trailing_more("declaration terms MORE"), "declaration terms");
+        assert_eq!(strip_trailing_more("declaration terms more"), "declaration terms");
+        assert_eq!(strip_trailing_more("declaration terms"), "declaration terms");
+        assert_eq!(strip_trailing_more("MORE"), "MORE");
         assert_eq!(symbolic_source_term("*ᵥ"), Some("*ᵥ".to_owned()));
         assert_eq!(symbolic_source_term("≤"), Some("≤".to_owned()));
         assert_eq!(symbolic_source_term("*"), None);
