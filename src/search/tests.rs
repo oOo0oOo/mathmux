@@ -1545,7 +1545,7 @@ fn goal_and_source_query_regressions() {
     assert_eq!(range.hits[0].kind, "source-range");
     assert_eq!(
         range.hits[0].source.as_deref(),
-        Some("/- open\ninside /-! doc\n-/ close")
+        Some("2\t/- open\n3\tinside /-! doc\n4\t-/ close")
     );
 
     let long_source = (1..=250)
@@ -1592,8 +1592,8 @@ fn goal_and_source_query_regressions() {
         duration_ms: 1,
         created_at: 0,
     });
-    assert!(long_summary.contains("\nline 120\n"));
-    assert!(!long_summary.contains("\nline 121\n"));
+    assert!(long_summary.contains("\n120\tline 120\n"));
+    assert!(!long_summary.contains("\n121\tline 121\n"));
     assert!(long_summary.ends_with("+130 lines omitted; use --all"));
     assert_eq!(parse_source_line_range("3-3"), Some((3, 3)));
     assert_eq!(parse_source_line_range("4-3"), None);

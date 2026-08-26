@@ -305,7 +305,7 @@ pub(super) fn source_occurrence_result(
         .take(limit)
         .map(|(line, source)| {
             if query.terms.is_empty() {
-                (*source).to_owned()
+                format!("{line}\t{source}")
             } else {
                 format!("{line:>5}  {source}")
             }
