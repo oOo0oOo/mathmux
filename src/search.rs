@@ -39,6 +39,7 @@ const SOURCE_INDEX_KIND: &str = "source-v7";
 const DECLARATION_DETAIL_LINES: usize = 48;
 const INDEX_COMMIT_BATCH: usize = 64;
 const SEARCH_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+const DIAGNOSTIC_PROBE_MAX_CHECK_MS: u64 = 2_000;
 
 pub struct Searcher {
     repo: Repo,
@@ -380,6 +381,7 @@ impl Searcher {
                 }
             }).collect::<Vec<_>>();
             if diagnostic_text.contains("unsolved goals")
+                && run.duration_ms <= DIAGNOSTIC_PROBE_MAX_CHECK_MS
                 && let Some(target) = target.as_deref()
             {
                 context.extend(self.diagnostic_probe_hits(
