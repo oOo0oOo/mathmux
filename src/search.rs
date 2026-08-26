@@ -1624,6 +1624,11 @@ impl Searcher {
                 candidate.hit.usages = self.usages(&candidate.hit.name, scopes, workspace)?;
             }
         }
+        let exact_name_miss = name_search
+            && !ranked.iter().any(|candidate| {
+                !matches!(candidate.hit.kind.as_str(), "file" | "imports")
+                    && qualified_name_matches(&candidate.hit.name, query)
+            });
         let no_hits = ranked.is_empty();
         let dependency_sources_missing = dependency_sources_missing(&workspace.path);
         let mut note = match (base_warming, warming, no_hits && dependency_sources_missing) {
@@ -1637,6 +1642,13 @@ impl Searcher {
         };
         if glob_name_miss {
             let detail = "no matching declaration name; showing related results";
+            note = Some(match note {
+                Some(existing) => format!("{detail}; {existing}"),
+                None => detail.into(),
+            });
+        }
+        if exact_name_miss {
+            let detail = "no exact declaration found; showing related results";
             note = Some(match note {
                 Some(existing) => format!("{detail}; {existing}"),
                 None => detail.into(),
