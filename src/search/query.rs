@@ -182,6 +182,14 @@ pub(super) fn diagnostic_context(diagnostic: &str, source_context: Option<&str>)
             rendered.push_str(&context);
         }
     }
+    if diagnostic.contains(
+        "synthesized type class instance is not definitionally equal to expression inferred by typing rules",
+    ) && !rendered.contains("same local instance")
+    {
+        rendered.push_str(
+            "\nhint: construct both expressions under the same local instance; introduce `classical` before either expression when decidability is involved",
+        );
+    }
     rendered
 }
 
@@ -297,6 +305,11 @@ pub(super) fn diagnostic_search_query(
     if diagnostic.contains("(deterministic) timeout at") {
         return String::new();
     }
+    if diagnostic.contains(
+        "synthesized type class instance is not definitionally equal to expression inferred by typing rules",
+    ) {
+        return String::new();
+    }
     let lines = diagnostic.lines().collect::<Vec<_>>();
     if diagnostic.contains("unsolved goals")
         && let Some(index) = lines
@@ -380,7 +393,12 @@ pub(super) fn diagnostic_search_query(
         return (*qualified).to_owned();
     }
     let mut selected = terms.into_iter().map(str::to_owned).collect::<Vec<_>>();
-    for token in diagnostic.split(|character: char| {
+    static LOCATION_PREFIX: OnceLock<Regex> = OnceLock::new();
+    let location_prefix = LOCATION_PREFIX.get_or_init(|| {
+        Regex::new(r"^[^:\n]+:\d+:\d+:\s*").expect("valid diagnostic location prefix")
+    });
+    let searchable = location_prefix.replace(diagnostic, "");
+    for token in searchable.split(|character: char| {
         character.is_whitespace() || matches!(character, ':' | ',' | '(' | ')' | '[' | ']')
     }) {
         let token = token.trim_matches(|character: char| {

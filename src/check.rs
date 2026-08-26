@@ -1664,6 +1664,12 @@ fn enriched_diagnostic_text(diagnostic: &WorkerDiagnostic) -> String {
         );
     } else if text.contains("failed to synthesize instance of type class\n  DecidableEq ") {
         text.push_str("\nhint: add `classical` locally or provide the `DecidableEq` instance");
+    } else if text.contains(
+        "synthesized type class instance is not definitionally equal to expression inferred by typing rules",
+    ) {
+        text.push_str(
+            "\nhint: construct both expressions under the same local instance; introduce `classical` before either expression when decidability is involved",
+        );
     }
     text
 }
@@ -2345,6 +2351,13 @@ mod tests {
             text: "Proof.lean:7:1: error: failed to synthesize instance of type class\n  DecidableEq α".into(),
         }]);
         assert!(decidable_errors[0].text.contains("add `classical` locally"));
+
+        let (_, _, _, coherence_errors) = partition_diagnostics(&[WorkerDiagnostic {
+            severity: "error".into(),
+            kind: "lean.synthInstanceMismatch".into(),
+            text: "Proof.lean:8:1: error: synthesized type class instance is not definitionally equal to expression inferred by typing rules".into(),
+        }]);
+        assert!(coherence_errors[0].text.contains("same local instance"));
 
         errors[1].text = "Demo.Nested.Proof:3:1: error: type mismatch".into();
         errors[1].context = None;

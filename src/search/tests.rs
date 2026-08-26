@@ -1392,6 +1392,9 @@ fn goal_and_source_query_regressions() {
         Some(">  106 | have hp : (2 : ℝ≥0∞) ≠ 0 := by norm_num"),
     )
     .is_empty());
+    let coherence = "Demo/Proof.lean:8:1: error: synthesized type class instance is not definitionally equal to expression inferred by typing rules, synthesized\n  inst✝\ninferred\n  Classical.propDecidable";
+    assert!(diagnostic_search_query(coherence, None).is_empty());
+    assert!(diagnostic_context(coherence, None).contains("same local instance"));
     assert!(diagnostic_search_query(
         "Demo:9:2: error: (deterministic) timeout at `whnf`, maximum number of heartbeats has been reached",
         None,
