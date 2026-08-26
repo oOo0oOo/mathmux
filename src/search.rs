@@ -1030,6 +1030,7 @@ impl Searcher {
             let mut exact_rows = self.exact_candidates(query, scopes)?;
             if exact_rows.is_empty()
                 && let Some(base) = declaration_suffix_base(query)
+                && !self.has_direct_continuation(query, scopes)?
             {
                 let base_rows = self.exact_candidates(base, scopes)?;
                 if !base_rows.is_empty() {
@@ -1664,6 +1665,28 @@ impl Searcher {
                     .collect()
             })
             .map_err(anyhow::Error::from)
+    }
+
+    fn has_direct_continuation(
+        &self,
+        query: &str,
+        scopes: &HashSet<String>,
+    ) -> Result<bool> {
+        let connection = self.open()?;
+        install_active_scopes(&connection, scopes)?;
+        let mut statement = connection.prepare(
+            "SELECT name FROM search_fts
+             WHERE search_fts MATCH ?1
+               AND owner IN (SELECT owner FROM active_search_scopes)
+             LIMIT 128",
+        )?;
+        let fts = format!("name : \"{}\"*", query.replace('"', "\"\""));
+        let names = statement
+            .query_map([fts], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(names
+            .iter()
+            .any(|name| direct_continuation_name_matches(name, query)))
     }
 
     fn api_neighborhood(
@@ -3109,6 +3132,21 @@ fn qualified_name_matches(name: &str, query: &str) -> bool {
         || name
             .strip_suffix(&query)
             .is_some_and(|prefix| prefix.ends_with('.'))
+}
+
+fn direct_continuation_name_matches(name: &str, query: &str) -> bool {
+    let name = name.to_lowercase();
+    let query = query.trim().to_lowercase();
+    let name_leaf = name.rsplit('.').next().unwrap_or(&name);
+    let query_leaf = query.rsplit('.').next().unwrap_or(&query);
+    if !name_leaf.starts_with(&format!("{query_leaf}_")) {
+        return false;
+    }
+    let Some((query_owner, _)) = query.rsplit_once('.') else {
+        return true;
+    };
+    let name_owner = name.rsplit_once('.').map_or("", |(owner, _)| owner);
+    name_owner == query_owner || name_owner.ends_with(&format!(".{query_owner}"))
 }
 
 fn unique_qualified_hit_name<'a>(
@@ -4994,6 +5032,18 @@ end Demo
         assert!(!qualified_name_matches(
             "AtiyahSinger.ComplexVectorSubbundle.transportAmbient",
             "VectorSubbundle.transportAmbient"
+        ));
+        assert!(direct_continuation_name_matches(
+            "AtiyahSinger.Topology.VectorBundle.MatrixGL.circleResolventFunction_commutes_on_sphere",
+            "circleResolventFunction_commutes"
+        ));
+        assert!(direct_continuation_name_matches(
+            "AtiyahSinger.Topology.VectorBundle.MatrixGL.circleResolventFunction_commutes_on_sphere",
+            "MatrixGL.circleResolventFunction_commutes"
+        ));
+        assert!(!direct_continuation_name_matches(
+            "AtiyahSinger.Topology.VectorBundle.Other.circleResolventFunction_commutes_on_sphere",
+            "MatrixGL.circleResolventFunction_commutes"
         ));
         assert_eq!(meaningful_query_tokens("precomp (L :=)"), vec!["precomp"]);
         assert_eq!(
