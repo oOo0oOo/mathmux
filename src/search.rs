@@ -203,6 +203,7 @@ impl Searcher {
         let started = Instant::now();
         let expanded = self.expand_reference_query(workspace, query.trim())?;
         let location = parse_goal_location(&workspace.path, cwd, &expanded.query)?;
+        let show_all = all || (location.is_none() && search_more_requested(&expanded.query));
         let query = strip_search_modifiers(&expanded.query);
         let query = query.as_str();
         ensure!(!query.is_empty(), "search query is empty");
@@ -212,7 +213,7 @@ impl Searcher {
         } else if let Some(location) =
             parse_source_occurrence_query(&workspace.path, cwd, query)?
         {
-            source_occurrence_result(workspace, location, all)?
+            source_occurrence_result(workspace, location, show_all)?
         } else {
             let (scopes, base_warming) = match self.index_lock.try_lock() {
                 Ok(_guard) => self.refresh(workspace)?,
@@ -249,7 +250,7 @@ impl Searcher {
         let ok = result.ok;
         self.state.add_search(&run)?;
         self.state.touch_workspace(&workspace.reference)?;
-        let rendered = if all {
+        let rendered = if show_all {
             self.state.show(&run.reference, true)
         } else {
             Ok(render_summary(&run))
@@ -2363,6 +2364,12 @@ fn more_search_reference(query: &str) -> Option<&str> {
             .strip_prefix('q')
             .is_some_and(|digits| !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())))
     .then_some(reference)
+}
+
+fn search_more_requested(query: &str) -> bool {
+    query
+        .split_whitespace()
+        .any(|term| term.eq_ignore_ascii_case("more"))
 }
 
 fn strip_search_modifiers(query: &str) -> String {
@@ -5994,6 +6001,9 @@ end Demo
             Some("q4246")
         );
         assert_eq!(more_search_reference("q4246 comp"), None);
+        assert!(search_more_requested("declaration MORE"));
+        assert!(search_more_requested("File.lean:1-120 more"));
+        assert!(!search_more_requested("moreover"));
         assert_eq!(strip_search_modifiers("declaration terms MORE"), "declaration terms");
         assert_eq!(strip_search_modifiers("declaration MORE terms more"), "declaration terms");
         assert_eq!(strip_search_modifiers("VectorBundle FILE:LINE MORE"), "VectorBundle");
