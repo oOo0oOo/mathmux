@@ -190,12 +190,15 @@ impl Searcher {
         let result = if let Some(location) = parse_goal_location(&workspace.path, cwd, query)? {
             self.goal_search(workspace, location)?
         } else {
-            let (scopes, base_warming) = {
-                let _guard = self
-                    .index_lock
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                self.refresh(workspace)?
+            let (scopes, base_warming) = match self.index_lock.try_lock() {
+                Ok(_guard) => self.refresh(workspace)?,
+                Err(std::sync::TryLockError::Poisoned(error)) => {
+                    let _guard = error.into_inner();
+                    self.refresh(workspace)?
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    self.current_scopes(workspace)
+                }
             };
             self.combined_search(workspace, query, &scopes, base_warming)?
         };
@@ -535,14 +538,7 @@ impl Searcher {
             kind: SourceKind::Project,
         }];
 
-        let mut scopes = roots
-            .iter()
-            .map(|root| root.owner.clone())
-            .collect::<HashSet<_>>();
         let project_artifacts = workspace.path.join(".lake/build/lib/lean");
-        if project_artifacts.is_dir() {
-            scopes.insert(format!("artifacts:{}", workspace.reference));
-        }
         let refresh_due = self
             .last_refresh
             .lock()
@@ -582,9 +578,17 @@ impl Searcher {
                 }
             }
         }
+        Ok(self.current_scopes(workspace))
+    }
+
+    fn current_scopes(&self, workspace: &Workspace) -> (HashSet<String>, bool) {
+        let mut scopes = HashSet::from([format!("workspace:{}", workspace.reference)]);
+        if workspace.path.join(".lake/build/lib/lean").is_dir() {
+            scopes.insert(format!("artifacts:{}", workspace.reference));
+        }
         let (base_scopes, warming) = self.base_scopes(workspace);
         scopes.extend(base_scopes);
-        Ok((scopes, warming))
+        (scopes, warming)
     }
 
     fn base_scopes(&self, workspace: &Workspace) -> (HashSet<String>, bool) {
