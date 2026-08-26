@@ -196,7 +196,7 @@ type CheckLocks = Mutex<HashMap<WorkerKey, Weak<Mutex<()>>>>;
 pub struct Checker {
     repo: Repo,
     state: State,
-    workers: Mutex<HashMap<WorkerKey, LeanWorker>>,
+    workers: Mutex<HashMap<WorkerKey, Arc<Mutex<LeanWorker>>>>,
     check_locks: CheckLocks,
     setup_locks: Mutex<HashMap<String, Weak<Mutex<()>>>>,
 }
@@ -492,48 +492,82 @@ impl Checker {
         source: &str,
         allow_fallback: bool,
     ) -> Result<(WorkerResponse, &'static str, Option<u64>)> {
-        let mut workers = self.workers.lock().expect("worker map poisoned");
         let key = (workspace.reference.clone(), target.to_path_buf());
-        let replace = workers
-            .get_mut(&key)
-            .is_none_or(|worker| worker.environment != environment || !worker.alive());
-        if replace {
-            workers.remove(&key);
-            let workspace_workers = workers
-                .keys()
-                .filter(|(reference, _)| reference == &workspace.reference)
-                .count();
-            if workspace_workers >= 3
-                && let Some(oldest) = workers
-                    .iter()
-                    .filter(|((reference, _), _)| reference == &workspace.reference)
-                    .max_by_key(|(_, worker)| worker.last_used.elapsed())
-                    .map(|(key, _)| key.clone())
-            {
-                workers.remove(&oldest);
-            }
-            match LeanWorker::start(&self.repo, &workspace.path, target, setup_path, environment) {
-                Ok(worker) => {
-                    workers.insert(key.clone(), worker);
+        let (worker, inserted) = {
+            let mut workers = self.workers.lock().expect("worker map poisoned");
+            if let Some(worker) = workers.get(&key) {
+                (worker.clone(), false)
+            } else {
+                let workspace_workers = workers
+                    .keys()
+                    .filter(|(reference, _)| reference == &workspace.reference)
+                    .count();
+                if workspace_workers >= 3
+                    && let Some(oldest) = workers
+                        .iter()
+                        .filter(|((reference, _), _)| reference == &workspace.reference)
+                        .filter_map(|(key, worker)| {
+                            worker
+                                .try_lock()
+                                .ok()
+                                .map(|worker| (key.clone(), worker.last_used.elapsed()))
+                        })
+                        .max_by_key(|(_, idle)| *idle)
+                        .map(|(key, _)| key)
+                {
+                    workers.remove(&oldest);
                 }
+                match LeanWorker::start(
+                    &self.repo,
+                    &workspace.path,
+                    setup_path,
+                    environment,
+                ) {
+                    Ok(worker) => {
+                        let worker = Arc::new(Mutex::new(worker));
+                        workers.insert(key.clone(), worker.clone());
+                        (worker, true)
+                    }
+                    Err(error) => {
+                        drop(workers);
+                        self.record_worker_failure(&format!("start: {error:#}"));
+                        if allow_fallback {
+                            return fallback_check(&self.repo, &workspace.path, target)
+                                .map(|response| (response, "fallback", None))
+                                .with_context(|| {
+                                    format!("direct Lean worker unavailable: {error:#}")
+                                });
+                        }
+                        return Err(error).context("direct Lean worker unavailable");
+                    }
+                }
+            }
+        };
+        let mut worker_guard = worker.lock().expect("Lean worker poisoned");
+        let replace = !inserted
+            && (worker_guard.environment != environment || !worker_guard.alive());
+        if replace {
+            match LeanWorker::start(&self.repo, &workspace.path, setup_path, environment) {
+                Ok(replacement) => *worker_guard = replacement,
                 Err(error) => {
+                    drop(worker_guard);
+                    self.remove_worker(&key, &worker);
                     self.record_worker_failure(&format!("start: {error:#}"));
                     if allow_fallback {
                         return fallback_check(&self.repo, &workspace.path, target)
                             .map(|response| (response, "fallback", None))
-                            .with_context(|| format!("direct Lean worker unavailable: {error:#}"));
+                            .with_context(|| {
+                                format!("direct Lean worker unavailable: {error:#}")
+                            });
                     }
                     return Err(error).context("direct Lean worker unavailable");
                 }
             }
         }
-        let worker = workers
-            .get_mut(&key)
-            .context("Lean worker did not start")?;
-        match worker.check(source) {
+        match worker_guard.check(source) {
             Ok((response, reuse)) => Ok((
                 response,
-                if replace {
+                if inserted || replace {
                     "cold-worker"
                 } else if reuse.identical {
                     "worker-cache"
@@ -544,7 +578,8 @@ impl Checker {
             )),
             Err(error) => {
                 self.record_worker_failure(&format!("request: {error:#}"));
-                workers.remove(&key);
+                drop(worker_guard);
+                self.remove_worker(&key, &worker);
                 if allow_fallback {
                     fallback_check(&self.repo, &workspace.path, target)
                         .map(|response| (response, "fallback", None))
@@ -553,6 +588,16 @@ impl Checker {
                     Err(error).context("direct Lean worker failed")
                 }
             }
+        }
+    }
+
+    fn remove_worker(&self, key: &WorkerKey, expected: &Arc<Mutex<LeanWorker>>) {
+        let mut workers = self.workers.lock().expect("worker map poisoned");
+        if workers
+            .get(key)
+            .is_some_and(|worker| Arc::ptr_eq(worker, expected))
+        {
+            workers.remove(key);
         }
     }
 
@@ -586,16 +631,21 @@ impl Checker {
         source: &str,
     ) -> Result<Option<(bool, String)>> {
         let target = resolve_target(&workspace.path, requested)?;
-        let ready = match self.workers.try_lock() {
-            Ok(mut workers) => workers
-                .get_mut(&(workspace.reference.clone(), target))
-                .is_some_and(LeanWorker::alive),
+        let worker = match self.workers.try_lock() {
+            Ok(workers) => workers
+                .get(&(workspace.reference.clone(), target))
+                .cloned(),
             Err(std::sync::TryLockError::Poisoned(error)) => error
                 .into_inner()
-                .get_mut(&(workspace.reference.clone(), target))
-                .is_some_and(LeanWorker::alive),
-            Err(std::sync::TryLockError::WouldBlock) => false,
+                .get(&(workspace.reference.clone(), target))
+                .cloned(),
+            Err(std::sync::TryLockError::WouldBlock) => None,
         };
+        let ready = worker.is_some_and(|worker| {
+            worker
+                .try_lock()
+                .is_ok_and(|mut worker| worker.alive())
+        });
         if !ready {
             return Ok(None);
         }
@@ -656,13 +706,14 @@ impl Checker {
         target: &Path,
         environment: &str,
     ) -> Option<PathBuf> {
-        let mut workers = self.workers.lock().expect("worker map poisoned");
-        workers
-            .get_mut(&(workspace.reference.clone(), target.to_path_buf()))
-            .and_then(|worker| {
-                (worker.environment == environment && worker.alive())
-                    .then(|| worker.setup_path.clone())
-            })
+        let worker = self
+            .workers
+            .lock()
+            .expect("worker map poisoned")
+            .get(&(workspace.reference.clone(), target.to_path_buf()))
+            .cloned()?;
+        let mut worker = worker.lock().expect("Lean worker poisoned");
+        (worker.environment == environment && worker.alive()).then(|| worker.setup_path.clone())
     }
 
     fn full_fingerprint(
@@ -787,21 +838,31 @@ impl Checker {
         self.workers
             .lock()
             .expect("worker map poisoned")
-            .retain(|(reference, _), worker| {
+            .retain(|(reference, target), _| {
                 reference != &workspace.reference
-                    || !invalidates_worker(&workspace.path, relative, &worker.target)
+                    || !invalidates_worker(&workspace.path, relative, target)
             });
     }
 
     pub fn evict_idle_workers(&self, idle_for: std::time::Duration) -> bool {
         let mut workers = self.workers.lock().expect("worker map poisoned");
-        workers.retain(|_, worker| worker.last_used.elapsed() < idle_for && worker.alive());
+        workers.retain(|_, worker| match worker.try_lock() {
+            Ok(mut worker) => worker.last_used.elapsed() < idle_for && worker.alive(),
+            Err(std::sync::TryLockError::WouldBlock) => true,
+            Err(std::sync::TryLockError::Poisoned(_)) => false,
+        });
         if workers.len() > 1
             && available_memory_gib().is_some_and(|gib| gib < 4)
             && let Some(oldest) = workers
                 .iter()
-                .max_by_key(|(_, worker)| worker.last_used.elapsed())
-                .map(|(reference, _)| reference.clone())
+                .filter_map(|(key, worker)| {
+                    worker
+                        .try_lock()
+                        .ok()
+                        .map(|worker| (key.clone(), worker.last_used.elapsed()))
+                })
+                .max_by_key(|(_, idle)| *idle)
+                .map(|(key, _)| key)
         {
             workers.remove(&oldest);
         }
@@ -865,7 +926,6 @@ struct LeanWorker {
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
-    target: PathBuf,
     environment: String,
     setup_path: PathBuf,
     version: u64,
@@ -884,7 +944,6 @@ impl LeanWorker {
     fn start(
         repo: &Repo,
         root: &Path,
-        target: &Path,
         setup_path: &Path,
         environment: &str,
     ) -> Result<Self> {
@@ -912,7 +971,6 @@ impl LeanWorker {
             child,
             stdin,
             stdout,
-            target: target.to_path_buf(),
             environment: environment.to_owned(),
             setup_path: setup_path.to_path_buf(),
             version: 0,
