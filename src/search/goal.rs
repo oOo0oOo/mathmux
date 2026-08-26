@@ -1222,6 +1222,11 @@ pub(super) fn local_method_candidates(goal_state: &str) -> Vec<String> {
         .take(6)
         .collect::<Vec<_>>();
     let mut candidates = Vec::new();
+    if (goal.contains('=') || goal.contains('≤') || goal.contains('<'))
+        && (goal.contains('+') || goal.contains('-') || goal.contains('*'))
+    {
+        candidates.push("omega".into());
+    }
     for left in &hypotheses {
         for right in &hypotheses {
             if left == right {

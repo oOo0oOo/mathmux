@@ -1379,6 +1379,10 @@ fn goal_and_source_query_regressions() {
         "Demo:9:2: error: (deterministic) timeout at `whnf`, maximum number of heartbeats has been reached"
     )
     .is_empty());
+    assert_eq!(
+        local_method_candidates("n : ℕ\nh : 0 < n\n⊢ 1 + (n - 1) = n"),
+        ["omega"]
+    );
     let source = (1..=30)
         .map(|line| format!("line {line}"))
         .collect::<Vec<_>>()

@@ -460,6 +460,7 @@ impl Searcher {
             let repair_requested = refinement
                 .split_whitespace()
                 .any(|term| term.eq_ignore_ascii_case("repair"));
+            let automatic_repair = refinement.is_empty();
             let refinement = refinement
                 .split_whitespace()
                 .filter(|term| !term.eq_ignore_ascii_case("repair"))
@@ -515,7 +516,7 @@ impl Searcher {
                     required_import: None,
                 }
             }).collect::<Vec<_>>();
-            if repair_requested
+            if (repair_requested || automatic_repair)
                 && diagnostic_text.contains("unsolved goals")
                 && run.duration_ms <= DIAGNOSTIC_PROBE_MAX_CHECK_MS
                 && let Some(target) = target.as_deref()
