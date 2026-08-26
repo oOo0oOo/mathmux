@@ -302,7 +302,7 @@ impl Searcher {
                 .state
                 .submission(reference)?
                 .with_context(|| format!("unknown submission reference {reference}"))?;
-            let (subject, context) = self.submission_search_context(&submission)?;
+            let (subject, context) = self.submission_search_context(&submission, refinement)?;
             return Ok(ExpandedQuery {
                 query: [subject.as_str(), refinement]
                     .into_iter()
@@ -425,6 +425,7 @@ impl Searcher {
     fn submission_search_context(
         &self,
         submission: &crate::state::Submission,
+        refinement: &str,
     ) -> Result<(String, Vec<SearchHit>)> {
         let subject = git_text(
             &self.repo.root,
@@ -468,10 +469,15 @@ impl Searcher {
         let has_public = added
             .iter()
             .any(|(_, _, entry)| !source_entry_is_private(entry));
+        let refinement_tokens = meaningful_query_tokens(refinement);
+        added.sort_by(|(_, _, left), (_, _, right)| {
+            submission_entry_score(right, &refinement_tokens)
+                .cmp(&submission_entry_score(left, &refinement_tokens))
+        });
         let context = added
             .into_iter()
             .filter(|(_, _, entry)| !has_public || !source_entry_is_private(entry))
-            .take(12)
+            .take(8)
             .map(|(path, module, entry)| SearchHit {
                 name: entry.name,
                 kind: entry.kind,
@@ -3334,6 +3340,15 @@ fn source_entry_is_private(entry: &SourceEntry) -> bool {
                 .split_whitespace()
                 .any(|word| word == entry.kind)
     })
+}
+
+fn submission_entry_score(entry: &SourceEntry, tokens: &[String]) -> usize {
+    let searchable = format!("{} {} {}", entry.name, entry.signature, entry.docs).to_lowercase();
+    tokens
+        .iter()
+        .filter(|token| searchable.contains(token.as_str()))
+        .map(String::len)
+        .sum()
 }
 
 fn parse_source(source: &str, module: &str) -> Vec<SourceEntry> {
