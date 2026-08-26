@@ -1,0 +1,1297 @@
+use super::*;
+
+pub(super) fn more_search_reference(query: &str) -> Option<&str> {
+    let mut terms = query.split_whitespace().rev();
+    let modifier = terms.next()?;
+    let reference = terms.next()?;
+    (modifier.eq_ignore_ascii_case("more")
+        && reference
+            .strip_prefix('q')
+            .is_some_and(|digits| !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())))
+    .then_some(reference)
+}
+
+pub(super) fn search_more_requested(query: &str) -> bool {
+    query
+        .split_whitespace()
+        .any(|term| term.eq_ignore_ascii_case("more"))
+}
+
+pub(super) fn normalize_lean_inspection_query(query: &str) -> String {
+    let mut query = query.trim();
+    if let Some((directive, rest)) = query.split_once(char::is_whitespace)
+        && matches!(
+            directive.to_ascii_lowercase().as_str(),
+            "#check" | "#print" | "#synth"
+        )
+    {
+        query = rest.trim_start();
+    }
+    let Some(application) = query.strip_prefix('@') else {
+        return query.to_owned();
+    };
+    let mut terms = application.split_whitespace();
+    let Some(name) = terms.next() else {
+        return query.to_owned();
+    };
+    std::iter::once(name)
+        .chain(terms.filter(|term| {
+            term.eq_ignore_ascii_case("more")
+                || matches!(term.to_ascii_lowercase().as_str(), "body" | "proof")
+        }))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+pub(super) fn strip_search_modifiers(query: &str) -> String {
+    query
+        .split_whitespace()
+        .filter(|term| {
+            !term.eq_ignore_ascii_case("more")
+                && !matches!(
+                    term.to_ascii_uppercase().as_str(),
+                    "FILE:LINE" | "FILE:LINE:COLUMN"
+                )
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+pub(super) fn refined_search_query(base: &str, refinement: &str) -> String {
+    let refinement = refinement.trim();
+    let facet = refinement.to_ascii_lowercase();
+    if matches!(
+        facet.as_str(),
+        "field" | "fields" | "projection" | "projections" | "constructor" | "constructors"
+    ) {
+        return format!("{base}.mk");
+    }
+    let refinement = match facet.as_str() {
+        "usage" | "usages" | "references" => "",
+        "coercion" | "coercions" => "coe",
+        "lemma" | "lemmas" => "theorem",
+        _ => refinement,
+    };
+    [base, refinement]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+pub(super) fn search_refinement_facet(refinement: &str) -> bool {
+    matches!(
+        refinement.trim().to_ascii_lowercase().as_str(),
+        "usage"
+            | "usages"
+            | "references"
+            | "field"
+            | "fields"
+            | "projection"
+            | "projections"
+            | "constructor"
+            | "constructors"
+            | "coercion"
+            | "coercions"
+            | "lemma"
+            | "lemmas"
+    )
+}
+
+pub(super) fn diagnostic_position(
+    diagnostic: &str,
+    fallback: Option<&str>,
+) -> (Option<String>, u64) {
+    static LOCATION: OnceLock<Regex> = OnceLock::new();
+    let location = LOCATION.get_or_init(|| {
+        Regex::new(r"^(?P<label>.+?):(?P<line>[0-9]+)(?::[0-9]+)?(?::|$)")
+            .expect("valid diagnostic location regex")
+    });
+    let parsed = diagnostic
+        .lines()
+        .next()
+        .and_then(|line| location.captures(line));
+    let path = parsed
+        .as_ref()
+        .and_then(|captures| captures.name("label"))
+        .filter(|label| label.as_str().ends_with(".lean"))
+        .map(|label| label.as_str().to_owned())
+        .or_else(|| fallback.map(str::to_owned));
+    let line = parsed
+        .as_ref()
+        .and_then(|captures| captures.name("line"))
+        .and_then(|line| line.as_str().parse().ok())
+        .unwrap_or(1);
+    (path, line)
+}
+
+pub(super) fn diagnostic_context(diagnostic: &str, source_context: Option<&str>) -> String {
+    let type_detail = diagnostic_type_detail(diagnostic);
+    let mut lines = diagnostic.lines().collect::<Vec<_>>();
+    let diagnostic_limit = if type_detail.is_some() { 8 } else { 16 };
+    if lines.len() > diagnostic_limit {
+        lines.truncate(diagnostic_limit);
+    }
+    let mut rendered = lines.join("\n");
+    if let Some(detail) = type_detail {
+        rendered.push('\n');
+        rendered.push_str(&detail);
+    }
+    if let Some(context) = source_context {
+        let context = context.lines().take(5).collect::<Vec<_>>().join("\n");
+        if !context.is_empty() {
+            rendered.push('\n');
+            rendered.push_str(&context);
+        }
+    }
+    rendered
+}
+
+pub(super) fn diagnostic_type_detail(diagnostic: &str) -> Option<String> {
+    const SYNTHESIS: &str = "failed to synthesize instance of type class";
+    let lines = diagnostic.lines().collect::<Vec<_>>();
+    if let Some(index) = lines.iter().position(|line| line.contains(SYNTHESIS)) {
+        let mut goal = lines[index]
+            .split_once(SYNTHESIS)
+            .map(|(_, suffix)| suffix.trim())
+            .filter(|suffix| !suffix.is_empty())
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        goal.extend(
+            lines[index + 1..]
+                .iter()
+                .map(|line| line.trim())
+                .take_while(|line| {
+                    !line.is_empty() && !line.starts_with("Hint:") && !line.starts_with("Note:")
+                })
+                .map(str::to_owned),
+        );
+        let goal = goal.join(" ");
+        if !goal.is_empty() {
+            return Some(format!("instance goal\n{}", truncate_middle(&goal, 480)));
+        }
+    }
+
+    let actual_start = lines.iter().position(|line| line.trim() == "has type")? + 1;
+    let expected_marker = lines[actual_start..]
+        .iter()
+        .position(|line| line.trim() == "but is expected to have type")?
+        + actual_start;
+    let expected_start = expected_marker + 1;
+    let expected_end = lines[expected_start..]
+        .iter()
+        .position(|line| {
+            let line = line.trim();
+            line.starts_with("in the application")
+                || line.starts_with("the following variables")
+                || line.starts_with("Hint:")
+                || line.starts_with("Note:")
+        })
+        .map_or(lines.len(), |offset| expected_start + offset);
+    let actual = lines[actual_start..expected_marker]
+        .iter()
+        .flat_map(|line| line.split_whitespace())
+        .collect::<Vec<_>>();
+    let expected = lines[expected_start..expected_end]
+        .iter()
+        .flat_map(|line| line.split_whitespace())
+        .collect::<Vec<_>>();
+    if actual.is_empty() || expected.is_empty() || actual == expected {
+        return None;
+    }
+    let prefix = actual
+        .iter()
+        .zip(&expected)
+        .take_while(|(actual, expected)| actual == expected)
+        .count();
+    let suffix = actual[prefix..]
+        .iter()
+        .rev()
+        .zip(expected[prefix..].iter().rev())
+        .take_while(|(actual, expected)| actual == expected)
+        .count();
+    let actual_end = actual.len().saturating_sub(suffix).max(prefix);
+    let expected_end = expected.len().saturating_sub(suffix).max(prefix);
+    let actual_difference = actual[prefix..actual_end].join(" ");
+    let expected_difference = expected[prefix..expected_end].join(" ");
+    Some(format!(
+        "first type difference\nactual: {}\nexpected: {}",
+        if actual_difference.is_empty() {
+            "<end>".into()
+        } else {
+            truncate_middle(&actual_difference, 360)
+        },
+        if expected_difference.is_empty() {
+            "<end>".into()
+        } else {
+            truncate_middle(&expected_difference, 360)
+        }
+    ))
+}
+
+pub(super) fn diagnostic_search_query(diagnostic: &str) -> String {
+    let lines = diagnostic.lines().collect::<Vec<_>>();
+    if diagnostic.contains("unsolved goals")
+        && let Some(index) = lines
+            .iter()
+            .rposition(|line| line.trim_start().starts_with('⊢'))
+    {
+        let goal = lines[index..]
+            .iter()
+            .copied()
+            .take_while(|line| {
+                let trimmed = line.trim_start();
+                !trimmed.is_empty()
+                    && !trimmed
+                        .chars()
+                        .next()
+                        .is_some_and(|character| character.is_ascii_digit())
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        let locals = lines[..index]
+            .iter()
+            .filter_map(|line| line.trim().split_once(':').map(|(names, _)| names))
+            .flat_map(str::split_whitespace)
+            .filter(|name| declaration_name_query(name))
+            .collect::<HashSet<_>>();
+        return diagnostic_goal_query(&goal, &locals);
+    }
+    if let Some(query) = diagnostic_relation_query(diagnostic) {
+        return query;
+    }
+    static QUOTED: OnceLock<Regex> = OnceLock::new();
+    let quoted = QUOTED.get_or_init(|| Regex::new(r"`([^`]+)`").expect("valid diagnostic regex"));
+    let terms = quoted
+        .captures_iter(diagnostic)
+        .filter_map(|capture| capture.get(1).map(|value| value.as_str().trim()))
+        .filter(|value| declaration_name_query(value))
+        .collect::<Vec<_>>();
+    if let Some(qualified) = terms.iter().find(|term| term.contains('.')) {
+        return (*qualified).to_owned();
+    }
+    let mut selected = terms.into_iter().map(str::to_owned).collect::<Vec<_>>();
+    for token in diagnostic.split(|character: char| {
+        character.is_whitespace() || matches!(character, ':' | ',' | '(' | ')' | '[' | ']')
+    }) {
+        let token = token.trim_matches(|character: char| {
+            !character.is_alphanumeric() && character != '_' && character != '.'
+        });
+        if token.len() >= 4
+            && (token.contains(['.', '_']) || token.chars().next().is_some_and(char::is_uppercase))
+            && !selected.iter().any(|seen| seen == token)
+        {
+            selected.push(token.to_owned());
+        }
+        if selected.len() >= 10 {
+            break;
+        }
+    }
+    if selected.is_empty() {
+        truncate_line(&single_line(diagnostic), 240)
+    } else {
+        selected.join(" ")
+    }
+}
+
+pub(super) fn diagnostic_goal_query(goal: &str, locals: &HashSet<&str>) -> String {
+    let anonymized = single_line(&anonymize_goal(goal, locals));
+    let target = anonymized
+        .trim_start()
+        .strip_prefix('⊢')
+        .unwrap_or(&anonymized)
+        .trim();
+    let mut focused = Vec::new();
+    for token in target.split(|character: char| {
+        character.is_whitespace()
+            || matches!(
+                character,
+                '⊢' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ':' | '='
+            )
+    }) {
+        let token = token.trim_matches(|character: char| {
+            !character.is_alphanumeric() && !matches!(character, '_' | '.' | '\'')
+        });
+        if token.chars().count() >= 4
+            && declaration_name_query(token)
+            && (token.contains(['.', '_']) || token.chars().next().is_some_and(char::is_uppercase))
+            && !focused
+                .iter()
+                .any(|seen: &String| seen.eq_ignore_ascii_case(token))
+        {
+            focused.push(token.to_owned());
+        }
+        if focused.len() == 6 {
+            break;
+        }
+    }
+    if focused.len() >= 2 {
+        focused.sort_by_key(|token| !token.contains(['.', '_']));
+        focused.join(" ")
+    } else {
+        truncate_line(&format!("⊢ {target}"), 600)
+    }
+}
+
+pub(super) fn diagnostic_relation_query(diagnostic: &str) -> Option<String> {
+    let relational = (diagnostic.contains("left-hand side")
+        && diagnostic.contains("right-hand side"))
+        || (diagnostic.contains("\nhas type\n") && diagnostic.contains("expected to have type"));
+    if !relational {
+        return None;
+    }
+    let message = diagnostic
+        .split_once(" error: ")
+        .map_or(diagnostic, |(_, message)| message)
+        .split("\n\n")
+        .next()
+        .unwrap_or_default();
+    let mut selected = Vec::new();
+    for token in message.split(|character: char| {
+        character.is_whitespace()
+            || matches!(character, ':' | ',' | '(' | ')' | '[' | ']' | '{' | '}')
+    }) {
+        let token = token.trim_matches(|character: char| {
+            !character.is_alphanumeric() && !matches!(character, '_' | '.' | '\'')
+        });
+        let structured = token.contains(['.', '_'])
+            || (token.chars().next().is_some_and(char::is_lowercase)
+                && token.chars().skip(1).any(char::is_uppercase));
+        if token.len() >= 4
+            && structured
+            && declaration_name_query(token)
+            && !selected.contains(&token)
+        {
+            selected.push(token);
+        }
+        if selected.len() == 4 {
+            break;
+        }
+    }
+    (!selected.is_empty()).then(|| selected.join(" "))
+}
+
+pub(super) fn anonymize_goal(goal: &str, locals: &HashSet<&str>) -> String {
+    let mut output = String::with_capacity(goal.len());
+    let mut identifier = String::new();
+    let flush = |output: &mut String, identifier: &mut String| {
+        if !identifier.is_empty() {
+            if locals.contains(identifier.as_str()) {
+                output.push('_');
+            } else {
+                output.push_str(identifier);
+            }
+            identifier.clear();
+        }
+    };
+    for character in goal.chars() {
+        if character.is_alphanumeric() || matches!(character, '_' | '\'' | '✝') {
+            identifier.push(character);
+        } else {
+            flush(&mut output, &mut identifier);
+            output.push(character);
+        }
+    }
+    flush(&mut output, &mut identifier);
+    output
+}
+
+pub(super) fn goal_refinement_query(goal_state: &str, refinement: &str) -> String {
+    let target = goal_state
+        .lines()
+        .find_map(|line| line.trim().strip_prefix('⊢'))
+        .map(str::trim)
+        .unwrap_or(goal_state);
+    let head = target
+        .split(|character: char| character.is_whitespace() || character == '(')
+        .find(|part| !part.is_empty());
+    if declaration_name_query(refinement)
+        && !refinement.contains('.')
+        && let Some(head) = head
+        && declaration_name_query(head)
+    {
+        format!("{head}.{refinement}")
+    } else {
+        format!("{target} {refinement}")
+    }
+}
+
+pub(super) fn edit_distance(left: &str, right: &str) -> usize {
+    let right = right.chars().collect::<Vec<_>>();
+    let mut previous = (0..=right.len()).collect::<Vec<_>>();
+    for (left_index, left_character) in left.chars().enumerate() {
+        let mut current = vec![left_index + 1];
+        for (right_index, right_character) in right.iter().enumerate() {
+            current.push(
+                (previous[right_index + 1] + 1)
+                    .min(current[right_index] + 1)
+                    .min(previous[right_index] + usize::from(left_character != *right_character)),
+            );
+        }
+        previous = current;
+    }
+    previous[right.len()]
+}
+
+pub(super) fn fts_query(query: &str) -> String {
+    meaningful_query_tokens(query)
+        .into_iter()
+        .filter(|token| token != "_")
+        .map(|token| format!("\"{}\"*", token.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" OR ")
+}
+
+pub(super) fn query_tokens(query: &str) -> Vec<String> {
+    query
+        .split(|character: char| {
+            !character.is_alphanumeric() && character != '_' && character != '.'
+        })
+        .map(|token| token.trim_matches('.').to_lowercase())
+        .filter(|token| !token.is_empty())
+        .collect()
+}
+
+pub(super) fn declaration_name_query(query: &str) -> bool {
+    let query = query.trim();
+    !query.is_empty()
+        && !query.starts_with('.')
+        && !query.ends_with('.')
+        && query
+            .chars()
+            .all(|character| character.is_alphanumeric() || matches!(character, '_' | '.' | '\''))
+}
+
+pub(super) fn declaration_list_terms(query: &str) -> Option<Vec<&str>> {
+    let terms = query.split_whitespace().collect::<Vec<_>>();
+    (terms.len() >= 2
+        && terms.len() <= 6
+        && terms.iter().all(|term| {
+            declaration_name_query(term)
+                && term.chars().count() >= 6
+                && (term.contains(['.', '_']) || term.chars().skip(1).any(char::is_uppercase))
+        }))
+    .then_some(terms)
+}
+
+pub(super) fn declaration_suffix_base(query: &str) -> Option<&str> {
+    let (base, suffix) = query.rsplit_once('_')?;
+    (!suffix.is_empty()
+        && suffix.chars().all(char::is_alphanumeric)
+        && base
+            .rsplit('.')
+            .next()
+            .is_some_and(|leaf| leaf.chars().count() >= 4)
+        && declaration_name_query(base))
+    .then_some(base)
+}
+
+pub(super) fn explicit_declaration_name(query: &str) -> Option<&str> {
+    let mut terms = query.split_whitespace();
+    let kind = terms.next()?;
+    if !matches!(
+        kind.to_ascii_lowercase().as_str(),
+        "abbrev"
+            | "class"
+            | "def"
+            | "definition"
+            | "inductive"
+            | "instance"
+            | "lemma"
+            | "structure"
+            | "theorem"
+    ) {
+        return None;
+    }
+    let name = terms.next()?;
+    if !declaration_name_query(name)
+        || !terms.all(|term| {
+            matches!(
+                term.to_ascii_lowercase().as_str(),
+                "body" | "constructors" | "fields" | "implementation" | "proof" | "source"
+            )
+        })
+    {
+        return None;
+    }
+    Some(name)
+}
+
+pub(super) fn declaration_glob_query(query: &str) -> bool {
+    query.contains('*')
+        && query
+            .chars()
+            .filter(|character| character.is_alphanumeric())
+            .count()
+            >= 2
+        && query.chars().all(|character| {
+            character.is_alphanumeric() || matches!(character, '_' | '.' | '\'' | '*')
+        })
+}
+
+pub(super) fn apply_declaration_glob(candidates: &mut Vec<RankedHit>, query: &str) -> bool {
+    if !declaration_glob_query(query) {
+        return false;
+    }
+    if candidates
+        .iter()
+        .any(|candidate| declaration_glob_matches(&candidate.hit.name, query))
+    {
+        candidates.retain(|candidate| declaration_glob_matches(&candidate.hit.name, query));
+        false
+    } else {
+        !candidates.is_empty()
+    }
+}
+
+pub(super) fn declaration_glob_matches(name: &str, query: &str) -> bool {
+    let characters = query.chars().collect::<Vec<_>>();
+    let pattern = characters
+        .iter()
+        .enumerate()
+        .map(|(index, character)| match character {
+            '*' => ".*".to_owned(),
+            '.' if index
+                .checked_sub(1)
+                .is_some_and(|prior| characters[prior] == '*')
+                || characters.get(index + 1) == Some(&'*') =>
+            {
+                "[._]?".to_owned()
+            }
+            '.' => "[._]".to_owned(),
+            character => regex::escape(&character.to_string()),
+        })
+        .collect::<String>();
+    let prefix = if query.starts_with('*') {
+        ""
+    } else {
+        r"(?:^|\.)"
+    };
+    Regex::new(&format!(r"(?i){prefix}{pattern}$")).is_ok_and(|pattern| pattern.is_match(name))
+}
+
+pub(super) fn qualified_name_matches(name: &str, query: &str) -> bool {
+    let name = name.to_lowercase();
+    let query = query.trim().to_lowercase();
+    name == query
+        || name
+            .strip_suffix(&query)
+            .is_some_and(|prefix| prefix.ends_with('.'))
+}
+
+pub(super) fn result_limit(exact_name_miss: bool, show_all: bool) -> usize {
+    if exact_name_miss && !show_all {
+        RELATED_RESULT_LIMIT
+    } else {
+        RESULT_LIMIT
+    }
+}
+
+pub(super) fn direct_continuation_name_matches(name: &str, query: &str) -> bool {
+    let name = name.to_lowercase();
+    let query = query.trim().to_lowercase();
+    let name_leaf = name.rsplit('.').next().unwrap_or(&name);
+    let query_leaf = query.rsplit('.').next().unwrap_or(&query);
+    if !name_leaf.starts_with(&format!("{query_leaf}_")) {
+        return false;
+    }
+    let Some((query_owner, _)) = query.rsplit_once('.') else {
+        return true;
+    };
+    let name_owner = name.rsplit_once('.').map_or("", |(owner, _)| owner);
+    name_owner == query_owner || name_owner.ends_with(&format!(".{query_owner}"))
+}
+
+pub(super) fn unique_qualified_hit_name<'a>(
+    hits: impl Iterator<Item = &'a SearchHit>,
+    query: &str,
+) -> Option<String> {
+    let names = hits
+        .filter(|hit| qualified_name_matches(&hit.name, query))
+        .map(|hit| hit.name.to_lowercase())
+        .collect::<HashSet<_>>();
+    if names.len() == 1 {
+        names.into_iter().next()
+    } else {
+        None
+    }
+}
+
+pub(super) fn merge_exact_candidates(mut candidates: Vec<RankedHit>) -> RankedHit {
+    candidates.sort_by(|left, right| {
+        right
+            .score
+            .partial_cmp(&left.score)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| left.hit.name.cmp(&right.hit.name))
+    });
+    let mut resolved = candidates.remove(0);
+    for mut candidate in candidates {
+        merge_duplicate_hit(&mut resolved.hit, &mut candidate.hit);
+    }
+    resolved
+}
+
+pub(super) fn ranked_exact_candidates(
+    rows: Vec<IndexedRow>,
+    query: &str,
+    workspace: &Workspace,
+) -> Vec<RankedHit> {
+    let tokens = meaningful_query_tokens(query);
+    rows.into_iter()
+        .map(|row| {
+            let score = lexical_score(query, &tokens, &row)
+                + if row.owner == format!("workspace:{}", workspace.reference) {
+                    8.0
+                } else {
+                    0.0
+                }
+                - row.rank.max(0.0);
+            let (source, matched_line) =
+                detailed_source_excerpt(&row.body, query, &tokens, row.line, &row.kind, &row.name);
+            RankedHit {
+                hit: SearchHit {
+                    name: row.name,
+                    kind: row.kind,
+                    signature: nonempty(row.signature),
+                    module: row.module,
+                    path: row.path,
+                    line: matched_line,
+                    doc: nonempty(row.docs),
+                    source,
+                    usages: Vec::new(),
+                    applicable: false,
+                    required_import: None,
+                },
+                score,
+            }
+        })
+        .collect()
+}
+
+pub(super) fn anchored_api_query(query: &str) -> Option<(&str, Vec<String>, Vec<String>)> {
+    let (anchor, refinement) = query.trim().split_once(char::is_whitespace)?;
+    let specific_anchor =
+        anchor.contains(['.', '_']) || anchor.chars().skip(1).any(char::is_uppercase);
+    if anchor.chars().count() < 6 || !specific_anchor || !declaration_name_query(anchor) {
+        return None;
+    }
+    let tokens = meaningful_query_tokens(refinement);
+    let mut requested = query_tokens(refinement)
+        .into_iter()
+        .filter(|token| token.chars().count() >= 3)
+        .collect::<Vec<_>>();
+    requested.sort();
+    requested.dedup();
+    (!tokens.is_empty() && tokens.len() <= 24).then_some((anchor, tokens, requested))
+}
+
+pub(super) fn missing_hit_terms(hits: &[SearchHit], terms: &[String]) -> Vec<String> {
+    let searchable = hits
+        .iter()
+        .map(|hit| {
+            format!(
+                "{} {} {} {}",
+                hit.name,
+                hit.signature.as_deref().unwrap_or_default(),
+                hit.doc.as_deref().unwrap_or_default(),
+                hit.source.as_deref().unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    terms
+        .iter()
+        .filter(|term| !searchable.contains(term.as_str()))
+        .take(4)
+        .cloned()
+        .collect()
+}
+
+pub(super) fn annotate_missing_hit_terms(result: &mut SearchResult, requested: &[String]) {
+    let missing = missing_hit_terms(&result.hits, requested);
+    if missing.is_empty() {
+        return;
+    }
+    let note = format!("no nearby match for {}", missing.join(", "));
+    result.note = Some(match result.note.take() {
+        Some(existing) => format!("{note}; {existing}"),
+        None => note,
+    });
+}
+
+pub(super) fn specific_query_tokens(query: &str) -> Vec<String> {
+    query
+        .split(|character: char| {
+            !character.is_alphanumeric() && character != '_' && character != '.'
+        })
+        .map(|token| token.trim_matches('.'))
+        .filter(|token| token.len() >= 8)
+        .filter(|token| token.contains(['.', '_']) || token.chars().skip(1).any(char::is_uppercase))
+        .map(str::to_lowercase)
+        .collect()
+}
+
+pub(super) fn source_specific_query_tokens(query: &str) -> Vec<String> {
+    query
+        .split(|character: char| {
+            !character.is_alphanumeric() && character != '_' && character != '.'
+        })
+        .map(|token| token.trim_matches('.'))
+        .filter(|token| token.len() >= 8)
+        .filter(|token| {
+            token.contains(['.', '_'])
+                || (token.chars().next().is_some_and(char::is_lowercase)
+                    && token.chars().skip(1).any(char::is_uppercase))
+        })
+        .map(str::to_lowercase)
+        .collect()
+}
+
+pub(super) fn meaningful_query_tokens(query: &str) -> Vec<String> {
+    let mut tokens = query_tokens(query);
+    if tokens.len() > 1 && tokens.iter().any(|token| !search_syntax_token(token)) {
+        tokens.retain(|token| !search_syntax_token(token));
+    }
+    if tokens.len() > 1 {
+        tokens.retain(|token| token.chars().count() >= 2);
+        tokens.retain(|token| {
+            !matches!(
+                token.as_str(),
+                "all" | "and" | "for" | "from" | "in" | "of" | "on" | "or" | "the" | "to" | "with"
+            )
+        });
+    }
+    if query_requests_proof_body(query) {
+        tokens.retain(|token| {
+            !matches!(
+                token.as_str(),
+                "body" | "implementation" | "proof" | "source"
+            )
+        });
+    }
+    let aliases = tokens
+        .iter()
+        .filter_map(|token| match token.as_str() {
+            "addition" => Some("add"),
+            "continuity" => Some("continuous"),
+            "multiplication" => Some("mul"),
+            "projection" => Some("proj"),
+            "scaling" => Some("smul"),
+            _ => None,
+        })
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    tokens.extend(aliases);
+    let identifier_parts = query
+        .split(|character: char| {
+            !character.is_alphanumeric() && character != '_' && character != '.'
+        })
+        // A guessed qualified declaration often gets the namespace right but the
+        // leaf wrong. Keep the qualified token for exact lookup, and search the
+        // leaf's Lean-style components for nearby members of that namespace.
+        .flat_map(|token| identifier_query_parts(token.rsplit('.').next().unwrap_or(token)))
+        .filter(|part| {
+            part.chars().count() >= 3
+                && !search_syntax_token(part)
+                && !matches!(
+                    part.as_str(),
+                    "all" | "and" | "for" | "from" | "the" | "with"
+                )
+        })
+        .collect::<Vec<_>>();
+    tokens.extend(identifier_parts);
+    let mut seen = HashSet::new();
+    tokens.retain(|token| seen.insert(token.clone()));
+    tokens
+}
+
+pub(super) fn search_syntax_token(token: &str) -> bool {
+    matches!(
+        token,
+        "aesop"
+            | "apply"
+            | "assumption"
+            | "class"
+            | "constructor"
+            | "constructors"
+            | "def"
+            | "exact"
+            | "instance"
+            | "lemma"
+            | "name"
+            | "only"
+            | "rfl"
+            | "rw"
+            | "simp"
+            | "simpa"
+            | "structure"
+            | "theorem"
+            | "using"
+    )
+}
+
+pub(super) fn identifier_query_parts(token: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    for segment in token.split(['.', '_']) {
+        let mut start = 0;
+        let characters = segment.char_indices().collect::<Vec<_>>();
+        for index in 1..characters.len() {
+            let (_, previous) = characters[index - 1];
+            let (offset, current) = characters[index];
+            let next_is_lower = characters
+                .get(index + 1)
+                .is_some_and(|(_, next)| next.is_lowercase());
+            if current.is_uppercase()
+                && (previous.is_lowercase() || previous.is_numeric() || next_is_lower)
+            {
+                parts.push(segment[start..offset].to_lowercase());
+                start = offset;
+            }
+        }
+        if start > 0 || segment != token {
+            parts.push(segment[start..].to_lowercase());
+        }
+    }
+    parts
+}
+
+pub(super) fn qualified_member_score(query: &str, name: &str) -> f64 {
+    if !declaration_name_query(query) {
+        return 0.0;
+    }
+    let Some((query_owner, query_leaf_raw)) = query.trim().rsplit_once('.') else {
+        return 0.0;
+    };
+    let Some((name_owner, name_leaf_raw)) = name.rsplit_once('.') else {
+        return 0.0;
+    };
+    let query_owner = query_owner.to_lowercase();
+    let name_owner = name_owner.to_lowercase();
+    if name_owner != query_owner && !name_owner.ends_with(&format!(".{query_owner}")) {
+        return 0.0;
+    }
+
+    let query_parts = identifier_query_parts(query_leaf_raw)
+        .into_iter()
+        .filter(|part| part.len() >= 3)
+        .collect::<HashSet<_>>();
+    let name_parts = identifier_query_parts(name_leaf_raw)
+        .into_iter()
+        .filter(|part| part.len() >= 3)
+        .collect::<HashSet<_>>();
+    let shared_parts = query_parts.intersection(&name_parts).count();
+    let query_leaf = query_leaf_raw.to_lowercase();
+    let name_leaf = name_leaf_raw.to_lowercase();
+    let common_prefix = query_leaf
+        .chars()
+        .zip(name_leaf.chars())
+        .take_while(|(left, right)| left == right)
+        .count();
+    let common_suffix = query_leaf
+        .chars()
+        .rev()
+        .zip(name_leaf.chars().rev())
+        .take_while(|(left, right)| left == right)
+        .count();
+    300.0
+        + shared_parts as f64 * 250.0
+        + common_prefix.saturating_sub(3).min(10) as f64 * 4.0
+        + common_suffix.saturating_sub(3).min(10) as f64 * 4.0
+}
+
+pub(super) fn promote_query_coverage(ranked: &mut Vec<RankedHit>, tokens: &[String]) {
+    if ranked.len() <= 1 || tokens.len() <= 1 {
+        return;
+    }
+    let mut remaining = std::mem::take(ranked);
+    let mut promoted: Vec<RankedHit> = Vec::new();
+    let qualified = tokens
+        .iter()
+        .filter(|token| token.contains('.') && !token.ends_with(".lean"))
+        .count();
+    if qualified >= 1 {
+        for token in tokens
+            .iter()
+            .filter(|token| token.contains('.') && !token.ends_with(".lean"))
+        {
+            let owner = token.rsplit_once('.').map(|(owner, _)| owner);
+            if let Some(position) = remaining.iter().position(|candidate| {
+                candidate.hit.name.eq_ignore_ascii_case(token)
+                    || owner.is_some_and(|owner| {
+                        candidate.hit.name.eq_ignore_ascii_case(owner)
+                            || candidate
+                                .hit
+                                .name
+                                .to_lowercase()
+                                .ends_with(&format!(".{owner}"))
+                    })
+            }) {
+                promoted.push(remaining.remove(position));
+            }
+        }
+    }
+    remaining.sort_by(|left, right| {
+        hit_query_coverage(&right.hit, tokens).cmp(&hit_query_coverage(&left.hit, tokens))
+    });
+    if promoted.len() < SUMMARY_LIMIT && !remaining.is_empty() {
+        promoted.push(remaining.remove(0));
+    }
+    for token in tokens.iter().filter(|token| token.len() >= 3) {
+        if promoted
+            .iter()
+            .any(|candidate| hit_matches_token(&candidate.hit, token))
+        {
+            continue;
+        }
+        let eligible = |candidate: &RankedHit| {
+            !matches!(candidate.hit.kind.as_str(), "file" | "imports")
+                || matches!(token.as_str(), "import" | "imports")
+        };
+        if let Some(position) = remaining
+            .iter()
+            .enumerate()
+            .filter(|(_, candidate)| {
+                eligible(candidate) && hit_name_matches(&candidate.hit.name, token)
+            })
+            .max_by_key(|(_, candidate)| {
+                candidate
+                    .hit
+                    .name
+                    .split(['.', '_'])
+                    .filter(|segment| tokens.iter().any(|facet| words_match(segment, facet)))
+                    .count()
+            })
+            .map(|(position, _)| position)
+        {
+            promoted.push(remaining.remove(position));
+        } else if token.len() >= 6
+            && !promoted
+                .iter()
+                .any(|candidate| hit_matches_token(&candidate.hit, token))
+            && let Some(position) = remaining.iter().position(|candidate| {
+                eligible(candidate) && hit_matches_token(&candidate.hit, token)
+            })
+        {
+            promoted.push(remaining.remove(position));
+        }
+        if promoted.len() == SUMMARY_LIMIT {
+            break;
+        }
+    }
+    promoted.extend(remaining);
+    *ranked = promoted;
+}
+
+pub(super) fn hit_name_matches(name: &str, token: &str) -> bool {
+    if name.eq_ignore_ascii_case(token) {
+        return true;
+    }
+    let leaf = token.rsplit('.').next().unwrap_or(token);
+    name.split(['.', '_']).any(|segment| {
+        words_match(segment, leaf)
+            || identifier_query_parts(segment)
+                .iter()
+                .any(|part| words_match(part, leaf))
+    })
+}
+
+pub(super) fn hit_matches_token(hit: &SearchHit, token: &str) -> bool {
+    hit_name_matches(&hit.name, token)
+        || [
+            hit.signature.as_deref(),
+            hit.doc.as_deref(),
+            hit.source.as_deref(),
+            Some(hit.module.as_str()),
+            Some(hit.path.as_str()),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|text| text_matches_token(&text.to_lowercase(), token))
+}
+
+pub(super) fn pipe_alternative_covered<'a>(
+    query: &str,
+    hits: impl Iterator<Item = &'a SearchHit> + Clone,
+) -> bool {
+    query.split('|').any(|alternative| {
+        let tokens = query_tokens(alternative)
+            .into_iter()
+            .filter(|token| token.chars().count() >= 3)
+            .collect::<Vec<_>>();
+        !tokens.is_empty()
+            && hits
+                .clone()
+                .any(|hit| tokens.iter().all(|token| hit_matches_token(hit, token)))
+    })
+}
+
+pub(super) fn hit_query_coverage(
+    hit: &SearchHit,
+    tokens: &[String],
+) -> (usize, usize, usize, usize) {
+    let matched = tokens
+        .iter()
+        .filter(|token| hit_matches_token(hit, token))
+        .fold((0, 0), |(count, weight), token| {
+            (count + 1, weight + token.chars().count())
+        });
+    let name_matched = tokens
+        .iter()
+        .filter(|token| hit_name_matches(&hit.name, token))
+        .fold((0, 0), |(count, weight), token| {
+            (count + 1, weight + token.chars().count())
+        });
+    (matched.0, matched.1, name_matched.0, name_matched.1)
+}
+
+pub(super) fn text_matches_token(text: &str, token: &str) -> bool {
+    text.contains(token)
+        || token
+            .strip_suffix('s')
+            .filter(|singular| singular.len() >= 4)
+            .is_some_and(|singular| text.contains(singular))
+}
+
+pub(super) fn words_match(left: &str, right: &str) -> bool {
+    left.eq_ignore_ascii_case(right)
+        || right
+            .strip_suffix('s')
+            .filter(|singular| singular.len() >= 4)
+            .is_some_and(|singular| left.eq_ignore_ascii_case(singular))
+        || left
+            .strip_suffix('s')
+            .filter(|singular| singular.len() >= 4)
+            .is_some_and(|singular| singular.eq_ignore_ascii_case(right))
+}
+
+pub(super) fn declaration_leaf_matches(name: &str, query: &str) -> bool {
+    let leaf = name.rsplit('.').next().unwrap_or(name);
+    query_tokens(query).iter().any(|token| {
+        let token = token.rsplit('.').next().unwrap_or(token);
+        words_match(leaf, token)
+    })
+}
+
+pub(super) fn lexical_score(query: &str, tokens: &[String], row: &IndexedRow) -> f64 {
+    let exact_case_name = row.name == query;
+    let exact_case_leaf = row.name.rsplit('.').next() == Some(query);
+    let query = query.to_lowercase();
+    let name = row.name.to_lowercase();
+    let base = name.rsplit('.').next().unwrap_or(&name);
+    let body = format!(
+        "{} {} {} {}",
+        row.signature.to_lowercase(),
+        row.docs.to_lowercase(),
+        row.body.to_lowercase(),
+        row.path.to_lowercase()
+    );
+    let mut score = if name == query {
+        600.0
+    } else if base == query {
+        105.0
+    } else if name.ends_with(&format!(".{query}")) {
+        95.0
+    } else if name.starts_with(&query) || base.starts_with(&query) {
+        75.0
+    } else if name.contains(&query) {
+        55.0
+    } else {
+        0.0
+    };
+    if row.kind != "file"
+        && tokens.iter().any(|token| {
+            token == &name || (token.len() >= 12 && !token.contains('.') && token.as_str() == base)
+        })
+    {
+        score += 100.0;
+    }
+    if exact_case_name {
+        score += 200.0;
+    } else if exact_case_leaf {
+        score += 160.0;
+    }
+    for token in tokens {
+        if name.contains(token) {
+            score += 12.0;
+        } else if body.contains(token) {
+            score += 3.0;
+        }
+    }
+    let name_segments = name.split('.').collect::<HashSet<_>>();
+    score += tokens
+        .iter()
+        .flat_map(|token| token.split('.'))
+        .filter(|segment| name_segments.contains(segment))
+        .count() as f64
+        * 30.0;
+    if row.kind != "file" {
+        score += 20.0;
+    } else {
+        score -= 40.0;
+    }
+    score += qualified_member_score(&query, &row.name);
+    score += qualified_leaf_path_score(&query, &row.name, &row.module, &row.path);
+    score
+}
+
+pub(super) fn qualified_leaf_path_score(query: &str, name: &str, module: &str, path: &str) -> f64 {
+    if !qualified_leaf_path_match(query, name, module, path) {
+        return if query.contains('.')
+            && name
+                .rsplit('.')
+                .next()
+                .zip(query.rsplit('.').next())
+                .is_some_and(|(left, right)| left.eq_ignore_ascii_case(right))
+        {
+            60.0
+        } else {
+            0.0
+        };
+    }
+    280.0
+}
+
+pub(super) fn qualified_leaf_path_match(query: &str, name: &str, module: &str, path: &str) -> bool {
+    let Some((owner, query_leaf)) = query.rsplit_once('.') else {
+        return false;
+    };
+    let name_leaf = name.rsplit('.').next().unwrap_or(name);
+    if !name_leaf.eq_ignore_ascii_case(query_leaf) {
+        return false;
+    }
+    let owner = owner.rsplit('.').next().unwrap_or(owner).to_lowercase();
+    let location = format!("{module} {path}").to_lowercase();
+    owner.chars().count() >= 3 && location.contains(&owner)
+}
+
+pub(super) fn type_shaped(query: &str) -> bool {
+    query_tokens(query).iter().any(|token| token == "_")
+        || query.contains('→')
+        || query.contains("->")
+        || query.contains('⊢')
+        || query.contains("∀")
+        || query.contains("fun ")
+}
+
+pub(super) fn conclusion_query(query: &str) -> bool {
+    let query = query.trim_start();
+    query.starts_with('⊢') || query.starts_with("|-")
+}
+
+pub(super) fn apply_import_context(candidate: &mut RankedHit, context: &ImportContext) {
+    if candidate.hit.module.is_empty() {
+        return;
+    }
+    if context.accessible.contains(&candidate.hit.module) {
+        candidate.score += 30.0;
+        candidate.hit.required_import = None;
+    } else if context.complete {
+        candidate.score -= 10.0;
+        candidate.hit.required_import = Some(candidate.hit.module.clone());
+    }
+}
+
+pub(super) fn merge_duplicate_hit(existing: &mut SearchHit, candidate: &mut SearchHit) {
+    if existing.kind == "declaration" && !matches!(candidate.kind.as_str(), "declaration" | "file")
+    {
+        existing.kind = candidate.kind.clone();
+    }
+    if existing.signature.is_none() {
+        existing.signature = candidate.signature.take();
+    }
+    if existing.doc.is_none() {
+        existing.doc = candidate.doc.take();
+    }
+    if existing.source.is_none() {
+        existing.source = candidate.source.take();
+    }
+    if existing.usages.is_empty() {
+        existing.usages = std::mem::take(&mut candidate.usages);
+    }
+    existing.applicable |= candidate.applicable;
+    if existing.required_import.is_none() {
+        existing.required_import = candidate.required_import.take();
+    }
+}
+
+pub(super) fn exact_search_result(hits: Vec<SearchHit>, base_warming: bool) -> SearchResult {
+    SearchResult {
+        hits,
+        inference: if type_search_enabled() {
+            "hybrid".into()
+        } else {
+            "hybrid(type-off)".into()
+        },
+        note: base_warming.then(|| "source index warming".into()),
+        ok: true,
+    }
+}
+
+pub(super) fn structural_type_score(pattern: &str, signature: &str) -> f64 {
+    if signature.is_empty() {
+        return 0.0;
+    }
+    let pattern_tokens = query_tokens(pattern)
+        .into_iter()
+        .filter(|token| token != "_")
+        .collect::<Vec<_>>();
+    let signature_lower = signature.to_lowercase();
+    if !pattern_tokens
+        .iter()
+        .all(|token| signature_lower.contains(token))
+    {
+        return 0.0;
+    }
+    let explicit_conclusion = conclusion_query(pattern);
+    let pattern_without_turnstile = pattern
+        .trim_start()
+        .strip_prefix('⊢')
+        .or_else(|| pattern.trim_start().strip_prefix("|-"))
+        .unwrap_or(pattern)
+        .trim_start();
+    let conclusion_head = pattern_without_turnstile
+        .split(|character: char| character.is_whitespace() || character == '(')
+        .find(|part| !part.is_empty());
+    let conclusion_score = if explicit_conclusion
+        && conclusion_head.is_some_and(|head| signature.contains(&format!(": {head}")))
+    {
+        80.0
+    } else {
+        0.0
+    };
+    let shape_score = ["∘", "→L", "≃L", "↔", "∈", "⊆"]
+        .into_iter()
+        .filter(|shape| pattern.contains(shape) && signature.contains(shape))
+        .count() as f64
+        * 50.0;
+    let arrows = pattern.matches('→').count() + pattern.matches("->").count();
+    let signature_arrows = signature.matches('→').count() + signature.matches("->").count();
+    let arrow_score = if arrows == 0 {
+        0.0
+    } else if arrows == signature_arrows {
+        24.0
+    } else if arrows < signature_arrows {
+        10.0
+    } else {
+        0.0
+    };
+    20.0 + arrow_score + conclusion_score + shape_score + pattern_tokens.len() as f64 * 5.0
+}
+
+pub(super) fn type_search_enabled() -> bool {
+    let opted_out = std::env::var("MATHMUX_LOOGLE")
+        .ok()
+        .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "0" | "false" | "off"));
+    let memory_limited = std::env::var("MATHMUX_SEARCH_MEMORY_MB")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .is_some_and(|limit| limit < 16_384);
+    !opted_out && !memory_limited
+}
+
+pub(super) fn nonempty(value: String) -> Option<String> {
+    (!value.trim().is_empty()).then_some(value)
+}
