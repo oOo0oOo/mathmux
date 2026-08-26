@@ -11,6 +11,7 @@ use display::{render_check_run, render_search_run, render_submission, validate_r
 
 const SEARCH_HISTORY_LIMIT: i64 = 20_000;
 const SEARCH_HISTORY_AGE_MS: i64 = 48 * 60 * 60 * 1000;
+pub(crate) const SEARCH_USAGE_LIMIT: usize = 8;
 
 #[derive(Debug, Clone)]
 pub struct State {

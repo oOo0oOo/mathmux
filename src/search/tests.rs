@@ -461,6 +461,10 @@ fn query_parsing_scoring_and_ranking_regressions() {
         "AtiyahSinger.ComplexVectorSubbundle.transportAmbient",
         "ComplexVectorSubbundle.transportAmbient"
     ));
+    assert!(qualified_name_matches(
+        "_root_.Demo.Structure",
+        "Demo.Structure"
+    ));
     assert!(!qualified_name_matches(
         "AtiyahSinger.ComplexVectorSubbundle.transportAmbient",
         "VectorSubbundle.transportAmbient"
@@ -487,6 +491,28 @@ fn query_parsing_scoring_and_ranking_regressions() {
     .unwrap();
     assert_eq!(resolved.len(), 1);
     assert_eq!(resolved[0].hit.name, "Units");
+    let root_aliases = resolved_exact_candidates(
+        vec![
+            RankedHit {
+                hit: SearchHit {
+                    name: "Demo.Structure".into(),
+                    ..contextual_hit.clone()
+                },
+                score: 20.0,
+            },
+            RankedHit {
+                hit: SearchHit {
+                    name: "_root_.Demo.Structure".into(),
+                    kind: "structure".into(),
+                    ..contextual_hit.clone()
+                },
+                score: 10.0,
+            },
+        ],
+        "Demo.Structure",
+    )
+    .unwrap();
+    assert_eq!(root_aliases.len(), 2);
     assert_eq!(result_limit(true, false), RELATED_RESULT_LIMIT);
     assert_eq!(result_limit(true, true), RESULT_LIMIT);
     assert_eq!(result_limit(false, false), RESULT_LIMIT);

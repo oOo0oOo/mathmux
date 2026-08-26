@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use anyhow::{Result, bail};
 
-use super::{CheckProfile, CheckRun, Diagnostic, SearchRun, Submission};
+use super::{CheckProfile, CheckRun, Diagnostic, SEARCH_USAGE_LIMIT, SearchRun, Submission};
 use crate::util::{
     SOURCE_PREVIEW_LINES, format_duration, query_requests_proof_body, short_hash, single_line,
     truncate_line,
@@ -58,7 +58,12 @@ pub(super) fn render_search_run(run: &SearchRun, all: bool) -> String {
             output.push_str("  applicable");
         }
         if !hit.usages.is_empty() {
-            output.push_str(&format!("  refs:{}", hit.usages.len()));
+            let suffix = if hit.usages.len() == SEARCH_USAGE_LIMIT {
+                "+"
+            } else {
+                ""
+            };
+            output.push_str(&format!("  refs:{}{suffix}", hit.usages.len()));
         }
         if let Some(module) = &hit.required_import {
             output.push_str(&format!("\n   import {module}"));

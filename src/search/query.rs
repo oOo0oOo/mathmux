@@ -631,12 +631,16 @@ pub(super) fn declaration_glob_matches(name: &str, query: &str) -> bool {
 }
 
 pub(super) fn qualified_name_matches(name: &str, query: &str) -> bool {
-    let name = name.to_lowercase();
-    let query = query.trim().to_lowercase();
+    let name = canonical_declaration_name(name).to_lowercase();
+    let query = canonical_declaration_name(query.trim()).to_lowercase();
     name == query
         || name
             .strip_suffix(&query)
             .is_some_and(|prefix| prefix.ends_with('.'))
+}
+
+pub(super) fn canonical_declaration_name(name: &str) -> &str {
+    name.strip_prefix("_root_.").unwrap_or(name)
 }
 
 pub(super) fn result_limit(exact_name_miss: bool, show_all: bool) -> usize {
@@ -667,10 +671,11 @@ pub(super) fn unique_qualified_hit_name<'a>(
     query: &str,
 ) -> Option<String> {
     let hits = hits.collect::<Vec<_>>();
+    let query = canonical_declaration_name(query);
     let exact = hits
         .iter()
-        .filter(|hit| hit.name.eq_ignore_ascii_case(query))
-        .map(|hit| hit.name.to_lowercase())
+        .filter(|hit| canonical_declaration_name(&hit.name).eq_ignore_ascii_case(query))
+        .map(|hit| canonical_declaration_name(&hit.name).to_lowercase())
         .collect::<HashSet<_>>();
     if exact.len() == 1 {
         return exact.into_iter().next();
@@ -678,7 +683,7 @@ pub(super) fn unique_qualified_hit_name<'a>(
     let names = hits
         .into_iter()
         .filter(|hit| qualified_name_matches(&hit.name, query))
-        .map(|hit| hit.name.to_lowercase())
+        .map(|hit| canonical_declaration_name(&hit.name).to_lowercase())
         .collect::<HashSet<_>>();
     if names.len() == 1 {
         names.into_iter().next()
@@ -695,7 +700,9 @@ pub(super) fn resolved_exact_candidates(
     Some(
         candidates
             .into_iter()
-            .filter(|candidate| candidate.hit.name.eq_ignore_ascii_case(&name))
+            .filter(|candidate| {
+                canonical_declaration_name(&candidate.hit.name).eq_ignore_ascii_case(&name)
+            })
             .collect(),
     )
 }

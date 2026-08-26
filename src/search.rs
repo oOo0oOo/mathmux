@@ -19,7 +19,7 @@ use crate::check::{Checker, parse_imports, project_module_name};
 use crate::git::{dirty_lean_files, lake_command, lake_executable, project_lean_files};
 use crate::issue::{TelemetryOperation, TelemetryStore, development_enabled};
 use crate::repo::Repo;
-use crate::state::{SearchHit, SearchRun, SearchUsage, State, Workspace};
+use crate::state::{SEARCH_USAGE_LIMIT, SearchHit, SearchRun, SearchUsage, State, Workspace};
 use crate::util::{
     SOURCE_PREVIEW_LINES, clean_line, hash_bytes, now_unix_ms, query_requests_proof_body,
     single_line, truncate_line, truncate_middle,
@@ -2406,6 +2406,8 @@ impl Searcher {
         if let Some(context) = import_context {
             apply_import_context(&mut parent, context);
         }
+        let indexed_parent_name = parent.hit.name.clone();
+        parent.hit.name = canonical_declaration_name(&parent.hit.name).to_owned();
 
         let connection = self.open()?;
         install_active_scopes(&connection, scopes)?;
@@ -2415,7 +2417,10 @@ impl Searcher {
                AND owner IN (SELECT owner FROM active_search_scopes)
              ORDER BY line, name LIMIT 256",
         )?;
-        let query = format!("name : \"{}\"*", parent.hit.name.replace('"', "\"\""));
+        let query = format!(
+            "name : \"{}\"*",
+            indexed_parent_name.replace('"', "\"\"")
+        );
         let prefix = format!("{}.", parent.hit.name);
         let rows = statement
             .query_map([query], indexed_row_from_row)?
@@ -2423,13 +2428,15 @@ impl Searcher {
         let mut seen = HashSet::new();
         let fields = rows
             .into_iter()
-            .filter(|row| {
-                row.module == parent.hit.module
+            .filter_map(|mut row| {
+                row.name = canonical_declaration_name(&row.name).to_owned();
+                (row.module == parent.hit.module
                     && row
                         .name
                         .strip_prefix(&prefix)
                         .is_some_and(|leaf| !leaf.contains('.'))
-                    && seen.insert(row.name.clone())
+                    && seen.insert(row.name.clone()))
+                .then_some(row)
             })
             .collect::<Vec<_>>();
         if fields.is_empty() {
@@ -2671,26 +2678,32 @@ impl Searcher {
         workspace: &Workspace,
     ) -> Result<Vec<SearchUsage>> {
         let connection = self.open()?;
+        install_active_scopes(&connection, scopes)?;
         let mut statement = connection.prepare(
             "SELECT files.owner, files.source_module, refs.line, refs.context
              FROM search_references refs
              JOIN search_reference_files files ON files.id = refs.file_id
-             WHERE refs.target = ?1 LIMIT 100",
+             WHERE refs.target = ?1
+               AND files.owner IN (SELECT owner FROM active_search_scopes)
+             ORDER BY (files.owner = ?2) DESC, files.source_module, refs.line
+             LIMIT ?3",
         )?;
-        let rows = statement.query_map([name], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)? as u64,
-                row.get::<_, Option<String>>(3)?,
-            ))
-        })?;
+        let workspace_owner = format!("workspace:{}", workspace.reference);
+        let rows = statement.query_map(
+            params![name, workspace_owner, SEARCH_USAGE_LIMIT as i64],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)? as u64,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )?;
         let mut usages = Vec::new();
         for row in rows {
             let (owner, module, line, context) = row?;
-            if !scopes.contains(&owner) {
-                continue;
-            }
+            debug_assert!(scopes.contains(&owner));
             usages.push(SearchUsage {
                 path: reference_display_path(&module, workspace),
                 module,
