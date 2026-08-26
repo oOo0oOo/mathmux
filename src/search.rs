@@ -323,13 +323,19 @@ impl Searcher {
                 .or_else(|| run.files.first().map(String::as_str))
                 .map(PathBuf::from);
             let mut context = diagnostic.into_iter().map(|diagnostic| {
-                let (path, line) = diagnostic_position(&diagnostic.text, run.failed.as_deref());
+                let fallback = target.as_deref().and_then(Path::to_str);
+                let (path, line) = diagnostic_position(&diagnostic.text, fallback);
                 SearchHit {
                     name: "diagnostic context".into(),
                     kind: "diagnostic-context".into(),
                     signature: None,
                     module: String::new(),
-                    path: path.unwrap_or_else(|| run.failed.clone().unwrap_or_default()),
+                    path: path.unwrap_or_else(|| {
+                        target
+                            .as_ref()
+                            .map(|path| path.to_string_lossy().into_owned())
+                            .unwrap_or_default()
+                    }),
                     line,
                     doc: None,
                     source: Some(diagnostic_context(
