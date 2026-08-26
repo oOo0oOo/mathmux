@@ -1400,6 +1400,16 @@ fn goal_and_source_query_regressions() {
         path_last.path,
         fs::canonicalize(directory.path().join("Markers.lean")).unwrap()
     );
+    let multiple = match parse_source_occurrence_query(
+        directory.path(),
+        directory.path(),
+        None,
+        "Demo.lean outline Markers.lean outline",
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("multi-file source query unexpectedly accepted"),
+    };
+    assert!(multiple.to_string().contains("one Lean file"));
     let placeholder = match parse_source_occurrence_query(
         directory.path(),
         directory.path(),

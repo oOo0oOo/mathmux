@@ -178,6 +178,9 @@ pub(super) fn parse_source_occurrence_query(
         .map(|(index, _)| index);
     let target_index = match (lean_targets.next(), lean_targets.next()) {
         (Some(index), None) => index,
+        (Some(_), Some(_)) => {
+            bail!("source queries accept one Lean file; search each file separately")
+        }
         _ => 0,
     };
     let target = parts[target_index];
