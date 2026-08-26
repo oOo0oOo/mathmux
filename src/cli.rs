@@ -87,7 +87,7 @@ enum TopCommand {
     /// Summarizes live project agents, Lean code size and growth, agent-normalized
     /// throughput, and recent check, build, and submission statistics.
     Status {
-        /// Print a partially generated formalization.yaml draft.
+        /// Print publication metadata as a partially generated formalization.yaml draft.
         #[arg(long)]
         formalization_yaml: bool,
     },
