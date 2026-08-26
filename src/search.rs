@@ -1904,13 +1904,18 @@ impl Searcher {
             .iter()
             .filter(|token| token.len() >= 4 && token.as_str() != "_")
         {
-            let query = format!("name : \"{}\"*", token.replace('"', "\"\""));
+            let name_query = format!("name : \"{}\"*", token.replace('"', "\"\""));
             let named_rows = named
-                .query_map([query], indexed_row_from_row)?
+                .query_map([name_query], indexed_row_from_row)?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             let found = !named_rows.is_empty();
             rows.extend(named_rows);
-            if !found && (token.len() >= 8 || token.contains(['.', '_'])) {
+            let compound_query = token.eq_ignore_ascii_case(query)
+                && identifier_query_parts(query).len() >= 2;
+            if !found
+                && !compound_query
+                && (token.len() >= 8 || token.contains(['.', '_']))
+            {
                 rows.extend(
                     named_contains
                         .query_map([format!("%{token}%")], indexed_row_from_row)?
