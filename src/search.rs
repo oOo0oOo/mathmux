@@ -52,6 +52,7 @@ const INDEX_COMMIT_BATCH: usize = 64;
 const SEARCH_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 const DIAGNOSTIC_PROBE_MAX_CHECK_MS: u64 = 2_000;
 const DIAGNOSTIC_PROBE_BUDGET: Duration = Duration::from_millis(750);
+const SOURCE_FALLBACK_BUDGET: Duration = Duration::from_secs(2);
 
 pub struct Searcher {
     repo: Repo,

@@ -776,6 +776,7 @@ pub(super) fn fallback_source_hits(
     query: &str,
     query_tokens: &[String],
 ) -> Result<Vec<RankedHit>> {
+    let deadline = Instant::now() + SOURCE_FALLBACK_BUDGET;
     let workspace = fs::canonicalize(workspace)?;
     let packages = fs::canonicalize(workspace.join(".lake/packages")).ok();
     let generic = [
@@ -868,10 +869,20 @@ pub(super) fn fallback_source_hits(
     strong_terms.extend(rare_terms.iter().take(2).cloned());
     strong_terms.sort();
     strong_terms.dedup();
-    let declaration_paths = source_scan_paths(&workspace, packages.as_deref(), &declaration_terms)?;
-    let strong_paths = source_scan_paths(&workspace, packages.as_deref(), &strong_terms)?;
-    let named_argument_paths =
-        source_scan_paths(&workspace, packages.as_deref(), &named_argument_terms)?;
+    let declaration_paths = source_scan_paths(
+        &workspace,
+        packages.as_deref(),
+        &declaration_terms,
+        deadline,
+    )?;
+    let strong_paths =
+        source_scan_paths(&workspace, packages.as_deref(), &strong_terms, deadline)?;
+    let named_argument_paths = source_scan_paths(
+        &workspace,
+        packages.as_deref(),
+        &named_argument_terms,
+        deadline,
+    )?;
     let mut balanced_paths = if symbolic_term.is_some() {
         strong_paths.iter().cloned().map(|path| (path, 1)).collect()
     } else {
@@ -879,6 +890,7 @@ pub(super) fn fallback_source_hits(
             &workspace,
             packages.as_deref(),
             &rare_terms.into_iter().take(12).collect::<Vec<_>>(),
+            deadline,
         )?
     };
     balanced_paths.sort_by(|(left_path, left_score), (right_path, right_score)| {
@@ -914,6 +926,7 @@ pub(super) fn fallback_source_hits(
             &workspace,
             packages.as_deref(),
             &source_specific_query_tokens(query),
+            deadline,
         )?
     };
     let mut paths = direct_paths
@@ -930,7 +943,7 @@ pub(super) fn fallback_source_hits(
     let remaining_paths = if terms == strong_terms {
         strong_paths.clone()
     } else {
-        source_scan_paths(&workspace, packages.as_deref(), &terms)?
+        source_scan_paths(&workspace, packages.as_deref(), &terms, deadline)?
     };
     for candidates in [
         declaration_paths,
@@ -1204,14 +1217,18 @@ pub(super) fn source_scan_paths(
     workspace: &Path,
     packages: Option<&Path>,
     terms: &[String],
+    deadline: Instant,
 ) -> Result<Vec<PathBuf>> {
+    let Some(timeout) = source_scan_timeout(deadline) else {
+        return Ok(Vec::new());
+    };
     if terms.is_empty() {
         return Ok(Vec::new());
     }
     let mut command = std::process::Command::new("timeout");
     command.args([
         "--signal=KILL",
-        "2s",
+        &timeout,
         "rg",
         "-l",
         "-i",
@@ -1243,14 +1260,18 @@ pub(super) fn source_scan_path_counts(
     workspace: &Path,
     packages: Option<&Path>,
     terms: &[String],
+    deadline: Instant,
 ) -> Result<Vec<(PathBuf, usize)>> {
+    let Some(timeout) = source_scan_timeout(deadline) else {
+        return Ok(Vec::new());
+    };
     if terms.is_empty() {
         return Ok(Vec::new());
     }
     let mut command = std::process::Command::new("timeout");
     command.args([
         "--signal=KILL",
-        "2s",
+        &timeout,
         "rg",
         "-c",
         "-i",
@@ -1279,4 +1300,11 @@ pub(super) fn source_scan_path_counts(
             Some((PathBuf::from(path), count.parse().ok()?))
         })
         .collect())
+}
+
+fn source_scan_timeout(deadline: Instant) -> Option<String> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .map(|remaining| format!("{:.3}s", remaining.as_secs_f64().max(0.001)))
 }
