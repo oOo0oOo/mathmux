@@ -41,6 +41,7 @@ const SEARCH_HELP: &str = r#"QUERY FORMS (inferred)
   sREF [TERMS]                  declarations added by a submission
 
   FILE:LINE[:COLUMN]            goal and tested suggestions, or labelled source only
+  MODULE.NAME:LINE              same lookup using Lean module notation
   FILE:LINE more                larger bounded source context
   FILE:tail                     bounded end-of-file context
   FILE:START-END                bounded source range
