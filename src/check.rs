@@ -1128,11 +1128,11 @@ fn profile_declaration_near<'a>(
         }
     }
     let end = lines.len().min(index + 9);
-    for line in index + 1..end {
-        if lines[line].trim().is_empty() {
+    for (line, text) in lines.iter().enumerate().take(end).skip(index + 1) {
+        if text.trim().is_empty() {
             break;
         }
-        if let Some(captures) = declaration.captures(lines[line].trim_start()) {
+        if let Some(captures) = declaration.captures(text.trim_start()) {
             return Some((line as u64 + 1, captures.get(1)?.as_str(), captures.get(2)?.as_str()));
         }
     }

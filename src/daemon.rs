@@ -342,17 +342,7 @@ impl Service {
                     !targets.is_empty(),
                     "submission has no checked Lean changes"
                 );
-                for path in &targets {
-                    if is_root_scratch(path)
-                        && workspace.path.join(path).is_file()
-                        && !git::tracked_at_head(&workspace.path, path)?
-                    {
-                        bail!(
-                            "{} is a check-only scratch file; move the result into a project module or remove it before submit",
-                            path.display()
-                        );
-                    }
-                }
+                reject_new_root_scratch(&workspace.path, &targets)?;
                 let checks = self.checker.valid_certificates(&workspace, &targets)?;
                 let message = message
                     .filter(|value| !value.trim().is_empty())
@@ -486,6 +476,21 @@ fn is_root_scratch(path: &Path) -> bool {
             .file_stem()
             .and_then(|stem| stem.to_str())
             .is_some_and(|stem| stem.to_ascii_lowercase().starts_with("scratch"))
+}
+
+fn reject_new_root_scratch(workspace: &Path, targets: &[PathBuf]) -> Result<()> {
+    for path in targets {
+        if is_root_scratch(path)
+            && workspace.join(path).is_file()
+            && !git::tracked_at_head(workspace, path)?
+        {
+            bail!(
+                "{} is a check-only scratch file; move the result into a project module or remove it before submit",
+                path.display()
+            );
+        }
+    }
+    Ok(())
 }
 
 fn default_submit_message(paths: &[PathBuf]) -> String {

@@ -728,24 +728,29 @@ pub(super) fn missing_source_message(
     Ok(format!("source file not found or ambiguous: {requested}"))
 }
 
+fn source_request_path(display: &str) -> PathBuf {
+    let path = Path::new(display);
+    if !display.contains(['/', '\\'])
+        && display.contains('.')
+        && path
+            .extension()
+            .is_none_or(|extension| extension != "lean")
+    {
+        PathBuf::from(format!("{}.lean", display.replace('.', "/")))
+    } else if path.extension().is_none() {
+        PathBuf::from(format!("{display}.lean"))
+    } else {
+        PathBuf::from(display)
+    }
+}
+
 pub(super) fn resolve_goal_path(
     root: &Path,
     cwd: &Path,
     path: &str,
 ) -> Result<Option<(PathBuf, Option<String>, bool)>> {
     let display = path.strip_prefix("<dependency>/").unwrap_or(path);
-    let requested = if !display.contains(['/', '\\'])
-        && display.contains('.')
-        && Path::new(display)
-            .extension()
-            .is_none_or(|extension| extension != "lean")
-    {
-        PathBuf::from(format!("{}.lean", display.replace('.', "/")))
-    } else if Path::new(display).extension().is_none() {
-        PathBuf::from(format!("{display}.lean"))
-    } else {
-        PathBuf::from(display)
-    };
+    let requested = source_request_path(display);
     if requested
         .extension()
         .is_none_or(|extension| extension != "lean")
@@ -766,6 +771,7 @@ pub(super) fn resolve_goal_path(
 
     let root = fs::canonicalize(root)?;
     let packages = fs::canonicalize(root.join(".lake/packages")).ok();
+    let project_files = std::cell::OnceCell::new();
     let mut variants = vec![requested.clone()];
     if !requested.is_absolute() {
         let components = requested.components().collect::<Vec<_>>();
@@ -839,8 +845,9 @@ pub(super) fn resolve_goal_path(
         )));
     }
     for variant in variants.iter().skip(1) {
-        let mut matches = project_lean_files(&root)
-            .into_iter()
+        let files = project_files.get_or_init(|| project_lean_files(&root));
+        let mut matches = files
+            .iter()
             .filter(|candidate| candidate.ends_with(variant))
             .filter_map(|candidate| fs::canonicalize(root.join(candidate)).ok())
             .collect::<Vec<_>>();
@@ -875,7 +882,7 @@ pub(super) fn resolve_goal_path(
         }
     }
     if requested.components().count() == 1 {
-        let files = project_lean_files(&root);
+        let files = project_files.get_or_init(|| project_lean_files(&root));
         let mut matches = files
             .iter()
             .filter(|candidate| candidate.file_name() == requested.file_name())
