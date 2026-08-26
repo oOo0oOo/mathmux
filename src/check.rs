@@ -137,6 +137,7 @@ unsafe def main (args : List String) : IO UInt32 := do
   | [setupPath] => runServer (← ModuleSetup.load setupPath); return 0
   | _ => IO.eprintln "usage: MathmuxWorker SETUP_JSON"; return 2
 "#;
+const CHECK_RESULT_VERSION: &[u8] = b"check-result-v2";
 
 #[derive(Debug, Clone)]
 pub struct CheckOutcome {
@@ -1263,7 +1264,7 @@ pub fn certificate_fingerprint(
     let mut entries = BTreeSet::new();
     entries.insert(target.to_path_buf());
     entries.extend(dependencies.iter().cloned());
-    let mut material = Vec::new();
+    let mut material = CHECK_RESULT_VERSION.to_vec();
     for path in entries {
         material.extend_from_slice(path.to_string_lossy().as_bytes());
         if root.join(&path).is_file() {
