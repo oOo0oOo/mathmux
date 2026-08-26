@@ -601,7 +601,10 @@ pub(super) fn resolve_goal_path(
         }
         variants.dedup();
     }
-    for variant in &variants {
+    let requested_components = requested.components().count();
+    for variant in variants.iter().filter(|variant| {
+        requested_components == 1 || variant.components().count() > 1
+    }) {
         let mut candidates = Vec::new();
         let project = root.join(variant);
         if project.is_file() {
@@ -657,6 +660,28 @@ pub(super) fn resolve_goal_path(
             [resolved] => return Ok(Some((resolved.clone(), None, true))),
             [] => {}
             _ => return Ok(None),
+        }
+    }
+    if let Some(packages) = &packages {
+        for variant in variants
+            .iter()
+            .filter(|variant| variant.components().count() > 1)
+        {
+            let mut matches = WalkDir::new(packages)
+                .into_iter()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_type().is_file() && entry.path().ends_with(variant))
+                .filter_map(|entry| fs::canonicalize(entry.path()).ok())
+                .collect::<Vec<_>>();
+            matches.sort();
+            matches.dedup();
+            match matches.as_slice() {
+                [resolved] => {
+                    return Ok(Some((resolved.clone(), Some(display.to_owned()), false)));
+                }
+                [] => {}
+                _ => return Ok(None),
+            }
         }
     }
     if requested.components().count() == 1 {

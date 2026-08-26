@@ -1683,6 +1683,27 @@ fn goal_and_source_query_regressions() {
         dependency_without_library.display_path.as_deref(),
         Some("Topology/Basic.lean")
     );
+    let nested_dependency = directory
+        .path()
+        .join(".lake/packages/mathlib/Mathlib/MeasureTheory/Function/LpSpace");
+    fs::create_dir_all(&nested_dependency).unwrap();
+    fs::write(nested_dependency.join("Basic.lean"), &source).unwrap();
+    let dependency_suffix = parse_goal_location(
+        directory.path(),
+        directory.path(),
+        None,
+        "LpSpace/Basic.lean:15",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        dependency_suffix.path,
+        fs::canonicalize(nested_dependency.join("Basic.lean")).unwrap()
+    );
+    assert_eq!(
+        dependency_suffix.display_path.as_deref(),
+        Some("LpSpace/Basic.lean")
+    );
 }
 
 #[test]
