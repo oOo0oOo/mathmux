@@ -3435,8 +3435,12 @@ fn hit_name_matches(name: &str, token: &str) -> bool {
         return true;
     }
     let leaf = token.rsplit('.').next().unwrap_or(token);
-    name.split(['.', '_'])
-        .any(|segment| words_match(segment, leaf))
+    name.split(['.', '_']).any(|segment| {
+        words_match(segment, leaf)
+            || identifier_query_parts(segment)
+                .iter()
+                .any(|part| words_match(part, leaf))
+    })
 }
 
 fn hit_matches_token(hit: &SearchHit, token: &str) -> bool {
@@ -3453,17 +3457,20 @@ fn hit_matches_token(hit: &SearchHit, token: &str) -> bool {
         .any(|text| text_matches_token(&text.to_lowercase(), token))
 }
 
-fn hit_query_coverage(hit: &SearchHit, tokens: &[String]) -> (usize, usize) {
-    (
-        tokens
-            .iter()
-            .filter(|token| hit_matches_token(hit, token))
-            .count(),
-        tokens
-            .iter()
-            .filter(|token| hit_name_matches(&hit.name, token))
-            .count(),
-    )
+fn hit_query_coverage(hit: &SearchHit, tokens: &[String]) -> (usize, usize, usize, usize) {
+    let matched = tokens
+        .iter()
+        .filter(|token| hit_matches_token(hit, token))
+        .fold((0, 0), |(count, weight), token| {
+            (count + 1, weight + token.chars().count())
+        });
+    let name_matched = tokens
+        .iter()
+        .filter(|token| hit_name_matches(&hit.name, token))
+        .fold((0, 0), |(count, weight), token| {
+            (count + 1, weight + token.chars().count())
+        });
+    (matched.0, matched.1, name_matched.0, name_matched.1)
 }
 
 fn text_matches_token(text: &str, token: &str) -> bool {
@@ -5022,8 +5029,29 @@ end Demo
                 &contextual_hit,
                 &["projectionrange".into(), "pullback".into(), "isomorphic".into()]
             ),
-            (3, 2)
+            (3, 33, 2, 25)
         );
+        let mut ranked = vec![
+            RankedHit {
+                hit: SearchHit {
+                    name: "circleMap_neg_radius".into(),
+                    signature: Some("circleMap c r".into()),
+                    ..contextual_hit.clone()
+                },
+                score: 100.0,
+            },
+            RankedHit {
+                hit: SearchHit {
+                    name: "Demo.CircleSeparatedOnRadius.continuousOn_resolvent".into(),
+                    signature: None,
+                    ..contextual_hit.clone()
+                },
+                score: 10.0,
+            },
+        ];
+        let tokens = meaningful_query_tokens("CircleSeparatedOnRadius circleMap");
+        promote_query_coverage(&mut ranked, &tokens);
+        assert!(ranked[0].hit.name.contains("CircleSeparatedOnRadius"));
         assert_eq!(symbolic_source_term("*ᵥ"), Some("*ᵥ".to_owned()));
         assert_eq!(symbolic_source_term("≤"), Some("≤".to_owned()));
         assert_eq!(symbolic_source_term("*"), None);
