@@ -319,7 +319,8 @@ impl Searcher {
             Some(&self.repo.root),
             &expanded.query,
         )?;
-        let show_all = all || (location.is_none() && search_more_requested(&expanded.query));
+        let more = location.is_none() && search_more_requested(&expanded.query);
+        let source_show_all = all || more;
         let query = strip_search_modifiers(&expanded.query);
         let query = query.as_str();
         ensure!(
@@ -339,7 +340,7 @@ impl Searcher {
         } else if let Some(query) =
             parse_source_regex_query(&workspace.path, cwd, query)?
         {
-            source_regex_result(workspace, query, show_all)?
+            source_regex_result(workspace, query, source_show_all)?
         } else if let Some(location) =
             parse_source_occurrence_query(
                 &workspace.path,
@@ -348,7 +349,7 @@ impl Searcher {
                 query,
             )?
         {
-            source_occurrence_result(workspace, location, show_all)?
+            source_occurrence_result(workspace, location, source_show_all)?
         } else {
             let (scopes, base_warming) = match self.index_lock.try_lock() {
                 Ok(_guard) => self.refresh(workspace)?,
@@ -366,7 +367,7 @@ impl Searcher {
                 &scopes,
                 base_warming,
                 expanded.import_target.as_deref(),
-                show_all,
+                all,
             )?
         };
         let mut result = result;
@@ -393,7 +394,8 @@ impl Searcher {
         let ok = result.ok;
         self.state.add_search(&run)?;
         self.state.touch_workspace(&workspace.reference)?;
-        let rendered = if show_all {
+        let render_all = all || (more && run.inference == "source");
+        let rendered = if render_all {
             self.state.show(&run.reference, true)
         } else {
             Ok(render_summary(&run))
