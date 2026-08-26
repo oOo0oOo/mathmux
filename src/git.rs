@@ -508,15 +508,12 @@ pub fn submit(repo: &Repo, workspace: &Workspace, message: &str) -> Result<Submi
 
     let output = run_output("git", ["cherry-pick", &workspace_commit], &repo.root)?;
     if !output.status.success() {
-        let detail = command_detail(&output);
         let _ = run_output("git", ["cherry-pick", "--abort"], &repo.root);
         let restore = run_output("git", ["reset", "--mixed", "HEAD^"], &workspace.path)?;
         if !restore.status.success() {
-            bail!(
-                "integration conflict; workspace change remains committed; run mathmux sync ({detail})"
-            );
+            bail!("integration conflict; workspace change remains committed; run mathmux sync");
         }
-        bail!("integration conflict; run mathmux sync ({detail})");
+        bail!("integration conflict; run mathmux sync");
     }
     let main_commit = head(&repo.root)?;
     Ok(SubmitResult {
@@ -655,7 +652,10 @@ mod tests {
         let main_before = head(&root).unwrap();
         fs::write(workspace.path.join("Proof.lean"), "def value := 2\n").unwrap();
 
-        assert!(submit(&repo, &workspace, "workspace change").is_err());
+        let error = submit(&repo, &workspace, "workspace change")
+            .err()
+            .expect("conflicting submission should fail");
+        assert_eq!(error.to_string(), "integration conflict; run mathmux sync");
         assert_eq!(head(&root).unwrap(), main_before);
         assert!(dirty_paths(&root).unwrap().is_empty());
         assert_eq!(
