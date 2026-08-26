@@ -1925,6 +1925,14 @@ impl Searcher {
                     && qualified_name_matches(&candidate.hit.name, query)
             });
         ranked.truncate(result_limit(exact_name_miss, show_all));
+        if exact_name_miss {
+            // A near declaration-name match should be useful without a follow-up
+            // source-range read. Keep this bounded: summaries show these three
+            // signatures, while ambiguous related source bodies stay hidden.
+            for candidate in ranked.iter_mut().take(3) {
+                self.enrich_exact_source(&mut candidate.hit, scopes)?;
+            }
+        }
         for candidate in &mut ranked {
             if candidate.hit.usages.is_empty()
                 && !matches!(candidate.hit.kind.as_str(), "file" | "imports")
