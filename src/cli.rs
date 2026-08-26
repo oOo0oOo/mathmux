@@ -472,7 +472,7 @@ fn transient_transport_error(error: &anyhow::Error) -> bool {
 fn wait_for_daemon_exit(repo: &Repo) -> Result<()> {
     let started = Instant::now();
     while started.elapsed() < Duration::from_secs(10 * 60) {
-        if !repo.socket_path.exists() {
+        if !repo.socket_path.exists() || UnixStream::connect(&repo.socket_path).is_err() {
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(25));
