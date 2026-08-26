@@ -872,6 +872,19 @@ fn stale_workspace_source_queries_recommend_sync() {
         error.to_string(),
         "source file is on managed main; run mathmux sync"
     );
+    let error = match parse_source_regex_query(
+        workspace.path(),
+        workspace.path(),
+        Some(main.path()),
+        "Demo/Topology/Recent.lean /recent/",
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("stale regex source unexpectedly resolved"),
+    };
+    assert_eq!(
+        error.to_string(),
+        "source file is on managed main; run mathmux sync"
+    );
 
     fs::write(
         main.path().join("Demo/Topology/Shared.lean"),
@@ -1996,6 +2009,7 @@ fn source_regex_queries_scan_a_bounded_scope_with_context() {
     let query = parse_source_regex_query(
         directory.path(),
         directory.path(),
+        None,
         "Nested /^(theorem) .*_apply/",
     )
     .unwrap()
@@ -2021,6 +2035,7 @@ fn source_regex_queries_scan_a_bounded_scope_with_context() {
     let bracketed = parse_source_regex_query(
         directory.path(),
         directory.path(),
+        None,
         "[Nested] /beta_apply/",
     )
     .unwrap()
@@ -2030,6 +2045,7 @@ fn source_regex_queries_scan_a_bounded_scope_with_context() {
     let ranged = parse_source_regex_query(
         directory.path(),
         directory.path(),
+        None,
         "Nested/One.lean:3-3 /alpha|after/",
     )
     .unwrap()
@@ -2057,6 +2073,7 @@ fn source_regex_queries_scan_a_bounded_scope_with_context() {
     let dependency = parse_source_regex_query(
         directory.path(),
         directory.path(),
+        None,
         "Mathlib/Analysis /dependency_hit/",
     )
     .unwrap()

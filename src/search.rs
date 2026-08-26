@@ -340,7 +340,7 @@ impl Searcher {
         } else if let Some(location) = location {
             self.goal_search(workspace, location)?
         } else if let Some(query) =
-            parse_source_regex_query(&workspace.path, cwd, query)?
+            parse_source_regex_query(&workspace.path, cwd, Some(&self.repo.root), query)?
         {
             source_regex_result(workspace, query, source_show_all)?
         } else if let Some(location) =

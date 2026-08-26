@@ -165,6 +165,7 @@ pub(super) struct SourceRegexQuery {
 pub(super) fn parse_source_regex_query(
     root: &Path,
     cwd: &Path,
+    main_root: Option<&Path>,
     query: &str,
 ) -> Result<Option<SourceRegexQuery>> {
     let query = query.trim();
@@ -203,9 +204,10 @@ pub(super) fn parse_source_regex_query(
     } else if range.is_some()
         || Path::new(scope).extension().is_some_and(|extension| extension == "lean")
     {
-        resolve_goal_path(root, cwd, scope)?
-            .map(|(path, _, _)| path)
-            .with_context(|| format!("source file not found or ambiguous: {scope}"))?
+        match resolve_goal_path(root, cwd, scope)? {
+            Some((path, _, _)) => path,
+            None => bail!(missing_source_message(root, main_root, scope)?),
+        }
     } else {
         resolve_source_directory(root, cwd, scope)?
     };
