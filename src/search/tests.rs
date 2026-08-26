@@ -1236,6 +1236,22 @@ fn goal_and_source_query_regressions() {
         .unwrap()
         .is_none()
     );
+    fs::write(
+        directory.path().join("Actual/Topology/CaseSensitive.lean"),
+        "def casing := true\n",
+    )
+    .unwrap();
+    let recovered_case = resolve_goal_path(
+        directory.path(),
+        directory.path(),
+        "caseSensitive.lean",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        recovered_case.0,
+        fs::canonicalize(directory.path().join("Actual/Topology/CaseSensitive.lean")).unwrap()
+    );
     let location = parse_goal_location(directory.path(), directory.path(), None, "Demo.lean:tail")
         .unwrap()
         .unwrap();

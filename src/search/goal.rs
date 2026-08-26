@@ -588,9 +588,32 @@ pub(super) fn resolve_goal_path(
         }
     }
     if requested.components().count() == 1 {
-        let mut matches = project_lean_files(&root)
-            .into_iter()
+        let files = project_lean_files(&root);
+        let mut matches = files
+            .iter()
             .filter(|candidate| candidate.file_name() == requested.file_name())
+            .filter_map(|candidate| fs::canonicalize(root.join(candidate)).ok())
+            .collect::<Vec<_>>();
+        matches.sort();
+        matches.dedup();
+        if let [resolved] = matches.as_slice() {
+            return Ok(Some((resolved.clone(), None, true)));
+        }
+        if !matches.is_empty() {
+            return Ok(None);
+        }
+        let requested_name = requested
+            .file_name()
+            .expect("single-component Lean path has a file name")
+            .to_string_lossy();
+        let mut matches = files
+            .into_iter()
+            .filter(|candidate| {
+                candidate.file_name().is_some_and(|name| {
+                    name.to_string_lossy()
+                        .eq_ignore_ascii_case(&requested_name)
+                })
+            })
             .filter_map(|candidate| fs::canonicalize(root.join(candidate)).ok())
             .collect::<Vec<_>>();
         matches.sort();
