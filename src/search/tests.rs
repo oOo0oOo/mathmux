@@ -259,6 +259,14 @@ fn lean_inspection_syntax_normalizes_to_search_terms() {
         normalize_lean_inspection_query(r"Finset.min\x27_mem|Finset.isLeast_min\'"),
         "Finset.min'_mem|Finset.isLeast_min'"
     );
+    assert_eq!(
+        normalize_lean_inspection_query("LinearMap.mkContinuous2 FILE"),
+        "LinearMap.mkContinuous2"
+    );
+    assert_eq!(
+        normalize_lean_inspection_query("FILE Demo.lean outline"),
+        "Demo.lean outline"
+    );
 }
 
 #[test]
@@ -542,6 +550,22 @@ fn query_parsing_scoring_and_ranking_regressions() {
         "MatrixGL.circleResolventFunction_commutes"
     ));
     assert_eq!(meaningful_query_tokens("precomp (L :=)"), vec!["precomp"]);
+    assert!(
+        meaningful_query_tokens("LinearMap.mkContinuous2")
+            .contains(&"linearmap.mkcontinuous₂".into())
+    );
+    assert!(
+        meaningful_query_tokens("LinearMap.mkContinuous₂")
+            .contains(&"linearmap.mkcontinuous2".into())
+    );
+    assert!(hit_name_matches(
+        "LinearMap.mkContinuous₂",
+        "LinearMap.mkContinuous2"
+    ));
+    assert!(qualified_name_matches(
+        "LinearMap.mkContinuous₂",
+        "LinearMap.mkContinuous2"
+    ));
     assert_eq!(
         meaningful_query_tokens("exact? eTarget.symm"),
         vec!["etarget.symm"]

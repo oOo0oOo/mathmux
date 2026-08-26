@@ -23,7 +23,12 @@ pub(super) fn normalize_lean_inspection_query(query: &str) -> String {
         .replace("\\x27", "'")
         .replace("\\X27", "'")
         .replace("\\'", "'");
-    let mut query = escaped_apostrophes.as_str();
+    let without_file_placeholder = escaped_apostrophes
+        .split_whitespace()
+        .filter(|term| *term != "FILE")
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut query = without_file_placeholder.as_str();
     if let Some((directive, rest)) = query.split_once(char::is_whitespace)
         && matches!(
             directive.to_ascii_lowercase().as_str(),
@@ -705,8 +710,8 @@ pub(super) fn declaration_glob_matches(name: &str, query: &str) -> bool {
 }
 
 pub(super) fn qualified_name_matches(name: &str, query: &str) -> bool {
-    let name = canonical_declaration_name(name).to_lowercase();
-    let query = canonical_declaration_name(query.trim()).to_lowercase();
+    let name = ascii_numeric_spelling(canonical_declaration_name(name)).to_lowercase();
+    let query = ascii_numeric_spelling(canonical_declaration_name(query.trim())).to_lowercase();
     name == query
         || name
             .strip_suffix(&query)
@@ -952,6 +957,12 @@ pub(super) fn meaningful_query_tokens(query: &str) -> Vec<String> {
         .map(str::to_owned)
         .collect::<Vec<_>>();
     tokens.extend(aliases);
+    tokens.extend(
+        tokens
+            .clone()
+            .into_iter()
+            .filter_map(|token| numeric_subscript_alias(&token)),
+    );
     let identifier_parts = query
         .split(|character: char| {
             !character.is_alphanumeric() && character != '_' && character != '.'
@@ -973,6 +984,49 @@ pub(super) fn meaningful_query_tokens(query: &str) -> Vec<String> {
     let mut seen = HashSet::new();
     tokens.retain(|token| seen.insert(token.clone()));
     tokens
+}
+
+fn numeric_subscript_alias(token: &str) -> Option<String> {
+    const ASCII: &str = "0123456789";
+    const SUBSCRIPT: &str = "₀₁₂₃₄₅₆₇₈₉";
+    let has_ascii = token.chars().any(|character| ASCII.contains(character));
+    let has_subscript = token
+        .chars()
+        .any(|character| SUBSCRIPT.contains(character));
+    if has_ascii == has_subscript {
+        return None;
+    }
+    let (from, to) = if has_ascii {
+        (ASCII, SUBSCRIPT)
+    } else {
+        (SUBSCRIPT, ASCII)
+    };
+    Some(
+        token
+            .chars()
+            .map(|character| {
+                from.chars()
+                    .position(|candidate| candidate == character)
+                    .and_then(|index| to.chars().nth(index))
+                    .unwrap_or(character)
+            })
+            .collect(),
+    )
+}
+
+fn ascii_numeric_spelling(value: &str) -> String {
+    const ASCII: &str = "0123456789";
+    const SUBSCRIPT: &str = "₀₁₂₃₄₅₆₇₈₉";
+    value
+        .chars()
+        .map(|character| {
+            SUBSCRIPT
+                .chars()
+                .position(|candidate| candidate == character)
+                .and_then(|index| ASCII.chars().nth(index))
+                .unwrap_or(character)
+        })
+        .collect()
 }
 
 pub(super) fn search_syntax_token(token: &str) -> bool {
@@ -1259,6 +1313,10 @@ pub(super) fn text_matches_token(text: &str, token: &str) -> bool {
 
 pub(super) fn words_match(left: &str, right: &str) -> bool {
     left.eq_ignore_ascii_case(right)
+        || numeric_subscript_alias(left)
+            .is_some_and(|alias| alias.eq_ignore_ascii_case(right))
+        || numeric_subscript_alias(right)
+            .is_some_and(|alias| alias.eq_ignore_ascii_case(left))
         || right
             .strip_suffix('s')
             .filter(|singular| singular.len() >= 4)
@@ -1366,7 +1424,7 @@ pub(super) fn qualified_leaf_path_match(query: &str, name: &str, module: &str, p
         return false;
     };
     let name_leaf = name.rsplit('.').next().unwrap_or(name);
-    if !name_leaf.eq_ignore_ascii_case(query_leaf) {
+    if !words_match(name_leaf, query_leaf) {
         return false;
     }
     let owner = owner.rsplit('.').next().unwrap_or(owner).to_lowercase();

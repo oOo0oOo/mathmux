@@ -160,8 +160,10 @@ fn serve_client(mut stream: UnixStream, service: &Service) -> Result<()> {
         Ok(request) => {
             if client_build_is_newer(&request) {
                 service.retiring.store(true, Ordering::SeqCst);
+                Response::retry()
+            } else {
+                handled_response(service, request)
             }
-            handled_response(service, request)
         }
         Err(error) => Response::error(format!("invalid request: {error}")),
     };
