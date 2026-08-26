@@ -5,6 +5,7 @@ open Lean Lean.Elab
 
 structure Request where
   source : String
+  file_name : String
   version : Nat
 deriving FromJson
 
@@ -199,7 +200,8 @@ unsafe def runServer (setup : ModuleSetup) (profile : Bool) : IO Unit := do
       loop
     | .ok (request : Request) =>
       enableInitializersExecution
-      let input := Parser.mkInputContext request.source setup.name.toString
+      let fileName := if setup.name == `_unknown then request.file_name else setup.name.toString
+      let input := Parser.mkInputContext request.source fileName
       let snapshot ← if profile then
         let fresh ← Language.mkIncrementalProcessor (Language.Lean.process (setupImports setup true))
         fresh input

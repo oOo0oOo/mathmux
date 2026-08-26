@@ -73,6 +73,7 @@ pub struct CheckRepetition {
 #[derive(Debug, Serialize)]
 struct WorkerRequest<'a> {
     source: &'a str,
+    file_name: &'a str,
     version: u64,
 }
 
@@ -638,7 +639,7 @@ impl Checker {
                 }
             }
         }
-        match worker_guard.check(source, timeout, !profile) {
+        match worker_guard.check(source, &target.to_string_lossy(), timeout, !profile) {
             Ok((response, reuse)) => Ok((
                 response,
                 if profile {
@@ -668,7 +669,7 @@ impl Checker {
                         profile,
                     )
                     .with_context(|| format!("Lean worker restart failed after: {error:#}"))?;
-                    match replacement.check(source, timeout, true) {
+                    match replacement.check(source, &target.to_string_lossy(), timeout, true) {
                         Ok((response, _)) => {
                             self.workers
                                 .lock()
@@ -1335,6 +1336,7 @@ impl LeanWorker {
     fn check(
         &mut self,
         source: &str,
+        file_name: &str,
         timeout: Duration,
         reuse_response: bool,
     ) -> Result<(WorkerResponse, WorkerReuse)> {
@@ -1362,6 +1364,7 @@ impl LeanWorker {
             &mut self.stdin,
             &WorkerRequest {
                 source,
+                file_name,
                 version: self.version,
             },
         )?;
