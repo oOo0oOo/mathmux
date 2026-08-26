@@ -596,6 +596,10 @@ pub(super) fn resolve_goal_path(
             }
             variants.push(suffix);
         }
+        if let Some(file_name) = requested.file_name() {
+            variants.push(PathBuf::from(file_name));
+        }
+        variants.dedup();
     }
     for variant in &variants {
         let mut candidates = Vec::new();

@@ -1580,6 +1580,15 @@ fn goal_and_source_query_regressions() {
         recovered.path,
         fs::canonicalize(project.join("Nested.lean")).unwrap()
     );
+    let recovered_guess = parse_source_occurrence_query(
+        directory.path(),
+        directory.path(),
+        None,
+        "Wrong/Prefix/Nested.lean:4-6",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(recovered_guess.path, recovered.path);
     let outline = parse_source_occurrence_query(
         directory.path(),
         directory.path(),
@@ -1589,6 +1598,21 @@ fn goal_and_source_query_regressions() {
     .unwrap()
     .unwrap();
     assert_eq!(outline.path, recovered.path);
+    let other = directory.path().join("Other");
+    fs::create_dir_all(&other).unwrap();
+    fs::write(other.join("Nested.lean"), &source).unwrap();
+    assert!(
+        parse_source_occurrence_query(
+            directory.path(),
+            directory.path(),
+            None,
+            "Wrong/Prefix/Nested.lean:4-6",
+        )
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("source file not found or ambiguous")
+    );
     assert!(
             parse_source_occurrence_query(
                 directory.path(),
