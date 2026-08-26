@@ -1334,11 +1334,23 @@ impl Searcher {
         import_target: Option<&Path>,
         show_all: bool,
     ) -> Result<SearchResult> {
+        let field_inventory = field_inventory_query(query);
         let explicit_declaration = explicit_declaration_name(query);
         let query = explicit_declaration.unwrap_or(query);
         let type_search = type_search_enabled() && type_shaped(query);
         let query_tokens = meaningful_query_tokens(query);
         let import_context = self.import_context(workspace, scopes, base_warming, import_target);
+        if let Some(structure) = field_inventory
+            && let Some(result) = self.field_inventory_result(
+                structure,
+                scopes,
+                workspace,
+                import_context.as_ref(),
+                base_warming,
+            )?
+        {
+            return Ok(result);
+        }
         if !type_search
             && let Some((anchor, refinement_tokens, requested_terms)) = anchored_api_query(query)
         {
@@ -2153,6 +2165,88 @@ impl Searcher {
             .map_err(anyhow::Error::from)
     }
 
+    fn field_inventory_result(
+        &self,
+        structure: &str,
+        scopes: &HashSet<String>,
+        workspace: &Workspace,
+        import_context: Option<&ImportContext>,
+        base_warming: bool,
+    ) -> Result<Option<SearchResult>> {
+        let exact = ranked_exact_candidates(
+            self.exact_candidates(structure, scopes)?,
+            structure,
+            workspace,
+        );
+        if unique_qualified_hit_name(exact.iter().map(|candidate| &candidate.hit), structure)
+            .is_none()
+        {
+            return Ok(None);
+        }
+        let mut parent = merge_exact_candidates(exact);
+        if !matches!(parent.hit.kind.as_str(), "class" | "structure") {
+            return Ok(None);
+        }
+        if let Some(context) = import_context {
+            apply_import_context(&mut parent, context);
+        }
+
+        let connection = self.open()?;
+        install_active_scopes(&connection, scopes)?;
+        let mut statement = connection.prepare(
+            "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0
+             FROM search_fts WHERE search_fts MATCH ?1 AND kind = 'field'
+               AND owner IN (SELECT owner FROM active_search_scopes)
+             ORDER BY line, name LIMIT 256",
+        )?;
+        let query = format!("name : \"{}\"*", parent.hit.name.replace('"', "\"\""));
+        let prefix = format!("{}.", parent.hit.name);
+        let rows = statement
+            .query_map([query], indexed_row_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut seen = HashSet::new();
+        let fields = rows
+            .into_iter()
+            .filter(|row| {
+                row.module == parent.hit.module
+                    && row
+                        .name
+                        .strip_prefix(&prefix)
+                        .is_some_and(|leaf| !leaf.contains('.'))
+                    && seen.insert(row.name.clone())
+            })
+            .collect::<Vec<_>>();
+        if fields.is_empty() {
+            return Ok(None);
+        }
+        let source = fields
+            .iter()
+            .map(|field| {
+                let leaf = field.name.strip_prefix(&prefix).unwrap_or(&field.name);
+                if field.signature.is_empty() {
+                    leaf.to_owned()
+                } else {
+                    format!("{leaf} : {}", field.signature)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let hit = SearchHit {
+            name: format!("{} fields", parent.hit.name),
+            kind: "fields".into(),
+            signature: None,
+            module: parent.hit.module,
+            path: parent.hit.path,
+            line: parent.hit.line,
+            doc: parent.hit.doc,
+            source: Some(source),
+            usages: Vec::new(),
+            applicable: false,
+            required_import: parent.hit.required_import,
+        };
+        Ok(Some(exact_search_result(vec![hit], base_warming)))
+    }
+
     fn direct_continuations(
         &self,
         query: &str,
@@ -2841,6 +2935,7 @@ fn render_summary(run: &SearchRun) -> String {
             if !matches!(
                 hit.kind.as_str(),
                 "file"
+                    | "fields"
                     | "imports"
                     | "location"
                     | "location-more"
@@ -2854,6 +2949,7 @@ fn render_summary(run: &SearchRun) -> String {
             } else {
                 match hit.kind.as_str() {
                     "class" | "inductive" | "structure" => 16,
+                    "fields" => SOURCE_OCCURRENCE_ALL_LIMIT,
                     "imports" => 64,
                     "location" => LOCATION_PREVIEW_LINES,
                     "location-more" => LOCATION_MORE_LINES,
@@ -2865,6 +2961,13 @@ fn render_summary(run: &SearchRun) -> String {
             for line in source.lines().take(source_lines) {
                 output.push('\n');
                 output.push_str(&truncate_line(line.trim_end(), 200));
+            }
+            let omitted = source.lines().count().saturating_sub(source_lines);
+            if omitted > 0 && matches!(hit.kind.as_str(), "class" | "structure") {
+                output.push_str(&format!(
+                    "\n+{omitted} lines; search {} fields",
+                    hit.name
+                ));
             }
         }
     }

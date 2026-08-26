@@ -60,10 +60,10 @@ pub(super) fn strip_search_modifiers(query: &str) -> String {
 pub(super) fn refined_search_query(base: &str, refinement: &str) -> String {
     let refinement = refinement.trim();
     let facet = refinement.to_ascii_lowercase();
-    if matches!(
-        facet.as_str(),
-        "field" | "fields" | "projection" | "projections" | "constructor" | "constructors"
-    ) {
+    if matches!(facet.as_str(), "field" | "fields" | "projection" | "projections") {
+        return format!("{base} fields");
+    }
+    if matches!(facet.as_str(), "constructor" | "constructors") {
         return format!("{base}.mk");
     }
     let refinement = match facet.as_str() {
@@ -77,6 +77,25 @@ pub(super) fn refined_search_query(base: &str, refinement: &str) -> String {
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+pub(super) fn field_inventory_query(query: &str) -> Option<&str> {
+    let terms = query.split_whitespace().collect::<Vec<_>>();
+    let (name, facet) = match terms.as_slice() {
+        [name, facet] => (*name, *facet),
+        [kind, name, facet]
+            if matches!(
+                kind.to_ascii_lowercase().as_str(),
+                "class" | "structure"
+            ) => (*name, *facet),
+        _ => return None,
+    };
+    (declaration_name_query(name)
+        && matches!(
+            facet.to_ascii_lowercase().as_str(),
+            "field" | "fields" | "projection" | "projections"
+        ))
+    .then_some(name)
 }
 
 pub(super) fn search_refinement_facet(refinement: &str) -> bool {

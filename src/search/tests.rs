@@ -565,6 +565,69 @@ fn search_summary_keeps_definition_body_after_ambient_context() {
 }
 
 #[test]
+fn structure_summary_points_to_complete_field_inventory() {
+    let source = std::iter::once("structure Demo.Config where".to_owned())
+        .chain((1..=20).map(|index| format!("  field{index} : Nat")))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let structure = SearchHit {
+        name: "Demo.Config".into(),
+        kind: "structure".into(),
+        signature: None,
+        module: "Demo".into(),
+        path: "Demo.lean".into(),
+        line: 1,
+        doc: None,
+        source: Some(source),
+        usages: Vec::new(),
+        applicable: false,
+        required_import: None,
+    };
+    let summary = render_summary(&SearchRun {
+        reference: "q-fields".into(),
+        workspace_ref: "w1".into(),
+        query: "Demo.Config".into(),
+        inference: "exact".into(),
+        hits: vec![structure],
+        note: None,
+        duration_ms: 1,
+        created_at: 0,
+    });
+    assert!(summary.contains("+5 lines; search Demo.Config fields"));
+
+    let fields = SearchHit {
+        name: "Demo.Config fields".into(),
+        kind: "fields".into(),
+        signature: None,
+        module: "Demo".into(),
+        path: "Demo.lean".into(),
+        line: 1,
+        doc: None,
+        source: Some(
+            (1..=20)
+                .map(|index| format!("field{index} : Nat"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        usages: Vec::new(),
+        applicable: false,
+        required_import: None,
+    };
+    let summary = render_summary(&SearchRun {
+        reference: "q-inventory".into(),
+        workspace_ref: "w1".into(),
+        query: "Demo.Config fields".into(),
+        inference: "exact".into(),
+        hits: vec![fields],
+        note: None,
+        duration_ms: 1,
+        created_at: 0,
+    });
+    assert!(summary.contains("\nfield20 : Nat"));
+    assert!(!summary.contains("source:"));
+}
+
+#[test]
 fn stale_workspace_source_queries_recommend_sync() {
     let main = tempfile::tempdir().unwrap();
     let workspace = tempfile::tempdir().unwrap();
@@ -769,9 +832,15 @@ fn goal_suggestions_accept_leans_multiline_output() {
     );
     assert_eq!(
         refined_search_query("Homeomorph", "fields"),
-        "Homeomorph.mk"
+        "Homeomorph fields"
     );
     assert_eq!(refined_search_query("Homeomorph", "usages"), "Homeomorph");
+    assert_eq!(field_inventory_query("Homeomorph fields"), Some("Homeomorph"));
+    assert_eq!(
+        field_inventory_query("structure Homeomorph projections"),
+        Some("Homeomorph")
+    );
+    assert_eq!(field_inventory_query("Homeomorph constructors"), None);
     assert_eq!(
         diagnostic_position(
             "Demo/Proof.lean:42:7: error: unsolved goals",
