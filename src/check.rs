@@ -1433,6 +1433,7 @@ fn is_linter(diagnostic: &WorkerDiagnostic) -> bool {
     let kind = diagnostic.kind.to_ascii_lowercase();
     let text = diagnostic.text.to_ascii_lowercase();
     kind.contains("linter")
+        || text.contains("this linter can be disabled")
         || text.contains("declaration uses 'sorry'")
         || text.contains("declaration uses `sorry`")
         || text.contains("unused variable")
@@ -1862,8 +1863,9 @@ mod tests {
             ordinary,
             WorkerDiagnostic {
                 severity: "warning".into(),
-                kind: "linter.unusedVariables".into(),
-                text: "Proof.lean:2:1: warning: Try this: omit the unused variable".into(),
+                kind: "declaration".into(),
+                text: "Proof.lean:2:1: warning: Try this: use let\nNote: This linter can be disabled"
+                    .into(),
             },
             WorkerDiagnostic {
                 severity: "error".into(),
