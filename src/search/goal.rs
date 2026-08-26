@@ -184,6 +184,10 @@ pub(super) fn parse_source_regex_query(
     Regex::new(pattern).context("invalid source regex")?;
     let scope = format!("{} {}", &query[..start], &query[end + 1..]);
     let scope = scope.trim();
+    let scope = scope
+        .strip_prefix('[')
+        .and_then(|scope| scope.strip_suffix(']'))
+        .unwrap_or(scope);
     ensure!(
         scope.split_whitespace().count() <= 1,
         "source regex accepts at most one file or directory scope"

@@ -1925,6 +1925,15 @@ fn source_regex_queries_scan_a_bounded_scope_with_context() {
     assert_eq!(result.hits[1].name, "theorem beta_apply := by trivial");
     assert!(result.hits[0].source.as_deref().unwrap().contains(">    2 | theorem alpha_apply"));
     assert!(result.hits[1].path.ends_with("Nested/Two.lean"));
+
+    let bracketed = parse_source_regex_query(
+        directory.path(),
+        directory.path(),
+        "[Nested] /beta_apply/",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(bracketed.scope, fs::canonicalize(directory.path().join("Nested")).unwrap());
 }
 
 #[test]
