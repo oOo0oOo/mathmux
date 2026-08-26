@@ -986,7 +986,7 @@ impl Searcher {
         let query = explicit_declaration.unwrap_or(query);
         let type_search = type_search_enabled() && type_shaped(query);
         let query_tokens = meaningful_query_tokens(query);
-        let rows = self.candidates(query, &query_tokens, type_search)?;
+        let rows = self.candidates(query, &query_tokens, type_search, scopes)?;
         let import_context = self.import_context(workspace, scopes, base_warming);
         if !type_search && declaration_name_query(query) {
             let exact = rows
@@ -1432,21 +1432,35 @@ impl Searcher {
         query: &str,
         tokens: &[String],
         include_all_signatures: bool,
+        scopes: &HashSet<String>,
     ) -> Result<Vec<IndexedRow>> {
         let connection = self.open()?;
+        connection.execute_batch(
+            "CREATE TEMP TABLE active_search_scopes (owner TEXT PRIMARY KEY) WITHOUT ROWID",
+        )?;
+        {
+            let mut insert =
+                connection.prepare("INSERT INTO active_search_scopes(owner) VALUES (?1)")?;
+            for scope in scopes {
+                insert.execute([scope])?;
+            }
+        }
         let fts_query = fts_query(&tokens.join(" "));
         let name_query = declaration_name_query(query);
         let sql = if fts_query.is_empty() && include_all_signatures {
             "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0
-             FROM search_fts WHERE signature <> '' LIMIT 20000"
+             FROM search_fts WHERE signature <> ''
+               AND owner IN (SELECT owner FROM active_search_scopes) LIMIT 20000"
         } else if name_query {
             "SELECT owner, file, module, line, name, kind, signature, docs, body,
                     bm25(search_fts, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 7.0, 3.0, 1.0)
-             FROM search_fts WHERE search_fts MATCH ?1 LIMIT 256"
+             FROM search_fts WHERE search_fts MATCH ?1
+               AND owner IN (SELECT owner FROM active_search_scopes) LIMIT 256"
         } else {
             "SELECT owner, file, module, line, name, kind, signature, docs, body,
                     bm25(search_fts, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 7.0, 3.0, 1.0)
-             FROM search_fts WHERE search_fts MATCH ?1 LIMIT 1000"
+             FROM search_fts WHERE search_fts MATCH ?1
+               AND owner IN (SELECT owner FROM active_search_scopes) LIMIT 1000"
         };
         let mut statement = connection.prepare(sql)?;
         let mut rows = if fts_query.is_empty() && include_all_signatures {
@@ -1466,16 +1480,19 @@ impl Searcher {
         let mut named = connection.prepare(
             "SELECT owner, file, module, line, name, kind, signature, docs, body,
                     bm25(search_fts, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 7.0, 3.0, 1.0)
-             FROM search_fts WHERE search_fts MATCH ?1 LIMIT 128",
+             FROM search_fts WHERE search_fts MATCH ?1
+               AND owner IN (SELECT owner FROM active_search_scopes) LIMIT 128",
         )?;
         let mut named_contains = connection.prepare(
             "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0
-             FROM search_fts WHERE name LIKE ?1 COLLATE NOCASE LIMIT 32",
+             FROM search_fts WHERE name LIKE ?1 COLLATE NOCASE
+               AND owner IN (SELECT owner FROM active_search_scopes) LIMIT 32",
         )?;
         let mut qualified = connection.prepare(
             "SELECT owner, file, module, line, name, kind, signature, docs, body,
                     bm25(search_fts, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 7.0, 3.0, 1.0)
-             FROM search_fts WHERE search_fts MATCH ?1 LIMIT 256",
+             FROM search_fts WHERE search_fts MATCH ?1
+               AND owner IN (SELECT owner FROM active_search_scopes) LIMIT 256",
         )?;
         for token in tokens
             .iter()
@@ -1820,9 +1837,10 @@ impl Searcher {
 }
 
 fn more_search_reference(query: &str) -> Option<&str> {
-    let (reference, modifier) = query.split_once(char::is_whitespace)?;
-    let reference = reference.trim();
-    (modifier.trim().eq_ignore_ascii_case("more")
+    let mut terms = query.split_whitespace().rev();
+    let modifier = terms.next()?;
+    let reference = terms.next()?;
+    (modifier.eq_ignore_ascii_case("more")
         && reference
             .strip_prefix('q')
             .is_some_and(|digits| !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())))
@@ -4453,6 +4471,10 @@ end Demo
         );
         assert_eq!(explicit_declaration_name("theorem search terms"), None);
         assert_eq!(more_search_reference("q4246 MORE"), Some("q4246"));
+        assert_eq!(
+            more_search_reference("projectionRangeInclusionHom q4246 MORE"),
+            Some("q4246")
+        );
         assert_eq!(more_search_reference("q4246 comp"), None);
         assert!(declaration_glob_query("FiberBundle.*equiv"));
         assert!(declaration_glob_matches(
@@ -4466,6 +4488,10 @@ end Demo
         assert!(declaration_glob_matches(
             "Demo.projectionRangePretrivializationAt_totalSpaceMk_isInducing",
             "projectionRange.*IsInducing"
+        ));
+        assert!(declaration_glob_matches(
+            "Demo.projectionRangeInclusionHom",
+            "projectionRange.*Inclusion*"
         ));
         assert!(!declaration_glob_matches(
             "Demo.FiberBundle.local_equiv_apply",
