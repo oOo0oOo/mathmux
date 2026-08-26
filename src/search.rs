@@ -2119,7 +2119,13 @@ impl Searcher {
                AND (lower(name) = lower(?2)
                     OR lower(substr(name, -(length(?2) + 1))) = ('.' || lower(?2)))
                AND owner IN (SELECT owner FROM active_search_scopes)
-             LIMIT 32",
+             ORDER BY CASE WHEN kind = 'file' THEN 1 ELSE 0 END,
+                      length(name),
+                      CASE
+                        WHEN owner LIKE 'workspace:%' OR owner LIKE 'artifacts:%' THEN 0
+                        ELSE 1
+                      END
+             LIMIT 128",
         )?;
         let mut contains_tokens = Vec::new();
         for token in tokens
