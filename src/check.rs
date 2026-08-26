@@ -145,6 +145,7 @@ pub struct CheckOutcome {
     pub elapsed_ms: u64,
     pub warnings: Vec<Diagnostic>,
     pub linters: Vec<Diagnostic>,
+    pub suggestions: Vec<Diagnostic>,
     pub diagnostics: Vec<Diagnostic>,
     pub profile: Option<CheckProfile>,
 }
@@ -173,6 +174,7 @@ struct FileCheck {
     certificate: CheckRecord,
     warnings: Vec<Diagnostic>,
     linters: Vec<Diagnostic>,
+    suggestions: Vec<Diagnostic>,
     diagnostics: Vec<Diagnostic>,
     ok: bool,
     profile: FileCheckProfile,
@@ -243,6 +245,7 @@ impl Checker {
         let mut passed = Vec::new();
         let mut warnings = Vec::new();
         let mut linters = Vec::new();
+        let mut suggestions = Vec::new();
         let mut diagnostics = Vec::new();
         let mut failed = None;
         let mut file_profiles = Vec::new();
@@ -254,6 +257,7 @@ impl Checker {
                     file_profiles.push(result.profile.clone());
                     warnings.extend(result.warnings);
                     linters.extend(result.linters);
+                    suggestions.extend(result.suggestions);
                     if result.ok {
                         passed.push(target_name);
                         certificates.push(result.certificate);
@@ -276,6 +280,7 @@ impl Checker {
         }
         deduplicate(&mut warnings);
         deduplicate(&mut linters);
+        deduplicate(&mut suggestions);
         deduplicate(&mut diagnostics);
         let elapsed_ms = started.elapsed().as_millis() as u64;
         let ok = failed.is_none();
@@ -294,6 +299,7 @@ impl Checker {
             not_checked,
             warnings: warnings.clone(),
             linters: linters.clone(),
+            suggestions: suggestions.clone(),
             diagnostics: diagnostics.clone(),
             profile: include_profile.then_some(CheckProfile {
                 planning_ms,
@@ -311,6 +317,7 @@ impl Checker {
             elapsed_ms,
             warnings,
             linters,
+            suggestions,
             diagnostics,
             profile: run.profile,
         })
@@ -349,6 +356,7 @@ impl Checker {
                 },
                 warnings: Vec::new(),
                 linters: Vec::new(),
+                suggestions: Vec::new(),
                 diagnostics: Vec::new(),
                 ok: true,
                 profile: FileCheckProfile {
@@ -395,7 +403,9 @@ impl Checker {
             response.version > 0,
             "Lean worker returned an invalid source version"
         );
-        let (warnings, linters, mut diagnostics) = partition_diagnostics(&response.diagnostics);
+        let (warnings, linters, mut suggestions, mut diagnostics) =
+            partition_diagnostics(&response.diagnostics);
+        attach_source_context(&mut suggestions, target, &source);
         attach_source_context(&mut diagnostics, target, &source);
         Ok(FileCheck {
             certificate: CheckRecord {
@@ -412,6 +422,7 @@ impl Checker {
             },
             warnings,
             linters,
+            suggestions,
             diagnostics,
             ok: response.ok,
             profile: FileCheckProfile {
@@ -452,6 +463,7 @@ impl Checker {
             certificate,
             warnings: run.warnings,
             linters: run.linters,
+            suggestions: run.suggestions,
             diagnostics: Vec::new(),
             ok: true,
             profile: FileCheckProfile {
@@ -1002,9 +1014,15 @@ fn invalidates_worker(root: &Path, path: &Path, target: &Path) -> bool {
 
 fn partition_diagnostics(
     diagnostics: &[WorkerDiagnostic],
-) -> (Vec<Diagnostic>, Vec<Diagnostic>, Vec<Diagnostic>) {
+) -> (
+    Vec<Diagnostic>,
+    Vec<Diagnostic>,
+    Vec<Diagnostic>,
+    Vec<Diagnostic>,
+) {
     let mut warnings = Vec::new();
     let mut linters = Vec::new();
+    let mut suggestions = Vec::new();
     let mut errors = Vec::new();
     for diagnostic in diagnostics {
         let value = Diagnostic {
@@ -1015,14 +1033,22 @@ fn partition_diagnostics(
         match diagnostic.severity.as_str() {
             "warning" if is_linter(diagnostic) => linters.push(value),
             "warning" => warnings.push(value),
+            "information" | "info" if is_tactic_suggestion(diagnostic) => {
+                suggestions.push(value)
+            }
             "error" => errors.push(value),
             _ => {}
         }
     }
     deduplicate(&mut warnings);
     deduplicate(&mut linters);
+    deduplicate(&mut suggestions);
     deduplicate(&mut errors);
-    (warnings, linters, errors)
+    (warnings, linters, suggestions, errors)
+}
+
+fn is_tactic_suggestion(diagnostic: &WorkerDiagnostic) -> bool {
+    diagnostic.text.contains("Try this:")
 }
 
 fn attach_source_context(diagnostics: &mut [Diagnostic], target: &Path, source: &str) {
@@ -1470,9 +1496,28 @@ mod tests {
                 kind: "typeMismatch".into(),
                 text: "Proof.lean:3:1: error: type mismatch".into(),
             },
+            WorkerDiagnostic {
+                severity: "information".into(),
+                kind: "tactic".into(),
+                text: "Proof.lean:4:1: information: Try this: simp".into(),
+            },
+            WorkerDiagnostic {
+                severity: "information".into(),
+                kind: "trace".into(),
+                text: "Proof.lean:5:1: information: ordinary trace".into(),
+            },
         ];
-        let (warnings, linters, mut errors) = partition_diagnostics(&diagnostics);
-        assert_eq!((warnings.len(), linters.len(), errors.len()), (1, 1, 1));
+        let (warnings, linters, suggestions, mut errors) =
+            partition_diagnostics(&diagnostics);
+        assert_eq!(
+            (
+                warnings.len(),
+                linters.len(),
+                suggestions.len(),
+                errors.len()
+            ),
+            (1, 1, 1, 1)
+        );
         attach_source_context(
             &mut errors,
             Path::new("Proof.lean"),

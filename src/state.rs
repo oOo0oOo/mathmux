@@ -52,6 +52,7 @@ pub struct CheckRun {
     pub not_checked: Vec<String>,
     pub warnings: Vec<Diagnostic>,
     pub linters: Vec<Diagnostic>,
+    pub suggestions: Vec<Diagnostic>,
     pub diagnostics: Vec<Diagnostic>,
     pub profile: Option<CheckProfile>,
     pub duration_ms: u64,
@@ -241,6 +242,7 @@ impl State {
                 not_checked_json TEXT NOT NULL,
                 warnings_json TEXT NOT NULL,
                 linters_json TEXT NOT NULL,
+                suggestions_json TEXT NOT NULL DEFAULT '[]',
                 diagnostics_json TEXT NOT NULL,
                 profile_json TEXT,
                 duration_ms INTEGER NOT NULL,
@@ -299,6 +301,10 @@ impl State {
             [],
         );
         let _ = connection.execute("ALTER TABLE check_runs ADD COLUMN profile_json TEXT", []);
+        let _ = connection.execute(
+            "ALTER TABLE check_runs ADD COLUMN suggestions_json TEXT NOT NULL DEFAULT '[]'",
+            [],
+        );
         for statement in [
             "ALTER TABLE submissions ADD COLUMN build_output TEXT",
             "ALTER TABLE submissions ADD COLUMN axioms_json TEXT NOT NULL DEFAULT '[]'",
@@ -510,8 +516,9 @@ impl State {
         transaction.execute(
             "INSERT INTO check_runs(
                 ref, workspace_ref, status, files_json, passed_json, failed, not_checked_json,
-                warnings_json, linters_json, diagnostics_json, profile_json, duration_ms, created_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                warnings_json, linters_json, suggestions_json, diagnostics_json, profile_json,
+                duration_ms, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 run.reference,
                 run.workspace_ref,
@@ -522,6 +529,7 @@ impl State {
                 serde_json::to_string(&run.not_checked)?,
                 serde_json::to_string(&run.warnings)?,
                 serde_json::to_string(&run.linters)?,
+                serde_json::to_string(&run.suggestions)?,
                 serde_json::to_string(&run.diagnostics)?,
                 run.profile
                     .as_ref()
@@ -555,7 +563,7 @@ impl State {
             .query_row(
                 "SELECT ref, workspace_ref, status, files_json, passed_json, failed,
                         not_checked_json, warnings_json, linters_json, diagnostics_json,
-                        profile_json, duration_ms, created_at
+                        suggestions_json, profile_json, duration_ms, created_at
                  FROM check_runs WHERE ref = ?1",
                 [reference],
                 check_run_from_row,
@@ -898,11 +906,12 @@ fn check_run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CheckRun> {
         warnings: json_column(row, 7),
         linters: json_column(row, 8),
         diagnostics: json_column(row, 9),
+        suggestions: json_column(row, 10),
         profile: row
-            .get::<_, Option<String>>(10)?
+            .get::<_, Option<String>>(11)?
             .and_then(|value| serde_json::from_str(&value).ok()),
-        duration_ms: row.get(11)?,
-        created_at: row.get(12)?,
+        duration_ms: row.get(12)?,
+        created_at: row.get(13)?,
     })
 }
 

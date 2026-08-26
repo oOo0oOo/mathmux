@@ -304,7 +304,8 @@ impl Searcher {
             let diagnostic = run
                 .diagnostics
                 .first()
-                .or_else(|| run.warnings.first());
+                .or_else(|| run.warnings.first())
+                .or_else(|| run.suggestions.first());
             let diagnostic_text = diagnostic.map(|value| value.text.as_str()).unwrap_or_default();
             let mut diagnostic_query = diagnostic_search_query(diagnostic_text);
             if diagnostic_text.contains("Invalid field")

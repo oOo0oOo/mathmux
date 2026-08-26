@@ -321,6 +321,13 @@ fn check_summary(outcome: &CheckOutcome) -> String {
             outcome.reference
         ));
     }
+    if outcome.ok && !outcome.suggestions.is_empty() {
+        output.push_str(&format!(
+            "\nsuggestions: {}; search {}",
+            outcome.suggestions.len(),
+            outcome.reference
+        ));
+    }
     if !outcome.ok {
         if let Some(diagnostic) = outcome.diagnostics.first() {
             let detail = clean_line(&diagnostic.text);
@@ -424,6 +431,7 @@ mod tests {
             elapsed_ms: 10,
             warnings: Vec::new(),
             linters: Vec::new(),
+            suggestions: Vec::new(),
             diagnostics: vec![Diagnostic {
                 kind: "error".into(),
                 text: diagnostic,
@@ -449,6 +457,7 @@ mod tests {
                 text: "unused variable".into(),
                 context: None,
             }],
+            suggestions: Vec::new(),
             diagnostics: Vec::new(),
             profile: None,
         });
