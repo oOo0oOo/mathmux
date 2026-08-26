@@ -239,12 +239,23 @@ pub fn sync(repo: &Repo, workspace: &Workspace) -> Result<SyncResult> {
     if merge_in_progress(&workspace.path) {
         return continue_sync(workspace);
     }
+    let unmerged = unmerged_paths(&workspace.path)?;
+    if !unmerged.is_empty() {
+        return continue_autostash_sync(workspace, unmerged);
+    }
     let output = run_output(
         "git",
         ["merge", "--no-edit", "--autostash", "main"],
         &workspace.path,
     )?;
     if output.status.success() {
+        let conflicts = unmerged_paths(&workspace.path)?;
+        if !conflicts.is_empty() {
+            return Ok(SyncResult {
+                clean: false,
+                detail: conflict_detail(conflicts.iter().map(|path| path.to_string_lossy())),
+            });
+        }
         let detail = command_detail(&output);
         return Ok(SyncResult {
             clean: true,
@@ -266,6 +277,34 @@ pub fn sync(repo: &Repo, workspace: &Workspace) -> Result<SyncResult> {
     Ok(SyncResult {
         clean: false,
         detail: conflict_detail(conflicts.lines()),
+    })
+}
+
+fn continue_autostash_sync(
+    workspace: &Workspace,
+    conflicts: Vec<PathBuf>,
+) -> Result<SyncResult> {
+    let unresolved = conflicts
+        .iter()
+        .filter(|path| has_conflict_markers(&workspace.path.join(path)))
+        .collect::<Vec<_>>();
+    if !unresolved.is_empty() {
+        return Ok(SyncResult {
+            clean: false,
+            detail: conflict_detail(unresolved.iter().map(|path| path.to_string_lossy())),
+        });
+    }
+    let mut args = vec!["add".into(), "--".into()];
+    args.extend(conflicts.iter().map(|path| path.as_os_str().to_owned()));
+    run_checked("git", args, &workspace.path)
+        .context("cannot mark resolved autostash conflicts")?;
+    let mut args = vec!["reset".into(), "--".into()];
+    args.extend(conflicts.iter().map(|path| path.as_os_str().to_owned()));
+    run_checked("git", args, &workspace.path)
+        .context("cannot restore resolved workspace changes")?;
+    Ok(SyncResult {
+        clean: true,
+        detail: "resolved autostash conflicts".into(),
     })
 }
 
@@ -545,6 +584,51 @@ mod tests {
         let second = sync(&repo, &workspace).unwrap();
         assert!(second.clean);
         assert!(!merge_in_progress(&workspace.path));
+        assert_eq!(
+            fs::read_to_string(workspace.path.join("Proof.lean")).unwrap(),
+            "def value := 3\n"
+        );
+    }
+
+    #[test]
+    fn sync_reports_and_recovers_autostash_conflicts() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("repo");
+        fs::create_dir(&root).unwrap();
+        run_checked("git", ["init", "-b", "main"], &root).unwrap();
+        run_checked("git", ["config", "user.name", "mathmux test"], &root).unwrap();
+        run_checked(
+            "git",
+            ["config", "user.email", "mathmux@test.invalid"],
+            &root,
+        )
+        .unwrap();
+        fs::write(root.join("Proof.lean"), "def value := 0\n").unwrap();
+        run_checked("git", ["add", "."], &root).unwrap();
+        run_checked("git", ["commit", "-m", "initial"], &root).unwrap();
+
+        let repo = Repo::discover(&root).unwrap();
+        let state = State::new(&repo.db_path).unwrap();
+        let workspace = create_workspace(&repo, &state, "agent").unwrap();
+        fs::write(workspace.path.join("Proof.lean"), "def value := 1\n").unwrap();
+        fs::write(root.join("Proof.lean"), "def value := 2\n").unwrap();
+        run_checked("git", ["add", "."], &root).unwrap();
+        run_checked("git", ["commit", "-m", "main"], &root).unwrap();
+
+        let first = sync(&repo, &workspace).unwrap();
+        assert!(!first.clean);
+        assert!(!merge_in_progress(&workspace.path));
+        assert_eq!(unmerged_paths(&workspace.path).unwrap().len(), 1);
+        assert!(has_conflict_markers(&workspace.path.join("Proof.lean")));
+
+        fs::write(workspace.path.join("Proof.lean"), "def value := 3\n").unwrap();
+        let second = sync(&repo, &workspace).unwrap();
+        assert!(second.clean);
+        assert!(unmerged_paths(&workspace.path).unwrap().is_empty());
+        assert_eq!(
+            dirty_paths(&workspace.path).unwrap(),
+            vec![PathBuf::from("Proof.lean")]
+        );
         assert_eq!(
             fs::read_to_string(workspace.path.join("Proof.lean")).unwrap(),
             "def value := 3\n"
