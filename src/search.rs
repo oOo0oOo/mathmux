@@ -1601,6 +1601,14 @@ impl Searcher {
                 rows.extend(
                     qualified
                         .query_map([query], indexed_row_from_row)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?,
+                );
+            }
+            if leaf.chars().count() >= 3 {
+                let query = format!("name : \"{}\"", leaf.replace('"', "\"\""));
+                rows.extend(
+                    named
+                        .query_map([query], indexed_row_from_row)?
                         .collect::<rusqlite::Result<Vec<_>>>()?,
                 );
             }
@@ -3467,7 +3475,26 @@ fn lexical_score(query: &str, tokens: &[String], row: &IndexedRow) -> f64 {
         score -= 40.0;
     }
     score += qualified_member_score(&query, &row.name);
+    score += qualified_leaf_path_score(&query, &row.name, &row.module, &row.path);
     score
+}
+
+fn qualified_leaf_path_score(query: &str, name: &str, module: &str, path: &str) -> f64 {
+    let Some((owner, query_leaf)) = query.rsplit_once('.') else {
+        return 0.0;
+    };
+    let name_leaf = name.rsplit('.').next().unwrap_or(name);
+    if !name_leaf.eq_ignore_ascii_case(query_leaf) {
+        return 0.0;
+    }
+    let owner = owner.rsplit('.').next().unwrap_or(owner).to_lowercase();
+    let location = format!("{module} {path}").to_lowercase();
+    60.0
+        + if owner.chars().count() >= 3 && location.contains(&owner) {
+            220.0
+        } else {
+            0.0
+        }
 }
 
 fn type_shaped(query: &str) -> bool {
@@ -4938,6 +4965,24 @@ end Demo
         );
         assert!(
             qualified_member_score("LinearEquiv.ofSurjective", "LinearEquiv.ofBijective") > 90.0
+        );
+        assert_eq!(
+            qualified_leaf_path_score(
+                "KZero.add",
+                "AtiyahSinger.ComplexVectorBundle.add",
+                "AtiyahSinger.ComplexVectorBundleKZero",
+                "AtiyahSinger/ComplexVectorBundleKZero.lean"
+            ),
+            280.0
+        );
+        assert_eq!(
+            qualified_leaf_path_score(
+                "BundleClass.add",
+                "AtiyahSinger.ComplexVectorBundle.add",
+                "AtiySinger.ComplexVectorBundleKZero",
+                "AtiyahSinger/ComplexVectorBundleKZero.lean"
+            ),
+            60.0
         );
         assert_eq!(
             meaningful_query_tokens("finite_trivialization_cover proof body"),
