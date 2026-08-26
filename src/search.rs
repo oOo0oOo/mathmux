@@ -1379,9 +1379,7 @@ impl Searcher {
                 return Ok(result);
             }
             let exact = ranked_exact_candidates(exact_rows, anchor, workspace);
-            if unique_qualified_hit_name(exact.iter().map(|candidate| &candidate.hit), anchor)
-                .is_some()
-            {
+            if let Some(exact) = resolved_exact_candidates(exact, anchor) {
                 let mut resolved = merge_exact_candidates(exact);
                 self.enrich_exact_source(&mut resolved.hit, scopes)?;
                 resolved.hit.usages = self.usages(&resolved.hit.name, scopes, workspace)?;
@@ -1435,12 +1433,7 @@ impl Searcher {
                 }
             }
             let exact = ranked_exact_candidates(exact_rows, &exact_query, workspace);
-            if unique_qualified_hit_name(
-                exact.iter().map(|candidate| &candidate.hit),
-                &exact_query,
-            )
-            .is_some()
-            {
+            if let Some(exact) = resolved_exact_candidates(exact, &exact_query) {
                 let mut resolved = merge_exact_candidates(exact);
                 self.enrich_exact_source(&mut resolved.hit, scopes)?;
                 resolved.hit.usages = self.usages(&resolved.hit.name, scopes, workspace)?;
@@ -2178,11 +2171,9 @@ impl Searcher {
             structure,
             workspace,
         );
-        if unique_qualified_hit_name(exact.iter().map(|candidate| &candidate.hit), structure)
-            .is_none()
-        {
+        let Some(exact) = resolved_exact_candidates(exact, structure) else {
             return Ok(None);
-        }
+        };
         let structural = exact
             .into_iter()
             .filter(|candidate| matches!(candidate.hit.kind.as_str(), "class" | "structure"))

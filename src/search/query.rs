@@ -626,7 +626,17 @@ pub(super) fn unique_qualified_hit_name<'a>(
     hits: impl Iterator<Item = &'a SearchHit>,
     query: &str,
 ) -> Option<String> {
+    let hits = hits.collect::<Vec<_>>();
+    let exact = hits
+        .iter()
+        .filter(|hit| hit.name.eq_ignore_ascii_case(query))
+        .map(|hit| hit.name.to_lowercase())
+        .collect::<HashSet<_>>();
+    if exact.len() == 1 {
+        return exact.into_iter().next();
+    }
     let names = hits
+        .into_iter()
         .filter(|hit| qualified_name_matches(&hit.name, query))
         .map(|hit| hit.name.to_lowercase())
         .collect::<HashSet<_>>();
@@ -635,6 +645,19 @@ pub(super) fn unique_qualified_hit_name<'a>(
     } else {
         None
     }
+}
+
+pub(super) fn resolved_exact_candidates(
+    candidates: Vec<RankedHit>,
+    query: &str,
+) -> Option<Vec<RankedHit>> {
+    let name = unique_qualified_hit_name(candidates.iter().map(|candidate| &candidate.hit), query)?;
+    Some(
+        candidates
+            .into_iter()
+            .filter(|candidate| candidate.hit.name.eq_ignore_ascii_case(&name))
+            .collect(),
+    )
 }
 
 pub(super) fn merge_exact_candidates(mut candidates: Vec<RankedHit>) -> RankedHit {

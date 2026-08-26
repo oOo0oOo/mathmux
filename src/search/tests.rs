@@ -366,6 +366,28 @@ fn inference_reserves_positions_and_recognizes_type_patterns() {
         "AtiyahSinger.ComplexVectorSubbundle.transportAmbient",
         "VectorSubbundle.transportAmbient"
     ));
+    let resolved = resolved_exact_candidates(
+        vec![
+            RankedHit {
+                hit: SearchHit {
+                    name: "NumberField.Units".into(),
+                    ..contextual_hit.clone()
+                },
+                score: 20.0,
+            },
+            RankedHit {
+                hit: SearchHit {
+                    name: "Units".into(),
+                    ..contextual_hit.clone()
+                },
+                score: 10.0,
+            },
+        ],
+        "Units",
+    )
+    .unwrap();
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].hit.name, "Units");
     assert_eq!(result_limit(true, false), RELATED_RESULT_LIMIT);
     assert_eq!(result_limit(true, true), RESULT_LIMIT);
     assert_eq!(result_limit(false, false), RESULT_LIMIT);
