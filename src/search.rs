@@ -183,7 +183,8 @@ impl Searcher {
             return self.state.show(reference, true);
         }
         let query = self.expand_reference_query(query.trim())?;
-        let query = strip_trailing_more(&query);
+        let query = strip_search_modifiers(&query);
+        let query = query.as_str();
         ensure!(!query.is_empty(), "search query is empty");
         let reference = self.state.next_ref('q')?;
         let started = Instant::now();
@@ -1945,16 +1946,12 @@ fn more_search_reference(query: &str) -> Option<&str> {
     .then_some(reference)
 }
 
-fn strip_trailing_more(query: &str) -> &str {
-    let query = query.trim();
-    let Some((prefix, modifier)) = query.rsplit_once(char::is_whitespace) else {
-        return query;
-    };
-    if modifier.eq_ignore_ascii_case("more") {
-        prefix.trim_end()
-    } else {
-        query
-    }
+fn strip_search_modifiers(query: &str) -> String {
+    query
+        .split_whitespace()
+        .filter(|term| !term.eq_ignore_ascii_case("more"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn diagnostic_search_query(diagnostic: &str) -> String {
@@ -4702,10 +4699,10 @@ end Demo
             Some("q4246")
         );
         assert_eq!(more_search_reference("q4246 comp"), None);
-        assert_eq!(strip_trailing_more("declaration terms MORE"), "declaration terms");
-        assert_eq!(strip_trailing_more("declaration terms more"), "declaration terms");
-        assert_eq!(strip_trailing_more("declaration terms"), "declaration terms");
-        assert_eq!(strip_trailing_more("MORE"), "MORE");
+        assert_eq!(strip_search_modifiers("declaration terms MORE"), "declaration terms");
+        assert_eq!(strip_search_modifiers("declaration MORE terms more"), "declaration terms");
+        assert_eq!(strip_search_modifiers("declaration terms"), "declaration terms");
+        assert_eq!(strip_search_modifiers("MORE"), "");
         assert_eq!(symbolic_source_term("*ᵥ"), Some("*ᵥ".to_owned()));
         assert_eq!(symbolic_source_term("≤"), Some("≤".to_owned()));
         assert_eq!(symbolic_source_term("*"), None);
