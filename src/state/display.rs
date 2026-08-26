@@ -228,7 +228,7 @@ pub(super) fn render_submission(submission: &Submission, all: bool) -> String {
             }
         } else {
             let rendered = if all {
-                build_output.trim().to_owned()
+                bounded_build_output(build_output)
             } else {
                 condense_build_output(build_output)
             };
@@ -332,6 +332,29 @@ fn condense_build_output(output: &str) -> String {
         .join("\n")
 }
 
+fn bounded_build_output(output: &str) -> String {
+    const LINE_LIMIT: usize = 120;
+    const TAIL_LINES: usize = 30;
+
+    let lines = output.trim().lines().collect::<Vec<_>>();
+    if lines.len() <= LINE_LIMIT {
+        return lines.join("\n");
+    }
+    let head_lines = LINE_LIMIT - TAIL_LINES;
+    let omitted = lines.len() - LINE_LIMIT;
+    let mut selected = lines[..head_lines]
+        .iter()
+        .map(|line| (*line).to_owned())
+        .collect::<Vec<_>>();
+    selected.push(format!("... {omitted} build lines omitted ..."));
+    selected.extend(
+        lines[lines.len() - TAIL_LINES..]
+            .iter()
+            .map(|line| (*line).to_owned()),
+    );
+    selected.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,5 +375,18 @@ mod tests {
         assert!(output.contains("diagnostic line 1"));
         assert!(output.contains("diagnostic line 300"));
         assert!(output.contains("289 diagnostic lines omitted"));
+    }
+
+    #[test]
+    fn expanded_build_output_keeps_head_and_tail_within_the_budget() {
+        let output = (1..=300)
+            .map(|line| format!("build line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let rendered = bounded_build_output(&output);
+        assert_eq!(rendered.lines().count(), 121);
+        assert!(rendered.contains("build line 1"));
+        assert!(rendered.contains("build line 300"));
+        assert!(rendered.contains("180 build lines omitted"));
     }
 }

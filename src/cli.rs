@@ -131,12 +131,12 @@ enum TopCommand {
     },
     /// Show stored detail for a short reference.
     ///
-    /// Accepts cREF, qREF, sREF, uREF, or wREF. --all includes every stored diagnostic,
-    /// result, linter message, build line, axiom, and sorry location.
+    /// Accepts cREF, qREF, sREF, uREF, or wREF. --all expands stored detail while
+    /// keeping raw build logs bounded.
     Show {
         /// Stored cREF, qREF, sREF, uREF, or wREF.
         reference: String,
-        /// Include complete stored detail.
+        /// Include expanded stored detail.
         #[arg(long)]
         all: bool,
     },
