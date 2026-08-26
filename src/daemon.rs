@@ -289,7 +289,6 @@ impl Service {
                     validated_by: None,
                     created_at: now_unix_ms(),
                 })?;
-                self.checker.invalidate_workspace(&workspace.reference);
                 self.validation.wake();
                 Ok(reference)
             }
