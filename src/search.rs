@@ -1583,9 +1583,7 @@ impl Searcher {
                 ),
             }
         }
-        if declaration_glob_query(query) {
-            ranked.retain(|candidate| declaration_glob_matches(&candidate.hit.name, query));
-        }
+        let glob_name_miss = apply_declaration_glob(&mut ranked, query);
         if let Some(context) = &import_context {
             for candidate in &mut ranked {
                 apply_import_context(candidate, context);
@@ -1624,6 +1622,22 @@ impl Searcher {
         }
         let no_hits = ranked.is_empty();
         let dependency_sources_missing = dependency_sources_missing(&workspace.path);
+        let mut note = match (base_warming, warming, no_hits && dependency_sources_missing) {
+            (_, _, true) => {
+                Some("dependency sources unavailable: .lake/packages is missing".into())
+            }
+            (true, true, _) => Some("source and type indexes warming".into()),
+            (true, false, _) => Some("source index warming".into()),
+            (false, true, _) => Some("type index warming".into()),
+            (false, false, false) => None,
+        };
+        if glob_name_miss {
+            let detail = "no matching declaration name; showing related results";
+            note = Some(match note {
+                Some(existing) => format!("{detail}; {existing}"),
+                None => detail.into(),
+            });
+        }
         Ok(SearchResult {
             hits: ranked.into_iter().map(|candidate| candidate.hit).collect(),
             inference: if type_search {
@@ -1633,15 +1647,7 @@ impl Searcher {
             } else {
                 "hybrid".into()
             },
-            note: match (base_warming, warming, no_hits && dependency_sources_missing) {
-                (_, _, true) => {
-                    Some("dependency sources unavailable: .lake/packages is missing".into())
-                }
-                (true, true, _) => Some("source and type indexes warming".into()),
-                (true, false, _) => Some("source index warming".into()),
-                (false, true, _) => Some("type index warming".into()),
-                (false, false, false) => None,
-            },
+            note,
             ok: true,
         })
     }
@@ -3593,6 +3599,21 @@ fn declaration_glob_query(query: &str) -> bool {
         && query.chars().all(|character| {
             character.is_alphanumeric() || matches!(character, '_' | '.' | '\'' | '*')
         })
+}
+
+fn apply_declaration_glob(candidates: &mut Vec<RankedHit>, query: &str) -> bool {
+    if !declaration_glob_query(query) {
+        return false;
+    }
+    if candidates
+        .iter()
+        .any(|candidate| declaration_glob_matches(&candidate.hit.name, query))
+    {
+        candidates.retain(|candidate| declaration_glob_matches(&candidate.hit.name, query));
+        false
+    } else {
+        !candidates.is_empty()
+    }
 }
 
 fn declaration_glob_matches(name: &str, query: &str) -> bool {
@@ -5842,6 +5863,25 @@ end Demo
             "Demo.FiberBundle.local_equiv_apply",
             "FiberBundle.*equiv"
         ));
+        let mut relational = vec![RankedHit {
+            hit: SearchHit {
+                name: "ContinuousLinearMap.intervalIntegral_comp_comm".into(),
+                ..contextual_hit.clone()
+            },
+            score: 10.0,
+        }];
+        assert!(apply_declaration_glob(&mut relational, "Matrix.*integral"));
+        assert_eq!(relational.len(), 1);
+        relational.push(RankedHit {
+            hit: SearchHit {
+                name: "Demo.Matrix_entry_integral".into(),
+                ..contextual_hit.clone()
+            },
+            score: 5.0,
+        });
+        assert!(!apply_declaration_glob(&mut relational, "Matrix.*integral"));
+        assert_eq!(relational.len(), 1);
+        assert_eq!(relational[0].hit.name, "Demo.Matrix_entry_integral");
         assert!(qualified_name_matches(
             "AtiyahSinger.ComplexVectorSubbundle.transportAmbient",
             "ComplexVectorSubbundle.transportAmbient"
