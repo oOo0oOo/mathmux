@@ -5429,6 +5429,17 @@ fn render_summary(run: &SearchRun) -> String {
             output.push_str(&format!("\n  import {module}"));
         }
         if let Some(source) = displayed_source {
+            if !matches!(
+                hit.kind.as_str(),
+                "file"
+                    | "imports"
+                    | "location"
+                    | "location-more"
+                    | "source-occurrences"
+                    | "source-range"
+            ) {
+                output.push_str("\nsource:");
+            }
             let source_lines = if index == 0 && proof_body_requested {
                 DECLARATION_DETAIL_LINES
             } else {
@@ -5443,7 +5454,7 @@ fn render_summary(run: &SearchRun) -> String {
                 }
             };
             for line in source.lines().take(source_lines) {
-                output.push_str("\n  ");
+                output.push('\n');
                 output.push_str(&truncate_line(line.trim_end(), 200));
             }
         }
@@ -5567,7 +5578,13 @@ fn source_occurrence_result(
     let excerpt = matches
         .iter()
         .take(limit)
-        .map(|(line, source)| format!("{line:>5}  {source}"))
+        .map(|(line, source)| {
+            if query.terms.is_empty() {
+                (*source).to_owned()
+            } else {
+                format!("{line:>5}  {source}")
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n");
     let relative = query.display_path.unwrap_or_else(|| {
@@ -6653,7 +6670,8 @@ end Demo
             duration_ms: 1,
             created_at: 0,
         });
-        assert!(summary.contains("\n    n + 1"));
+        assert!(summary.contains("source:\n-- ambient context"));
+        assert!(summary.contains("\n  n + 1"));
         assert!(!summary.contains("matrixLaurentShift : Nat → Nat"));
     }
 
@@ -7043,7 +7061,10 @@ end Demo
         .unwrap();
         assert_eq!(range.hits[0].signature.as_deref(), Some("3 source lines"));
         assert_eq!(range.hits[0].kind, "source-range");
-        assert_eq!(range.hits[0].source.as_deref().unwrap().lines().count(), 3);
+        assert_eq!(
+            range.hits[0].source.as_deref(),
+            Some("/- open\ninside /-! doc\n-/ close")
+        );
 
         let long_source = (1..=250)
             .map(|line| format!("line {line}"))
@@ -7087,8 +7108,8 @@ end Demo
             duration_ms: 1,
             created_at: 0,
         });
-        assert!(long_summary.contains("  200  line 200"));
-        assert!(!long_summary.contains("  201  line 201"));
+        assert!(long_summary.contains("\nline 200\n"));
+        assert!(!long_summary.contains("\nline 201\n"));
         assert!(long_summary.ends_with("+50 lines omitted; narrow the range"));
         assert_eq!(parse_source_line_range("3-3"), Some((3, 3)));
         assert_eq!(parse_source_line_range("4-3"), None);
