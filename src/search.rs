@@ -1568,7 +1568,10 @@ impl Searcher {
                 exact_query = continuation.clone();
                 exact_rows = self.exact_candidates(continuation, scopes)?;
             }
-            if exact_rows.is_empty()
+            let has_qualified_match = exact_rows
+                .iter()
+                .any(|row| qualified_name_matches(&row.name, query));
+            if !has_qualified_match
                 && let Some(base) = declaration_suffix_base(query)
                 && continuations.is_empty()
             {
