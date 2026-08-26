@@ -106,6 +106,7 @@ unsafe def runServer (setup : ModuleSetup) : IO Unit := do
       writeResponse (failureResponse error 0)
       loop
     | .ok (request : Request) =>
+      enableInitializersExecution
       let snapshot ← processor (Parser.mkInputContext request.source setup.name.toString)
       writeResponse (← processSnapshot snapshot request.version)
       loop
