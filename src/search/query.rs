@@ -285,6 +285,35 @@ pub(super) fn diagnostic_search_query(diagnostic: &str) -> String {
     if let Some(detail) = diagnostic_type_detail(diagnostic)
         && let Some(goal) = detail.strip_prefix("instance goal\n")
     {
+        let mut specific = Vec::new();
+        let mut structural = Vec::new();
+        for token in goal.split(|character: char| {
+            !character.is_alphanumeric() && character != '_' && character != '.'
+        }) {
+            let token = token.trim_matches('.').rsplit('.').next().unwrap_or(token);
+            if token.chars().count() < 4 || !declaration_name_query(token) {
+                continue;
+            }
+            let destination = if token.contains('_')
+                || token.chars().next().is_some_and(char::is_lowercase)
+                    && token.chars().skip(1).any(char::is_uppercase)
+            {
+                &mut specific
+            } else {
+                &mut structural
+            };
+            if !destination
+                .iter()
+                .any(|seen: &String| seen.eq_ignore_ascii_case(token))
+            {
+                destination.push(token.to_owned());
+            }
+        }
+        structural.reverse();
+        specific.extend(structural);
+        if !specific.is_empty() {
+            return specific.join(" ");
+        }
         return goal.to_owned();
     }
     if let Some(query) = diagnostic_relation_query(diagnostic) {

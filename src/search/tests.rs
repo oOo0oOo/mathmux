@@ -1141,7 +1141,7 @@ fn goal_suggestions_accept_leans_multiline_output() {
         diagnostic_search_query(
             "Demo:1:1: error(lean.synthInstanceFailed): failed to synthesize instance of type class\n  TopologicalSpace (TotalSpace (X.changeModel eF).F X.E)\n\nHint: inspect it"
         ),
-        "TopologicalSpace (TotalSpace (X.changeModel eF).F X.E)"
+        "changeModel TotalSpace TopologicalSpace"
     );
     let source = (1..=30)
         .map(|line| format!("line {line}"))
