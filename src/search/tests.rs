@@ -708,6 +708,10 @@ fn query_parsing_scoring_and_ranking_regressions() {
         "Matrix.conjTranspose_mul",
         "matrix.conjtranspose_mul"
     ));
+    assert!(hit_name_matches(
+        "instTopologicalSpaceQuotient",
+        "topology"
+    ));
     assert!(declaration_leaf_matches(
         "AtiyahSinger.ContinuousLinearBundleHom.matrixEquiv",
         "ContinuousLinearBundleHom matrixEquiv"
@@ -738,6 +742,18 @@ fn query_parsing_scoring_and_ranking_regressions() {
             "HermitianBundleMetric",
             &tokens,
             &named_row("AtiyahSinger.Bundle.Trivial.hermitianBundleMetric")
+        )
+    );
+    let conceptual_tokens = meaningful_query_tokens("quotient topology");
+    assert!(
+        lexical_score(
+            "quotient topology",
+            &conceptual_tokens,
+            &named_row("instTopologicalSpaceQuotient")
+        ) > lexical_score(
+            "quotient topology",
+            &conceptual_tokens,
+            &named_row("Path.Homotopic.Quotient")
         )
     );
     let summary = render_summary(&SearchRun {

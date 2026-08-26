@@ -226,6 +226,52 @@ fn name_contains_candidates(
         .map_err(Into::into)
 }
 
+fn related_module_candidates(
+    connection: &Connection,
+    query: &str,
+    tokens: &[String],
+    rows: &[IndexedRow],
+) -> Result<Vec<IndexedRow>> {
+    if tokens.len() < 2 {
+        return Ok(Vec::new());
+    }
+    let mut modules = rows
+        .iter()
+        .filter(|row| !matches!(row.kind.as_str(), "file" | "imports"))
+        .map(|row| (lexical_score(query, tokens, row), row.module.clone()))
+        .filter(|(score, module)| *score > 0.0 && !module.is_empty())
+        .collect::<Vec<_>>();
+    modules.sort_by(|left, right| {
+        right
+            .0
+            .partial_cmp(&left.0)
+            .unwrap_or(Ordering::Equal)
+    });
+    let mut seen = HashSet::new();
+    modules.retain(|(_, module)| seen.insert(module.clone()));
+    modules.truncate(8);
+    if modules.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut statement = connection.prepare(
+        "SELECT owner, file, module, line, name, kind, signature, docs, body,
+                bm25(search_fts, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 7.0, 3.0, 1.0)
+         FROM search_fts WHERE search_fts MATCH ?1 AND module = ?2
+           AND owner IN (SELECT owner FROM active_search_scopes)
+         LIMIT 192",
+    )?;
+    let fts = fts_query(&tokens.join(" "));
+    let mut related = Vec::new();
+    for (_, module) in modules {
+        related.extend(
+            statement
+                .query_map(params![fts, module], indexed_row_from_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?,
+        );
+    }
+    Ok(related)
+}
+
 #[derive(Clone, Copy)]
 enum SourceKind {
     Project,
@@ -2017,6 +2063,7 @@ impl Searcher {
             ranked.sort_by_key(|candidate| !qualified_name_matches(&candidate.hit.name, query));
         } else {
             promote_query_coverage(&mut ranked, &query_tokens);
+            promote_concept_cluster(&mut ranked, &query_tokens);
         }
         let exact_name_miss = name_search
             && !ranked.iter().any(|candidate| {
@@ -2382,6 +2429,10 @@ impl Searcher {
             }
         }
         rows.extend(name_contains_candidates(&connection, &contains_tokens)?);
+        if !name_query && !include_all_signatures {
+            let related = related_module_candidates(&connection, query, tokens, &rows)?;
+            rows.extend(related);
+        }
         if name_query && let Some((owner, leaf)) = query.rsplit_once('.')
         {
             let owner = owner.rsplit('.').next().unwrap_or(owner).to_lowercase();

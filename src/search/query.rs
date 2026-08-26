@@ -1362,6 +1362,83 @@ pub(super) fn promote_query_coverage(ranked: &mut Vec<RankedHit>, tokens: &[Stri
     *ranked = promoted;
 }
 
+pub(super) fn promote_concept_cluster(ranked: &mut Vec<RankedHit>, tokens: &[String]) {
+    let mut seen = HashSet::new();
+    let tokens = tokens
+        .iter()
+        .filter(|token| seen.insert(token.as_str()))
+        .collect::<Vec<_>>();
+    if tokens.len() < 2 {
+        return;
+    }
+    let coverage = |candidate: &RankedHit| {
+        let leaf = candidate
+            .hit
+            .name
+            .rsplit('.')
+            .next()
+            .unwrap_or(&candidate.hit.name);
+        tokens
+            .iter()
+            .filter(|token| hit_name_matches(leaf, token))
+            .count()
+    };
+    let Some(anchor) = ranked
+        .iter()
+        .enumerate()
+        .filter(|(_, candidate)| !matches!(candidate.hit.kind.as_str(), "file" | "imports"))
+        .filter(|(_, candidate)| coverage(candidate) >= 2)
+        .min_by_key(|(_, candidate)| candidate.hit.name.matches('.').count())
+        .map(|(index, _)| index)
+    else {
+        return;
+    };
+    let anchor = ranked.remove(anchor);
+    let path = anchor.hit.path.clone();
+    let module = anchor.hit.module.clone();
+    let primary = tokens[0];
+    let mut cluster = vec![anchor];
+    while cluster.len() < 4 {
+        let sibling = ranked
+            .iter()
+            .enumerate()
+            .filter(|(_, candidate)| {
+                (if module.is_empty() {
+                    candidate.hit.path == path
+                } else {
+                    candidate.hit.module == module
+                })
+                    && !matches!(candidate.hit.kind.as_str(), "file" | "imports")
+                    && coverage(candidate) > 0
+            })
+            .max_by(|(_, left), (_, right)| {
+                let key = |candidate: &RankedHit| {
+                    (
+                        coverage(candidate),
+                        usize::MAX - candidate.hit.name.matches('.').count(),
+                        candidate.hit.signature.as_deref().map_or(0, |signature| {
+                            signature.to_lowercase().match_indices(primary).count()
+                        }),
+                    )
+                };
+                key(left).cmp(&key(right)).then_with(|| {
+                    right
+                        .hit
+                        .name
+                        .to_lowercase()
+                        .cmp(&left.hit.name.to_lowercase())
+                })
+            })
+            .map(|(index, _)| index);
+        let Some(sibling) = sibling else {
+            break;
+        };
+        cluster.push(ranked.remove(sibling));
+    }
+    cluster.append(ranked);
+    *ranked = cluster;
+}
+
 pub(super) fn hit_name_matches(name: &str, token: &str) -> bool {
     if name.eq_ignore_ascii_case(token) {
         return true;
@@ -1371,7 +1448,7 @@ pub(super) fn hit_name_matches(name: &str, token: &str) -> bool {
         words_match(segment, leaf)
             || identifier_query_parts(segment)
                 .iter()
-                .any(|part| words_match(part, leaf))
+                .any(|part| conceptual_words_match(part, leaf))
     })
 }
 
@@ -1448,6 +1525,21 @@ pub(super) fn words_match(left: &str, right: &str) -> bool {
             .is_some_and(|singular| singular.eq_ignore_ascii_case(right))
 }
 
+fn conceptual_words_match(left: &str, right: &str) -> bool {
+    if words_match(left, right) {
+        return true;
+    }
+    let left = left.to_lowercase();
+    let right = right.to_lowercase();
+    let shared = left
+        .chars()
+        .zip(right.chars())
+        .take_while(|(left, right)| left == right)
+        .count();
+    let shorter = left.chars().count().min(right.chars().count());
+    shared >= 5 && shared * 3 >= shorter * 2
+}
+
 pub(super) fn declaration_leaf_matches(name: &str, query: &str) -> bool {
     let leaf = name.rsplit('.').next().unwrap_or(name);
     query_tokens(query).iter().any(|token| {
@@ -1501,13 +1593,30 @@ pub(super) fn lexical_score(query: &str, tokens: &[String], row: &IndexedRow) ->
             score += 3.0;
         }
     }
-    let name_segments = name.split('.').collect::<HashSet<_>>();
-    score += tokens
+    let name_parts = identifier_query_parts(&row.name)
+        .into_iter()
+        .collect::<HashSet<_>>();
+    let query_parts = tokens
         .iter()
-        .flat_map(|token| token.split('.'))
-        .filter(|segment| name_segments.contains(segment))
-        .count() as f64
-        * 30.0;
+        .flat_map(|token| {
+            let parts = identifier_query_parts(token);
+            if parts.is_empty() {
+                vec![token.rsplit('.').next().unwrap_or(token).to_owned()]
+            } else {
+                parts
+            }
+        })
+        .collect::<HashSet<_>>();
+    for part in query_parts {
+        if name_parts.contains(&part) {
+            score += 40.0;
+        } else if name_parts
+            .iter()
+            .any(|name_part| conceptual_words_match(name_part, &part))
+        {
+            score += 35.0;
+        }
+    }
     if row.kind != "file" {
         score += 20.0;
     } else {
