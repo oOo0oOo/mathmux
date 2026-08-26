@@ -776,16 +776,19 @@ impl Checker {
         target: &Path,
         dependencies: &[PathBuf],
     ) -> Result<(PathBuf, String)> {
-        let setup_input = environment_fingerprint(&workspace.path, dependencies)?;
-        let mut environment = self.worker_environment_from_base(workspace, target, &setup_input)?;
+        let setup_input = setup_input_fingerprint(&workspace.path, target, dependencies)?;
+        let environment_base = environment_fingerprint(&workspace.path, dependencies)?;
+        let mut environment =
+            self.worker_environment_from_base(workspace, target, &environment_base)?;
         let persisted_setup = self.setup_path(workspace, target);
         let setup_path = match self.current_setup(workspace, target, &environment) {
             Some(path) => path,
-            None if setup_is_current(&persisted_setup, &setup_input) => persisted_setup,
+            None if setup_is_usable(&persisted_setup, &setup_input) => persisted_setup,
             None => {
                 let path =
                     self.prepare_setup(workspace, target, &setup_input, !dependencies.is_empty())?;
-                environment = self.worker_environment_from_base(workspace, target, &setup_input)?;
+                environment =
+                    self.worker_environment_from_base(workspace, target, &environment_base)?;
                 path
             }
         };
@@ -899,7 +902,7 @@ impl Checker {
             .as_ref()
             .map(|lock| lock.lock().expect("dependency build lock poisoned"));
         let path = self.setup_path(workspace, target);
-        if setup_is_current(&path, input_fingerprint) {
+        if setup_is_usable(&path, input_fingerprint) {
             return Ok(path);
         }
         let shared = self.shared_setup_path(target, input_fingerprint);
@@ -911,7 +914,7 @@ impl Checker {
             .write(true)
             .open(shared.with_extension("lock"))?;
         shared_lock.lock_exclusive()?;
-        if setup_is_current(&shared, input_fingerprint) {
+        if setup_is_usable(&shared, input_fingerprint) {
             materialize_setup(&shared, &path, input_fingerprint)?;
             return Ok(path);
         }
@@ -1198,6 +1201,21 @@ fn setup_is_current(setup_path: &Path, input_fingerprint: &str) -> bool {
     setup_path.is_file()
         && fs::read_to_string(setup_fingerprint_path(setup_path))
             .is_ok_and(|fingerprint| fingerprint == input_fingerprint)
+}
+
+fn setup_is_usable(setup_path: &Path, input_fingerprint: &str) -> bool {
+    if !setup_is_current(setup_path, input_fingerprint) {
+        return false;
+    }
+    let Ok(bytes) = fs::read(setup_path) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_slice(&bytes) else {
+        return false;
+    };
+    let mut artifacts = BTreeSet::new();
+    collect_artifact_paths(&value, &mut artifacts);
+    artifacts.into_iter().all(|path| path.is_file())
 }
 
 fn materialize_setup(shared: &Path, path: &Path, input_fingerprint: &str) -> Result<()> {
@@ -1950,6 +1968,50 @@ fn environment_fingerprint(root: &Path, dependencies: &[PathBuf]) -> Result<Stri
     Ok(hash_bytes(&material))
 }
 
+fn setup_input_fingerprint(
+    root: &Path,
+    target: &Path,
+    dependencies: &[PathBuf],
+) -> Result<String> {
+    let mut entries = BTreeSet::new();
+    entries.insert(target.to_path_buf());
+    entries.extend(dependencies.iter().cloned());
+    let mut material = b"mathmux-setup-v1".to_vec();
+    for path in entries {
+        material.extend_from_slice(path.to_string_lossy().as_bytes());
+        let source = fs::read_to_string(root.join(&path))?;
+        for line in source.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with("--") {
+                continue;
+            }
+            if line == "module"
+                || line == "prelude"
+                || line.starts_with("import ")
+                || line.starts_with("public import ")
+            {
+                material.extend_from_slice(line.as_bytes());
+                material.push(b'\n');
+                continue;
+            }
+            break;
+        }
+    }
+    for config in [
+        "lean-toolchain",
+        "lakefile.lean",
+        "lakefile.toml",
+        "lake-manifest.json",
+    ] {
+        let path = root.join(config);
+        if path.is_file() {
+            material.extend_from_slice(config.as_bytes());
+            material.extend_from_slice(hash_file(&path)?.as_bytes());
+        }
+    }
+    Ok(hash_bytes(&material))
+}
+
 fn available_memory_gib() -> Option<u64> {
     fs::read_to_string("/proc/meminfo")
         .ok()?
@@ -2057,6 +2119,67 @@ mod tests {
 
         fs::write(setup_fingerprint_path(&setup), "current").unwrap();
         assert!(setup_is_current(&setup, "current"));
+    }
+
+    #[test]
+    fn setup_inputs_track_headers_not_proof_bodies() {
+        let directory = tempdir().unwrap();
+        fs::write(directory.path().join("Base.lean"), "def value := 1\n").unwrap();
+        fs::write(
+            directory.path().join("Proof.lean"),
+            "import Base\n\ntheorem result : True := by trivial\n",
+        )
+        .unwrap();
+        let dependencies = vec![PathBuf::from("Base.lean")];
+        let before = setup_input_fingerprint(
+            directory.path(),
+            Path::new("Proof.lean"),
+            &dependencies,
+        )
+        .unwrap();
+        fs::write(directory.path().join("Base.lean"), "def value := 2\n").unwrap();
+        fs::write(
+            directory.path().join("Proof.lean"),
+            "import Base\n\ntheorem result : True := by exact True.intro\n",
+        )
+        .unwrap();
+        let body_changed = setup_input_fingerprint(
+            directory.path(),
+            Path::new("Proof.lean"),
+            &dependencies,
+        )
+        .unwrap();
+        assert_eq!(before, body_changed);
+
+        fs::write(
+            directory.path().join("Proof.lean"),
+            "public import Base\n\ntheorem result : True := by exact True.intro\n",
+        )
+        .unwrap();
+        let header_changed = setup_input_fingerprint(
+            directory.path(),
+            Path::new("Proof.lean"),
+            &dependencies,
+        )
+        .unwrap();
+        assert_ne!(before, header_changed);
+    }
+
+    #[test]
+    fn persisted_setup_requires_its_import_artifacts() {
+        let directory = tempdir().unwrap();
+        let artifact = directory.path().join("Base.olean");
+        fs::write(&artifact, "compiled").unwrap();
+        let setup = directory.path().join("setup.json");
+        fs::write(
+            &setup,
+            serde_json::to_vec(&serde_json::json!({ "import": artifact })).unwrap(),
+        )
+        .unwrap();
+        fs::write(setup_fingerprint_path(&setup), "current").unwrap();
+        assert!(setup_is_usable(&setup, "current"));
+        fs::remove_file(artifact).unwrap();
+        assert!(!setup_is_usable(&setup, "current"));
     }
 
     #[test]

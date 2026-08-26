@@ -99,7 +99,7 @@ enum TopCommand {
     Check {
         /// Restrict checking to this Lean file and its source dependencies.
         file: Option<PathBuf>,
-        /// Run a fresh full elaboration with Lean timings; use only for suspiciously slow checks.
+        /// Fresh elaboration with source hotspots and Lean timings; use only for slow checks.
         #[arg(long)]
         profile: bool,
     },
