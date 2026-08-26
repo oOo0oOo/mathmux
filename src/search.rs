@@ -1313,7 +1313,13 @@ impl Searcher {
                     && (text_matches_token(&candidate.hit.name.to_lowercase(), token)
                         || candidate.hit.signature.as_deref().is_some_and(|signature| {
                             text_matches_token(&signature.to_lowercase(), token)
-                        }))
+                        })
+                        || qualified_leaf_path_match(
+                            token,
+                            &candidate.hit.name,
+                            &candidate.hit.module,
+                            &candidate.hit.path,
+                        ))
             })
         });
         let missing_source_identifier = source_specific_query_tokens(query).iter().any(|token| {
@@ -1325,6 +1331,14 @@ impl Searcher {
                 let base = name.rsplit('.').next().unwrap_or(&name);
                 if token.contains('_') {
                     name.contains(token)
+                } else if token.contains('.') {
+                    name.contains(token)
+                        || qualified_leaf_path_match(
+                            token,
+                            &candidate.hit.name,
+                            &candidate.hit.module,
+                            &candidate.hit.path,
+                        )
                 } else {
                     base == token
                 }
@@ -3480,21 +3494,33 @@ fn lexical_score(query: &str, tokens: &[String], row: &IndexedRow) -> f64 {
 }
 
 fn qualified_leaf_path_score(query: &str, name: &str, module: &str, path: &str) -> f64 {
+    if !qualified_leaf_path_match(query, name, module, path) {
+        return if query.contains('.')
+            && name
+                .rsplit('.')
+                .next()
+                .zip(query.rsplit('.').next())
+                .is_some_and(|(left, right)| left.eq_ignore_ascii_case(right))
+        {
+            60.0
+        } else {
+            0.0
+        };
+    }
+    280.0
+}
+
+fn qualified_leaf_path_match(query: &str, name: &str, module: &str, path: &str) -> bool {
     let Some((owner, query_leaf)) = query.rsplit_once('.') else {
-        return 0.0;
+        return false;
     };
     let name_leaf = name.rsplit('.').next().unwrap_or(name);
     if !name_leaf.eq_ignore_ascii_case(query_leaf) {
-        return 0.0;
+        return false;
     }
     let owner = owner.rsplit('.').next().unwrap_or(owner).to_lowercase();
     let location = format!("{module} {path}").to_lowercase();
-    60.0
-        + if owner.chars().count() >= 3 && location.contains(&owner) {
-            220.0
-        } else {
-            0.0
-        }
+    owner.chars().count() >= 3 && location.contains(&owner)
 }
 
 fn type_shaped(query: &str) -> bool {
