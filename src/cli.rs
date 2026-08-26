@@ -429,7 +429,7 @@ fn exchange(mut stream: UnixStream, request: &Request) -> Result<Response> {
     let started = Instant::now();
     let mut reader = BufReader::new(stream);
     let mut progress = String::from("running");
-    let mut next_report = Duration::from_secs(30);
+    let mut next_report = Duration::from_secs(10);
     loop {
         let elapsed = started.elapsed();
         if report_progress {
@@ -458,7 +458,7 @@ fn exchange(mut stream: UnixStream, request: &Request) -> Result<Response> {
                     ) =>
             {
                 eprintln!("check {progress} {}s", started.elapsed().as_secs());
-                next_report += Duration::from_secs(60);
+                next_report += Duration::from_secs(30);
             }
             Err(error) => return Err(error.into()),
         }

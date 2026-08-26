@@ -542,10 +542,10 @@ impl Checker {
         source: &str,
         run: WorkerRun,
     ) -> Result<(WorkerResponse, &'static str, Option<u64>)> {
-        let (allow_fallback, timeout) = match run {
-            WorkerRun::Check => (true, CHECK_TIMEOUT),
-            WorkerRun::Probe(timeout) => (false, timeout),
-            WorkerRun::Profile => (false, CHECK_TIMEOUT),
+        let (allow_fallback, retry_worker, timeout) = match run {
+            WorkerRun::Check => (true, true, CHECK_TIMEOUT),
+            WorkerRun::Probe(timeout) => (false, false, timeout),
+            WorkerRun::Profile => (false, true, CHECK_TIMEOUT),
         };
         let profile = matches!(run, WorkerRun::Profile);
         let key = (workspace.reference.clone(), target.to_path_buf(), profile);
@@ -648,10 +648,30 @@ impl Checker {
                 self.remove_worker(&key, &worker);
                 if timed_out {
                     Err(error)
-                } else if allow_fallback {
-                    fallback_check(&self.repo, &workspace.path, target)
-                        .map(|response| (response, "fallback", None))
-                        .with_context(|| format!("direct Lean worker failed: {error:#}"))
+                } else if retry_worker {
+                    let mut replacement = LeanWorker::start(
+                        &self.repo,
+                        &workspace.path,
+                        setup_path,
+                        environment,
+                        profile,
+                    )
+                    .with_context(|| format!("Lean worker restart failed after: {error:#}"))?;
+                    match replacement.check(source, timeout, true) {
+                        Ok((response, _)) => {
+                            self.workers
+                                .lock()
+                                .expect("worker map poisoned")
+                                .insert(key, Arc::new(Mutex::new(replacement)));
+                            Ok((response, "cold-worker-retry", None))
+                        }
+                        Err(retry_error) => {
+                            self.record_worker_failure(&format!("retry: {retry_error:#}"));
+                            Err(retry_error).with_context(|| {
+                                format!("Lean worker failed twice; first failure: {error:#}")
+                            })
+                        }
+                    }
                 } else {
                     Err(error).context("direct Lean worker failed")
                 }
