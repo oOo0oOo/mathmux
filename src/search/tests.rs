@@ -1198,6 +1198,13 @@ fn goal_and_source_query_regressions() {
         "BundleCoordinate.coordinateMap Matrix.toLinearMap"
     );
     assert_eq!(
+        diagnostic_goal_query(
+            "⊢ pullbackIsoOfEq generated._proof_14 = projectionRangeGlobal",
+            &HashSet::new()
+        ),
+        "pullbackIsoOfEq projectionRangeGlobal"
+    );
+    assert_eq!(
         refined_search_query("Homeomorph", "constructors"),
         "Homeomorph.mk"
     );

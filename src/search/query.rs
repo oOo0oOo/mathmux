@@ -404,7 +404,10 @@ pub(super) fn diagnostic_goal_query(goal: &str, locals: &HashSet<&str>) -> Strin
         });
         if token.chars().count() >= 4
             && declaration_name_query(token)
-            && (token.contains(['.', '_']) || token.chars().next().is_some_and(char::is_uppercase))
+            && !token.contains("_proof_")
+            && (token.contains(['.', '_'])
+                || token.chars().next().is_some_and(char::is_uppercase)
+                || token.chars().skip(1).any(char::is_uppercase))
             && !focused
                 .iter()
                 .any(|seen: &String| seen.eq_ignore_ascii_case(token))
@@ -418,11 +421,18 @@ pub(super) fn diagnostic_goal_query(goal: &str, locals: &HashSet<&str>) -> Strin
     if focused.len() >= 2 {
         focused.sort_by_key(|token| {
             let namespace = token.split_once('.').map(|(namespace, _)| namespace);
-            std::cmp::Reverse((
-                namespace.is_some_and(|namespace| {
+            let specificity = namespace
+                .filter(|namespace| {
                     namespace.chars().next().is_some_and(char::is_uppercase)
-                }),
-                namespace.map_or(0, str::len),
+                })
+                .map(|namespace| namespace.chars().count())
+                .or_else(|| {
+                    (namespace.is_none() && token.chars().skip(1).any(char::is_uppercase))
+                        .then_some(16)
+                })
+                .unwrap_or_default();
+            std::cmp::Reverse((
+                specificity,
                 token.contains(['.', '_']),
             ))
         });
