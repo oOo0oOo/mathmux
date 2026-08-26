@@ -46,7 +46,7 @@ const SEARCH_HELP: &str = r#"QUERY FORMS (inferred)
   FILE:tail                     bounded end-of-file context
   FILE:START-END                bounded source range
   FILE[:START-END] TERM[|TERM]  literal source occurrences
-  /REGEX/ | FILE /REGEX/        bounded regex source matches; DIR also scopes
+  /REGEX/ | SCOPE /REGEX/       bounded matches; file ranges and dependency dirs work
   FILE imports [TERMS]          imports, optionally filtered
   FILE outline|declarations     declarations with lines and signatures
 

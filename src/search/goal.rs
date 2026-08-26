@@ -158,6 +158,8 @@ pub(super) struct SourceOccurrenceQuery {
 pub(super) struct SourceRegexQuery {
     pub(super) scope: PathBuf,
     pub(super) pattern: String,
+    pub(super) first_line: u64,
+    pub(super) last_line: u64,
 }
 
 pub(super) fn parse_source_regex_query(
@@ -192,31 +194,64 @@ pub(super) fn parse_source_regex_query(
         scope.split_whitespace().count() <= 1,
         "source regex accepts at most one file or directory scope"
     );
+    let (scope, range) = scope
+        .rsplit_once(':')
+        .and_then(|(scope, range)| parse_source_line_range(range).map(|range| (scope, range)))
+        .map_or((scope, None), |(scope, range)| (scope, Some(range)));
     let scope = if scope.is_empty() {
         fs::canonicalize(root)?
-    } else if Path::new(scope).extension().is_some_and(|extension| extension == "lean") {
+    } else if range.is_some()
+        || Path::new(scope).extension().is_some_and(|extension| extension == "lean")
+    {
         resolve_goal_path(root, cwd, scope)?
             .map(|(path, _, _)| path)
             .with_context(|| format!("source file not found or ambiguous: {scope}"))?
     } else {
-        let direct = if Path::new(scope).is_absolute() {
-            PathBuf::from(scope)
-        } else if cwd.join(scope).is_dir() {
-            cwd.join(scope)
-        } else {
-            root.join(scope)
-        };
-        let direct = fs::canonicalize(&direct)
-            .with_context(|| format!("source directory not found: {scope}"))?;
-        let root = fs::canonicalize(root)?;
-        ensure!(direct.starts_with(&root), "source regex scope is outside the workspace");
-        ensure!(direct.is_dir(), "source regex scope is not a directory");
-        direct
+        resolve_source_directory(root, cwd, scope)?
     };
+    let (first_line, last_line) = range.unwrap_or((1, u64::MAX));
     Ok(Some(SourceRegexQuery {
         scope,
         pattern: pattern.to_owned(),
+        first_line,
+        last_line,
     }))
+}
+
+fn resolve_source_directory(root: &Path, cwd: &Path, scope: &str) -> Result<PathBuf> {
+    let root = fs::canonicalize(root)?;
+    let requested = Path::new(scope);
+    let mut candidates = if requested.is_absolute() {
+        vec![requested.to_path_buf()]
+    } else {
+        vec![cwd.join(requested), root.join(requested)]
+    };
+    let packages = root.join(".lake/packages");
+    if !requested.is_absolute() && packages.is_dir() {
+        candidates.push(packages.join(requested));
+        for package in fs::read_dir(&packages)?.flatten() {
+            candidates.push(package.path().join(requested));
+            if let Ok(source_roots) = fs::read_dir(package.path()) {
+                candidates.extend(
+                    source_roots
+                        .flatten()
+                        .map(|source_root| source_root.path().join(requested)),
+                );
+            }
+        }
+    }
+    let mut candidates = candidates
+        .into_iter()
+        .filter(|path| path.is_dir())
+        .filter_map(|path| fs::canonicalize(path).ok())
+        .collect::<Vec<_>>();
+    candidates.sort();
+    candidates.dedup();
+    let [resolved] = candidates.as_slice() else {
+        bail!("source directory not found or ambiguous: {scope}")
+    };
+    ensure!(resolved.starts_with(&root), "source regex scope is outside the workspace");
+    Ok(resolved.clone())
 }
 
 pub(super) fn source_regex_result(
@@ -246,6 +281,10 @@ pub(super) fn source_regex_result(
         let source = fs::read_to_string(&path)?;
         let lines = source.lines().collect::<Vec<_>>();
         for (index, line) in lines.iter().enumerate() {
+            let line_number = index as u64 + 1;
+            if line_number < query.first_line || line_number > query.last_line {
+                continue;
+            }
             if !regex.is_match(line) {
                 continue;
             }
@@ -276,7 +315,7 @@ pub(super) fn source_regex_result(
                 signature: None,
                 module: String::new(),
                 path: relative,
-                line: index as u64 + 1,
+                line: line_number,
                 doc: None,
                 source: Some(excerpt),
                 usages: Vec::new(),

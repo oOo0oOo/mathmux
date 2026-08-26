@@ -1988,6 +1988,40 @@ fn source_regex_queries_scan_a_bounded_scope_with_context() {
     .unwrap()
     .unwrap();
     assert_eq!(bracketed.scope, fs::canonicalize(directory.path().join("Nested")).unwrap());
+
+    let ranged = parse_source_regex_query(
+        directory.path(),
+        directory.path(),
+        "Nested/One.lean:3-3 /alpha|after/",
+    )
+    .unwrap()
+    .unwrap();
+    let ranged = source_regex_result(
+        &Workspace {
+            reference: "w1".into(),
+            name: "demo".into(),
+            path: directory.path().to_path_buf(),
+            branch: "demo".into(),
+            model: None,
+        },
+        ranged,
+        false,
+    )
+    .unwrap();
+    assert_eq!(ranged.hits.iter().map(|hit| hit.line).collect::<Vec<_>>(), [3]);
+
+    let dependency = directory.path().join(".lake/packages/demo/Mathlib/Analysis");
+    fs::create_dir_all(&dependency).unwrap();
+    fs::write(dependency.join("Api.lean"), "theorem dependency_hit := by trivial\n").unwrap();
+    let dependency = parse_source_regex_query(
+        directory.path(),
+        directory.path(),
+        "Mathlib/Analysis /dependency_hit/",
+    )
+    .unwrap()
+    .unwrap();
+    assert!(dependency.scope.is_absolute());
+    assert!(dependency.scope.ends_with("Mathlib/Analysis"));
 }
 
 #[test]
