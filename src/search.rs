@@ -5486,6 +5486,16 @@ fn resolve_goal_path(
     let mut variants = vec![requested.clone()];
     if !requested.is_absolute() {
         let components = requested.components().collect::<Vec<_>>();
+        if components.len() == 2
+            && requested
+                .parent()
+                .and_then(Path::file_name)
+                .zip(requested.file_stem())
+                .is_some_and(|(directory, stem)| directory == stem)
+            && let Some(file_name) = requested.file_name()
+        {
+            variants.push(PathBuf::from(file_name));
+        }
         for start in 1..components.len().saturating_sub(1) {
             let mut suffix = PathBuf::new();
             for component in &components[start..] {
@@ -6537,6 +6547,17 @@ end Demo
 
         let directory = tempfile::tempdir().unwrap();
         fs::write(directory.path().join("Demo.lean"), &source).unwrap();
+        let duplicated_root = resolve_goal_path(
+            directory.path(),
+            directory.path(),
+            "Demo/Demo.lean",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            duplicated_root.0,
+            fs::canonicalize(directory.path().join("Demo.lean")).unwrap()
+        );
         let location = parse_goal_location(directory.path(), directory.path(), "Demo.lean:tail")
             .unwrap()
             .unwrap();
