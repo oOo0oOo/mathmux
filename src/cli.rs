@@ -35,7 +35,7 @@ LEAN
 const SEARCH_HELP: &str = r#"Search local Lean declarations, types, source, and goals.
 
 Query forms are inferred in this order:
-  cREF [TERMS]                  search a check diagnostic
+  cREF [TERMS]                  search a diagnostic; add repair to test tactics
   qREF TERMS                    refine a stored search
   qREF MORE                     show complete stored results
   sREF [TERMS]                  search a submission

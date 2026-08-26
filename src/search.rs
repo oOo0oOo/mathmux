@@ -437,6 +437,14 @@ impl Searcher {
             .strip_prefix('c')
             .is_some_and(|digits| !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()))
         {
+            let repair_requested = refinement
+                .split_whitespace()
+                .any(|term| term.eq_ignore_ascii_case("repair"));
+            let refinement = refinement
+                .split_whitespace()
+                .filter(|term| !term.eq_ignore_ascii_case("repair"))
+                .collect::<Vec<_>>()
+                .join(" ");
             let run = self
                 .state
                 .check_run(reference)?
@@ -487,7 +495,8 @@ impl Searcher {
                     required_import: None,
                 }
             }).collect::<Vec<_>>();
-            if diagnostic_text.contains("unsolved goals")
+            if repair_requested
+                && diagnostic_text.contains("unsolved goals")
                 && run.duration_ms <= DIAGNOSTIC_PROBE_MAX_CHECK_MS
                 && let Some(target) = target.as_deref()
             {
@@ -498,7 +507,7 @@ impl Searcher {
                 ));
             }
             return Ok(ExpandedQuery {
-                query: [diagnostic_query.as_str(), refinement]
+                query: [diagnostic_query.as_str(), refinement.as_str()]
                     .into_iter()
                     .filter(|part| !part.is_empty())
                     .collect::<Vec<_>>()
@@ -655,6 +664,12 @@ impl Searcher {
         }
         suggestions
             .into_iter()
+            .filter(|suggestion| {
+                suggestion.len() <= 500
+                    && !suggestion
+                        .split_whitespace()
+                        .any(|term| term == "sorry")
+            })
             .take(3)
             .map(|suggestion| SearchHit {
                 name: clean_line(&suggestion),
