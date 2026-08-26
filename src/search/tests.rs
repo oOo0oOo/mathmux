@@ -1361,6 +1361,16 @@ fn goal_and_source_query_regressions() {
     assert_eq!(more.line, 15);
     assert!(!more.tail);
     assert!(more.more);
+    let path_last = parse_goal_location(
+        directory.path(),
+        directory.path(),
+        None,
+        "Demo.value Demo.lean:15",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(path_last.line, 15);
+    assert_eq!(path_last.path, more.path);
 
     fs::write(
         directory.path().join("Markers.lean"),

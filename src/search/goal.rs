@@ -454,6 +454,13 @@ pub(super) fn parse_goal_location(
         .rsplit_once(char::is_whitespace)
         .filter(|(_, modifier)| modifier.eq_ignore_ascii_case("more"))
         .map_or((query, false), |(query, _)| (query.trim_end(), true));
+    let mut location_tokens = query
+        .split_whitespace()
+        .filter(|token| is_goal_location_token(token));
+    let query = match (location_tokens.next(), location_tokens.next()) {
+        (Some(token), None) => token,
+        _ => query,
+    };
     if let Some((path, suffix)) = query.rsplit_once(':')
         && suffix.eq_ignore_ascii_case("tail")
     {
@@ -500,6 +507,20 @@ pub(super) fn parse_goal_location(
         more,
         probe,
     }))
+}
+
+fn is_goal_location_token(token: &str) -> bool {
+    let Some((prefix, suffix)) = token.rsplit_once(':') else {
+        return false;
+    };
+    if !suffix.eq_ignore_ascii_case("tail") && suffix.parse::<u64>().is_err() {
+        return false;
+    }
+    let path = prefix
+        .rsplit_once(':')
+        .filter(|(_, line)| line.parse::<u64>().is_ok())
+        .map_or(prefix, |(path, _)| path);
+    Path::new(path).extension().and_then(|extension| extension.to_str()) == Some("lean")
 }
 
 pub(super) fn missing_source_message(
