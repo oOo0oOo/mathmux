@@ -2073,29 +2073,29 @@ fn setup_input_fingerprint(
     target: &Path,
     dependencies: &[PathBuf],
 ) -> Result<String> {
-    let mut entries = BTreeSet::new();
-    entries.insert(target.to_path_buf());
-    entries.extend(dependencies.iter().cloned());
     let mut material = b"mathmux-setup-v1".to_vec();
-    for path in entries {
-        material.extend_from_slice(path.to_string_lossy().as_bytes());
-        let source = fs::read_to_string(root.join(&path))?;
-        for line in source.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with("--") {
-                continue;
-            }
-            if line == "module"
-                || line == "prelude"
-                || line.starts_with("import ")
-                || line.starts_with("public import ")
-            {
-                material.extend_from_slice(line.as_bytes());
-                material.push(b'\n');
-                continue;
-            }
-            break;
+    material.extend_from_slice(target.to_string_lossy().as_bytes());
+    let target_source = fs::read_to_string(root.join(target))?;
+    for line in target_source.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("--") {
+            continue;
         }
+        if line == "module"
+            || line == "prelude"
+            || line.starts_with("import ")
+            || line.starts_with("public import ")
+        {
+            material.extend_from_slice(line.as_bytes());
+            material.push(b'\n');
+            continue;
+        }
+        break;
+    }
+    let dependencies = dependencies.iter().collect::<BTreeSet<_>>();
+    for dependency in dependencies {
+        material.extend_from_slice(dependency.to_string_lossy().as_bytes());
+        material.extend_from_slice(hash_file(&root.join(dependency))?.as_bytes());
     }
     for config in PROJECT_CONFIG_FILES {
         let path = root.join(config);
@@ -2217,7 +2217,7 @@ mod tests {
     }
 
     #[test]
-    fn setup_inputs_track_headers_not_proof_bodies() {
+    fn setup_inputs_track_dependency_content_and_target_headers() {
         let directory = tempdir().unwrap();
         fs::write(directory.path().join("Base.lean"), "def value := 1\n").unwrap();
         fs::write(
@@ -2232,7 +2232,6 @@ mod tests {
             &dependencies,
         )
         .unwrap();
-        fs::write(directory.path().join("Base.lean"), "def value := 2\n").unwrap();
         fs::write(
             directory.path().join("Proof.lean"),
             "import Base\n\ntheorem result : True := by exact True.intro\n",
@@ -2246,6 +2245,16 @@ mod tests {
         .unwrap();
         assert_eq!(before, body_changed);
 
+        fs::write(directory.path().join("Base.lean"), "def value := 2\n").unwrap();
+        let dependency_changed = setup_input_fingerprint(
+            directory.path(),
+            Path::new("Proof.lean"),
+            &dependencies,
+        )
+        .unwrap();
+        assert_ne!(before, dependency_changed);
+
+        fs::write(directory.path().join("Base.lean"), "def value := 1\n").unwrap();
         fs::write(
             directory.path().join("Proof.lean"),
             "public import Base\n\ntheorem result : True := by exact True.intro\n",
