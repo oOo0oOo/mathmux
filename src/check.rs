@@ -325,6 +325,21 @@ impl Checker {
             })
         };
         let _check_guard = check_lock.lock().expect("target check lock poisoned");
+        let lock_directory = self.repo.state_dir.join("check-locks");
+        fs::create_dir_all(&lock_directory)?;
+        let process_lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(lock_directory.join(format!(
+                "{}-{}.lock",
+                workspace.reference,
+                hash_bytes(target.to_string_lossy().as_bytes())
+            )))?;
+        process_lock.lock_exclusive().with_context(|| {
+            format!("cannot lock check target {}", target.display())
+        })?;
         let queue_ms = file_started.elapsed().as_millis() as u64;
         let target_name = target.to_string_lossy().into_owned();
         let target_absolute = workspace.path.join(target);
