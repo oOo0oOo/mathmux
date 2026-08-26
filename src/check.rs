@@ -29,6 +29,12 @@ const CHECK_RESULT_VERSION: &[u8] = b"check-result-v2";
 const CHECK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const SLOW_CHECK_PROFILE_MS: u64 = 5_000;
 const PROFILE_ENTRY_LIMIT: usize = 512;
+const PROJECT_CONFIG_FILES: [&str; 4] = [
+    "lean-toolchain",
+    "lakefile.lean",
+    "lakefile.toml",
+    "lake-manifest.json",
+];
 
 #[derive(Debug)]
 struct CheckTimeout(Duration);
@@ -1873,12 +1879,7 @@ pub fn certificate_fingerprint(
             material.extend_from_slice(hash_file(&artifact)?.as_bytes());
         }
     }
-    for config in [
-        "lean-toolchain",
-        "lakefile.lean",
-        "lakefile.toml",
-        "lake-manifest.json",
-    ] {
+    for config in PROJECT_CONFIG_FILES {
         let path = root.join(config);
         if path.is_file() {
             material.extend_from_slice(config.as_bytes());
@@ -1957,12 +1958,7 @@ fn environment_fingerprint(root: &Path, dependencies: &[PathBuf]) -> Result<Stri
             material.extend_from_slice(hash_file(&artifact)?.as_bytes());
         }
     }
-    for config in [
-        "lean-toolchain",
-        "lakefile.lean",
-        "lakefile.toml",
-        "lake-manifest.json",
-    ] {
+    for config in PROJECT_CONFIG_FILES {
         let path = root.join(config);
         if path.is_file() {
             material.extend_from_slice(hash_file(&path)?.as_bytes());
@@ -2000,12 +1996,7 @@ fn setup_input_fingerprint(
             break;
         }
     }
-    for config in [
-        "lean-toolchain",
-        "lakefile.lean",
-        "lakefile.toml",
-        "lake-manifest.json",
-    ] {
+    for config in PROJECT_CONFIG_FILES {
         let path = root.join(config);
         if path.is_file() {
             material.extend_from_slice(config.as_bytes());
