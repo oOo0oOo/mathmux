@@ -1349,7 +1349,16 @@ pub(super) fn merge_duplicate_hit(existing: &mut SearchHit, candidate: &mut Sear
     }
 }
 
-pub(super) fn exact_search_result(hits: Vec<SearchHit>, base_warming: bool) -> SearchResult {
+pub(super) fn exact_search_result(mut hits: Vec<SearchHit>, base_warming: bool) -> SearchResult {
+    // Exact results are commonly pasted into a namespace where their leading
+    // namespace may be shadowed. Make the resolved declaration absolute while
+    // leaving nearby API results compact.
+    if let Some(hit) = hits.first_mut()
+        && hit.kind != "fields"
+        && !hit.name.starts_with("_root_.")
+    {
+        hit.name.insert_str(0, "_root_.");
+    }
     SearchResult {
         hits,
         inference: if type_search_enabled() {

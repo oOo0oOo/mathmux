@@ -513,6 +513,15 @@ fn query_parsing_scoring_and_ranking_regressions() {
     )
     .unwrap();
     assert_eq!(root_aliases.len(), 2);
+    let exact = exact_search_result(
+        vec![SearchHit {
+            name: "Demo.Structure".into(),
+            kind: "structure".into(),
+            ..contextual_hit.clone()
+        }],
+        false,
+    );
+    assert_eq!(exact.hits[0].name, "_root_.Demo.Structure");
     assert_eq!(result_limit(true, false), RELATED_RESULT_LIMIT);
     assert_eq!(result_limit(true, true), RESULT_LIMIT);
     assert_eq!(result_limit(false, false), RESULT_LIMIT);
