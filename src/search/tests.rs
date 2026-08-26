@@ -188,6 +188,10 @@ fn lean_inspection_syntax_normalizes_to_search_terms() {
         normalize_lean_inspection_query("⊢ Continuous f"),
         "⊢ Continuous f"
     );
+    assert_eq!(
+        normalize_lean_inspection_query(r"Finset.min\x27_mem|Finset.isLeast_min\'"),
+        "Finset.min'_mem|Finset.isLeast_min'"
+    );
 }
 
 #[test]

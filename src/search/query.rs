@@ -18,7 +18,12 @@ pub(super) fn search_more_requested(query: &str) -> bool {
 }
 
 pub(super) fn normalize_lean_inspection_query(query: &str) -> String {
-    let mut query = query.trim();
+    let escaped_apostrophes = query
+        .trim()
+        .replace("\\x27", "'")
+        .replace("\\X27", "'")
+        .replace("\\'", "'");
+    let mut query = escaped_apostrophes.as_str();
     if let Some((directive, rest)) = query.split_once(char::is_whitespace)
         && matches!(
             directive.to_ascii_lowercase().as_str(),
