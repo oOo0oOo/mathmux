@@ -392,7 +392,10 @@ pub(super) fn parse_source_occurrence_query(
             return Ok(Some(combined));
         }
     }
-    let parts = query.split_whitespace().collect::<Vec<_>>();
+    let parts = query
+        .split(|character: char| character.is_whitespace() || character == '|')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
     let Some(_) = parts.first() else {
         return Ok(None);
     };

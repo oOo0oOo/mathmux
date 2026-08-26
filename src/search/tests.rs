@@ -1565,6 +1565,16 @@ fn goal_and_source_query_regressions() {
     .unwrap();
     assert_eq!((occurrences.first_line, occurrences.last_line), (2, 4));
     assert_eq!(occurrences.terms, ["/-", "-/", "/-!"]);
+    let mixed = parse_source_occurrence_query(
+        directory.path(),
+        directory.path(),
+        None,
+        "Demo.value|inside 2|Markers.lean:2-4",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!((mixed.first_line, mixed.last_line), (2, 4));
+    assert_eq!(mixed.terms, ["Demo.value", "inside", "2"]);
     let path_last = parse_source_occurrence_query(
         directory.path(),
         directory.path(),
