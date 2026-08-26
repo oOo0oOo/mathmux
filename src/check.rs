@@ -258,7 +258,11 @@ impl Checker {
         self.state
             .add_check_run(&run, if ok { &certificates } else { &[] })?;
         self.state.touch_workspace(&workspace.reference)?;
-        let repetition = self.repeated_blocker(&run)?;
+        let repetition = if cache_only_run(&run) {
+            None
+        } else {
+            self.repeated_blocker(&run)?
+        };
         Ok(CheckOutcome {
             reference,
             ok,
@@ -299,6 +303,7 @@ impl Checker {
         let Some((deterministic_timeout, matches)) = fingerprints.into_iter().find_map(|(fingerprint, timeout)| {
             let matches = recent
                 .iter()
+                .filter(|run| !cache_only_run(run))
                 .filter(|run| run.failed.as_deref() == Some(target))
                 .filter(|run| {
                     run.diagnostics.iter().any(|diagnostic| {
@@ -1639,6 +1644,16 @@ fn diagnostic_fingerprint(diagnostic: &str) -> String {
     let without_generated = generated.replace_all(&without_location, "?_");
     let without_daggers = dagger_suffix.replace_all(&without_generated, "✝");
     without_daggers.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn cache_only_run(run: &CheckRun) -> bool {
+    run.profile.as_ref().is_some_and(|profile| {
+        !profile.files.is_empty()
+            && profile
+                .files
+                .iter()
+                .all(|file| file.mode == "worker-cache")
+    })
 }
 
 fn repetition_fingerprint(diagnostic: &Diagnostic) -> String {
