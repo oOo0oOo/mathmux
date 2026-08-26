@@ -445,8 +445,19 @@ impl Checker {
             response.version > 0,
             "Lean worker returned an invalid source version"
         );
+        let source_lines = source.lines().collect::<Vec<_>>();
         for entry in response.profile.iter_mut().filter(|entry| entry.line > 0) {
-            if let Some(line) = source.lines().nth(entry.line.saturating_sub(1) as usize) {
+            if entry.kind == "Elab.command"
+                && let Some((line, kind, name)) =
+                    profile_declaration_near(&source_lines, entry.line)
+            {
+                entry.line = line;
+                entry.column = 1;
+                entry.kind = kind.to_owned();
+                entry.detail = name.to_owned();
+                continue;
+            }
+            if let Some(line) = source_lines.get(entry.line.saturating_sub(1) as usize) {
                 let line = line.trim();
                 if entry.detail.is_empty() {
                     entry.detail = line.to_owned();
@@ -1084,6 +1095,42 @@ impl Checker {
         );
         Ok(references)
     }
+}
+
+fn profile_declaration_near<'a>(
+    lines: &[&'a str],
+    reported_line: u64,
+) -> Option<(u64, &'a str, &'a str)> {
+    static DECLARATION: OnceLock<Regex> = OnceLock::new();
+    let declaration = DECLARATION.get_or_init(|| {
+        Regex::new(
+            r"^(?:(?:private|protected|noncomputable|unsafe|partial)\s+)*(theorem|lemma|def|abbrev|opaque|axiom|structure|class|inductive|coinductive|instance)\s+([^\s(:{]+)",
+        )
+        .expect("valid profile declaration regex")
+    });
+    let index = reported_line.saturating_sub(1) as usize;
+    if index >= lines.len() {
+        return None;
+    }
+    let start = (0..index)
+        .rev()
+        .find(|&line| lines[line].trim().is_empty())
+        .map_or(0, |line| line + 1);
+    for line in (start..=index).rev() {
+        if let Some(captures) = declaration.captures(lines[line].trim_start()) {
+            return Some((line as u64 + 1, captures.get(1)?.as_str(), captures.get(2)?.as_str()));
+        }
+    }
+    let end = lines.len().min(index + 9);
+    for line in index + 1..end {
+        if lines[line].trim().is_empty() {
+            break;
+        }
+        if let Some(captures) = declaration.captures(lines[line].trim_start()) {
+            return Some((line as u64 + 1, captures.get(1)?.as_str(), captures.get(2)?.as_str()));
+        }
+    }
+    None
 }
 
 fn reap_stale_workers(worker_path: &Path) -> usize {
@@ -2222,6 +2269,28 @@ mod tests {
         assert_eq!(entries[0].duration_ms, 199.0);
         assert_eq!(entries[1].kind, "import");
         assert_eq!(entries[1].duration_ms, 3160.0);
+    }
+
+    #[test]
+    fn profile_locations_resolve_binders_and_doc_comments_to_declarations() {
+        let source = "\
+theorem first
+    (value : Nat) : True := by trivial
+
+/-! context -/
+/-- explanation
+continued here -/
+noncomputable def second : Nat := 2
+";
+        let lines = source.lines().collect::<Vec<_>>();
+        assert_eq!(
+            profile_declaration_near(&lines, 2),
+            Some((1, "theorem", "first"))
+        );
+        assert_eq!(
+            profile_declaration_near(&lines, 6),
+            Some((7, "def", "second"))
+        );
     }
 
     #[test]
