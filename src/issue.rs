@@ -800,7 +800,44 @@ fn response_reference(summary: &str) -> Option<String> {
 }
 
 fn error_class(summary: &str) -> String {
-    let value = summary.lines().next().unwrap_or("error").trim();
+    let value = summary
+        .lines()
+        .map(str::trim)
+        .find(|line| {
+            let mut words = line.split_whitespace();
+            let reference = words.next().unwrap_or_default();
+            let duration = words.next().unwrap_or_default();
+            !(response_reference(reference).as_deref() == Some(reference)
+                && duration.ends_with("ms")
+                && words.next().is_none())
+        })
+        .unwrap_or("error");
+    if let Some(rest) = value.split_once("error(").map(|(_, rest)| rest)
+        && let Some((code, _)) = rest.split_once("): ")
+    {
+        return code.to_owned();
+    }
+    let value = value
+        .split_once(": error: ")
+        .map(|(_, message)| message)
+        .or_else(|| value.strip_prefix("error: "))
+        .unwrap_or(value);
+    let lower = value.to_ascii_lowercase();
+    for (prefix, class) in [
+        ("application type mismatch", "application type mismatch"),
+        ("type mismatch", "type mismatch"),
+        ("unsolved goals", "unsolved goals"),
+        ("failed to synthesize instance", "instance synthesis"),
+        ("typeclass instance problem", "instance synthesis"),
+        ("unknown identifier", "unknown identifier"),
+        ("no goals to be solved", "no goals to be solved"),
+        ("fields missing", "fields missing"),
+    ] {
+        if lower.starts_with(prefix) {
+            return class.into();
+        }
+    }
+    let value = value.split_once(':').map_or(value, |(class, _)| class);
     let mut boundary = value.len().min(120);
     while !value.is_char_boundary(boundary) {
         boundary -= 1;
@@ -1138,5 +1175,25 @@ mod tests {
         assert_eq!(parse_since("all").unwrap(), 0);
         assert!(parse_since("24h").unwrap() < now_unix_ms());
         assert!(parse_since("soon").is_err());
+    }
+
+    #[test]
+    fn telemetry_error_classes_ignore_run_specific_headers() {
+        assert_eq!(
+            error_class(
+                "c5364 27639ms\nDemo:12:3: error: No goals to be solved\n  12 | exact h"
+            ),
+            "no goals to be solved"
+        );
+        assert_eq!(
+            error_class(
+                "c5361 421ms\nDemo:9:2: error(lean.synthInstanceFailed): failed to synthesize instance"
+            ),
+            "lean.synthInstanceFailed"
+        );
+        assert_eq!(
+            error_class("source file is on managed main; run mathmux sync"),
+            "source file is on managed main; run mathmux sync"
+        );
     }
 }
