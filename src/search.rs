@@ -1704,8 +1704,11 @@ impl Searcher {
                 .take(3)
                 .count()
                 == 3;
+        let pipe_alternative_covered = query.contains('|')
+            && pipe_alternative_covered(query, ranked.iter().map(|candidate| &candidate.hit));
         if !resolved_declaration_head
             && !warm_name_coverage
+            && !pipe_alternative_covered
             && (ranked.len() < 3
                 || missing_specific_term
                 || missing_source_identifier
@@ -4406,6 +4409,22 @@ fn hit_matches_token(hit: &SearchHit, token: &str) -> bool {
         .any(|text| text_matches_token(&text.to_lowercase(), token))
 }
 
+fn pipe_alternative_covered<'a>(
+    query: &str,
+    hits: impl Iterator<Item = &'a SearchHit> + Clone,
+) -> bool {
+    query.split('|').any(|alternative| {
+        let tokens = query_tokens(alternative)
+            .into_iter()
+            .filter(|token| token.chars().count() >= 3)
+            .collect::<Vec<_>>();
+        !tokens.is_empty()
+            && hits
+                .clone()
+                .any(|hit| tokens.iter().all(|token| hit_matches_token(hit, token)))
+    })
+}
+
 fn hit_query_coverage(hit: &SearchHit, tokens: &[String]) -> (usize, usize, usize, usize) {
     let matched = tokens
         .iter()
@@ -6129,6 +6148,31 @@ end Demo
             .unwrap();
         assert_eq!(notation.kind, "notation");
         assert_eq!(notation.line, 2);
+    }
+
+    #[test]
+    fn pipe_alternatives_short_circuit_after_one_indexed_hit_covers_a_group() {
+        let hit = SearchHit {
+            name: "MatrixGL.gl_pathConnectedSpace".into(),
+            kind: "theorem".into(),
+            signature: Some("PathConnectedSpace (Matrix.GeneralLinearGroup n C)".into()),
+            module: "Demo.GLPaths".into(),
+            path: "Demo/GLPaths.lean".into(),
+            line: 1,
+            doc: None,
+            source: None,
+            usages: Vec::new(),
+            applicable: false,
+            required_import: None,
+        };
+        assert!(pipe_alternative_covered(
+            "GeneralLinearGroup connected|unrelated missing",
+            [&hit].into_iter()
+        ));
+        assert!(!pipe_alternative_covered(
+            "GeneralLinearGroup compact|unrelated missing",
+            [&hit].into_iter()
+        ));
     }
 
     #[test]
