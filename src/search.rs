@@ -2963,6 +2963,7 @@ fn render_summary(run: &SearchRun) -> String {
                     | "imports"
                     | "location"
                     | "location-more"
+                    | "outline"
                     | "source-occurrences"
                     | "source-range"
             ) {
@@ -2975,6 +2976,7 @@ fn render_summary(run: &SearchRun) -> String {
                     "class" | "inductive" | "structure" => 16,
                     "fields" => SOURCE_OCCURRENCE_ALL_LIMIT,
                     "imports" => 64,
+                    "outline" => SOURCE_OCCURRENCE_ALL_LIMIT,
                     "location" => LOCATION_PREVIEW_LINES,
                     "location-more" => LOCATION_MORE_LINES,
                     "source-range" => SOURCE_OCCURRENCE_ALL_LIMIT,

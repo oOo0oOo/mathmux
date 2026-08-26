@@ -729,6 +729,54 @@ fn stale_workspace_source_queries_recommend_sync() {
 }
 
 #[test]
+fn source_outline_lists_declarations_without_structure_fields() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(
+        directory.path().join("Outline.lean"),
+        "import Demo\nnamespace Demo\ndef alpha : Nat := 1\n\nstructure Config where\n  value : Nat\n\ntheorem beta : True := by trivial\nend Demo\n",
+    )
+    .unwrap();
+    let query = parse_source_occurrence_query(
+        directory.path(),
+        directory.path(),
+        None,
+        "Outline.lean outline",
+    )
+    .unwrap()
+    .unwrap();
+    let result = source_occurrence_result(
+        &Workspace {
+            reference: "w1".into(),
+            name: "demo".into(),
+            path: directory.path().to_path_buf(),
+            branch: "demo".into(),
+        },
+        query,
+        false,
+    )
+    .unwrap();
+    assert_eq!(result.hits[0].kind, "outline");
+    assert_eq!(result.hits[0].signature.as_deref(), Some("3 declarations"));
+    let outline = result.hits[0].source.as_deref().unwrap();
+    assert!(outline.contains("    3  def Demo.alpha : Nat"));
+    assert!(outline.contains("    5  structure Demo.Config"));
+    assert!(outline.contains("    8  theorem Demo.beta : True"));
+    assert!(!outline.contains("value"));
+    let summary = render_summary(&SearchRun {
+        reference: "q-outline".into(),
+        workspace_ref: "w1".into(),
+        query: "Outline.lean outline".into(),
+        inference: result.inference,
+        hits: result.hits,
+        note: result.note,
+        duration_ms: 1,
+        created_at: 0,
+    });
+    assert!(summary.contains("source outline : 3 declarations  Outline.lean:3"));
+    assert!(!summary.contains("source:"));
+}
+
+#[test]
 fn explicit_body_query_keeps_alternatives_compact() {
     let hit = |name: &str, source: &str| SearchHit {
         name: name.into(),

@@ -222,6 +222,11 @@ pub(super) fn source_occurrence_result(
     all: bool,
 ) -> Result<SearchResult> {
     let source = fs::read_to_string(&query.path)?;
+    if query.terms.len() == 1
+        && matches!(query.terms[0].to_ascii_lowercase().as_str(), "outline" | "declarations")
+    {
+        return Ok(source_outline_result(workspace, &query, &source));
+    }
     let source_lines = source.lines().count() as u64;
     let matches = source
         .lines()
@@ -322,6 +327,76 @@ pub(super) fn source_occurrence_result(
         },
         ok: true,
     })
+}
+
+fn source_outline_result(
+    workspace: &Workspace,
+    query: &SourceOccurrenceQuery,
+    source: &str,
+) -> SearchResult {
+    let module = project_module_name(&workspace.path, &query.path);
+    let mut entries = parse_source(source, &module)
+        .into_iter()
+        .filter(|entry| !matches!(entry.kind.as_str(), "field" | "file" | "imports"))
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| entry.line);
+    let total = entries.len();
+    let outline = entries
+        .iter()
+        .take(SOURCE_OCCURRENCE_ALL_LIMIT)
+        .map(|entry| {
+            let signature = (!entry.signature.is_empty())
+                .then(|| format!(" : {}", entry.signature))
+                .unwrap_or_default();
+            truncate_line(
+                &format!(
+                    "{:>5}  {} {}{}",
+                    entry.line, entry.kind, entry.name, signature
+                ),
+                200,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let relative = query.display_path.clone().unwrap_or_else(|| {
+        query
+            .path
+            .strip_prefix(&workspace.path)
+            .unwrap_or(&query.path)
+            .to_string_lossy()
+            .into_owned()
+    });
+    let hits = (!entries.is_empty())
+        .then(|| SearchHit {
+            name: "source outline".into(),
+            kind: "outline".into(),
+            signature: Some(format!("{total} declarations")),
+            module,
+            path: relative,
+            line: entries.first().map_or(1, |entry| entry.line),
+            doc: None,
+            source: Some(outline),
+            usages: Vec::new(),
+            applicable: false,
+            required_import: None,
+        })
+        .into_iter()
+        .collect();
+    SearchResult {
+        hits,
+        inference: "source".into(),
+        note: if entries.is_empty() {
+            Some("no declarations in source file".into())
+        } else if total > SOURCE_OCCURRENCE_ALL_LIMIT {
+            Some(format!(
+                "+{} declarations omitted",
+                total - SOURCE_OCCURRENCE_ALL_LIMIT
+            ))
+        } else {
+            None
+        },
+        ok: true,
+    }
 }
 
 pub(super) fn parse_goal_location(
