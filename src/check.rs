@@ -3,6 +3,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
@@ -10,6 +11,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail, ensure};
+use fs2::FileExt;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
@@ -769,6 +771,19 @@ impl Checker {
         if setup_is_current(&path, input_fingerprint) {
             return Ok(path);
         }
+        let shared = self.shared_setup_path(target, input_fingerprint);
+        fs::create_dir_all(shared.parent().expect("shared setup has a parent"))?;
+        let shared_lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(shared.with_extension("lock"))?;
+        shared_lock.lock_exclusive()?;
+        if setup_is_current(&shared, input_fingerprint) {
+            materialize_setup(&shared, &path, input_fingerprint)?;
+            return Ok(path);
+        }
         let output = lake_command(&self.repo, &workspace.path)
             .arg("setup-file")
             .arg(target)
@@ -795,8 +810,10 @@ impl Checker {
             .join("setups")
             .join(&workspace.reference);
         fs::create_dir_all(&directory)?;
-        fs::write(&path, &output.stdout)?;
-        fs::write(setup_fingerprint_path(&path), input_fingerprint)?;
+        fs::write(&shared, &output.stdout)?;
+        fs::write(setup_fingerprint_path(&shared), input_fingerprint)?;
+        materialize_setup(&shared, &path, input_fingerprint)?;
+        prune_shared_setups(shared.parent().expect("shared setup has a parent"), &shared);
         Ok(path)
     }
 
@@ -808,6 +825,16 @@ impl Checker {
             .join(format!(
                 "{}.json",
                 hash_bytes(target.to_string_lossy().as_bytes())
+            ))
+    }
+
+    fn shared_setup_path(&self, target: &Path, input_fingerprint: &str) -> PathBuf {
+        self.repo
+            .state_dir
+            .join("setups/shared")
+            .join(format!(
+                "{}.json",
+                hash_bytes(format!("{}\0{input_fingerprint}", target.display()).as_bytes())
             ))
     }
 
@@ -1024,6 +1051,42 @@ fn setup_is_current(setup_path: &Path, input_fingerprint: &str) -> bool {
     setup_path.is_file()
         && fs::read_to_string(setup_fingerprint_path(setup_path))
             .is_ok_and(|fingerprint| fingerprint == input_fingerprint)
+}
+
+fn materialize_setup(shared: &Path, path: &Path, input_fingerprint: &str) -> Result<()> {
+    fs::create_dir_all(path.parent().context("setup path has no parent")?)?;
+    if path.exists() {
+        fs::remove_file(path)?;
+    }
+    if fs::hard_link(shared, path).is_err() {
+        fs::copy(shared, path)?;
+    }
+    fs::write(setup_fingerprint_path(path), input_fingerprint)?;
+    Ok(())
+}
+
+fn prune_shared_setups(directory: &Path, current: &Path) {
+    const RETAIN_FOR: Duration = Duration::from_secs(60 * 60);
+
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for path in entries.flatten().map(|entry| entry.path()).filter(|path| {
+        path != current && path.extension().is_some_and(|extension| extension == "json")
+    }) {
+        let Ok(metadata) = fs::metadata(&path) else {
+            continue;
+        };
+        let old = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age >= RETAIN_FOR);
+        if metadata.nlink() == 1 && old {
+            let _ = fs::remove_file(setup_fingerprint_path(&path));
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 struct LeanWorker {
