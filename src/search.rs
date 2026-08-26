@@ -3280,17 +3280,11 @@ fn promote_query_coverage(ranked: &mut Vec<RankedHit>, tokens: &[String]) {
             }
         }
     }
+    remaining.sort_by(|left, right| {
+        hit_query_coverage(&right.hit, tokens).cmp(&hit_query_coverage(&left.hit, tokens))
+    });
     if promoted.len() < SUMMARY_LIMIT && !remaining.is_empty() {
-        let best = remaining
-            .iter()
-            .map(|candidate| hit_query_coverage(&candidate.hit, tokens))
-            .max()
-            .unwrap_or_default();
-        let position = remaining
-            .iter()
-            .position(|candidate| hit_query_coverage(&candidate.hit, tokens) == best)
-            .unwrap_or_default();
-        promoted.push(remaining.remove(position));
+        promoted.push(remaining.remove(0));
     }
     for token in tokens.iter().filter(|token| token.len() >= 3) {
         if promoted
