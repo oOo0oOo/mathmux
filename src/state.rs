@@ -125,6 +125,7 @@ pub struct Submission {
 #[derive(Debug, Clone)]
 pub struct ValidationReport {
     pub passed: bool,
+    pub sorry_audit: bool,
     pub detail: String,
     pub build_output: String,
     pub axioms: Vec<String>,
@@ -269,6 +270,7 @@ impl State {
                 build_output TEXT,
                 axioms_json TEXT NOT NULL DEFAULT '[]',
                 sorries_json TEXT NOT NULL DEFAULT '[]',
+                sorry_audit_version INTEGER NOT NULL DEFAULT 0,
                 validation_duration_ms INTEGER,
                 validated_by TEXT,
                 created_at INTEGER NOT NULL
@@ -303,6 +305,7 @@ impl State {
             "ALTER TABLE submissions ADD COLUMN build_output TEXT",
             "ALTER TABLE submissions ADD COLUMN axioms_json TEXT NOT NULL DEFAULT '[]'",
             "ALTER TABLE submissions ADD COLUMN sorries_json TEXT NOT NULL DEFAULT '[]'",
+            "ALTER TABLE submissions ADD COLUMN sorry_audit_version INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE submissions ADD COLUMN validation_duration_ms INTEGER",
         ] {
             let _ = connection.execute(statement, []);
@@ -658,6 +661,24 @@ impl State {
             .map_err(Into::into)
     }
 
+    pub fn latest_audited_submission(&self, main_commit: &str) -> Result<Option<Submission>> {
+        self.open()?
+            .query_row(
+                "SELECT ref, workspace_ref, workspace_commit, main_commit, base_commit, checks_json,
+                        validation_status, validation_detail, build_output, axioms_json,
+                        sorries_json, validation_duration_ms, validated_by, created_at
+                 FROM submissions
+                 WHERE sorry_audit_version = 1
+                 ORDER BY (main_commit = ?1) DESC, created_at DESC,
+                          CAST(substr(ref, 2) AS INTEGER) DESC
+                 LIMIT 1",
+                [main_commit],
+                submission_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
     pub fn pending_submissions(&self) -> Result<Vec<Submission>> {
         let connection = self.open()?;
         let mut statement = connection.prepare(
@@ -719,7 +740,8 @@ impl State {
         self.open()?.execute(
             "UPDATE submissions
              SET validation_status = ?2, validation_detail = ?3, build_output = ?4,
-                 axioms_json = ?5, sorries_json = ?6, validation_duration_ms = ?7
+                 axioms_json = ?5, sorries_json = ?6, sorry_audit_version = ?7,
+                 validation_duration_ms = ?8
              WHERE ref = ?1",
             params![
                 reference,
@@ -728,6 +750,7 @@ impl State {
                 report.build_output,
                 serde_json::to_string(&report.axioms)?,
                 serde_json::to_string(&report.sorries)?,
+                i64::from(report.sorry_audit),
                 report.duration_ms,
             ],
         )?;
@@ -1149,6 +1172,7 @@ mod tests {
                 "s2",
                 &ValidationReport {
                     passed: false,
+                    sorry_audit: true,
                     detail: "build passed; 1 extra axiom".into(),
                     build_output: "info: Building Proof\nerror detail".into(),
                     axioms: vec!["Unsafe.assume (used by Proof.bad)".into()],

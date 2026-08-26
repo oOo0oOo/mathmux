@@ -11,7 +11,6 @@ use crate::issue::{ContextEvent, TelemetryStore, development_enabled};
 use crate::repo::Repo;
 use crate::state::{ActivityMetrics, State, SubmissionInterval, Workspace};
 use crate::util::{now_unix_ms, run_checked, run_output, short_hash};
-use crate::validation::project_sorry_count;
 
 const HOUR_SECS: i64 = 60 * 60;
 const DAY_SECS: i64 = 24 * HOUR_SECS;
@@ -58,6 +57,7 @@ pub fn render(repo: &Repo, state: &State) -> Result<String> {
     let agents = project_agents(&workspaces, &activity, now);
     remember_agent_models(state, &agents);
     let code = current_code(&repo.root)?;
+    let sorries = audited_sorry_count(state, &revision)?;
     let context = submission_context(repo, state, (now - DAY_SECS) * 1000);
     let activity_events = development_enabled(repo)
         .then(|| {
@@ -71,11 +71,11 @@ pub fn render(repo: &Repo, state: &State) -> Result<String> {
 
     let mut output = format!("{project} {}", short_hash(&revision));
     render_agents(&mut output, &agents, now)?;
-    write!(
-        output,
-        "\ncode {:>7} Lean lines in {} files",
-        code.lines, code.files
-    )?;
+    write!(output, "\ncode {:>7} Lean lines in {} files  sorry declarations ", code.lines, code.files)?;
+    match sorries {
+        Some(count) => write!(output, "{count}")?,
+        None => output.push_str("unknown"),
+    }
 
     output.push_str("\nmerged progress");
     for (label, seconds) in [("1h", HOUR_SECS), ("24h", DAY_SECS)] {
@@ -150,7 +150,7 @@ pub fn render_formalization_yaml(repo: &Repo, state: &State) -> Result<String> {
     remember_agent_models(state, &agents);
     let workspaces = state.list_workspaces()?;
     let code = current_code(&repo.root)?;
-    let sorries = project_sorry_count(&repo.root)?;
+    let sorries = audited_sorry_count(state, &revision)?;
     let models = workspaces
         .iter()
         .filter_map(|workspace| workspace.model.as_deref())
@@ -185,13 +185,13 @@ version: \"v0.4\"\n",
     writeln!(output, "  msc2020: [] # TODO if applicable")?;
     writeln!(output, "status:")?;
     writeln!(output, "  scope: \"\" # TODO")?;
-    if sorries == 0 {
+    if sorries == Some(0) {
         writeln!(output, "  sorry_count: 0")?;
         writeln!(output, "  sorry_in_definitions: 0")?;
-    } else {
+    } else if let Some(sorries) = sorries {
         writeln!(
             output,
-            "  # TODO: classify {sorries} detected sorry occurrence(s) between proofs and definitions"
+            "  # TODO: classify {sorries} audited sorry-bearing declaration(s) between proofs and definitions"
         )?;
     }
     writeln!(output, "  main_results: [] # TODO: curated declarations, not an inventory")?;
@@ -234,7 +234,10 @@ version: \"v0.4\"\n",
     }
     writeln!(output, "  lean_files: {}", code.files)?;
     writeln!(output, "  lean_lines: {}", code.lines)?;
-    writeln!(output, "  detected_sorry_occurrences: {sorries}")?;
+    match sorries {
+        Some(count) => writeln!(output, "  audited_sorry_declarations: {count}")?,
+        None => writeln!(output, "  audited_sorry_declarations: null # TODO: no completed audit")?,
+    }
     writeln!(output, "  workspaces:")?;
     if workspaces.is_empty() {
         writeln!(output, "    []")?;
@@ -252,6 +255,12 @@ version: \"v0.4\"\n",
     render_yaml_activity(&mut output, "1h", &hour, net_lean_lines(&repo.root, now - HOUR_SECS)?)?;
     render_yaml_activity(&mut output, "24h", &day, net_lean_lines(&repo.root, now - DAY_SECS)?)?;
     Ok(output.trim_end().to_owned())
+}
+
+fn audited_sorry_count(state: &State, revision: &str) -> Result<Option<usize>> {
+    Ok(state
+        .latest_audited_submission(revision)?
+        .map(|submission| submission.sorries.len()))
 }
 
 fn remember_agent_models(state: &State, agents: &[AgentStatus]) {
