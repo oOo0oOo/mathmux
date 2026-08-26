@@ -102,6 +102,7 @@ fn validate(repo: &Repo, submission: &Submission) -> Result<ValidationReport> {
     let root = prepare_worktree(repo, &submission.main_commit)?;
     let sorries = find_sorries(&root)?;
     let (roots, project_modules) = deliverable_modules(&root);
+    invalidate_newer_project_artifacts(&root)?;
     let output = lake_command(repo, &root)
         .arg("build")
         .args(&roots)
@@ -148,6 +149,31 @@ fn validate(repo: &Repo, submission: &Submission) -> Result<ValidationReport> {
         sorries,
         duration_ms: started.elapsed().as_millis() as u64,
     })
+}
+
+fn invalidate_newer_project_artifacts(root: &Path) -> Result<()> {
+    for source in project_lean_files(root) {
+        let absolute_source = root.join(&source);
+        let mut artifact = root
+            .join(".lake/build/lib/lean")
+            .join(project_module_name(root, &source).replace('.', "/"));
+        artifact.set_extension("olean");
+        let Ok(artifact_metadata) = fs::metadata(&artifact) else {
+            continue;
+        };
+        let source_modified = fs::metadata(&absolute_source)?.modified()?;
+        if source_modified <= artifact_metadata.modified()? {
+            continue;
+        }
+        for extension in ["olean", "olean.hash", "ilean", "ilean.hash", "trace"] {
+            let candidate = artifact.with_extension(extension);
+            if candidate.is_file() {
+                fs::remove_file(&candidate)
+                    .with_context(|| format!("cannot invalidate {}", candidate.display()))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn failed_report(
