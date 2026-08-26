@@ -1025,6 +1025,34 @@ impl Searcher {
         let type_search = type_search_enabled() && type_shaped(query);
         let query_tokens = meaningful_query_tokens(query);
         let import_context = self.import_context(workspace, scopes, base_warming);
+        if !type_search
+            && let Some((anchor, refinement_tokens)) = anchored_api_query(query)
+        {
+            let exact = ranked_exact_candidates(
+                self.exact_candidates(anchor, scopes)?,
+                anchor,
+                workspace,
+            );
+            if unique_qualified_hit_name(exact.iter().map(|candidate| &candidate.hit), anchor)
+                .is_some()
+            {
+                let mut resolved = merge_exact_candidates(exact);
+                self.enrich_exact_source(&mut resolved.hit, scopes)?;
+                resolved.hit.usages = self.usages(&resolved.hit.name, scopes, workspace)?;
+                if let Some(context) = &import_context {
+                    apply_import_context(&mut resolved, context);
+                }
+                let mut hits = vec![resolved.hit];
+                hits.extend(self.api_neighborhood(
+                    &hits[0],
+                    scopes,
+                    workspace,
+                    import_context.as_ref(),
+                    &refinement_tokens,
+                )?);
+                return Ok(exact_search_result(hits, base_warming));
+            }
+        }
         if !type_search && declaration_name_query(query) {
             let mut exact_query = query.to_owned();
             let mut exact_rows = self.exact_candidates(query, scopes)?;
@@ -1060,43 +1088,7 @@ impl Searcher {
                     exact_rows = base_rows;
                 }
             }
-            let exact_tokens = meaningful_query_tokens(&exact_query);
-            let exact = exact_rows
-                .into_iter()
-                .map(|row| {
-                    let score = lexical_score(&exact_query, &exact_tokens, &row)
-                        + if row.owner == format!("workspace:{}", workspace.reference) {
-                            8.0
-                        } else {
-                            0.0
-                        }
-                        - row.rank.max(0.0);
-                    let (source, matched_line) = detailed_source_excerpt(
-                        &row.body,
-                        &exact_query,
-                        &exact_tokens,
-                        row.line,
-                        &row.kind,
-                        &row.name,
-                    );
-                    RankedHit {
-                        hit: SearchHit {
-                            name: row.name.clone(),
-                            kind: row.kind.clone(),
-                            signature: nonempty(row.signature.clone()),
-                            module: row.module.clone(),
-                            path: row.path.clone(),
-                            line: matched_line,
-                            doc: nonempty(row.docs.clone()),
-                            source,
-                            usages: Vec::new(),
-                            applicable: false,
-                            required_import: None,
-                        },
-                        score,
-                    }
-                })
-                .collect::<Vec<_>>();
+            let exact = ranked_exact_candidates(exact_rows, &exact_query, workspace);
             if unique_qualified_hit_name(
                 exact.iter().map(|candidate| &candidate.hit),
                 &exact_query,
@@ -1115,6 +1107,7 @@ impl Searcher {
                     scopes,
                     workspace,
                     import_context.as_ref(),
+                    &[],
                 )?);
                 let mut result = exact_search_result(hits, base_warming);
                 if exact_query != query {
@@ -1221,6 +1214,7 @@ impl Searcher {
                     scopes,
                     workspace,
                     import_context.as_ref(),
+                    &[],
                 )?);
                 return Ok(exact_search_result(hits, base_warming));
             }
@@ -1326,6 +1320,7 @@ impl Searcher {
                     scopes,
                     workspace,
                     import_context.as_ref(),
+                    &[],
                 )?);
                 return Ok(exact_search_result(hits, base_warming || warming));
             }
@@ -1526,6 +1521,7 @@ impl Searcher {
             scopes,
             workspace,
             import_context,
+            &[],
         )?);
         Ok(Some(exact_search_result(
             hits,
@@ -1784,6 +1780,7 @@ impl Searcher {
         scopes: &HashSet<String>,
         workspace: &Workspace,
         import_context: Option<&ImportContext>,
+        refinement_tokens: &[String],
     ) -> Result<Vec<SearchHit>> {
         let connection = self.open()?;
         install_active_scopes(&connection, scopes)?;
@@ -1831,18 +1828,28 @@ impl Searcher {
                 } else {
                     2
                 };
-                (priority, row)
+                let searchable = format!("{} {}", row.name, row.signature).to_lowercase();
+                let refinement_score = refinement_tokens
+                    .iter()
+                    .filter(|token| searchable.contains(token.as_str()))
+                    .map(|token| token.chars().count())
+                    .sum::<usize>();
+                (refinement_score, priority, row)
             })
             .collect::<Vec<_>>();
-        ranked.sort_by(|(left_priority, left), (right_priority, right)| {
-            left_priority
-                .cmp(right_priority)
-                .then_with(|| left.name.cmp(&right.name))
-        });
+        ranked.sort_by(
+            |(left_score, left_priority, left),
+             (right_score, right_priority, right)| {
+                right_score
+                    .cmp(left_score)
+                    .then_with(|| left_priority.cmp(right_priority))
+                    .then_with(|| left.name.cmp(&right.name))
+            },
+        );
         ranked
             .into_iter()
             .take(4)
-            .map(|(_, row)| {
+            .map(|(_, _, row)| {
                 let mut candidate = RankedHit {
                     hit: SearchHit {
                         name: row.name.clone(),
@@ -3321,6 +3328,60 @@ fn merge_exact_candidates(mut candidates: Vec<RankedHit>) -> RankedHit {
         merge_duplicate_hit(&mut resolved.hit, &mut candidate.hit);
     }
     resolved
+}
+
+fn ranked_exact_candidates(
+    rows: Vec<IndexedRow>,
+    query: &str,
+    workspace: &Workspace,
+) -> Vec<RankedHit> {
+    let tokens = meaningful_query_tokens(query);
+    rows.into_iter()
+        .map(|row| {
+            let score = lexical_score(query, &tokens, &row)
+                + if row.owner == format!("workspace:{}", workspace.reference) {
+                    8.0
+                } else {
+                    0.0
+                }
+                - row.rank.max(0.0);
+            let (source, matched_line) = detailed_source_excerpt(
+                &row.body,
+                query,
+                &tokens,
+                row.line,
+                &row.kind,
+                &row.name,
+            );
+            RankedHit {
+                hit: SearchHit {
+                    name: row.name,
+                    kind: row.kind,
+                    signature: nonempty(row.signature),
+                    module: row.module,
+                    path: row.path,
+                    line: matched_line,
+                    doc: nonempty(row.docs),
+                    source,
+                    usages: Vec::new(),
+                    applicable: false,
+                    required_import: None,
+                },
+                score,
+            }
+        })
+        .collect()
+}
+
+fn anchored_api_query(query: &str) -> Option<(&str, Vec<String>)> {
+    let (anchor, refinement) = query.trim().split_once(char::is_whitespace)?;
+    let specific_anchor = anchor.contains(['.', '_'])
+        || anchor.chars().skip(1).any(char::is_uppercase);
+    if anchor.chars().count() < 6 || !specific_anchor || !declaration_name_query(anchor) {
+        return None;
+    }
+    let tokens = meaningful_query_tokens(refinement);
+    (!tokens.is_empty() && tokens.len() <= 24).then_some((anchor, tokens))
 }
 
 fn specific_query_tokens(query: &str) -> Vec<String> {
@@ -5321,6 +5382,13 @@ end Demo
             meaningful_query_tokens("name LinearEquiv.ofFinrankEq"),
             vec!["linearequiv.offinrankeq", "finrank"]
         );
+        let (anchor, refinements) = anchored_api_query(
+            "bottProjectionMatrix selfAdjoint|conjTranspose|mul_self|one_sub",
+        )
+        .unwrap();
+        assert_eq!(anchor, "bottProjectionMatrix");
+        assert!(refinements.contains(&"mul_self".into()));
+        assert!(anchored_api_query("continuous map compact support").is_none());
         assert_eq!(
             meaningful_query_tokens("LinearEquiv.ofFinrankEq --all"),
             vec!["linearequiv.offinrankeq", "finrank"]
