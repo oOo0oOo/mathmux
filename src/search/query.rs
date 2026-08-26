@@ -1043,7 +1043,7 @@ pub(super) fn promote_query_coverage(ranked: &mut Vec<RankedHit>, tokens: &[Stri
     for token in tokens.iter().filter(|token| token.len() >= 3) {
         if promoted
             .iter()
-            .any(|candidate| hit_matches_token(&candidate.hit, token))
+            .any(|candidate| hit_name_matches(&candidate.hit.name, token))
         {
             continue;
         }
