@@ -2065,6 +2065,9 @@ fn diagnostic_search_query(diagnostic: &str) -> String {
             .collect::<HashSet<_>>();
         return truncate_line(&single_line(&anonymize_goal(&goal, &locals)), 600);
     }
+    if let Some(query) = diagnostic_relation_query(diagnostic) {
+        return query;
+    }
     static QUOTED: OnceLock<Regex> = OnceLock::new();
     let quoted = QUOTED.get_or_init(|| Regex::new(r"`([^`]+)`").expect("valid diagnostic regex"));
     let terms = quoted
@@ -2099,6 +2102,45 @@ fn diagnostic_search_query(diagnostic: &str) -> String {
     } else {
         selected.join(" ")
     }
+}
+
+fn diagnostic_relation_query(diagnostic: &str) -> Option<String> {
+    let relational = (diagnostic.contains("left-hand side")
+        && diagnostic.contains("right-hand side"))
+        || (diagnostic.contains("\nhas type\n")
+            && diagnostic.contains("expected to have type"));
+    if !relational {
+        return None;
+    }
+    let message = diagnostic
+        .split_once(" error: ")
+        .map_or(diagnostic, |(_, message)| message)
+        .split("\n\n")
+        .next()
+        .unwrap_or_default();
+    let mut selected = Vec::new();
+    for token in message.split(|character: char| {
+        character.is_whitespace()
+            || matches!(character, ':' | ',' | '(' | ')' | '[' | ']' | '{' | '}')
+    }) {
+        let token = token.trim_matches(|character: char| {
+            !character.is_alphanumeric() && !matches!(character, '_' | '.' | '\'')
+        });
+        let structured = token.contains(['.', '_'])
+            || (token.chars().next().is_some_and(char::is_lowercase)
+                && token.chars().skip(1).any(char::is_uppercase));
+        if token.len() >= 4
+            && structured
+            && declaration_name_query(token)
+            && !selected.contains(&token)
+        {
+            selected.push(token);
+        }
+        if selected.len() == 4 {
+            break;
+        }
+    }
+    (!selected.is_empty()).then(|| selected.join(" "))
 }
 
 fn anonymize_goal(goal: &str, locals: &HashSet<&str>) -> String {
@@ -5350,6 +5392,12 @@ end Demo
                 "error: unsolved goals\nX : Type\nf g : X → X\nhf : Continuous f\n⊢ Continuous (f ∘ g)\n   3 | example"
             ),
             "⊢ Continuous (_ ∘ _)"
+        );
+        assert_eq!(
+            diagnostic_search_query(
+                "Demo:12:4: error: Tactic `rfl` failed: The left-hand side\n  (projectionRangePullbackMapAt P x) ((Trivialization.symmL ℂ e x) v)\nis not definitionally equal to the right-hand side\n  (Trivialization.symmL ℂ e' x) v\n\ncase refl\nP : C X Y"
+            ),
+            "projectionRangePullbackMapAt Trivialization.symmL"
         );
         let source = (1..=30)
             .map(|line| format!("line {line}"))
