@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail, ensure};
 use regex::Regex;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use serde_json::Value;
 use walkdir::WalkDir;
 
@@ -123,6 +123,35 @@ fn install_active_scopes(connection: &Connection, scopes: &HashSet<String>) -> R
         insert.execute([scope])?;
     }
     Ok(())
+}
+
+fn name_contains_candidates(
+    connection: &Connection,
+    tokens: &[String],
+) -> Result<Vec<IndexedRow>> {
+    if tokens.is_empty() {
+        return Ok(Vec::new());
+    }
+    let conditions = vec!["name LIKE ? COLLATE NOCASE"; tokens.len()].join(" OR ");
+    let sql = format!(
+        "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0
+         FROM search_fts WHERE ({conditions})
+           AND owner IN (SELECT owner FROM active_search_scopes)
+         ORDER BY CASE
+           WHEN owner LIKE 'workspace:%' OR owner LIKE 'artifacts:%' THEN 0
+           ELSE 1
+         END
+         LIMIT 128"
+    );
+    let patterns = tokens
+        .iter()
+        .map(|token| format!("%{token}%"))
+        .collect::<Vec<_>>();
+    let mut statement = connection.prepare(&sql)?;
+    statement
+        .query_map(params_from_iter(&patterns), indexed_row_from_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 #[derive(Clone, Copy)]
@@ -1912,22 +1941,13 @@ impl Searcher {
              END, bm25(search_fts, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 7.0, 3.0, 1.0)
              LIMIT 128",
         )?;
-        let mut named_contains = connection.prepare(
-            "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0
-             FROM search_fts WHERE name LIKE ?1 COLLATE NOCASE
-               AND owner IN (SELECT owner FROM active_search_scopes)
-             ORDER BY CASE
-               WHEN owner LIKE 'workspace:%' OR owner LIKE 'artifacts:%' THEN 0
-               ELSE 1
-             END
-             LIMIT 32",
-        )?;
         let mut qualified = connection.prepare(
             "SELECT owner, file, module, line, name, kind, signature, docs, body,
                     bm25(search_fts, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 7.0, 3.0, 1.0)
              FROM search_fts WHERE search_fts MATCH ?1
                AND owner IN (SELECT owner FROM active_search_scopes) LIMIT 256",
         )?;
+        let mut contains_tokens = Vec::new();
         for token in tokens
             .iter()
             .filter(|token| token.len() >= 4 && token.as_str() != "_")
@@ -1944,13 +1964,10 @@ impl Searcher {
                 && !compound_query
                 && (token.len() >= 8 || token.contains(['.', '_']))
             {
-                rows.extend(
-                    named_contains
-                        .query_map([format!("%{token}%")], indexed_row_from_row)?
-                        .collect::<rusqlite::Result<Vec<_>>>()?,
-                );
+                contains_tokens.push(token.clone());
             }
         }
+        rows.extend(name_contains_candidates(&connection, &contains_tokens)?);
         if name_query && let Some((owner, leaf)) = query.rsplit_once('.')
         {
             let owner = owner.rsplit('.').next().unwrap_or(owner).to_lowercase();
@@ -6327,6 +6344,48 @@ end Demo
         assert!(summary.contains("requested body"));
         assert!(summary.contains("Other.proof : True"));
         assert!(!summary.contains("alternative body"));
+    }
+
+    #[test]
+    fn name_contains_fallback_batches_tokens_and_respects_scopes() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE VIRTUAL TABLE search_fts USING fts5(
+                    owner UNINDEXED, origin UNINDEXED, file UNINDEXED,
+                    module UNINDEXED, line UNINDEXED, name, kind UNINDEXED,
+                    signature, docs, body
+                 );",
+            )
+            .unwrap();
+        for (owner, name) in [
+            ("workspace:w1", "Demo.prefixAlphaSuffix"),
+            ("packages:demo", "Demo.prefixBetaSuffix"),
+            ("workspace:w2", "Demo.prefixGammaSuffix"),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO search_fts(
+                        owner, origin, file, module, line, name, kind, signature, docs, body
+                     ) VALUES (?1, '', 'Demo.lean', 'Demo', 1, ?2, 'def', '', '', '')",
+                    params![owner, name],
+                )
+                .unwrap();
+        }
+        install_active_scopes(
+            &connection,
+            &HashSet::from(["workspace:w1".into(), "packages:demo".into()]),
+        )
+        .unwrap();
+        let hits = name_contains_candidates(
+            &connection,
+            &["alphasuffix".into(), "betasuffix".into()],
+        )
+        .unwrap();
+        assert_eq!(
+            hits.into_iter().map(|hit| hit.name).collect::<Vec<_>>(),
+            ["Demo.prefixAlphaSuffix", "Demo.prefixBetaSuffix"]
+        );
     }
 
     #[test]
