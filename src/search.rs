@@ -497,6 +497,28 @@ impl Searcher {
         )?;
         if has_stale_sources {
             connection.execute(
+                "DELETE FROM search_imports
+                 WHERE EXISTS (
+                    SELECT 1 FROM search_files
+                    WHERE search_files.owner = search_imports.owner
+                      AND search_files.path = search_imports.origin
+                      AND (search_files.kind = 'source' OR search_files.kind LIKE 'source-v%')
+                      AND search_files.kind <> ?1
+                 )",
+                [SOURCE_INDEX_KIND],
+            )?;
+            connection.execute(
+                "DELETE FROM search_origins
+                 WHERE EXISTS (
+                    SELECT 1 FROM search_files
+                    WHERE search_files.owner = search_origins.owner
+                      AND search_files.path = search_origins.origin
+                      AND (search_files.kind = 'source' OR search_files.kind LIKE 'source-v%')
+                      AND search_files.kind <> ?1
+                 )",
+                [SOURCE_INDEX_KIND],
+            )?;
+            connection.execute(
                 "DELETE FROM search_fts
                  WHERE EXISTS (
                     SELECT 1 FROM search_files
@@ -513,6 +535,11 @@ impl Searcher {
                 [SOURCE_INDEX_KIND],
             )?;
         }
+        connection.execute(
+            "DELETE FROM search_origins
+             WHERE rowid NOT IN (SELECT rowid FROM search_fts)",
+            [],
+        )?;
         let origins_mapped = connection
             .query_row(
                 "SELECT value FROM search_meta WHERE key = 'origins_mapped'",
@@ -3679,12 +3706,27 @@ fn promote_query_coverage(ranked: &mut Vec<RankedHit>, tokens: &[String]) {
     }
     let mut remaining = std::mem::take(ranked);
     let mut promoted: Vec<RankedHit> = Vec::new();
-    let qualified = tokens.iter().filter(|token| token.contains('.')).count();
-    if qualified >= 2 {
-        for token in tokens.iter().filter(|token| token.contains('.')) {
-            if let Some(position) = remaining
-                .iter()
-                .position(|candidate| candidate.hit.name.eq_ignore_ascii_case(token))
+    let qualified = tokens
+        .iter()
+        .filter(|token| token.contains('.') && !token.ends_with(".lean"))
+        .count();
+    if qualified >= 1 {
+        for token in tokens
+            .iter()
+            .filter(|token| token.contains('.') && !token.ends_with(".lean"))
+        {
+            let owner = token.rsplit_once('.').map(|(owner, _)| owner);
+            if let Some(position) = remaining.iter().position(|candidate| {
+                candidate.hit.name.eq_ignore_ascii_case(token)
+                    || owner.is_some_and(|owner| {
+                        candidate.hit.name.eq_ignore_ascii_case(owner)
+                            || candidate
+                                .hit
+                                .name
+                                .to_lowercase()
+                                .ends_with(&format!(".{owner}"))
+                    })
+            })
             {
                 promoted.push(remaining.remove(position));
             }
@@ -4550,10 +4592,9 @@ fn file_query_coverage_signature(source: &str, tokens: &[String]) -> Option<Stri
         return None;
     }
     Some(format!(
-        "partial source match {}/{}; missing {}",
+        "partial source match {}/{}",
         tokens.len() - missing.len(),
-        tokens.len(),
-        missing.into_iter().take(3).collect::<Vec<_>>().join(", ")
+        tokens.len()
     ))
 }
 
@@ -5984,7 +6025,7 @@ end Demo
                 &["first".into(), "second".into()]
             )
             .as_deref(),
-            Some("partial source match 1/2; missing second")
+            Some("partial source match 1/2")
         );
 
         let structure = "structure Config where\n  first : Nat\n  second : String\n  third : Bool\n\n/-- The next declaration. -/\ndef next := 1\n";
