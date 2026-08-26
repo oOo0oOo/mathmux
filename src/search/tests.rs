@@ -1191,6 +1191,13 @@ fn goal_and_source_query_regressions() {
         "Matrix.fromBlocks finSumFinEquiv.symm Continuous"
     );
     assert_eq!(
+        diagnostic_goal_query(
+            "⊢ Matrix.toLinearMap (BundleCoordinate.coordinateMap φ b₀ b) = rhs",
+            &HashSet::from(["φ", "b₀", "b", "rhs"])
+        ),
+        "BundleCoordinate.coordinateMap Matrix.toLinearMap"
+    );
+    assert_eq!(
         refined_search_query("Homeomorph", "constructors"),
         "Homeomorph.mk"
     );

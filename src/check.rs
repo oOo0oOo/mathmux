@@ -1365,10 +1365,10 @@ fn partition_diagnostics(
             context: None,
         };
         match diagnostic.severity.as_str() {
+            "warning" if is_linter(diagnostic) => linters.push(value),
             "warning" | "information" | "info" if is_tactic_suggestion(diagnostic) => {
                 suggestions.push(value)
             }
-            "warning" if is_linter(diagnostic) => linters.push(value),
             "warning" => warnings.push(value),
             "error" => errors.push(value),
             _ => {}
@@ -1863,7 +1863,7 @@ mod tests {
             WorkerDiagnostic {
                 severity: "warning".into(),
                 kind: "linter.unusedVariables".into(),
-                text: "Proof.lean:2:1: warning: unused variable".into(),
+                text: "Proof.lean:2:1: warning: Try this: omit the unused variable".into(),
             },
             WorkerDiagnostic {
                 severity: "error".into(),

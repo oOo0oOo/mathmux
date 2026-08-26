@@ -416,7 +416,16 @@ pub(super) fn diagnostic_goal_query(goal: &str, locals: &HashSet<&str>) -> Strin
         }
     }
     if focused.len() >= 2 {
-        focused.sort_by_key(|token| !token.contains(['.', '_']));
+        focused.sort_by_key(|token| {
+            let namespace = token.split_once('.').map(|(namespace, _)| namespace);
+            std::cmp::Reverse((
+                namespace.is_some_and(|namespace| {
+                    namespace.chars().next().is_some_and(char::is_uppercase)
+                }),
+                namespace.map_or(0, str::len),
+                token.contains(['.', '_']),
+            ))
+        });
         focused.join(" ")
     } else {
         truncate_line(&format!("⊢ {target}"), 600)
