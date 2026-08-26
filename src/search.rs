@@ -5147,7 +5147,7 @@ fn parse_source_occurrence_query(
         return Ok(None);
     }
     let Some((path, display_path, _)) = resolve_goal_path(root, cwd, path)? else {
-        return Ok(None);
+        bail!("source file not found or ambiguous: {path}");
     };
     let (first_line, last_line) = range.unwrap_or((1, u64::MAX));
     Ok(Some(SourceOccurrenceQuery {
@@ -5269,7 +5269,7 @@ fn parse_goal_location(root: &Path, cwd: &Path, query: &str) -> Result<Option<Go
         && suffix.eq_ignore_ascii_case("tail")
     {
         let Some((path, display_path, probe)) = resolve_goal_path(root, cwd, path)? else {
-            return Ok(None);
+            bail!("source file not found or ambiguous: {path}");
         };
         let line = fs::read_to_string(&path)?.lines().count().max(1) as u64;
         return Ok(Some(GoalLocation {
@@ -5300,7 +5300,7 @@ fn parse_goal_location(root: &Path, cwd: &Path, query: &str) -> Result<Option<Go
         (second, last_number)
     };
     let Some((path, display_path, probe)) = resolve_goal_path(root, cwd, path)? else {
-        return Ok(None);
+        bail!("source file not found or ambiguous: {path}");
     };
     ensure!(line > 0, "goal line starts at 1");
     Ok(Some(GoalLocation {
@@ -5386,6 +5386,18 @@ fn resolve_goal_path(
             (!project).then(|| display.to_owned()),
             project,
         )));
+    }
+    if requested.components().count() == 1 {
+        let mut matches = project_lean_files(&root)
+            .into_iter()
+            .filter(|candidate| candidate.file_name() == requested.file_name())
+            .filter_map(|candidate| fs::canonicalize(root.join(candidate)).ok())
+            .collect::<Vec<_>>();
+        matches.sort();
+        matches.dedup();
+        if let [resolved] = matches.as_slice() {
+            return Ok(Some((resolved.clone(), None, true)));
+        }
     }
     Ok(None)
 }
@@ -6402,6 +6414,28 @@ end Demo
             fs::canonicalize(project.join("Nested.lean")).unwrap()
         );
         assert!(recovered.display_path.is_none());
+        let recovered = parse_source_occurrence_query(
+            directory.path(),
+            directory.path(),
+            "Nested.lean:4-6",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            recovered.path,
+            fs::canonicalize(project.join("Nested.lean")).unwrap()
+        );
+        assert!(
+            parse_source_occurrence_query(
+                directory.path(),
+                directory.path(),
+                "Missing.lean:4-6",
+            )
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("source file not found or ambiguous")
+        );
 
         let dependency = directory
             .path()
