@@ -2025,6 +2025,19 @@ fn source_regex_queries_scan_a_bounded_scope_with_context() {
     .unwrap();
     assert!(dependency.scope.is_absolute());
     assert!(dependency.scope.ends_with("Mathlib/Analysis"));
+    let dependency = source_regex_result(
+        &Workspace {
+            reference: "w1".into(),
+            name: "demo".into(),
+            path: directory.path().to_path_buf(),
+            branch: "demo".into(),
+            model: None,
+        },
+        dependency,
+        false,
+    )
+    .unwrap();
+    assert_eq!(dependency.hits[0].path, "<dependency>/Mathlib/Analysis/Api.lean");
 }
 
 #[test]

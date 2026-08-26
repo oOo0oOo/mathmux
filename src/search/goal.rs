@@ -274,6 +274,7 @@ pub(super) fn source_regex_result(
     };
     let limit = if all { SOURCE_OCCURRENCE_LIMIT } else { 12 };
     let deadline = Instant::now() + SOURCE_FALLBACK_BUDGET;
+    let dependency_root = fs::canonicalize(workspace.path.join(".lake/packages")).ok();
     let mut hits = Vec::new();
     let mut total = 0usize;
     let mut timed_out = false;
@@ -308,11 +309,7 @@ pub(super) fn source_regex_result(
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            let relative = path
-                .strip_prefix(&workspace.path)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .into_owned();
+            let relative = source_display_path(workspace, dependency_root.as_deref(), &path);
             hits.push(SearchHit {
                 name: truncate_line(line.trim(), 200),
                 kind: "source-regex".into(),
@@ -347,6 +344,19 @@ pub(super) fn source_regex_result(
         },
         ok: true,
     })
+}
+
+fn source_display_path(workspace: &Workspace, dependency_root: Option<&Path>, path: &Path) -> String {
+    if let Ok(relative) = path.strip_prefix(&workspace.path) {
+        return relative.to_string_lossy().into_owned();
+    }
+    if let Some(relative) = dependency_root.and_then(|root| path.strip_prefix(root).ok()) {
+        let relative = relative.components().skip(1).collect::<PathBuf>();
+        if !relative.as_os_str().is_empty() {
+            return format!("<dependency>/{}", relative.display());
+        }
+    }
+    path.to_string_lossy().into_owned()
 }
 
 pub(super) fn parse_source_occurrence_query(
