@@ -2555,6 +2555,7 @@ fn parse_source(source: &str, module: &str) -> Vec<SourceEntry> {
             body: body.chars().take(16_000).collect(),
         });
     }
+    entries.extend(parse_notations(source, &lines, &namespaces));
     let imports = source
         .lines()
         .enumerate()
@@ -2586,6 +2587,57 @@ fn parse_source(source: &str, module: &str) -> Vec<SourceEntry> {
         body: source.chars().take(256_000).collect(),
     });
     entries
+}
+
+fn parse_notations(
+    source: &str,
+    lines: &[usize],
+    namespaces: &[Vec<String>],
+) -> Vec<SourceEntry> {
+    static COMMAND: OnceLock<Regex> = OnceLock::new();
+    static LITERAL: OnceLock<Regex> = OnceLock::new();
+    let command = COMMAND.get_or_init(|| {
+        Regex::new(
+            r#"(?m)^[ \t]*(?:(?:scoped|local)[ \t]+)*(?P<kind>notation|infixl|infixr|infix|prefix|postfix)(?::[0-9]+)?(?P<body>[^\n]*)"#,
+        )
+        .expect("valid notation command regex")
+    });
+    let literal =
+        LITERAL.get_or_init(|| Regex::new(r#"\"([^\"]+)\""#).expect("valid notation literal regex"));
+    command
+        .captures_iter(source)
+        .filter_map(|capture| {
+            let complete = capture.get(0)?;
+            let notation = literal
+                .captures_iter(capture.name("body")?.as_str())
+                .filter_map(|literal| literal.get(1))
+                .map(|literal| literal.as_str().trim())
+                .filter(|literal| !literal.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            if notation.is_empty() {
+                return None;
+            }
+            let line = offset_line(lines, complete.start());
+            let namespace = namespaces
+                .get(line.saturating_sub(1))
+                .cloned()
+                .unwrap_or_default();
+            let label = format!("notation {notation}");
+            Some(SourceEntry {
+                line: line as u64,
+                name: if namespace.is_empty() {
+                    label
+                } else {
+                    format!("{}.{}", namespace.join("."), label)
+                },
+                kind: capture.name("kind")?.as_str().to_owned(),
+                signature: single_line(complete.as_str().trim()),
+                docs: preceding_doc(source, complete.start()).unwrap_or_default(),
+                body: complete.as_str().trim().to_owned(),
+            })
+        })
+        .collect()
 }
 
 fn generated_parent_projection(name: &str, signature: &str) -> Option<String> {
@@ -4559,6 +4611,17 @@ end Demo
             .unwrap();
         assert!(useful.body.contains("section Adapter"));
         assert!(!useful.body.contains("end Adapter"));
+
+        let notation = parse_source(
+            "namespace Bundle\nnotation:100 E₁ \" ×ᵇ \" E₂ => fun x => E₁ x × E₂ x\nend Bundle\n",
+            "Demo",
+        );
+        let notation = notation
+            .iter()
+            .find(|entry| entry.name == "Bundle.notation ×ᵇ")
+            .unwrap();
+        assert_eq!(notation.kind, "notation");
+        assert_eq!(notation.line, 2);
     }
 
     #[test]
