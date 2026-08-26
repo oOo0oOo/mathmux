@@ -30,7 +30,7 @@ impl CheckProfile {
                 String::new()
             };
             output.push_str(&format!(
-                "\n  {} {} {}ms (deps {}, cache {}, setup {}, Lean {}ms{}{})",
+                "\n  {} {} {}ms (deps {}ms, cache {}ms, setup {}ms, Lean {}ms{}{})",
                 target,
                 file.mode,
                 file.total_ms,
