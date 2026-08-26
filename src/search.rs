@@ -3207,6 +3207,7 @@ fn render_summary(run: &SearchRun) -> String {
                     "outline" => OUTLINE_PREVIEW_LINES,
                     "location" => LOCATION_PREVIEW_LINES,
                     "location-more" => LOCATION_MORE_LINES,
+                    "diagnostic-context" => source.lines().count(),
                     "source-range" => SOURCE_OCCURRENCE_ALL_LIMIT,
                     "source-occurrences" => SOURCE_OCCURRENCE_LIMIT,
                     _ => SOURCE_PREVIEW_LINES,
@@ -3214,7 +3215,11 @@ fn render_summary(run: &SearchRun) -> String {
             };
             for line in source.lines().take(source_lines) {
                 output.push('\n');
-                output.push_str(&truncate_line(line.trim_end(), 200));
+                if hit.kind == "diagnostic-context" {
+                    output.push_str(line.trim_end());
+                } else {
+                    output.push_str(&truncate_line(line.trim_end(), 200));
+                }
             }
             let omitted = source.lines().count().saturating_sub(source_lines);
             if omitted > 0 {
