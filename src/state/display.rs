@@ -108,10 +108,10 @@ pub(super) fn render_check_run(run: &CheckRun, all: bool) -> String {
             output.push_str(&format!("\n  {file}"));
         }
     }
-    append_diagnostics(&mut output, "diagnostics", &run.diagnostics, None);
-    append_diagnostics(&mut output, "warnings", &run.warnings, Some(8));
+    append_diagnostics(&mut output, "diagnostics", &run.diagnostics, None, 120);
+    append_diagnostics(&mut output, "warnings", &run.warnings, Some(8), 30);
     if all {
-        append_diagnostics(&mut output, "linters", &run.linters, Some(8));
+        append_diagnostics(&mut output, "linters", &run.linters, Some(8), 30);
     } else if !run.linters.is_empty() {
         output.push_str(&format!("\nlinters: {}", run.linters.len()));
     }
@@ -209,21 +209,53 @@ fn append_diagnostics(
     label: &str,
     diagnostics: &[Diagnostic],
     limit: Option<usize>,
+    line_limit: usize,
 ) {
     if diagnostics.is_empty() {
         return;
     }
     output.push_str(&format!("\n{label}:"));
-    let shown = limit.unwrap_or(diagnostics.len()).min(diagnostics.len());
-    for diagnostic in diagnostics.iter().take(shown) {
-        for line in diagnostic.text.trim().lines() {
-            output.push_str(&format!("\n  {line}"));
+    let maximum = limit.unwrap_or(diagnostics.len()).min(diagnostics.len());
+    let mut remaining = line_limit;
+    let mut shown = 0;
+    for diagnostic in diagnostics.iter().take(maximum) {
+        if remaining == 0 {
+            break;
         }
-        if let Some(context) = &diagnostic.context {
-            for line in context.lines() {
+        let lines = diagnostic
+            .text
+            .trim()
+            .lines()
+            .chain(
+                diagnostic
+                    .context
+                    .as_deref()
+                    .into_iter()
+                    .flat_map(str::lines),
+            )
+            .collect::<Vec<_>>();
+        if lines.len() <= remaining {
+            for line in &lines {
                 output.push_str(&format!("\n  {line}"));
             }
+            remaining -= lines.len();
+        } else {
+            let content = remaining.saturating_sub(1);
+            let first = content / 3;
+            let last = content - first;
+            for line in lines.iter().take(first) {
+                output.push_str(&format!("\n  {line}"));
+            }
+            output.push_str(&format!(
+                "\n  ... {} diagnostic lines omitted ...",
+                lines.len().saturating_sub(content)
+            ));
+            for line in lines.iter().skip(lines.len().saturating_sub(last)) {
+                output.push_str(&format!("\n  {line}"));
+            }
+            remaining = 0;
         }
+        shown += 1;
     }
     if shown < diagnostics.len() {
         output.push_str(&format!(
@@ -252,4 +284,27 @@ fn condense_build_output(output: &str) -> String {
         .take(20)
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn long_diagnostics_keep_their_head_and_tail_within_the_budget() {
+        let diagnostic = Diagnostic {
+            kind: "lean".into(),
+            text: (1..=300)
+                .map(|line| format!("diagnostic line {line}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            context: None,
+        };
+        let mut output = String::new();
+        append_diagnostics(&mut output, "diagnostics", &[diagnostic], None, 12);
+        assert_eq!(output.trim().lines().count(), 13);
+        assert!(output.contains("diagnostic line 1"));
+        assert!(output.contains("diagnostic line 300"));
+        assert!(output.contains("289 diagnostic lines omitted"));
+    }
 }
