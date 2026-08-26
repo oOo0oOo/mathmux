@@ -1269,9 +1269,17 @@ fn partition_diagnostics(
     let mut suggestions = Vec::new();
     let mut errors = Vec::new();
     for diagnostic in diagnostics {
+        let mut text = diagnostic.text.clone();
+        if diagnostic.severity == "error"
+            && text.contains("elaboration function for `Mathlib.Tactic.subscriptTerm` has not been implemented")
+        {
+            text.push_str(
+                "\nhint: this notation is not active; open its scoped notation or use the named declaration",
+            );
+        }
         let value = Diagnostic {
             kind: diagnostic.kind.clone(),
-            text: diagnostic.text.clone(),
+            text,
             context: None,
         };
         match diagnostic.severity.as_str() {
@@ -1806,6 +1814,14 @@ mod tests {
                 "     1 | first\n     2 | second\n>    3 | problem\n     4 | fourth\n     5 | fifth"
             )
         );
+
+        let (_, _, _, notation_errors) = partition_diagnostics(&[WorkerDiagnostic {
+            severity: "error".into(),
+            kind: "unsupportedSyntax".into(),
+            text: "elaboration function for `Mathlib.Tactic.subscriptTerm` has not been implemented"
+                .into(),
+        }]);
+        assert!(notation_errors[0].text.contains("open its scoped notation"));
 
         errors[0].text = "Demo.Nested.Proof:3:1: error: type mismatch".into();
         errors[0].context = None;
