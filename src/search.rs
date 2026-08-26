@@ -2512,6 +2512,7 @@ fn diagnostic_goal_query(goal: &str, locals: &HashSet<&str>) -> String {
         }
     }
     if focused.len() >= 2 {
+        focused.sort_by_key(|token| !token.contains(['.', '_']));
         focused.join(" ")
     } else {
         truncate_line(&format!("⊢ {target}"), 600)
@@ -6127,7 +6128,7 @@ end Demo
                 "⊢ Continuous fun a => Matrix.fromBlocks (A a) 0 0 (D a) (finSumFinEquiv.symm i)",
                 &HashSet::from(["a", "A", "D", "i"])
             ),
-            "Continuous Matrix.fromBlocks finSumFinEquiv.symm"
+            "Matrix.fromBlocks finSumFinEquiv.symm Continuous"
         );
         assert_eq!(refined_search_query("Homeomorph", "constructors"), "Homeomorph mk");
         assert_eq!(refined_search_query("Homeomorph", "usages"), "Homeomorph");
