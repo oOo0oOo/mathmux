@@ -753,6 +753,9 @@ impl Searcher {
     fn migrate(&self) -> Result<()> {
         let connection = self.open()?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
+        // Daemon generations can overlap briefly during a live upgrade. Keep
+        // schema repair and origin-map reconstruction atomic across processes.
+        connection.execute_batch("BEGIN IMMEDIATE")?;
         connection.execute_batch(
             "CREATE TABLE IF NOT EXISTS search_files (
                 owner TEXT NOT NULL,
@@ -930,6 +933,7 @@ impl Searcher {
             connection.execute("DELETE FROM search_imports WHERE owner = ?1", [&owner])?;
             connection.execute("DELETE FROM search_files WHERE owner = ?1", [&owner])?;
         }
+        connection.execute_batch("COMMIT")?;
         Ok(())
     }
 
