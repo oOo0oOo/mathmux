@@ -378,15 +378,17 @@ fn check_summary(outcome: &CheckOutcome) -> String {
     const ADDITIONAL_DIAGNOSTIC_LIMIT: usize = 3;
 
     let mut output = format!("{} {}ms", outcome.reference, outcome.elapsed_ms);
-    for warning in outcome.warnings.iter().take(3) {
-        output.push_str(&format!("\nwarning {}", clean_line(&warning.text)));
-    }
-    if outcome.warnings.len() > 3 {
-        output.push_str(&format!(
-            "\n+{} warnings; show {}",
-            outcome.warnings.len() - 3,
-            outcome.reference
-        ));
+    if outcome.ok {
+        for warning in outcome.warnings.iter().take(3) {
+            output.push_str(&format!("\nwarning {}", clean_line(&warning.text)));
+        }
+        if outcome.warnings.len() > 3 {
+            output.push_str(&format!(
+                "\n+{} warnings; show {}",
+                outcome.warnings.len() - 3,
+                outcome.reference
+            ));
+        }
     }
     if outcome.ok && !outcome.linters.is_empty() {
         output.push_str(&format!(
@@ -629,6 +631,30 @@ mod tests {
         assert!(summary.contains("also Demo.Proof:4:1: error: failure 4"));
         assert!(!summary.contains("source 2"));
         assert!(summary.contains("+1 diagnostics; show c2"));
+    }
+
+    #[test]
+    fn failed_check_summary_omits_non_blocking_warnings() {
+        let summary = check_summary(&CheckOutcome {
+            reference: "c4".into(),
+            ok: false,
+            elapsed_ms: 10,
+            warnings: vec![Diagnostic {
+                kind: "warning".into(),
+                text: "non-blocking warning".into(),
+                context: None,
+            }],
+            linters: Vec::new(),
+            suggestions: Vec::new(),
+            diagnostics: vec![Diagnostic {
+                kind: "error".into(),
+                text: "blocking error".into(),
+                context: None,
+            }],
+            profile: None,
+            repetition: None,
+        });
+        assert_eq!(summary, "c4 10ms\nblocking error");
     }
 
     #[test]
