@@ -29,6 +29,8 @@ const RESULT_LIMIT: usize = 24;
 const SUMMARY_LIMIT: usize = 5;
 const LOCATION_PREVIEW_LINES: usize = 32;
 const LOCATION_MORE_LINES: usize = 96;
+const SOURCE_OCCURRENCE_LIMIT: usize = 64;
+const SOURCE_OCCURRENCE_ALL_LIMIT: usize = 200;
 const GOAL_STATE_BEGIN: &str = "MATHMUX_GOAL_BEGIN";
 const GOAL_STATE_END: &str = "MATHMUX_GOAL_END";
 const SEARCH_INDEX_VERSION: i64 = 6;
@@ -190,6 +192,10 @@ impl Searcher {
         let started = Instant::now();
         let result = if let Some(location) = parse_goal_location(&workspace.path, cwd, query)? {
             self.goal_search(workspace, location)?
+        } else if let Some(location) =
+            parse_source_occurrence_query(&workspace.path, cwd, query)?
+        {
+            source_occurrence_result(workspace, location, all)?
         } else {
             let (scopes, base_warming) = match self.index_lock.try_lock() {
                 Ok(_guard) => self.refresh(workspace)?,
@@ -4215,6 +4221,7 @@ fn render_summary(run: &SearchRun) -> String {
                     "imports" => 64,
                     "location" => LOCATION_PREVIEW_LINES,
                     "location-more" => LOCATION_MORE_LINES,
+                    "source-occurrences" => SOURCE_OCCURRENCE_LIMIT,
                     _ => SOURCE_PREVIEW_LINES,
                 }
             };
@@ -4243,6 +4250,130 @@ struct GoalLocation {
     tail: bool,
     more: bool,
     probe: bool,
+}
+
+struct SourceOccurrenceQuery {
+    path: PathBuf,
+    display_path: Option<String>,
+    first_line: u64,
+    last_line: u64,
+    terms: Vec<String>,
+}
+
+fn parse_source_occurrence_query(
+    root: &Path,
+    cwd: &Path,
+    query: &str,
+) -> Result<Option<SourceOccurrenceQuery>> {
+    let mut parts = query.split_whitespace();
+    let Some(target) = parts.next() else {
+        return Ok(None);
+    };
+    let terms = parts
+        .flat_map(|part| part.split('|'))
+        .map(|term| term.trim_matches(['\'', '"']))
+        .filter(|term| !term.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if terms.is_empty() {
+        return Ok(None);
+    }
+    let (path, range) = target
+        .rsplit_once(':')
+        .and_then(|(path, range)| parse_source_line_range(range).map(|range| (path, range)))
+        .map_or((target, None), |(path, range)| (path, Some(range)));
+    if Path::new(path).extension().and_then(|extension| extension.to_str()) != Some("lean") {
+        return Ok(None);
+    }
+    let Some((path, display_path, _)) = resolve_goal_path(root, cwd, path)? else {
+        return Ok(None);
+    };
+    let (first_line, last_line) = range.unwrap_or((1, u64::MAX));
+    Ok(Some(SourceOccurrenceQuery {
+        path,
+        display_path,
+        first_line,
+        last_line,
+        terms,
+    }))
+}
+
+fn parse_source_line_range(range: &str) -> Option<(u64, u64)> {
+    let (first, last) = range.split_once('-')?;
+    let first = first.parse().ok()?;
+    let last = last.parse().ok()?;
+    (first > 0 && first <= last).then_some((first, last))
+}
+
+fn source_occurrence_result(
+    workspace: &Workspace,
+    query: SourceOccurrenceQuery,
+    all: bool,
+) -> Result<SearchResult> {
+    let source = fs::read_to_string(&query.path)?;
+    let matches = source
+        .lines()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            let number = index as u64 + 1;
+            (number >= query.first_line
+                && number <= query.last_line
+                && query.terms.iter().any(|term| line.contains(term)))
+            .then_some((number, line))
+        })
+        .collect::<Vec<_>>();
+    let limit = if all {
+        SOURCE_OCCURRENCE_ALL_LIMIT
+    } else {
+        SOURCE_OCCURRENCE_LIMIT
+    };
+    let excerpt = matches
+        .iter()
+        .take(limit)
+        .map(|(line, source)| format!("{line:>5} | {source}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let relative = query.display_path.unwrap_or_else(|| {
+        query
+            .path
+            .strip_prefix(&workspace.path)
+            .unwrap_or(&query.path)
+            .to_string_lossy()
+            .into_owned()
+    });
+    let omitted = matches.len().saturating_sub(limit);
+    let hits = (!matches.is_empty())
+        .then(|| SearchHit {
+            name: "source matches".into(),
+            kind: "source-occurrences".into(),
+            signature: Some(format!(
+                "{} exact matches for {}",
+                matches.len(),
+                query.terms.join(" | ")
+            )),
+            module: String::new(),
+            path: relative,
+            line: matches.first().map_or(query.first_line, |(line, _)| *line),
+            doc: None,
+            source: Some(excerpt),
+            usages: Vec::new(),
+            applicable: false,
+            required_import: None,
+        })
+        .into_iter()
+        .collect();
+    Ok(SearchResult {
+        hits,
+        inference: "source".into(),
+        note: if matches.is_empty() {
+            Some("no literal source matches".into())
+        } else if omitted > 0 {
+            Some(format!("+{omitted} matches omitted; use --all"))
+        } else {
+            None
+        },
+        ok: true,
+    })
 }
 
 fn parse_goal_location(root: &Path, cwd: &Path, query: &str) -> Result<Option<GoalLocation>> {
@@ -5046,6 +5177,40 @@ end Demo
         assert_eq!(more.line, 15);
         assert!(!more.tail);
         assert!(more.more);
+
+        fs::write(
+            directory.path().join("Markers.lean"),
+            "plain\n/- open\ninside /-! doc\n-/ close\nplain\n",
+        )
+        .unwrap();
+        let occurrences = parse_source_occurrence_query(
+            directory.path(),
+            directory.path(),
+            "Markers.lean:2-4 /- | -/ | /-!",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!((occurrences.first_line, occurrences.last_line), (2, 4));
+        assert_eq!(occurrences.terms, ["/-", "-/", "/-!"]);
+        let result = source_occurrence_result(
+            &Workspace {
+                reference: "w1".into(),
+                name: "demo".into(),
+                path: directory.path().to_path_buf(),
+                branch: "demo".into(),
+            },
+            occurrences,
+            false,
+        )
+        .unwrap();
+        assert_eq!(result.hits.len(), 1);
+        let matches = result.hits[0].source.as_deref().unwrap();
+        assert!(matches.contains("    2 | /- open"));
+        assert!(matches.contains("    3 | inside /-! doc"));
+        assert!(matches.contains("    4 | -/ close"));
+        assert_eq!(parse_source_line_range("3-3"), Some((3, 3)));
+        assert_eq!(parse_source_line_range("4-3"), None);
+        assert_eq!(parse_source_line_range("0-3"), None);
 
         let dependency = directory
             .path()

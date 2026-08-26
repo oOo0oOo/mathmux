@@ -46,14 +46,12 @@ pub(super) fn render_search_run(run: &SearchRun, all: bool) -> String {
                 if hit.kind != "location" {
                     output.push_str("\n   source:");
                 }
-                let source_lines =
-                    if matches!(hit.kind.as_str(), "class" | "inductive" | "structure")
-                        || (index == 0 && query_requests_proof_body(&run.query))
-                    {
-                        48
-                    } else {
-                        SOURCE_PREVIEW_LINES
-                    };
+                let source_lines = match hit.kind.as_str() {
+                    "source-occurrences" => usize::MAX,
+                    "class" | "inductive" | "structure" => 48,
+                    _ if index == 0 && query_requests_proof_body(&run.query) => 48,
+                    _ => SOURCE_PREVIEW_LINES,
+                };
                 for line in source.trim().lines().take(source_lines) {
                     output.push_str(&format!("\n     {}", truncate_line(line, 240)));
                 }
