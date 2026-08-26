@@ -1097,7 +1097,9 @@ impl Searcher {
         let changed = self.changed_files(&source_root.owner, SOURCE_INDEX_KIND, &files)?;
         let mut connection = self.open()?;
         for batch in changed.chunks(INDEX_COMMIT_BATCH) {
-            let transaction = connection.transaction()?;
+            let transaction =
+                connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let mut next_rowid = Self::next_search_rowid(&transaction)?;
             for path in batch {
                 let display =
                     display_path(path, workspace_root, &source_root.root, source_root.kind);
@@ -1144,8 +1146,8 @@ impl Searcher {
                 {
                     let mut insert = transaction.prepare_cached(
                         "INSERT INTO search_fts(
-                            owner, origin, file, module, line, name, kind, signature, docs, body
-                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                            rowid, owner, origin, file, module, line, name, kind, signature, docs, body
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                     )?;
                     let mut map_origin = transaction.prepare_cached(
                         "INSERT INTO search_origins(rowid, owner, origin)
@@ -1155,6 +1157,7 @@ impl Searcher {
                     )?;
                     for entry in entries.iter() {
                         insert.execute(params![
+                            next_rowid,
                             source_root.owner,
                             path.to_string_lossy(),
                             display,
@@ -1167,10 +1170,13 @@ impl Searcher {
                             entry.body,
                         ])?;
                         map_origin.execute(params![
-                            transaction.last_insert_rowid(),
+                            next_rowid,
                             source_root.owner,
                             path.to_string_lossy(),
                         ])?;
+                        next_rowid = next_rowid
+                            .checked_add(1)
+                            .context("search index rowid overflow")?;
                     }
                 }
                 record_file(&transaction, &source_root.owner, path, SOURCE_INDEX_KIND)?;
@@ -1198,7 +1204,9 @@ impl Searcher {
         let changed = self.changed_files(owner, "ilean", &files)?;
         let mut connection = self.open()?;
         for batch in changed.chunks(INDEX_COMMIT_BATCH) {
-            let transaction = connection.transaction()?;
+            let transaction =
+                connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let mut next_rowid = Self::next_search_rowid(&transaction)?;
             for path in batch {
                 let value: Value = serde_json::from_slice(&fs::read(path)?)
                     .with_context(|| format!("cannot index {}", path.display()))?;
@@ -1216,8 +1224,8 @@ impl Searcher {
                 if let Some(declarations) = value.get("decls").and_then(Value::as_object) {
                     let mut insert = transaction.prepare_cached(
                         "INSERT INTO search_fts(
-                            owner, origin, file, module, line, name, kind, signature, docs, body
-                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'declaration', '', '', '')",
+                            rowid, owner, origin, file, module, line, name, kind, signature, docs, body
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'declaration', '', '', '')",
                     )?;
                     let mut map_origin = transaction.prepare_cached(
                         "INSERT INTO search_origins(rowid, owner, origin)
@@ -1233,6 +1241,7 @@ impl Searcher {
                             .unwrap_or(0)
                             + 1;
                         insert.execute(params![
+                            next_rowid,
                             owner,
                             artifact,
                             source_path,
@@ -1240,11 +1249,10 @@ impl Searcher {
                             line,
                             name
                         ])?;
-                        map_origin.execute(params![
-                            transaction.last_insert_rowid(),
-                            owner,
-                            artifact,
-                        ])?;
+                        map_origin.execute(params![next_rowid, owner, artifact])?;
+                        next_rowid = next_rowid
+                            .checked_add(1)
+                            .context("search index rowid overflow")?;
                     }
                 }
                 if let Some(references) = value.get("references").and_then(Value::as_object) {
@@ -1276,6 +1284,19 @@ impl Searcher {
             transaction.commit()?;
         }
         Ok(())
+    }
+
+    fn next_search_rowid(connection: &Connection) -> Result<i64> {
+        connection
+            .query_row(
+                "SELECT max(
+                    coalesce((SELECT max(rowid) FROM search_fts), 0),
+                    coalesce((SELECT max(rowid) FROM search_origins), 0)
+                 ) + 1",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
     }
 
     fn remove_missing(&self, owner: &str, kind: &str, present: &[PathBuf]) -> Result<()> {

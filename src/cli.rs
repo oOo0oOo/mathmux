@@ -228,12 +228,7 @@ impl IssueFilter {
 
 pub fn run() -> Result<u8> {
     let development = development_requested();
-    if !development
-        && matches!(
-            requested_top_command().as_deref(),
-            Some("issue" | "telemetry")
-        )
-    {
+    if !development && matches!(requested_top_command().as_deref(), Some("telemetry")) {
         bail!("development commands are disabled");
     }
     let command = command_line(development);
@@ -249,7 +244,10 @@ pub fn run() -> Result<u8> {
         let _ = enable_development(&repo);
     }
     if let TopCommand::Issue { command } = args.command {
-        ensure!(development, "development commands are disabled");
+        ensure!(
+            development || matches!(command, IssueCommand::Report { .. }),
+            "development commands are disabled"
+        );
         return run_issue(command, &cwd);
     }
     if let TopCommand::Telemetry { since, verb, slow } = args.command {
@@ -455,8 +453,21 @@ fn command_line(development: bool) -> clap::Command {
     let mut command = Args::command();
     if development {
         command = command
-            .mut_subcommand("issue", |command| command.hide(false))
+            .mut_subcommand("issue", |command| {
+                command
+                    .hide(false)
+                    .mut_subcommand("list", |command| command.hide(false))
+                    .mut_subcommand("resolve", |command| command.hide(false))
+                    .mut_subcommand("dismiss", |command| command.hide(false))
+            })
             .mut_subcommand("telemetry", |command| command.hide(false));
+    } else {
+        command = command.mut_subcommand("issue", |command| {
+            command
+                .mut_subcommand("list", |command| command.hide(true))
+                .mut_subcommand("resolve", |command| command.hide(true))
+                .mut_subcommand("dismiss", |command| command.hide(true))
+        });
     }
     command
 }
@@ -546,7 +557,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn issue_help_requires_the_development_opt_in() {
+    fn development_commands_stay_out_of_normal_help() {
         let normal = command_line(false).render_help().to_string();
         let development = command_line(true).render_help().to_string();
         assert!(!normal.contains("issue"));
@@ -555,6 +566,29 @@ mod tests {
         assert!(development.contains("telemetry"));
         assert!(normal.contains("Do not run git, lean, lake build"));
         assert!(normal.contains("Use Lean's module system"));
+    }
+
+    #[test]
+    fn managed_workspaces_can_report_but_not_triage_issues() {
+        let mut normal = command_line(false);
+        let issue_help = normal
+            .find_subcommand_mut("issue")
+            .unwrap()
+            .render_help()
+            .to_string();
+        assert!(issue_help.contains("report"));
+        assert!(!issue_help.contains("resolve"));
+        assert!(!issue_help.contains("dismiss"));
+        let matches = command_line(false)
+            .try_get_matches_from(["mathmux", "issue", "report", "search missed an exact name"])
+            .unwrap();
+        let args = Args::from_arg_matches(&matches).unwrap();
+        assert!(matches!(
+            args.command,
+            TopCommand::Issue {
+                command: IssueCommand::Report { .. }
+            }
+        ));
     }
 
     #[test]

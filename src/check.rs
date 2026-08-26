@@ -717,12 +717,12 @@ impl Checker {
             let mut locks = self.setup_locks.lock().expect("setup lock map poisoned");
             locks.retain(|_, lock| lock.strong_count() > 0);
             locks
-                .entry(input_fingerprint.to_owned())
+                .entry(workspace.reference.clone())
                 .or_default()
                 .upgrade()
                 .unwrap_or_else(|| {
                     let lock = Arc::new(Mutex::new(()));
-                    locks.insert(input_fingerprint.to_owned(), Arc::downgrade(&lock));
+                    locks.insert(workspace.reference.clone(), Arc::downgrade(&lock));
                     lock
                 })
         });

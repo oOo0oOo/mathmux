@@ -163,6 +163,24 @@ fn pipe_alternatives_short_circuit_after_one_indexed_hit_covers_a_group() {
 }
 
 #[test]
+fn search_rowids_advance_past_fts_and_origin_mappings() {
+    let connection = Connection::open_in_memory().unwrap();
+    connection
+        .execute_batch(
+            "CREATE VIRTUAL TABLE search_fts USING fts5(owner UNINDEXED, origin UNINDEXED);
+             CREATE TABLE search_origins (
+                rowid INTEGER PRIMARY KEY,
+                owner TEXT NOT NULL,
+                origin TEXT NOT NULL
+             );
+             INSERT INTO search_fts(rowid, owner, origin) VALUES (4, 'fts', 'source');
+             INSERT INTO search_origins(rowid, owner, origin) VALUES (9, 'stale', 'mapping');",
+        )
+        .unwrap();
+    assert_eq!(Searcher::next_search_rowid(&connection).unwrap(), 10);
+}
+
+#[test]
 fn lean_inspection_syntax_normalizes_to_search_terms() {
     assert_eq!(
         normalize_lean_inspection_query("@Demo.useful"),
@@ -316,6 +334,34 @@ fn inference_reserves_positions_and_recognizes_type_patterns() {
     let tokens = meaningful_query_tokens("CircleSeparatedOnRadius circleMap");
     promote_query_coverage(&mut ranked, &tokens);
     assert!(ranked[0].hit.name.contains("CircleSeparatedOnRadius"));
+    let mut qualified_leaf = vec![
+        RankedHit {
+            hit: SearchHit {
+                name: "AtiyahSinger.ComplexVectorBundle.KZero".into(),
+                module: "AtiyahSinger.ComplexVectorBundleKZeroGroup".into(),
+                path: "AtiyahSinger/ComplexVectorBundleKZeroGroup.lean".into(),
+                ..contextual_hit.clone()
+            },
+            score: 500.0,
+        },
+        RankedHit {
+            hit: SearchHit {
+                name: "AtiyahSinger.ComplexVectorBundle.ofBundle".into(),
+                module: "AtiyahSinger.ComplexVectorBundleKZeroGroup".into(),
+                path: "AtiyahSinger/ComplexVectorBundleKZeroGroup.lean".into(),
+                ..contextual_hit.clone()
+            },
+            score: 100.0,
+        },
+    ];
+    promote_query_coverage(
+        &mut qualified_leaf,
+        &meaningful_query_tokens("KZero.ofBundle"),
+    );
+    assert_eq!(
+        qualified_leaf[0].hit.name,
+        "AtiyahSinger.ComplexVectorBundle.ofBundle"
+    );
     assert_eq!(symbolic_source_term("*ᵥ"), Some("*ᵥ".to_owned()));
     assert_eq!(symbolic_source_term("≤"), Some("≤".to_owned()));
     assert_eq!(symbolic_source_term("*"), None);
@@ -438,6 +484,10 @@ fn inference_reserves_positions_and_recognizes_type_patterns() {
     assert_eq!(
         requested,
         vec!["conjtranspose", "mul_self", "one_sub", "selfadjoint"]
+    );
+    assert_eq!(
+        anchored_api_query("changeModelIso declarations"),
+        Some(("changeModelIso", Vec::new(), Vec::new()))
     );
     assert!(anchored_api_query("continuous map compact support").is_none());
     assert_eq!(

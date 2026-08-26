@@ -725,6 +725,9 @@ pub(super) fn anchored_api_query(query: &str) -> Option<(&str, Vec<String>, Vec<
     if anchor.chars().count() < 6 || !specific_anchor || !declaration_name_query(anchor) {
         return None;
     }
+    if refinement.trim().eq_ignore_ascii_case("declarations") {
+        return Some((anchor, Vec::new(), Vec::new()));
+    }
     let tokens = meaningful_query_tokens(refinement);
     let mut requested = query_tokens(refinement)
         .into_iter()
@@ -966,9 +969,18 @@ pub(super) fn promote_query_coverage(ranked: &mut Vec<RankedHit>, tokens: &[Stri
             .filter(|token| token.contains('.') && !token.ends_with(".lean"))
         {
             let owner = token.rsplit_once('.').map(|(owner, _)| owner);
-            if let Some(position) = remaining.iter().position(|candidate| {
+            let direct = remaining.iter().position(|candidate| {
                 candidate.hit.name.eq_ignore_ascii_case(token)
-                    || owner.is_some_and(|owner| {
+                    || qualified_leaf_path_match(
+                        token,
+                        &candidate.hit.name,
+                        &candidate.hit.module,
+                        &candidate.hit.path,
+                    )
+            });
+            let owner_position = || {
+                remaining.iter().position(|candidate| {
+                    owner.is_some_and(|owner| {
                         candidate.hit.name.eq_ignore_ascii_case(owner)
                             || candidate
                                 .hit
@@ -976,7 +988,14 @@ pub(super) fn promote_query_coverage(ranked: &mut Vec<RankedHit>, tokens: &[Stri
                                 .to_lowercase()
                                 .ends_with(&format!(".{owner}"))
                     })
-            }) {
+                })
+            };
+            let position = if qualified == 1 {
+                direct.or_else(owner_position)
+            } else {
+                owner_position().or(direct)
+            };
+            if let Some(position) = position {
                 promoted.push(remaining.remove(position));
             }
         }
