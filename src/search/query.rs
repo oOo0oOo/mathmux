@@ -1298,17 +1298,22 @@ pub(super) fn lexical_score(query: &str, tokens: &[String], row: &IndexedRow) ->
 
 pub(super) fn qualified_leaf_path_score(query: &str, name: &str, module: &str, path: &str) -> f64 {
     if !qualified_leaf_path_match(query, name, module, path) {
-        return if query.contains('.')
-            && name
-                .rsplit('.')
-                .next()
-                .zip(query.rsplit('.').next())
-                .is_some_and(|(left, right)| left.eq_ignore_ascii_case(right))
-        {
-            60.0
-        } else {
-            0.0
+        let Some((query_owner, query_leaf)) = query.rsplit_once('.') else {
+            return 0.0;
         };
+        let Some((name_owner, name_leaf)) = name.rsplit_once('.') else {
+            return 0.0;
+        };
+        if !name_leaf.eq_ignore_ascii_case(query_leaf) {
+            return 0.0;
+        }
+        let query_owner = identifier_query_parts(query_owner)
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let name_owner = identifier_query_parts(name_owner)
+            .into_iter()
+            .collect::<HashSet<_>>();
+        return 60.0 + query_owner.intersection(&name_owner).count() as f64 * 100.0;
     }
     280.0
 }

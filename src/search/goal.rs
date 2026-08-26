@@ -182,6 +182,9 @@ pub(super) fn parse_source_occurrence_query(
     let inferred_outline_path = Path::new(path).extension().is_none()
         && terms.len() == 1
         && matches!(terms[0].to_ascii_lowercase().as_str(), "outline" | "declarations");
+    if inferred_outline_path && path.eq_ignore_ascii_case("FILE") {
+        bail!("FILE is a help placeholder; replace it with a Lean source path");
+    }
     let resolved_path = inferred_outline_path
         .then(|| format!("{path}.lean"))
         .unwrap_or_else(|| path.to_owned());

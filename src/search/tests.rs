@@ -607,7 +607,20 @@ fn query_parsing_scoring_and_ranking_regressions() {
             "AtiySinger.ComplexVectorBundleKZero",
             "AtiyahSinger/ComplexVectorBundleKZero.lean"
         ),
-        60.0
+        160.0
+    );
+    assert!(
+        qualified_leaf_path_score(
+            "AddEquiv.map_zsmul",
+            "AddMonoidHom.map_zsmul",
+            "Mathlib.Algebra.Group.Hom.Defs",
+            "Mathlib/Algebra/Group/Hom/Defs.lean"
+        ) > qualified_leaf_path_score(
+            "AddEquiv.map_zsmul",
+            "CategoryTheory.Functor.map_zsmul",
+            "Mathlib.CategoryTheory.Preadditive.AdditiveFunctor",
+            "Mathlib/CategoryTheory/Preadditive/AdditiveFunctor.lean"
+        )
     );
     assert_eq!(
         meaningful_query_tokens("finite_trivialization_cover proof body"),
@@ -1343,6 +1356,16 @@ fn goal_and_source_query_regressions() {
     .unwrap();
     assert_eq!((occurrences.first_line, occurrences.last_line), (2, 4));
     assert_eq!(occurrences.terms, ["/-", "-/", "/-!"]);
+    let placeholder = match parse_source_occurrence_query(
+        directory.path(),
+        directory.path(),
+        None,
+        "FILE outline",
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("placeholder query unexpectedly accepted"),
+    };
+    assert!(placeholder.to_string().contains("FILE is a help placeholder"));
     let result = source_occurrence_result(
         &Workspace {
             reference: "w1".into(),
