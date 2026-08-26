@@ -1406,11 +1406,11 @@ fn goal_and_source_query_regressions() {
             .unwrap()
             .lines()
             .count(),
-        SOURCE_OCCURRENCE_ALL_LIMIT
+        SOURCE_RANGE_LIMIT
     );
     assert_eq!(
         long_range.note.as_deref(),
-        Some("+50 lines omitted; narrow the range")
+        Some("+130 lines omitted; use --all")
     );
     let long_summary = render_summary(&SearchRun {
         reference: "q-range".into(),
@@ -1422,9 +1422,9 @@ fn goal_and_source_query_regressions() {
         duration_ms: 1,
         created_at: 0,
     });
-    assert!(long_summary.contains("\nline 200\n"));
-    assert!(!long_summary.contains("\nline 201\n"));
-    assert!(long_summary.ends_with("+50 lines omitted; narrow the range"));
+    assert!(long_summary.contains("\nline 120\n"));
+    assert!(!long_summary.contains("\nline 121\n"));
+    assert!(long_summary.ends_with("+130 lines omitted; use --all"));
     assert_eq!(parse_source_line_range("3-3"), Some((3, 3)));
     assert_eq!(parse_source_line_range("4-3"), None);
     assert_eq!(parse_source_line_range("0-3"), None);

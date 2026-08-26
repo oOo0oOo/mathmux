@@ -248,8 +248,10 @@ pub(super) fn source_occurrence_result(
             .then_some((number, line))
         })
         .collect::<Vec<_>>();
-    let limit = if all || query.terms.is_empty() {
+    let limit = if all {
         SOURCE_OCCURRENCE_ALL_LIMIT
+    } else if query.terms.is_empty() {
+        SOURCE_RANGE_LIMIT
     } else {
         SOURCE_OCCURRENCE_LIMIT
     };
@@ -325,7 +327,11 @@ pub(super) fn source_occurrence_result(
             })
         } else if omitted > 0 {
             Some(if query.terms.is_empty() {
-                format!("+{omitted} lines omitted; narrow the range")
+                if all {
+                    format!("+{omitted} lines omitted; narrow the range")
+                } else {
+                    format!("+{omitted} lines omitted; use --all")
+                }
             } else if all {
                 format!("+{omitted} matches omitted; narrow the query")
             } else {

@@ -40,6 +40,7 @@ const SUMMARY_LIMIT: usize = 5;
 const LOCATION_PREVIEW_LINES: usize = 32;
 const LOCATION_MORE_LINES: usize = 96;
 const SOURCE_OCCURRENCE_LIMIT: usize = 64;
+const SOURCE_RANGE_LIMIT: usize = 120;
 const SOURCE_OCCURRENCE_ALL_LIMIT: usize = 200;
 const OUTLINE_PREVIEW_LINES: usize = 64;
 const RELATED_RESULT_LIMIT: usize = 8;
@@ -1579,6 +1580,19 @@ impl Searcher {
                 if !base_rows.is_empty() {
                     exact_query = base.to_owned();
                     exact_rows = base_rows;
+                } else if let Some(mut result) = self.generated_exact_result(
+                    workspace,
+                    base,
+                    scopes,
+                    import_context.as_ref(),
+                    base_warming,
+                )? {
+                    let recovery = format!("closest name: {base}");
+                    result.note = Some(match result.note {
+                        Some(note) => format!("{recovery}; {note}"),
+                        None => recovery,
+                    });
+                    return Ok(result);
                 }
             }
             let exact = ranked_exact_candidates(exact_rows, &exact_query, workspace);
