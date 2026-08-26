@@ -44,7 +44,7 @@ const SEARCH_HELP: &str = r#"QUERY FORMS (inferred)
   FILE:LINE more                larger bounded source context
   FILE:tail                     bounded end-of-file context
   FILE:START-END                bounded source range
-  FILE[:START-END] A|B          literal source occurrences
+  FILE[:START-END] TERM[|TERM]  literal source occurrences
   FILE imports [TERMS]          imports, optionally filtered
   FILE outline|declarations     declarations with lines and signatures
 
