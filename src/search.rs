@@ -33,7 +33,7 @@ const SOURCE_OCCURRENCE_LIMIT: usize = 64;
 const SOURCE_OCCURRENCE_ALL_LIMIT: usize = 200;
 const GOAL_STATE_BEGIN: &str = "MATHMUX_GOAL_BEGIN";
 const GOAL_STATE_END: &str = "MATHMUX_GOAL_END";
-const SEARCH_INDEX_VERSION: i64 = 6;
+const SEARCH_INDEX_VERSION: i64 = 7;
 const SOURCE_INDEX_KIND: &str = "source-v7";
 const DECLARATION_DETAIL_LINES: usize = 48;
 const INDEX_COMMIT_BATCH: usize = 64;
@@ -630,22 +630,22 @@ impl Searcher {
                 [SOURCE_INDEX_KIND],
             )?;
             connection.execute(
-                "DELETE FROM search_origins
+                "DELETE FROM search_fts
                  WHERE EXISTS (
                     SELECT 1 FROM search_files
-                    WHERE search_files.owner = search_origins.owner
-                      AND search_files.path = search_origins.origin
+                    WHERE search_files.owner = search_fts.owner
+                      AND search_files.path = search_fts.origin
                       AND (search_files.kind = 'source' OR search_files.kind LIKE 'source-v%')
                       AND search_files.kind <> ?1
                  )",
                 [SOURCE_INDEX_KIND],
             )?;
             connection.execute(
-                "DELETE FROM search_fts
+                "DELETE FROM search_origins
                  WHERE EXISTS (
                     SELECT 1 FROM search_files
-                    WHERE search_files.owner = search_fts.owner
-                      AND search_files.path = search_fts.origin
+                    WHERE search_files.owner = search_origins.owner
+                      AND search_files.path = search_origins.origin
                       AND (search_files.kind = 'source' OR search_files.kind LIKE 'source-v%')
                       AND search_files.kind <> ?1
                  )",
@@ -966,7 +966,9 @@ impl Searcher {
                     )?;
                     let mut map_origin = transaction.prepare_cached(
                         "INSERT INTO search_origins(rowid, owner, origin)
-                         VALUES (?1, ?2, ?3)",
+                         VALUES (?1, ?2, ?3)
+                         ON CONFLICT(rowid) DO UPDATE SET
+                            owner = excluded.owner, origin = excluded.origin",
                     )?;
                     for entry in entries {
                         insert.execute(params![
@@ -1036,7 +1038,9 @@ impl Searcher {
                     )?;
                     let mut map_origin = transaction.prepare_cached(
                         "INSERT INTO search_origins(rowid, owner, origin)
-                         VALUES (?1, ?2, ?3)",
+                         VALUES (?1, ?2, ?3)
+                         ON CONFLICT(rowid) DO UPDATE SET
+                            owner = excluded.owner, origin = excluded.origin",
                     )?;
                     for (name, range) in declarations {
                         let line = range
