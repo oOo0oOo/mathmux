@@ -393,6 +393,7 @@ pub(super) fn diagnostic_relation_query(diagnostic: &str) -> Option<String> {
             break;
         }
     }
+    selected.sort_by_key(|token| !token.contains('_'));
     (!selected.is_empty()).then(|| selected.join(" "))
 }
 

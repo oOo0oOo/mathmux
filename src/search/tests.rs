@@ -1081,6 +1081,12 @@ fn goal_suggestions_accept_leans_multiline_output() {
         ),
         "projectionRangePullbackMapAt Trivialization.symmL"
     );
+    assert_eq!(
+        diagnostic_search_query(
+            "Demo:12:4: error: Type mismatch: term\n  Eq.symm (local_repair_lemma x)\nhas type\n  Left x\nbut is expected to have type\n  Right x"
+        ),
+        "local_repair_lemma Eq.symm"
+    );
     let source = (1..=30)
         .map(|line| format!("line {line}"))
         .collect::<Vec<_>>()
