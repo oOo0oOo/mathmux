@@ -4345,13 +4345,13 @@ fn parse_source_occurrence_query(
         .filter(|term| !term.is_empty())
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    if terms.is_empty() {
-        return Ok(None);
-    }
     let (path, range) = target
         .rsplit_once(':')
         .and_then(|(path, range)| parse_source_line_range(range).map(|range| (path, range)))
         .map_or((target, None), |(path, range)| (path, Some(range)));
+    if terms.is_empty() && range.is_none() {
+        return Ok(None);
+    }
     if Path::new(path).extension().and_then(|extension| extension.to_str()) != Some("lean") {
         return Ok(None);
     }
@@ -4388,7 +4388,8 @@ fn source_occurrence_result(
             let number = index as u64 + 1;
             (number >= query.first_line
                 && number <= query.last_line
-                && query.terms.iter().any(|term| line.contains(term)))
+                && (query.terms.is_empty()
+                    || query.terms.iter().any(|term| line.contains(term))))
             .then_some((number, line))
         })
         .collect::<Vec<_>>();
@@ -4414,13 +4415,21 @@ fn source_occurrence_result(
     let omitted = matches.len().saturating_sub(limit);
     let hits = (!matches.is_empty())
         .then(|| SearchHit {
-            name: "source matches".into(),
+            name: if query.terms.is_empty() {
+                "source range".into()
+            } else {
+                "source matches".into()
+            },
             kind: "source-occurrences".into(),
-            signature: Some(format!(
-                "{} exact matches for {}",
-                matches.len(),
-                query.terms.join(" | ")
-            )),
+            signature: Some(if query.terms.is_empty() {
+                format!("{} source lines", matches.len())
+            } else {
+                format!(
+                    "{} exact matches for {}",
+                    matches.len(),
+                    query.terms.join(" | ")
+                )
+            }),
             module: String::new(),
             path: relative,
             line: matches.first().map_or(query.first_line, |(line, _)| *line),
@@ -4436,7 +4445,11 @@ fn source_occurrence_result(
         hits,
         inference: "source".into(),
         note: if matches.is_empty() {
-            Some("no literal source matches".into())
+            Some(if query.terms.is_empty() {
+                "no source lines in range".into()
+            } else {
+                "no literal source matches".into()
+            })
         } else if omitted > 0 {
             Some(format!("+{omitted} matches omitted; use --all"))
         } else {
@@ -5297,6 +5310,27 @@ end Demo
         assert!(matches.contains("    2 | /- open"));
         assert!(matches.contains("    3 | inside /-! doc"));
         assert!(matches.contains("    4 | -/ close"));
+        let range = parse_source_occurrence_query(
+            directory.path(),
+            directory.path(),
+            "Markers.lean:2-4",
+        )
+        .unwrap()
+        .unwrap();
+        assert!(range.terms.is_empty());
+        let range = source_occurrence_result(
+            &Workspace {
+                reference: "w1".into(),
+                name: "demo".into(),
+                path: directory.path().to_path_buf(),
+                branch: "demo".into(),
+            },
+            range,
+            false,
+        )
+        .unwrap();
+        assert_eq!(range.hits[0].signature.as_deref(), Some("3 source lines"));
+        assert_eq!(range.hits[0].source.as_deref().unwrap().lines().count(), 3);
         assert_eq!(parse_source_line_range("3-3"), Some((3, 3)));
         assert_eq!(parse_source_line_range("4-3"), None);
         assert_eq!(parse_source_line_range("0-3"), None);
