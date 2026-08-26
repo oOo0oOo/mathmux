@@ -1105,6 +1105,39 @@ mod tests {
     }
 
     #[test]
+    fn expanded_search_limits_source_to_top_three_hits() {
+        let hits = (1..=4)
+            .map(|index| SearchHit {
+                name: format!("Demo.result{index}"),
+                kind: "theorem".into(),
+                signature: Some("True".into()),
+                module: "Demo".into(),
+                path: "Demo.lean".into(),
+                line: index,
+                doc: None,
+                source: Some(format!("source marker {index}")),
+                usages: Vec::new(),
+                applicable: false,
+                required_import: None,
+            })
+            .collect();
+        let run = SearchRun {
+            reference: "q1".into(),
+            workspace_ref: "w1".into(),
+            query: "Demo.result".into(),
+            inference: "hybrid".into(),
+            hits,
+            note: Some("related results (no exact match)".into()),
+            duration_ms: 0,
+            created_at: 0,
+        };
+        let rendered = render_search_run(&run, true);
+        assert!(rendered.contains("4. Demo.result4 : True"));
+        assert!(rendered.contains("source marker 3"));
+        assert!(!rendered.contains("source marker 4"));
+    }
+
+    #[test]
     fn passed_validation_summarizes_build_warnings_by_default() {
         let submission = Submission {
             reference: "s1".into(),

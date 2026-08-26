@@ -74,7 +74,7 @@ pub(super) fn render_search_run(run: &SearchRun, all: bool) -> String {
                     output.push_str(&format!("\n   doc: {}", truncate_line(line.trim(), 240)));
                 }
             }
-            if let Some(source) = &hit.source {
+            if index < 3 && let Some(source) = &hit.source {
                 if !matches!(hit.kind.as_str(), "fields" | "location") {
                     output.push_str("\n   source:");
                 }
