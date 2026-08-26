@@ -16,9 +16,11 @@ impl CheckProfile {
                 .reused_prefix_lines
                 .map(|lines| format!(", reused {lines} lines"))
                 .unwrap_or_default();
-            let queue = (file.queue_ms > 0)
-                .then(|| format!(", queue {}ms", file.queue_ms))
-                .unwrap_or_default();
+            let queue = if file.queue_ms > 0 {
+                format!(", queue {}ms", file.queue_ms)
+            } else {
+                String::new()
+            };
             output.push_str(&format!(
                 "\n  {} {} {}ms (dependencies {}ms, cache {}ms, setup {}ms, elaborate {}ms{}{})",
                 file.target,

@@ -491,7 +491,7 @@ pub(super) fn diagnostic_relation_query(diagnostic: &str) -> Option<String> {
     (!selected.is_empty()).then(|| selected.join(" "))
 }
 
-fn related_namespace_sibling<'a>(diagnostic: &'a str, selected: &[&str]) -> Option<String> {
+fn related_namespace_sibling(diagnostic: &str, selected: &[&str]) -> Option<String> {
     let wrapper = diagnostic
         .split(|character: char| {
             !character.is_alphanumeric() && !matches!(character, '_' | '.' | '\'')

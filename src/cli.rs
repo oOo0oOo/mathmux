@@ -286,7 +286,7 @@ pub fn run() -> Result<u8> {
     let matches = command.get_matches();
     let args = Args::from_arg_matches(&matches)?;
     if let TopCommand::Daemon { repo } = &args.command {
-        daemon::run(Repo::from_root(&repo)?)?;
+        daemon::run(Repo::from_root(repo)?)?;
         return Ok(0);
     }
     let cwd = std::env::current_dir()?;
@@ -496,7 +496,7 @@ fn run_issue_report(command: &IssueCommand, cwd: &Path) -> Result<u8> {
     let store = IssueStore::global()?;
     let summary = match command {
         IssueCommand::Report { summary, reference } => {
-            store.create(cwd, &summary, reference.as_deref())?
+            store.create(cwd, summary, reference.as_deref())?
         }
     };
     println!("{summary}");

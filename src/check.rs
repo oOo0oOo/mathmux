@@ -106,6 +106,12 @@ struct LakeSetup {
 type WorkerKey = (String, PathBuf);
 type CheckLocks = Mutex<HashMap<WorkerKey, Weak<Mutex<()>>>>;
 
+#[derive(Clone, Copy)]
+enum WorkerRun {
+    Check,
+    Probe(Duration),
+}
+
 pub struct Checker {
     repo: Repo,
     state: State,
@@ -386,8 +392,7 @@ impl Checker {
                 &setup_path,
                 &environment,
                 &source,
-                true,
-                CHECK_TIMEOUT,
+                WorkerRun::Check,
             )?;
         let elaborate_ms = phase.elapsed().as_millis() as u64;
         ensure!(
@@ -480,9 +485,12 @@ impl Checker {
         setup_path: &Path,
         environment: &str,
         source: &str,
-        allow_fallback: bool,
-        timeout: Duration,
+        run: WorkerRun,
     ) -> Result<(WorkerResponse, &'static str, Option<u64>)> {
+        let (allow_fallback, timeout) = match run {
+            WorkerRun::Check => (true, CHECK_TIMEOUT),
+            WorkerRun::Probe(timeout) => (false, timeout),
+        };
         let key = (workspace.reference.clone(), target.to_path_buf());
         let (worker, inserted) = {
             let mut workers = self.workers.lock().expect("worker map poisoned");
@@ -621,8 +629,7 @@ impl Checker {
                 &setup_path,
                 &environment,
                 source,
-                false,
-                timeout,
+                WorkerRun::Probe(timeout),
             )?;
         let ok = response.ok;
         Ok((

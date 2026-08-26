@@ -68,8 +68,7 @@ pub(super) fn parse_source(source: &str, module: &str) -> Vec<SourceEntry> {
             signature = format!(":= {}", value.trim());
         }
         if block.lines().next().is_some_and(|line| {
-            line.trim_start()
-                .split_whitespace()
+            line.split_whitespace()
                 .take_while(|word| *word != kind)
                 .any(|word| word == "private")
         }) {

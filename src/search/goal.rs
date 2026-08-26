@@ -208,9 +208,11 @@ pub(super) fn parse_source_occurrence_query(
     if inferred_outline_path && path.eq_ignore_ascii_case("FILE") {
         bail!("FILE is a help placeholder; replace it with a Lean source path");
     }
-    let resolved_path = inferred_outline_path
-        .then(|| format!("{path}.lean"))
-        .unwrap_or_else(|| path.to_owned());
+    let resolved_path = if inferred_outline_path {
+        format!("{path}.lean")
+    } else {
+        path.to_owned()
+    };
     if Path::new(&resolved_path)
         .extension()
         .and_then(|extension| extension.to_str())
