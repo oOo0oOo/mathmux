@@ -1284,9 +1284,7 @@ impl Searcher {
             {
                 return Ok(result);
             }
-            let continuations = if exact_rows.is_empty()
-                && declaration_suffix_base(query).is_some()
-            {
+            let continuations = if exact_rows.is_empty() {
                 self.direct_continuations(query, scopes)?
             } else {
                 Vec::new()
@@ -6138,6 +6136,10 @@ end Demo
         assert!(direct_continuation_name_matches(
             "AtiyahSinger.Topology.VectorBundle.MatrixGL.circleResolventFunction_commutes_on_sphere",
             "MatrixGL.circleResolventFunction_commutes"
+        ));
+        assert!(direct_continuation_name_matches(
+            "WithLp.ext_iff",
+            "WithLp.ext"
         ));
         assert!(!direct_continuation_name_matches(
             "AtiyahSinger.Topology.VectorBundle.Other.circleResolventFunction_commutes_on_sphere",
