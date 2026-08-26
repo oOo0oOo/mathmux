@@ -418,7 +418,7 @@ impl Checker {
 
         let phase = Instant::now();
         report(&format!("elaborating {}", target.display()));
-        let (response, mode, reused_prefix_lines) =
+        let (mut response, mode, reused_prefix_lines) =
             self.run_worker(
                 workspace,
                 target,
@@ -436,6 +436,17 @@ impl Checker {
             response.version > 0,
             "Lean worker returned an invalid source version"
         );
+        for entry in response.profile.iter_mut().filter(|entry| entry.line > 0) {
+            if let Some(line) = source.lines().nth(entry.line.saturating_sub(1) as usize) {
+                let line = line.trim();
+                if entry.detail.is_empty() {
+                    entry.detail = line.to_owned();
+                } else if !line.is_empty() && !entry.detail.contains(line) {
+                    entry.detail.push(' ');
+                    entry.detail.push_str(line);
+                }
+            }
+        }
         let (warnings, linters, mut suggestions, mut diagnostics) =
             partition_diagnostics(&response.diagnostics);
         attach_source_context(&mut suggestions, target, &source);
@@ -1375,8 +1386,11 @@ impl LeanWorker {
                 std::thread::sleep(Duration::from_millis(1));
                 let stderr = self.stderr.lock().expect("stderr buffer poisoned");
                 if stderr[stderr_start..].contains("cumulative profiling times:") {
-                    response.profile = parse_native_profile(&stderr[stderr_start..]);
-                    for entry in &mut response.profile {
+                    let first_native = response.profile.len();
+                    response
+                        .profile
+                        .extend(parse_native_profile(&stderr[stderr_start..]));
+                    for entry in &mut response.profile[first_native..] {
                         if !entry.detail.is_empty() {
                             continue;
                         }
@@ -2055,6 +2069,16 @@ mod tests {
         assert_eq!(entries[0].duration_ms, 199.0);
         assert_eq!(entries[1].kind, "import");
         assert_eq!(entries[1].duration_ms, 3160.0);
+    }
+
+    #[test]
+    fn worker_profile_accepts_lean_field_names() {
+        let response: WorkerResponse = serde_json::from_str(
+            r#"{"ok":true,"diagnostics":[],"profile":[{"line":7,"column":1,"kind":"Elab.command","detail":"","duration_ms":12.5}],"version":1}"#,
+        )
+        .unwrap();
+        assert_eq!(response.profile[0].line, 7);
+        assert_eq!(response.profile[0].duration_ms, 12.5);
     }
 
     #[test]

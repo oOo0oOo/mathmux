@@ -67,7 +67,7 @@ impl CheckProfile {
                 .iter()
                 .filter(|(_, entry)| entry.line > 0)
                 .filter(|(target, entry)| {
-                    seen.insert((*target, entry.line, entry.kind.as_str(), entry.detail.as_str()))
+                    seen.insert((*target, entry.line))
                 })
                 .take(limit)
                 .collect::<Vec<_>>();
@@ -85,8 +85,11 @@ impl CheckProfile {
                         format!(" {}", truncate_line(&single_line(&entry.detail), 160))
                     };
                     output.push_str(&format!(
-                        "\n    {} {:.0}ms {}{}",
-                        location, entry.duration_ms, entry.kind, detail
+                        "\n    {} {} {}{}",
+                        location,
+                        format_profile_ms(entry.duration_ms),
+                        entry.kind,
+                        detail
                     ));
                 }
             }
@@ -99,8 +102,8 @@ impl CheckProfile {
                 output.push_str("\n  Lean hotspots:");
                 for (_, entry) in named {
                     output.push_str(&format!(
-                        "\n    {:.0}ms {} {}",
-                        entry.duration_ms,
+                        "\n    {} {} {}",
+                        format_profile_ms(entry.duration_ms),
                         entry.kind,
                         truncate_line(&single_line(&entry.detail), if all { 500 } else { 160 }),
                     ));
@@ -114,13 +117,27 @@ impl CheckProfile {
             if !components.is_empty() {
                 output.push_str("\n  Lean components:");
                 for (_, entry) in components {
-                    output.push_str(&format!("\n    {:.0}ms {}", entry.duration_ms, entry.kind));
+                    output.push_str(&format!(
+                        "\n    {} {}",
+                        format_profile_ms(entry.duration_ms),
+                        entry.kind
+                    ));
                 }
             }
         } else if self.files.iter().any(|file| file.mode == "profile") {
             output.push_str("\n  hotspots: none captured");
         }
         output
+    }
+}
+
+fn format_profile_ms(duration_ms: f64) -> String {
+    if duration_ms >= 10.0 {
+        format!("{duration_ms:.0}ms")
+    } else if duration_ms >= 1.0 {
+        format!("{duration_ms:.1}ms")
+    } else {
+        format!("{duration_ms:.2}ms")
     }
 }
 

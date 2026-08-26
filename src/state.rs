@@ -94,7 +94,7 @@ pub struct CheckProfileEntry {
     pub column: u64,
     pub kind: String,
     pub detail: String,
-    #[serde(rename = "durationMs")]
+    #[serde(rename = "durationMs", alias = "duration_ms")]
     pub duration_ms: f64,
 }
 

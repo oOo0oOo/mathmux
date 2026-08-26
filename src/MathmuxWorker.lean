@@ -14,9 +14,18 @@ structure Diagnostic where
   text : String
 deriving ToJson
 
+structure ProfileEntry where
+  line : Nat
+  column : Nat
+  kind : String
+  detail : String
+  duration_ms : Float
+deriving ToJson
+
 structure Response where
   ok : Bool
   diagnostics : Array Diagnostic
+  profile : Array ProfileEntry := #[]
   version : Nat
 deriving ToJson
 
@@ -25,13 +34,18 @@ def setupImports (setup : ModuleSetup) (profile : Bool) (stx : HeaderSyntax) :
       (Except Language.Lean.HeaderProcessedSnapshot Language.Lean.SetupImportsResult) := do
   let header := stx.toModuleHeader
   let opts := if profile then
-    profiler.set setup.options.toOptions true
-  else setup.options.toOptions
+    let opts := profiler.set setup.options.toOptions true
+    let opts := trace.profiler.set opts true
+    let opts := trace.profiler.threshold.set opts 50
+    let opts := trace.profiler.output.set opts "mathmux"
+    Elab.async.set opts false
+  else
+    Elab.async.setIfNotSet setup.options.toOptions true
   return .ok {
     mainModuleName := setup.name
     isModule := setup.isModule || header.isModule
     imports := setup.imports?.getD header.imports
-    opts := Elab.async.setIfNotSet opts true
+    opts
     importArts := setup.importArts
     plugins := setup.plugins
   }
@@ -80,23 +94,53 @@ partial def collectAfterError
   else
     return messages
 
-partial def firstErrorOrFinal (task : Language.SnapshotTask Language.Lean.CommandParsedSnapshot) :
-    BaseIO (Bool × MessageLog) := do
+partial def collectTraceProfile (fileMap : FileMap) (ref : Syntax) :
+    MessageData → Array ProfileEntry
+  | .trace data _ children =>
+      let elapsed := (data.stopTime - data.startTime) * 1000
+      let children := children.flatMap (collectTraceProfile fileMap ref)
+      if elapsed < 5 then children else
+        let pos := fileMap.toPosition (ref.getPos?.getD 0)
+        let detail := if data.tag.isEmpty then "" else data.tag
+        #[{ line := pos.line + 1, column := pos.column + 1, kind := data.cls.toString,
+            detail, duration_ms := elapsed }] ++ children
+  | .withContext _ msg => collectTraceProfile fileMap ref msg
+  | .withNamingContext _ msg => collectTraceProfile fileMap ref msg
+  | .nest _ msg => collectTraceProfile fileMap ref msg
+  | .group msg => collectTraceProfile fileMap ref msg
+  | .compose left right =>
+      collectTraceProfile fileMap ref left ++ collectTraceProfile fileMap ref right
+  | .tagged _ msg => collectTraceProfile fileMap ref msg
+  | .ofOriginatingSyntax origin msg => collectTraceProfile fileMap origin msg
+  | _ => #[]
+
+def collectResultProfile (fileMap : FileMap)
+    (result : Language.Lean.CommandResultSnapshot) : Array ProfileEntry := Id.run do
+  let mut entries := #[]
+  for trace in result.traces.traces do
+    entries := entries ++ collectTraceProfile fileMap trace.ref trace.msg
+  return entries
+
+partial def firstErrorOrFinal (task : Language.SnapshotTask Language.Lean.CommandParsedSnapshot)
+    (fileMap : FileMap) (profile : Bool) :
+    BaseIO (Bool × MessageLog × Array ProfileEntry) := do
   let command := task.get
   let result := command.elabSnap.resultSnap.get
+  let entries := if profile then collectResultProfile fileMap result else #[]
   if result.cmdState.messages.hasErrors then
     cancelCommandWork command
     let messages := result.cmdState.messages
     if let some next := command.nextCmdSnap? then
       let started ← IO.monoMsNow
       let messages ← collectAfterError next messages 1 0 started started
-      return (true, messages)
+      return (true, messages, entries)
     else
-      return (true, messages)
+      return (true, messages, entries)
   if let some next := command.nextCmdSnap? then
-    firstErrorOrFinal next
+    let (failed, messages, rest) ← firstErrorOrFinal next fileMap profile
+    return (failed, messages, entries ++ rest)
   else
-    return (false, result.cmdState.messages)
+    return (false, result.cmdState.messages, entries)
 
 def renderMessages (messages : MessageLog) : BaseIO (Array Diagnostic) := do
   let mut diagnostics := #[]
@@ -113,16 +157,18 @@ def failureResponse (detail : String) (version : Nat) : Response :=
     diagnostics := #[{ severity := "error", kind := "mathmux", text := detail }],
     version := version }
 
-def processSnapshot (snapshot : Language.Lean.InitialSnapshot) (version : Nat) : BaseIO Response := do
+def processSnapshot (snapshot : Language.Lean.InitialSnapshot) (version : Nat)
+    (profile : Bool) : BaseIO Response := do
   let some header := snapshot.result? |
     return ← failureWithDiagnostics snapshot "header parsing failed" version
   let processed := header.processedSnap.get
   let some processed := processed.result? |
     return ← failureWithDiagnostics snapshot "import processing failed" version
-  let (failed, commandMessages) ← firstErrorOrFinal processed.firstCmdSnap
+  let (failed, commandMessages, profileEntries) ←
+    firstErrorOrFinal processed.firstCmdSnap snapshot.ictx.fileMap profile
   let messages ← if failed then pure commandMessages else collectTree (Language.toSnapshotTree snapshot)
   let diagnostics ← renderMessages messages
-  return { ok := !messages.hasErrors, diagnostics, version := version }
+  return { ok := !messages.hasErrors, diagnostics, profile := profileEntries, version := version }
 
 where
   failureWithDiagnostics (snapshot : Language.Lean.InitialSnapshot) (detail : String)
@@ -159,7 +205,7 @@ unsafe def runServer (setup : ModuleSetup) (profile : Bool) : IO Unit := do
         fresh input
       else
         processor input
-      let response ← processSnapshot snapshot request.version
+      let response ← processSnapshot snapshot request.version profile
       if profile then Lean.displayCumulativeProfilingTimes
       writeResponse response
       loop
