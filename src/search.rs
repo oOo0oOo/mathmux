@@ -331,7 +331,7 @@ impl Searcher {
             SearchResult {
                 hits: Vec::new(),
                 inference: "diagnostic".into(),
-                note: Some("timeout context only; declaration search skipped".into()),
+                note: Some("diagnostic context only; declaration search skipped".into()),
                 ok: true,
             }
         } else if let Some(location) = location {

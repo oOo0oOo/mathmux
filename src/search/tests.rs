@@ -1388,6 +1388,11 @@ fn goal_and_source_query_regressions() {
         "lp"
     );
     assert!(diagnostic_search_query(
+        "Demo:106:17: error(lean.synthInstanceFailed): failed to synthesize instance of type class\n  LE Type\n\nHint: inspect it",
+        Some(">  106 | have hp : (2 : ℝ≥0∞) ≠ 0 := by norm_num"),
+    )
+    .is_empty());
+    assert!(diagnostic_search_query(
         "Demo:9:2: error: (deterministic) timeout at `whnf`, maximum number of heartbeats has been reached",
         None,
     )

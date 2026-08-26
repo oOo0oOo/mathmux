@@ -359,9 +359,8 @@ pub(super) fn diagnostic_search_query(
                     term.as_str(),
                     "Type" | "Sort" | "Prop" | "OfNat" | "LE" | "LT"
                 )
-            }) && let Some(query) = highlighted_tactic_query(source_context)
-            {
-                return query;
+            }) {
+                return highlighted_tactic_query(source_context).unwrap_or_default();
             }
             return specific.join(" ");
         }
