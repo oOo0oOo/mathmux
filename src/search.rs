@@ -184,13 +184,14 @@ impl Searcher {
         if let Some(reference) = more_search_reference(query.trim()) {
             return self.state.show(reference, true);
         }
-        let query = self.expand_reference_query(query.trim())?;
-        let query = strip_search_modifiers(&query);
+        let expanded = self.expand_reference_query(query.trim())?;
+        let location = parse_goal_location(&workspace.path, cwd, &expanded)?;
+        let query = strip_search_modifiers(&expanded);
         let query = query.as_str();
         ensure!(!query.is_empty(), "search query is empty");
         let reference = self.state.next_ref('q')?;
         let started = Instant::now();
-        let result = if let Some(location) = parse_goal_location(&workspace.path, cwd, query)? {
+        let result = if let Some(location) = location {
             self.goal_search(workspace, location)?
         } else if let Some(location) =
             parse_source_occurrence_query(&workspace.path, cwd, query)?
@@ -1955,7 +1956,13 @@ fn more_search_reference(query: &str) -> Option<&str> {
 fn strip_search_modifiers(query: &str) -> String {
     query
         .split_whitespace()
-        .filter(|term| !term.eq_ignore_ascii_case("more"))
+        .filter(|term| {
+            !term.eq_ignore_ascii_case("more")
+                && !matches!(
+                    term.to_ascii_uppercase().as_str(),
+                    "FILE:LINE" | "FILE:LINE:COLUMN"
+                )
+        })
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -4854,6 +4861,7 @@ end Demo
         assert_eq!(more_search_reference("q4246 comp"), None);
         assert_eq!(strip_search_modifiers("declaration terms MORE"), "declaration terms");
         assert_eq!(strip_search_modifiers("declaration MORE terms more"), "declaration terms");
+        assert_eq!(strip_search_modifiers("VectorBundle FILE:LINE MORE"), "VectorBundle");
         assert_eq!(strip_search_modifiers("declaration terms"), "declaration terms");
         assert_eq!(strip_search_modifiers("MORE"), "");
         let contextual_hit = SearchHit {
