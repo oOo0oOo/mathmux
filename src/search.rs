@@ -1018,11 +1018,22 @@ impl Searcher {
         let query_tokens = meaningful_query_tokens(query);
         let import_context = self.import_context(workspace, scopes, base_warming);
         if !type_search && declaration_name_query(query) {
-            let exact = self
-                .exact_candidates(query, scopes)?
+            let mut exact_query = query.to_owned();
+            let mut exact_rows = self.exact_candidates(query, scopes)?;
+            if exact_rows.is_empty()
+                && let Some(base) = declaration_suffix_base(query)
+            {
+                let base_rows = self.exact_candidates(base, scopes)?;
+                if !base_rows.is_empty() {
+                    exact_query = base.to_owned();
+                    exact_rows = base_rows;
+                }
+            }
+            let exact_tokens = meaningful_query_tokens(&exact_query);
+            let exact = exact_rows
                 .into_iter()
                 .map(|row| {
-                    let score = lexical_score(query, &query_tokens, &row)
+                    let score = lexical_score(&exact_query, &exact_tokens, &row)
                         + if row.owner == format!("workspace:{}", workspace.reference) {
                             8.0
                         } else {
@@ -1031,8 +1042,8 @@ impl Searcher {
                         - row.rank.max(0.0);
                     let (source, matched_line) = detailed_source_excerpt(
                         &row.body,
-                        query,
-                        &query_tokens,
+                        &exact_query,
+                        &exact_tokens,
                         row.line,
                         &row.kind,
                         &row.name,
@@ -1055,8 +1066,11 @@ impl Searcher {
                     }
                 })
                 .collect::<Vec<_>>();
-            if unique_qualified_hit_name(exact.iter().map(|candidate| &candidate.hit), query)
-                .is_some()
+            if unique_qualified_hit_name(
+                exact.iter().map(|candidate| &candidate.hit),
+                &exact_query,
+            )
+            .is_some()
             {
                 let mut resolved = merge_exact_candidates(exact);
                 self.enrich_exact_source(&mut resolved.hit, scopes)?;
@@ -1071,7 +1085,15 @@ impl Searcher {
                     workspace,
                     import_context.as_ref(),
                 )?);
-                return Ok(exact_search_result(hits, base_warming));
+                let mut result = exact_search_result(hits, base_warming);
+                if exact_query != query {
+                    let recovery = format!("no exact {query}; showing {exact_query}");
+                    result.note = Some(match result.note {
+                        Some(note) => format!("{recovery}; {note}"),
+                        None => recovery,
+                    });
+                }
+                return Ok(result);
             }
         }
         let rows = self.candidates(query, &query_tokens, type_search, scopes)?;
@@ -2961,6 +2983,18 @@ fn declaration_name_query(query: &str) -> bool {
             .all(|character| character.is_alphanumeric() || matches!(character, '_' | '.' | '\''))
 }
 
+fn declaration_suffix_base(query: &str) -> Option<&str> {
+    let (base, suffix) = query.rsplit_once('_')?;
+    (!suffix.is_empty()
+        && suffix.chars().all(char::is_alphanumeric)
+        && base
+            .rsplit('.')
+            .next()
+            .is_some_and(|leaf| leaf.chars().count() >= 4)
+        && declaration_name_query(base))
+    .then_some(base)
+}
+
 fn explicit_declaration_name(query: &str) -> Option<&str> {
     let mut terms = query.split_whitespace();
     let kind = terms.next()?;
@@ -4646,6 +4680,10 @@ end Demo
             Some("Demo.useful")
         );
         assert_eq!(explicit_declaration_name("theorem search terms"), None);
+        assert_eq!(declaration_suffix_base("Demo.longDeclaration_E"), Some("Demo.longDeclaration"));
+        assert_eq!(declaration_suffix_base("short_E"), Some("short"));
+        assert_eq!(declaration_suffix_base("abc_E"), None);
+        assert_eq!(declaration_suffix_base("Demo.longDeclaration"), None);
         assert_eq!(more_search_reference("q4246 MORE"), Some("q4246"));
         assert_eq!(
             more_search_reference("projectionRangeInclusionHom q4246 MORE"),
