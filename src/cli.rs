@@ -313,6 +313,26 @@ pub fn run() -> Result<u8> {
         command,
     };
     let client_started = Instant::now();
+    if matches!(&request.command, Command::Sync { push: true }) {
+        let response = match crate::git::push_main(&repo) {
+            Ok(detail) => Response::ok(format!("ok pushed main\n{detail}")),
+            Err(error) => Response::error(format!("{error:#}")),
+        };
+        if project_development {
+            let _ = crate::issue::record_exchange(
+                &repo,
+                &request,
+                &response,
+                client_started.elapsed().as_millis() as u64,
+            );
+        }
+        if response.ok {
+            println!("{}", response.summary);
+            return Ok(0);
+        }
+        eprintln!("error {}", response.summary);
+        return Ok(1);
+    }
     let mut handoffs = 0;
     let mut retirement_waits = 0;
     let mut transport_retries = 0;

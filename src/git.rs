@@ -232,6 +232,13 @@ pub struct SyncResult {
 }
 
 pub fn push_main(repo: &Repo) -> Result<String> {
+    let lock = File::options()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&repo.integration_lock)?;
+    lock.lock_exclusive()?;
     ensure!(
         dirty_paths(&repo.root)?.is_empty(),
         "managed main worktree is not clean"
