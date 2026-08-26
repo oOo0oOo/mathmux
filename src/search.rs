@@ -1012,15 +1012,19 @@ impl Searcher {
         let query = explicit_declaration.unwrap_or(query);
         let type_search = type_search_enabled() && type_shaped(query);
         let query_tokens = meaningful_query_tokens(query);
-        let rows = self.candidates(query, &query_tokens, type_search, scopes)?;
         let import_context = self.import_context(workspace, scopes, base_warming);
         if !type_search && declaration_name_query(query) {
-            let exact = rows
-                .iter()
-                .filter(|row| {
-                    scopes.contains(&row.owner) && qualified_name_matches(&row.name, query)
-                })
+            let exact = self
+                .exact_candidates(query, scopes)?
+                .into_iter()
                 .map(|row| {
+                    let score = lexical_score(query, &query_tokens, &row)
+                        + if row.owner == format!("workspace:{}", workspace.reference) {
+                            8.0
+                        } else {
+                            0.0
+                        }
+                        - row.rank.max(0.0);
                     let (source, matched_line) = detailed_source_excerpt(
                         &row.body,
                         query,
@@ -1043,13 +1047,7 @@ impl Searcher {
                             applicable: false,
                             required_import: None,
                         },
-                        score: lexical_score(query, &query_tokens, row)
-                            + if row.owner == format!("workspace:{}", workspace.reference) {
-                                8.0
-                            } else {
-                                0.0
-                            }
-                            - row.rank.max(0.0),
+                        score,
                     }
                 })
                 .collect::<Vec<_>>();
@@ -1072,6 +1070,7 @@ impl Searcher {
                 return Ok(exact_search_result(hits, base_warming));
             }
         }
+        let rows = self.candidates(query, &query_tokens, type_search, scopes)?;
         let name_search = !type_search && declaration_name_query(query);
         let mut ranked = Vec::new();
         let mut warming = false;
@@ -1568,6 +1567,29 @@ impl Searcher {
             }
         }
         Ok(rows)
+    }
+
+    fn exact_candidates(
+        &self,
+        query: &str,
+        scopes: &HashSet<String>,
+    ) -> Result<Vec<IndexedRow>> {
+        let connection = self.open()?;
+        install_active_scopes(&connection, scopes)?;
+        let mut statement = connection.prepare(
+            "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0
+             FROM search_fts
+             WHERE (name = ?1 COLLATE NOCASE
+                    OR (length(name) > length(?1)
+                        AND substr(name, -length(?1)) = ?1 COLLATE NOCASE
+                        AND substr(name, -length(?1) - 1, 1) = '.'))
+               AND owner IN (SELECT owner FROM active_search_scopes)
+             LIMIT 128",
+        )?;
+        statement
+            .query_map([query], indexed_row_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(anyhow::Error::from)
     }
 
     fn api_neighborhood(
