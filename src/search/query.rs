@@ -282,6 +282,11 @@ pub(super) fn diagnostic_search_query(diagnostic: &str) -> String {
             .collect::<HashSet<_>>();
         return diagnostic_goal_query(&goal, &locals);
     }
+    if let Some(detail) = diagnostic_type_detail(diagnostic)
+        && let Some(goal) = detail.strip_prefix("instance goal\n")
+    {
+        return goal.to_owned();
+    }
     if let Some(query) = diagnostic_relation_query(diagnostic) {
         return query;
     }
