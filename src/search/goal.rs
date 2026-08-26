@@ -728,7 +728,7 @@ pub(super) fn missing_source_message(
     Ok(format!("source file not found or ambiguous: {requested}"))
 }
 
-fn source_request_path(display: &str) -> PathBuf {
+fn source_request_path(display: &str) -> Option<PathBuf> {
     let path = Path::new(display);
     if !display.contains(['/', '\\'])
         && display.contains('.')
@@ -736,11 +736,11 @@ fn source_request_path(display: &str) -> PathBuf {
             .extension()
             .is_none_or(|extension| extension != "lean")
     {
-        PathBuf::from(format!("{}.lean", display.replace('.', "/")))
+        Some(PathBuf::from(format!("{}.lean", display.replace('.', "/"))))
     } else if path.extension().is_none() {
-        PathBuf::from(format!("{display}.lean"))
+        Some(PathBuf::from(format!("{display}.lean")))
     } else {
-        PathBuf::from(display)
+        (path.extension()? == "lean").then(|| path.to_path_buf())
     }
 }
 
@@ -750,13 +750,9 @@ pub(super) fn resolve_goal_path(
     path: &str,
 ) -> Result<Option<(PathBuf, Option<String>, bool)>> {
     let display = path.strip_prefix("<dependency>/").unwrap_or(path);
-    let requested = source_request_path(display);
-    if requested
-        .extension()
-        .is_none_or(|extension| extension != "lean")
-    {
+    let Some(requested) = source_request_path(display) else {
         return Ok(None);
-    }
+    };
     let direct = if requested.is_absolute() {
         requested.clone()
     } else {

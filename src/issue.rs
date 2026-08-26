@@ -138,14 +138,8 @@ impl IssueStore {
         Ok(store)
     }
 
-    fn open_db(&self) -> Result<Connection> {
-        let connection = Connection::open(&self.path)?;
-        connection.busy_timeout(std::time::Duration::from_secs(10))?;
-        Ok(connection)
-    }
-
     fn migrate(&self) -> Result<()> {
-        let connection = self.open_db()?;
+        let connection = open_db(&self.path)?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.execute_batch(
             "CREATE TABLE IF NOT EXISTS issues (
@@ -184,7 +178,7 @@ impl IssueStore {
         let context = capture_context(cwd, related_ref)?;
         let signature = hash_bytes(summary.to_ascii_lowercase().as_bytes());
         let now = now_unix_ms();
-        let mut connection = self.open_db()?;
+        let mut connection = open_db(&self.path)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let existing = transaction
             .query_row(
@@ -220,7 +214,7 @@ impl IssueStore {
             matches!(status, "open" | "resolved" | "dismissed" | "all"),
             "invalid issue status"
         );
-        let connection = self.open_db()?;
+        let connection = open_db(&self.path)?;
         let sql = if status == "all" {
             "SELECT id, summary,
                     CASE WHEN resolution = 'dismissed' THEN 'dismissed' ELSE status END,
@@ -276,7 +270,7 @@ impl IssueStore {
         note: Option<&str>,
     ) -> Result<String> {
         let id = parse_reference(reference)?;
-        let changed = self.open_db()?.execute(
+        let changed = open_db(&self.path)?.execute(
             "UPDATE issues SET status = 'resolved', resolution = 'fixed',
                     fixed_by = ?2, note = ?3,
                     updated_at = ?4, resolved_at = ?4
@@ -297,7 +291,7 @@ impl IssueStore {
         let reason = reason.trim();
         ensure!(!reason.is_empty(), "dismissal reason is empty");
         let now = now_unix_ms();
-        let changed = self.open_db()?.execute(
+        let changed = open_db(&self.path)?.execute(
             "UPDATE issues SET status = 'resolved', resolution = 'dismissed',
                     fixed_by = NULL, note = ?2, updated_at = ?3, resolved_at = ?3
              WHERE id = ?1 AND status = 'open'",
@@ -309,8 +303,7 @@ impl IssueStore {
 
     pub fn show(&self, reference: &str, all: bool) -> Result<String> {
         let id = parse_reference(reference)?;
-        let issue = self
-            .open_db()?
+        let issue = open_db(&self.path)?
             .query_row(
                 "SELECT id, summary,
                         CASE WHEN resolution = 'dismissed' THEN 'dismissed' ELSE status END,
@@ -340,17 +333,11 @@ impl TelemetryStore {
         Ok(store)
     }
 
-    fn open_db(&self) -> Result<Connection> {
-        let connection = Connection::open(&self.path)?;
-        connection.busy_timeout(std::time::Duration::from_secs(10))?;
-        Ok(connection)
-    }
-
     fn migrate(&self) -> Result<()> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let connection = self.open_db()?;
+        let connection = open_db(&self.path)?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.execute_batch(
             "CREATE TABLE IF NOT EXISTS telemetry_events (
@@ -397,7 +384,7 @@ impl TelemetryStore {
         let reference = response_reference(&response.summary);
         let error_class = (!response.ok).then(|| error_class(&response.summary));
         let now = now_unix_ms();
-        let mut connection = self.open_db()?;
+        let mut connection = open_db(&self.path)?;
         let transaction = connection.transaction()?;
         transaction.execute(
             "INSERT INTO telemetry_events(
@@ -430,7 +417,7 @@ impl TelemetryStore {
     }
 
     pub fn context_events(&self, repo: &Repo, since: i64) -> Result<Vec<ContextEvent>> {
-        let connection = self.open_db()?;
+        let connection = open_db(&self.path)?;
         let mut statement = connection.prepare(
             "SELECT created_at, client_ms, workspace, reference, response_bytes
              FROM telemetry_events
@@ -470,7 +457,7 @@ impl TelemetryStore {
         );
         let response_json = serde_json::json!({ "detail": operation.detail }).to_string();
         let now = now_unix_ms();
-        let mut connection = self.open_db()?;
+        let mut connection = open_db(&self.path)?;
         let transaction = connection.transaction()?;
         transaction.execute(
             "INSERT INTO telemetry_events(
@@ -532,8 +519,7 @@ impl TelemetryStore {
 
     pub fn show(&self, reference: &str, all: bool) -> Result<String> {
         let id = parse_event_reference(reference)?;
-        let event = self
-            .open_db()?
+        let event = open_db(&self.path)?
             .query_row(
                 "SELECT id, created_at, build, project, workspace, verb, reference, ok,
                         error_class, client_ms, daemon_ms, rss_kib, request_bytes,
@@ -548,7 +534,7 @@ impl TelemetryStore {
     }
 
     fn events_since(&self, cutoff: i64, verb: Option<&str>) -> Result<Vec<TelemetryEvent>> {
-        let connection = self.open_db()?;
+        let connection = open_db(&self.path)?;
         let select = "SELECT id, created_at, build, project, workspace, verb, reference, ok,
                              error_class, client_ms, daemon_ms, rss_kib, request_bytes,
                              response_bytes, request_json, response_json
@@ -573,7 +559,7 @@ impl TelemetryStore {
     }
 
     fn recent(&self, project: &Path, workspace: Option<&str>) -> Result<Option<String>> {
-        let connection = self.open_db()?;
+        let connection = open_db(&self.path)?;
         let mut statement = connection.prepare(
             "SELECT id, created_at, build, project, workspace, verb, reference, ok,
                     error_class, client_ms, daemon_ms, rss_kib, request_bytes,
@@ -598,8 +584,7 @@ impl TelemetryStore {
     }
 
     fn latest_exchange(&self, project: &Path, workspace: Option<&str>) -> Result<Option<String>> {
-        let row = self
-            .open_db()?
+        let row = open_db(&self.path)?
             .query_row(
                 "SELECT request_json, response_json
                  FROM telemetry_events
@@ -635,6 +620,12 @@ pub fn record_exchange(
 
 pub const fn development_enabled() -> bool {
     cfg!(feature = "development")
+}
+
+fn open_db(path: &Path) -> Result<Connection> {
+    let connection = Connection::open(path)?;
+    connection.busy_timeout(std::time::Duration::from_secs(10))?;
+    Ok(connection)
 }
 
 fn prune_telemetry(transaction: &rusqlite::Transaction<'_>, now: i64) -> Result<()> {
@@ -1122,7 +1113,7 @@ mod tests {
     fn telemetry_aggregates_and_exposes_slow_events() {
         let directory = tempdir().unwrap();
         let store = TelemetryStore::new(directory.path().join("development.db")).unwrap();
-        let connection = store.open_db().unwrap();
+        let connection = open_db(&store.path).unwrap();
         for (verb, duration, ok) in [
             ("check", 12, true),
             ("check", 1200, false),

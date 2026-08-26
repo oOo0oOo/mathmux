@@ -342,11 +342,22 @@ impl Service {
                     !targets.is_empty(),
                     "submission has no checked Lean changes"
                 );
-                reject_new_root_scratch(&workspace.path, &targets)?;
+                for path in &targets {
+                    ensure!(
+                        !is_root_scratch(path)
+                            || !workspace.path.join(path).is_file()
+                            || git::tracked_at_head(&workspace.path, path)?,
+                        "{} is a check-only scratch file; move the result into a project module or remove it before submit",
+                        path.display()
+                    );
+                }
                 let checks = self.checker.valid_certificates(&workspace, &targets)?;
                 let message = message
                     .filter(|value| !value.trim().is_empty())
-                    .unwrap_or_else(|| default_submit_message(&dirty));
+                    .unwrap_or_else(|| match dirty.as_slice() {
+                        [path] => format!("Update {}", path.display()),
+                        paths => format!("Update {} files", paths.len()),
+                    });
                 let result = git::submit(&self.repo, &workspace, &message)?;
                 let reference = self.state.next_ref('s')?;
                 self.state.add_submission(&Submission {
@@ -476,29 +487,6 @@ fn is_root_scratch(path: &Path) -> bool {
             .file_stem()
             .and_then(|stem| stem.to_str())
             .is_some_and(|stem| stem.to_ascii_lowercase().starts_with("scratch"))
-}
-
-fn reject_new_root_scratch(workspace: &Path, targets: &[PathBuf]) -> Result<()> {
-    for path in targets {
-        if is_root_scratch(path)
-            && workspace.join(path).is_file()
-            && !git::tracked_at_head(workspace, path)?
-        {
-            bail!(
-                "{} is a check-only scratch file; move the result into a project module or remove it before submit",
-                path.display()
-            );
-        }
-    }
-    Ok(())
-}
-
-fn default_submit_message(paths: &[PathBuf]) -> String {
-    if let [path] = paths {
-        format!("Update {}", path.display())
-    } else {
-        format!("Update {} files", paths.len())
-    }
 }
 
 struct WorkspaceWatcher {
