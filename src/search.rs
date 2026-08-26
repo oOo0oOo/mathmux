@@ -1026,7 +1026,7 @@ impl Searcher {
         let query_tokens = meaningful_query_tokens(query);
         let import_context = self.import_context(workspace, scopes, base_warming);
         if !type_search
-            && let Some((anchor, refinement_tokens)) = anchored_api_query(query)
+            && let Some((anchor, refinement_tokens, requested_terms)) = anchored_api_query(query)
         {
             let exact = ranked_exact_candidates(
                 self.exact_candidates(anchor, scopes)?,
@@ -1050,7 +1050,16 @@ impl Searcher {
                     import_context.as_ref(),
                     &refinement_tokens,
                 )?);
-                return Ok(exact_search_result(hits, base_warming));
+                let missing = missing_hit_terms(&hits, &requested_terms);
+                let mut result = exact_search_result(hits, base_warming);
+                if !missing.is_empty() {
+                    let note = format!("no nearby match for {}", missing.join(", "));
+                    result.note = Some(match result.note {
+                        Some(existing) => format!("{note}; {existing}"),
+                        None => note,
+                    });
+                }
+                return Ok(result);
             }
         }
         if !type_search && declaration_name_query(query) {
@@ -3373,7 +3382,7 @@ fn ranked_exact_candidates(
         .collect()
 }
 
-fn anchored_api_query(query: &str) -> Option<(&str, Vec<String>)> {
+fn anchored_api_query(query: &str) -> Option<(&str, Vec<String>, Vec<String>)> {
     let (anchor, refinement) = query.trim().split_once(char::is_whitespace)?;
     let specific_anchor = anchor.contains(['.', '_'])
         || anchor.chars().skip(1).any(char::is_uppercase);
@@ -3381,7 +3390,28 @@ fn anchored_api_query(query: &str) -> Option<(&str, Vec<String>)> {
         return None;
     }
     let tokens = meaningful_query_tokens(refinement);
-    (!tokens.is_empty() && tokens.len() <= 24).then_some((anchor, tokens))
+    let mut requested = query_tokens(refinement)
+        .into_iter()
+        .filter(|token| token.chars().count() >= 3)
+        .collect::<Vec<_>>();
+    requested.sort();
+    requested.dedup();
+    (!tokens.is_empty() && tokens.len() <= 24).then_some((anchor, tokens, requested))
+}
+
+fn missing_hit_terms(hits: &[SearchHit], terms: &[String]) -> Vec<String> {
+    let searchable = hits
+        .iter()
+        .map(|hit| format!("{} {}", hit.name, hit.signature.as_deref().unwrap_or_default()))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    terms
+        .iter()
+        .filter(|term| !searchable.contains(term.as_str()))
+        .take(4)
+        .cloned()
+        .collect()
 }
 
 fn specific_query_tokens(query: &str) -> Vec<String> {
@@ -5382,12 +5412,16 @@ end Demo
             meaningful_query_tokens("name LinearEquiv.ofFinrankEq"),
             vec!["linearequiv.offinrankeq", "finrank"]
         );
-        let (anchor, refinements) = anchored_api_query(
+        let (anchor, refinements, requested) = anchored_api_query(
             "bottProjectionMatrix selfAdjoint|conjTranspose|mul_self|one_sub",
         )
         .unwrap();
         assert_eq!(anchor, "bottProjectionMatrix");
         assert!(refinements.contains(&"mul_self".into()));
+        assert_eq!(
+            requested,
+            vec!["conjtranspose", "mul_self", "one_sub", "selfadjoint"]
+        );
         assert!(anchored_api_query("continuous map compact support").is_none());
         assert_eq!(
             meaningful_query_tokens("LinearEquiv.ofFinrankEq --all"),
