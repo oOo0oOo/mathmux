@@ -47,7 +47,7 @@ pub(super) fn render_search_run(run: &SearchRun, all: bool) -> String {
                     output.push_str("\n   source:");
                 }
                 let source_lines = match hit.kind.as_str() {
-                    "source-occurrences" => usize::MAX,
+                    "source-range" | "source-occurrences" => usize::MAX,
                     "class" | "inductive" | "structure" => 48,
                     _ if index == 0 && query_requests_proof_body(&run.query) => 48,
                     _ => SOURCE_PREVIEW_LINES,

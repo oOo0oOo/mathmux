@@ -4344,6 +4344,7 @@ fn render_summary(run: &SearchRun) -> String {
                     "imports" => 64,
                     "location" => LOCATION_PREVIEW_LINES,
                     "location-more" => LOCATION_MORE_LINES,
+                    "source-range" => LOCATION_MORE_LINES,
                     "source-occurrences" => SOURCE_OCCURRENCE_LIMIT,
                     _ => SOURCE_PREVIEW_LINES,
                 }
@@ -4448,6 +4449,8 @@ fn source_occurrence_result(
         .collect::<Vec<_>>();
     let limit = if all {
         SOURCE_OCCURRENCE_ALL_LIMIT
+    } else if query.terms.is_empty() {
+        LOCATION_MORE_LINES
     } else {
         SOURCE_OCCURRENCE_LIMIT
     };
@@ -4473,7 +4476,11 @@ fn source_occurrence_result(
             } else {
                 "source matches".into()
             },
-            kind: "source-occurrences".into(),
+            kind: if query.terms.is_empty() {
+                "source-range".into()
+            } else {
+                "source-occurrences".into()
+            },
             signature: Some(if query.terms.is_empty() {
                 format!("{} source lines", matches.len())
             } else {
@@ -4504,7 +4511,11 @@ fn source_occurrence_result(
                 "no literal source matches".into()
             })
         } else if omitted > 0 {
-            Some(format!("+{omitted} matches omitted; use --all"))
+            Some(if query.terms.is_empty() {
+                format!("+{omitted} lines omitted; use --all")
+            } else {
+                format!("+{omitted} matches omitted; use --all")
+            })
         } else {
             None
         },
@@ -5395,6 +5406,7 @@ end Demo
         )
         .unwrap();
         assert_eq!(range.hits[0].signature.as_deref(), Some("3 source lines"));
+        assert_eq!(range.hits[0].kind, "source-range");
         assert_eq!(range.hits[0].source.as_deref().unwrap().lines().count(), 3);
         assert_eq!(parse_source_line_range("3-3"), Some((3, 3)));
         assert_eq!(parse_source_line_range("4-3"), None);
