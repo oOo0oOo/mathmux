@@ -228,11 +228,13 @@ impl Searcher {
         query: &str,
         all: bool,
     ) -> Result<String> {
-        if let Some(reference) = more_search_reference(query.trim()) {
+        let query = query.trim();
+        if let Some(reference) = more_search_reference(query) {
             return self.state.show(reference, true);
         }
         let started = Instant::now();
-        let expanded = self.expand_reference_query(workspace, query.trim())?;
+        let query = normalize_lean_inspection_query(query);
+        let expanded = self.expand_reference_query(workspace, &query)?;
         let location = parse_goal_location(
             &workspace.path,
             cwd,
@@ -2501,6 +2503,29 @@ fn search_more_requested(query: &str) -> bool {
     query
         .split_whitespace()
         .any(|term| term.eq_ignore_ascii_case("more"))
+}
+
+fn normalize_lean_inspection_query(query: &str) -> String {
+    let mut query = query.trim();
+    if let Some((directive, rest)) = query.split_once(char::is_whitespace)
+        && matches!(directive.to_ascii_lowercase().as_str(), "#check" | "#print" | "#synth")
+    {
+        query = rest.trim_start();
+    }
+    let Some(application) = query.strip_prefix('@') else {
+        return query.to_owned();
+    };
+    let mut terms = application.split_whitespace();
+    let Some(name) = terms.next() else {
+        return query.to_owned();
+    };
+    std::iter::once(name)
+        .chain(terms.filter(|term| {
+            term.eq_ignore_ascii_case("more")
+                || matches!(term.to_ascii_lowercase().as_str(), "body" | "proof")
+        }))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn strip_search_modifiers(query: &str) -> String {
@@ -6248,6 +6273,31 @@ end Demo
             "GeneralLinearGroup compact|unrelated missing",
             [&hit].into_iter()
         ));
+    }
+
+    #[test]
+    fn lean_inspection_syntax_normalizes_to_search_terms() {
+        assert_eq!(normalize_lean_inspection_query("@Demo.useful"), "Demo.useful");
+        assert_eq!(
+            normalize_lean_inspection_query("@Demo.useful x y MORE"),
+            "Demo.useful MORE"
+        );
+        assert_eq!(
+            normalize_lean_inspection_query("#check Demo.useful"),
+            "Demo.useful"
+        );
+        assert_eq!(
+            normalize_lean_inspection_query("#print @Demo.useful x"),
+            "Demo.useful"
+        );
+        assert_eq!(
+            normalize_lean_inspection_query("#synth TopologicalSpace X"),
+            "TopologicalSpace X"
+        );
+        assert_eq!(
+            normalize_lean_inspection_query("⊢ Continuous f"),
+            "⊢ Continuous f"
+        );
     }
 
     #[test]
