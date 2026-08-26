@@ -1178,11 +1178,11 @@ fn reap_stale_workers(worker_path: &Path) -> usize {
         {
             continue;
         }
-        if worker_has_daemon_parent(&process.path()) {
-            continue;
-        }
         let group = unsafe { libc::getpgid(pid) };
-        if group > 0 && group != own_group {
+        if group == pid
+            && group != own_group
+            && !worker_has_daemon_parent(&process.path())
+        {
             groups.insert(group);
         }
     }
