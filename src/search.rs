@@ -397,7 +397,9 @@ impl Searcher {
             &source,
             line,
             "first | exact? | aesop? | simp? | apply? | rw?",
-        ) && let Ok((_, rendered)) = self.checker.probe_source(workspace, &absolute, &probe)
+        ) && let Ok(Some((_, rendered))) = self
+            .checker
+            .probe_source_if_ready(workspace, &absolute, &probe)
         {
             suggestions.extend(try_this_suggestions(&rendered));
         }
@@ -408,8 +410,8 @@ impl Searcher {
                 };
                 if self
                     .checker
-                    .probe_source(workspace, &absolute, &probe)
-                    .is_ok_and(|(ok, _)| ok)
+                    .probe_source_if_ready(workspace, &absolute, &probe)
+                    .is_ok_and(|result| result.is_some_and(|(ok, _)| ok))
                 {
                     suggestions.push(candidate);
                     break;

@@ -561,6 +561,29 @@ impl Checker {
         ))
     }
 
+    pub fn probe_source_if_ready(
+        &self,
+        workspace: &Workspace,
+        requested: &Path,
+        source: &str,
+    ) -> Result<Option<(bool, String)>> {
+        let target = resolve_target(&workspace.path, requested)?;
+        let ready = match self.workers.try_lock() {
+            Ok(mut workers) => workers
+                .get_mut(&(workspace.reference.clone(), target))
+                .is_some_and(LeanWorker::alive),
+            Err(std::sync::TryLockError::Poisoned(error)) => error
+                .into_inner()
+                .get_mut(&(workspace.reference.clone(), target))
+                .is_some_and(LeanWorker::alive),
+            Err(std::sync::TryLockError::WouldBlock) => false,
+        };
+        if !ready {
+            return Ok(None);
+        }
+        self.probe_source(workspace, requested, source).map(Some)
+    }
+
     fn worker_setup(
         &self,
         workspace: &Workspace,
