@@ -1401,6 +1401,25 @@ fn goal_and_source_query_regressions() {
     )
     .is_empty());
     assert_eq!(
+        diagnostic_search_query(
+            "Demo:12:2: error: `simp` made no progress",
+            Some(">  12 | simp_rw [← fourier_neg, ← fourier_add]"),
+        ),
+        "fourier_neg"
+    );
+    assert_eq!(
+        diagnostic_search_query(
+            "Demo:13:2: error: Tactic `rewrite` failed: pattern not found",
+            Some(">  13 | rw [map_zpow]"),
+        ),
+        "map_zpow"
+    );
+    assert!(diagnostic_search_query(
+        "Demo:14:2: error: No goals to be solved",
+        Some(">  14 | rw [irrelevant]"),
+    )
+    .is_empty());
+    assert_eq!(
         local_method_candidates("n : ℕ\nh : 0 < n\n⊢ 1 + (n - 1) = n"),
         ["omega"]
     );

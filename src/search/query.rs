@@ -310,6 +310,15 @@ pub(super) fn diagnostic_search_query(
     ) {
         return String::new();
     }
+    if diagnostic.contains("No goals to be solved") {
+        return String::new();
+    }
+    if (diagnostic.contains("made no progress")
+        || diagnostic.contains("Tactic `") && diagnostic.contains(" failed"))
+        && let Some(query) = highlighted_tactic_query(source_context)
+    {
+        return query;
+    }
     let lines = diagnostic.lines().collect::<Vec<_>>();
     if diagnostic.contains("unsolved goals")
         && let Some(index) = lines
@@ -436,7 +445,7 @@ fn highlighted_tactic_query(source_context: Option<&str>) -> Option<String> {
     let tactic = identifiers.next()?;
     if !matches!(
         tactic,
-        "apply" | "change" | "exact" | "refine" | "rw" | "simpa" | "simp"
+        "apply" | "change" | "exact" | "refine" | "rw" | "simpa" | "simp" | "simp_rw"
     ) {
         return None;
     }
