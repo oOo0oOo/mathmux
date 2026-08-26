@@ -231,6 +231,32 @@ pub struct SyncResult {
     pub detail: String,
 }
 
+pub fn push_main(repo: &Repo) -> Result<String> {
+    ensure!(
+        dirty_paths(&repo.root)?.is_empty(),
+        "managed main worktree is not clean"
+    );
+    ensure!(
+        run_checked(
+            "git",
+            ["rev-parse", "-q", "--verify", "CHERRY_PICK_HEAD"],
+            &repo.root,
+        )
+        .is_err(),
+        "managed main has an unfinished integration"
+    );
+    let output = run_output("git", ["push", "--porcelain"], &repo.root)?;
+    if !output.status.success() {
+        bail!("push failed: {}", command_detail(&output));
+    }
+    let detail = command_detail(&output);
+    Ok(if detail.is_empty() {
+        "up to date".into()
+    } else {
+        detail
+    })
+}
+
 pub fn sync(repo: &Repo, workspace: &Workspace) -> Result<SyncResult> {
     ensure!(
         dirty_paths(&repo.root)?.is_empty(),
@@ -503,6 +529,40 @@ mod tests {
         assert!(validate_name("-bad").is_err());
         assert!(validate_name("a/b").is_err());
         assert!((1..=8).contains(&workspace_limit()));
+    }
+
+    #[test]
+    fn push_main_uses_the_configured_upstream() {
+        let directory = tempdir().unwrap();
+        let remote = directory.path().join("remote.git");
+        let root = directory.path().join("repo");
+        run_checked("git", ["init", "--bare", remote.to_str().unwrap()], directory.path())
+            .unwrap();
+        fs::create_dir(&root).unwrap();
+        run_checked("git", ["init", "-b", "main"], &root).unwrap();
+        run_checked("git", ["config", "user.name", "mathmux test"], &root).unwrap();
+        run_checked(
+            "git",
+            ["config", "user.email", "mathmux@test.invalid"],
+            &root,
+        )
+        .unwrap();
+        fs::write(root.join("Proof.lean"), "def value := 0\n").unwrap();
+        run_checked("git", ["add", "."], &root).unwrap();
+        run_checked("git", ["commit", "-m", "initial"], &root).unwrap();
+        run_checked("git", ["remote", "add", "origin", remote.to_str().unwrap()], &root)
+            .unwrap();
+        run_checked("git", ["push", "-u", "origin", "main"], &root).unwrap();
+        fs::write(root.join("Proof.lean"), "def value := 1\n").unwrap();
+        run_checked("git", ["add", "."], &root).unwrap();
+        run_checked("git", ["commit", "-m", "next"], &root).unwrap();
+
+        let repo = Repo::discover(&root).unwrap();
+        assert!(push_main(&repo).unwrap().contains("main"));
+        assert_eq!(
+            head(&root).unwrap(),
+            run_checked("git", ["rev-parse", "refs/heads/main"], &remote).unwrap()
+        );
     }
 
     #[test]

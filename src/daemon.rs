@@ -242,7 +242,12 @@ impl Service {
                 git::prepare_workspace(&self.repo, &workspace.path)?;
                 self.searcher.search(&workspace, &cwd, &query, all)
             }
-            Command::Sync => {
+            Command::Sync { push: true } => {
+                let _guard = self.mutations.lock().expect("mutation lock poisoned");
+                let detail = git::push_main(&self.repo)?;
+                Ok(format!("ok pushed main\n{detail}"))
+            }
+            Command::Sync { push: false } => {
                 let _guard = self.mutations.lock().expect("mutation lock poisoned");
                 let workspace = self.state.workspace_for_path(&cwd)?;
                 let result = git::sync(&self.repo, &workspace)?;

@@ -109,11 +109,16 @@ enum TopCommand {
         #[arg(long)]
         all: bool,
     },
-    /// Bring managed main into the current workspace.
+    /// Bring managed main into the current workspace, or publish managed main.
     ///
     /// Merges mathmux-managed main into the current workspace and reports conflicts
-    /// without moving work into main.
-    Sync,
+    /// without moving work into main. With --push, publishes managed main through
+    /// its configured Git remote instead of changing the workspace.
+    Sync {
+        /// Push managed main through its configured Git remote.
+        #[arg(long)]
+        push: bool,
+    },
     /// Integrate a certified change and queue validation.
     ///
     /// Requires current check coverage for the dirty Lean files. Integrates the
@@ -294,7 +299,7 @@ pub fn run() -> Result<u8> {
             query: query.join(" "),
             all,
         },
-        TopCommand::Sync => Command::Sync,
+        TopCommand::Sync { push } => Command::Sync { push },
         TopCommand::Submit { message } => Command::Submit { message },
         TopCommand::Show { reference, all } => Command::Show { reference, all },
         TopCommand::Issue { .. } | TopCommand::Telemetry { .. } | TopCommand::Daemon { .. } => {

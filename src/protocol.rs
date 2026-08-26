@@ -31,7 +31,10 @@ pub enum Command {
         all: bool,
     },
     Status,
-    Sync,
+    Sync {
+        #[serde(default)]
+        push: bool,
+    },
     Submit {
         message: Option<String>,
     },
@@ -50,7 +53,7 @@ impl Command {
             Self::Check { .. } => "check",
             Self::Search { .. } => "search",
             Self::Status => "status",
-            Self::Sync => "sync",
+            Self::Sync { .. } => "sync",
             Self::Submit { .. } => "submit",
             Self::Show { .. } => "show",
         }
@@ -63,7 +66,7 @@ impl Command {
                 | Self::Status
                 | Self::Check { .. }
                 | Self::Search { .. }
-                | Self::Sync
+                | Self::Sync { .. }
                 | Self::Show { .. }
         )
     }
@@ -137,11 +140,20 @@ mod tests {
             panic!("expected search command");
         };
         assert!(!all);
+
+        let request: Request = serde_json::from_str(
+            r#"{"cwd":"/project","command":{"verb":"sync"}}"#,
+        )
+        .unwrap();
+        let Command::Sync { push } = request.command else {
+            panic!("expected sync command");
+        };
+        assert!(!push);
     }
 
     #[test]
     fn only_idempotent_commands_are_transport_retry_safe() {
-        assert!(Command::Sync.transport_retry_safe());
+        assert!(Command::Sync { push: false }.transport_retry_safe());
         assert!(Command::Status.transport_retry_safe());
         assert!(
             Command::Check {
