@@ -5412,7 +5412,7 @@ fn render_summary(run: &SearchRun) -> String {
                     "imports" => 64,
                     "location" => LOCATION_PREVIEW_LINES,
                     "location-more" => LOCATION_MORE_LINES,
-                    "source-range" => LOCATION_MORE_LINES,
+                    "source-range" => SOURCE_OCCURRENCE_ALL_LIMIT,
                     "source-occurrences" => SOURCE_OCCURRENCE_LIMIT,
                     _ => SOURCE_PREVIEW_LINES,
                 }
@@ -7027,6 +7027,19 @@ end Demo
             long_range.note.as_deref(),
             Some("+50 lines omitted; narrow the range")
         );
+        let long_summary = render_summary(&SearchRun {
+            reference: "q-range".into(),
+            workspace_ref: "w1".into(),
+            query: "Long.lean:1-250".into(),
+            inference: long_range.inference.clone(),
+            hits: long_range.hits.clone(),
+            note: long_range.note.clone(),
+            duration_ms: 1,
+            created_at: 0,
+        });
+        assert!(long_summary.contains("  200  line 200"));
+        assert!(!long_summary.contains("  201  line 201"));
+        assert!(long_summary.ends_with("+50 lines omitted; narrow the range"));
         assert_eq!(parse_source_line_range("3-3"), Some((3, 3)));
         assert_eq!(parse_source_line_range("4-3"), None);
         assert_eq!(parse_source_line_range("0-3"), None);
