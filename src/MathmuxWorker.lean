@@ -39,16 +39,57 @@ partial def collectTree (tree : Language.SnapshotTree) : BaseIO MessageLog := do
     messages := messages ++ (← collectTree child.get)
   return messages
 
+def cancelCommandWork (command : Language.Lean.CommandParsedSnapshot) : BaseIO Unit := do
+  command.elabSnap.elabSnap.cancelRec
+  command.elabSnap.infoTreeSnap.cancelRec
+  command.elabSnap.reportSnap.cancelRec
+
+def postErrorIdleMs : Nat := 300
+def postErrorMaxMs : Nat := 750
+def postErrorFailingCommands : Nat := 3
+def postErrorCommandLimit : Nat := 64
+
+/-- Harvest nearby diagnostics without waiting for the remainder of the file. -/
+partial def collectAfterError
+    (task : Language.SnapshotTask Language.Lean.CommandParsedSnapshot)
+    (messages : MessageLog) (failingCommands inspected : Nat)
+    (started lastProgress : Nat) : BaseIO MessageLog := do
+  if failingCommands >= postErrorFailingCommands || inspected >= postErrorCommandLimit then
+    task.cancelRec
+    return messages
+  let now ← IO.monoMsNow
+  if now - started >= postErrorMaxMs || now - lastProgress >= postErrorIdleMs then
+    task.cancelRec
+    return messages
+  let some command ← task.get? | do
+    IO.sleep 10
+    collectAfterError task messages failingCommands inspected started lastProgress
+  let some result ← command.elabSnap.resultSnap.get? | do
+    IO.sleep 10
+    collectAfterError task messages failingCommands inspected started lastProgress
+  cancelCommandWork command
+  let commandMessages := result.cmdState.messages
+  let messages := messages ++ commandMessages
+  let failingCommands := failingCommands + if commandMessages.hasErrors then 1 else 0
+  let now ← IO.monoMsNow
+  if let some next := command.nextCmdSnap? then
+    collectAfterError next messages failingCommands (inspected + 1) started now
+  else
+    return messages
+
 partial def firstErrorOrFinal (task : Language.SnapshotTask Language.Lean.CommandParsedSnapshot) :
     BaseIO (Bool × MessageLog) := do
   let command := task.get
   let result := command.elabSnap.resultSnap.get
   if result.cmdState.messages.hasErrors then
-    command.elabSnap.elabSnap.cancelRec
-    command.elabSnap.infoTreeSnap.cancelRec
-    command.elabSnap.reportSnap.cancelRec
-    if let some next := command.nextCmdSnap? then next.cancelRec
-    return (true, result.cmdState.messages)
+    cancelCommandWork command
+    let messages := result.cmdState.messages
+    if let some next := command.nextCmdSnap? then
+      let started ← IO.monoMsNow
+      let messages ← collectAfterError next messages 1 0 started started
+      return (true, messages)
+    else
+      return (true, messages)
   if let some next := command.nextCmdSnap? then
     firstErrorOrFinal next
   else
