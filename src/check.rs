@@ -309,6 +309,7 @@ impl Checker {
             })
         };
         let _check_guard = check_lock.lock().expect("target check lock poisoned");
+        let queue_ms = file_started.elapsed().as_millis() as u64;
         let target_name = target.to_string_lossy().into_owned();
         let target_absolute = workspace.path.join(target);
         if !target_absolute.exists() {
@@ -331,6 +332,7 @@ impl Checker {
                     target: target_name,
                     mode: "deleted".into(),
                     reused_prefix_lines: None,
+                    queue_ms,
                     dependencies_ms: 0,
                     cache_ms: 0,
                     setup_ms: 0,
@@ -349,6 +351,7 @@ impl Checker {
                 target: target_name,
                 mode: "cached".into(),
                 reused_prefix_lines: None,
+                queue_ms,
                 dependencies_ms,
                 cache_ms: phase.elapsed().as_millis() as u64,
                 setup_ms: 0,
@@ -407,6 +410,7 @@ impl Checker {
                 target: target_name,
                 mode: mode.into(),
                 reused_prefix_lines,
+                queue_ms,
                 dependencies_ms,
                 cache_ms,
                 setup_ms,
@@ -449,6 +453,7 @@ impl Checker {
                 target: target.to_string_lossy().into_owned(),
                 mode: "cached".into(),
                 reused_prefix_lines: None,
+                queue_ms: 0,
                 dependencies_ms: 0,
                 cache_ms: 0,
                 setup_ms: 0,

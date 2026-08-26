@@ -16,8 +16,11 @@ impl CheckProfile {
                 .reused_prefix_lines
                 .map(|lines| format!(", reused {lines} lines"))
                 .unwrap_or_default();
+            let queue = (file.queue_ms > 0)
+                .then(|| format!(", queue {}ms", file.queue_ms))
+                .unwrap_or_default();
             output.push_str(&format!(
-                "\n  {} {} {}ms (dependencies {}ms, cache {}ms, setup {}ms, elaborate {}ms{})",
+                "\n  {} {} {}ms (dependencies {}ms, cache {}ms, setup {}ms, elaborate {}ms{}{})",
                 file.target,
                 file.mode,
                 file.total_ms,
@@ -26,6 +29,7 @@ impl CheckProfile {
                 file.setup_ms,
                 file.elaborate_ms,
                 reuse,
+                queue,
             ));
         }
         if self.files.len() > 32 {

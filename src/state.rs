@@ -77,6 +77,8 @@ pub struct FileCheckProfile {
     pub mode: String,
     #[serde(default)]
     pub reused_prefix_lines: Option<u64>,
+    #[serde(default)]
+    pub queue_ms: u64,
     pub dependencies_ms: u64,
     pub cache_ms: u64,
     pub setup_ms: u64,
