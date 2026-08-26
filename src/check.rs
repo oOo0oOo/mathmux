@@ -10,7 +10,7 @@ use std::time::{Instant, UNIX_EPOCH};
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 
-use crate::git::{dirty_lean_files, lake_command, project_lean_files};
+use crate::git::{dirty_lean_files, lake_command, merge_in_progress, project_lean_files};
 use crate::issue::{TelemetryOperation, TelemetryStore, development_enabled};
 use crate::repo::Repo;
 use crate::state::{
@@ -224,6 +224,10 @@ impl Checker {
         let targets = match requested {
             Some(path) => vec![resolve_target(&workspace.path, path)?],
             None => {
+                ensure!(
+                    !merge_in_progress(&workspace.path),
+                    "workspace has an unfinished sync; check the conflicted files, then rerun mathmux sync"
+                );
                 let files = dirty_lean_files(&workspace.path)?;
                 ensure!(!files.is_empty(), "workspace has no dirty Lean files");
                 dependency_order(&workspace.path, &files)?

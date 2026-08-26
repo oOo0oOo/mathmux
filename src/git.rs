@@ -236,6 +236,9 @@ pub fn sync(repo: &Repo, workspace: &Workspace) -> Result<SyncResult> {
         dirty_paths(&repo.root)?.is_empty(),
         "managed main worktree is not clean"
     );
+    if merge_in_progress(&workspace.path) {
+        return continue_sync(workspace);
+    }
     let output = run_output(
         "git",
         ["merge", "--no-edit", "--autostash", "main"],
@@ -262,11 +265,88 @@ pub fn sync(repo: &Repo, workspace: &Workspace) -> Result<SyncResult> {
     }
     Ok(SyncResult {
         clean: false,
-        detail: format!(
-            "conflicts: {}",
-            conflicts.lines().collect::<Vec<_>>().join(", ")
-        ),
+        detail: conflict_detail(conflicts.lines()),
     })
+}
+
+fn continue_sync(workspace: &Workspace) -> Result<SyncResult> {
+    let conflicts = unmerged_paths(&workspace.path)?;
+    let unresolved = conflicts
+        .iter()
+        .filter(|path| has_conflict_markers(&workspace.path.join(path)))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !unresolved.is_empty() {
+        return Ok(SyncResult {
+            clean: false,
+            detail: conflict_detail(unresolved.iter().map(|path| path.to_string_lossy())),
+        });
+    }
+    if !conflicts.is_empty() {
+        let mut args = vec!["add".into(), "--".into()];
+        args.extend(conflicts.iter().map(|path| path.as_os_str().to_owned()));
+        run_checked("git", args, &workspace.path)
+            .context("cannot stage resolved sync conflicts")?;
+    }
+    let output = run_output(
+        "git",
+        ["-c", "core.editor=true", "merge", "--continue"],
+        &workspace.path,
+    )?;
+    if output.status.success() {
+        return Ok(SyncResult {
+            clean: true,
+            detail: command_detail(&output),
+        });
+    }
+    let conflicts = unmerged_paths(&workspace.path)?;
+    if conflicts.is_empty() {
+        bail!("cannot continue sync: {}", command_detail(&output));
+    }
+    Ok(SyncResult {
+        clean: false,
+        detail: conflict_detail(conflicts.iter().map(|path| path.to_string_lossy())),
+    })
+}
+
+fn unmerged_paths(root: &Path) -> Result<Vec<PathBuf>> {
+    let output = run_output(
+        "git",
+        ["diff", "--name-only", "-z", "--diff-filter=U"],
+        root,
+    )?;
+    ensure!(
+        output.status.success(),
+        "cannot inspect sync conflicts: {}",
+        command_detail(&output)
+    );
+    Ok(output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|field| !field.is_empty())
+        .map(|field| PathBuf::from(String::from_utf8_lossy(field).into_owned()))
+        .collect())
+}
+
+fn has_conflict_markers(path: &Path) -> bool {
+    fs::read_to_string(path).is_ok_and(|source| {
+        source.lines().any(|line| {
+            line.starts_with("<<<<<<< ")
+                || line == "======="
+                || line.starts_with(">>>>>>> ")
+        })
+    })
+}
+
+fn conflict_detail(conflicts: impl IntoIterator<Item = impl AsRef<str>>) -> String {
+    format!(
+        "conflicts: {} (resolve them, check the affected files, then rerun mathmux sync)",
+        conflicts
+            .into_iter()
+            .map(|path| path.as_ref().to_owned())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 pub struct SubmitResult {
@@ -354,7 +434,7 @@ pub(crate) fn lake_executable() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("lake"))
 }
 
-fn merge_in_progress(root: &Path) -> bool {
+pub(crate) fn merge_in_progress(root: &Path) -> bool {
     run_checked("git", ["rev-parse", "-q", "--verify", "MERGE_HEAD"], root).is_ok()
 }
 
@@ -428,6 +508,46 @@ mod tests {
         assert_eq!(
             fs::read_to_string(root.join("Proof.lean")).unwrap(),
             "def value := 1\n"
+        );
+    }
+
+    #[test]
+    fn sync_rerun_continues_a_resolved_merge() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("repo");
+        fs::create_dir(&root).unwrap();
+        run_checked("git", ["init", "-b", "main"], &root).unwrap();
+        run_checked("git", ["config", "user.name", "mathmux test"], &root).unwrap();
+        run_checked(
+            "git",
+            ["config", "user.email", "mathmux@test.invalid"],
+            &root,
+        )
+        .unwrap();
+        fs::write(root.join("Proof.lean"), "def value := 0\n").unwrap();
+        run_checked("git", ["add", "."], &root).unwrap();
+        run_checked("git", ["commit", "-m", "initial"], &root).unwrap();
+
+        let repo = Repo::discover(&root).unwrap();
+        let state = State::new(&repo.db_path).unwrap();
+        let workspace = create_workspace(&repo, &state, "agent").unwrap();
+        fs::write(workspace.path.join("Proof.lean"), "def value := 1\n").unwrap();
+        run_checked("git", ["add", "."], &workspace.path).unwrap();
+        run_checked("git", ["commit", "-m", "workspace"], &workspace.path).unwrap();
+        fs::write(root.join("Proof.lean"), "def value := 2\n").unwrap();
+        run_checked("git", ["add", "."], &root).unwrap();
+        run_checked("git", ["commit", "-m", "main"], &root).unwrap();
+
+        let first = sync(&repo, &workspace).unwrap();
+        assert!(!first.clean);
+        assert!(merge_in_progress(&workspace.path));
+        fs::write(workspace.path.join("Proof.lean"), "def value := 3\n").unwrap();
+        let second = sync(&repo, &workspace).unwrap();
+        assert!(second.clean);
+        assert!(!merge_in_progress(&workspace.path));
+        assert_eq!(
+            fs::read_to_string(workspace.path.join("Proof.lean")).unwrap(),
+            "def value := 3\n"
         );
     }
 }
