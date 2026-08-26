@@ -1356,6 +1356,19 @@ fn goal_and_source_query_regressions() {
     .unwrap();
     assert_eq!((occurrences.first_line, occurrences.last_line), (2, 4));
     assert_eq!(occurrences.terms, ["/-", "-/", "/-!"]);
+    let path_last = parse_source_occurrence_query(
+        directory.path(),
+        directory.path(),
+        None,
+        "inside Markers.lean",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(path_last.terms, ["inside"]);
+    assert_eq!(
+        path_last.path,
+        fs::canonicalize(directory.path().join("Markers.lean")).unwrap()
+    );
     let placeholder = match parse_source_occurrence_query(
         directory.path(),
         directory.path(),

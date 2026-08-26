@@ -161,11 +161,31 @@ pub(super) fn parse_source_occurrence_query(
     main_root: Option<&Path>,
     query: &str,
 ) -> Result<Option<SourceOccurrenceQuery>> {
-    let mut parts = query.split_whitespace();
-    let Some(target) = parts.next() else {
+    let parts = query.split_whitespace().collect::<Vec<_>>();
+    let Some(_) = parts.first() else {
         return Ok(None);
     };
+    let mut lean_targets = parts
+        .iter()
+        .enumerate()
+        .filter(|(_, part)| {
+            let path = part
+                .rsplit_once(':')
+                .filter(|(_, range)| parse_source_line_range(range).is_some())
+                .map_or(**part, |(path, _)| path);
+            Path::new(path).extension().and_then(|extension| extension.to_str()) == Some("lean")
+        })
+        .map(|(index, _)| index);
+    let target_index = match (lean_targets.next(), lean_targets.next()) {
+        (Some(index), None) => index,
+        _ => 0,
+    };
+    let target = parts[target_index];
     let terms = parts
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != target_index)
+        .map(|(_, part)| *part)
         .flat_map(|part| part.split('|'))
         .map(|term| term.trim_matches(['\'', '"']))
         .filter(|term| !term.is_empty())
