@@ -1,12 +1,13 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
-use std::time::{Instant, UNIX_EPOCH};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail, ensure};
 use regex::Regex;
@@ -22,6 +23,21 @@ use crate::util::{hash_bytes, hash_file, now_unix_ms};
 
 const WORKER_SOURCE: &str = include_str!("MathmuxWorker.lean");
 const CHECK_RESULT_VERSION: &[u8] = b"check-result-v2";
+const CHECK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
+#[derive(Debug)]
+struct CheckTimeout;
+
+impl std::fmt::Display for CheckTimeout {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "Lean elaboration exceeded five minutes; split the file or simplify the current declaration"
+        )
+    }
+}
+
+impl std::error::Error for CheckTimeout {}
 
 #[derive(Debug, Clone)]
 pub struct CheckOutcome {
@@ -517,10 +533,13 @@ impl Checker {
                 (!replace).then_some(reuse.prefix_lines),
             )),
             Err(error) => {
+                let timed_out = error.downcast_ref::<CheckTimeout>().is_some();
                 self.record_worker_failure(&format!("request: {error:#}"));
                 drop(worker_guard);
                 self.remove_worker(&key, &worker);
-                if allow_fallback {
+                if timed_out {
+                    Err(error)
+                } else if allow_fallback {
                     fallback_check(&self.repo, &workspace.path, target)
                         .map(|response| (response, "fallback", None))
                         .with_context(|| format!("direct Lean worker failed: {error:#}"))
@@ -979,6 +998,29 @@ impl LeanWorker {
         )?;
         self.stdin.write_all(b"\n")?;
         self.stdin.flush()?;
+        let mut descriptor = libc::pollfd {
+            fd: self.stdout.get_ref().as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ready = unsafe {
+            libc::poll(
+                &mut descriptor,
+                1,
+                CHECK_TIMEOUT.as_millis().min(i32::MAX as u128) as i32,
+            )
+        };
+        if ready == 0 {
+            let pid = self.child.id() as i32;
+            unsafe {
+                libc::kill(-pid, libc::SIGTERM);
+            }
+            let _ = self.child.wait();
+            return Err(CheckTimeout.into());
+        }
+        if ready < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
         let mut line = String::new();
         let read = self.stdout.read_line(&mut line)?;
         if read == 0 {
