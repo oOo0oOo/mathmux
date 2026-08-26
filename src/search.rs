@@ -249,7 +249,7 @@ fn related_module_candidates(
     });
     let mut seen = HashSet::new();
     modules.retain(|(_, module)| seen.insert(module.clone()));
-    modules.truncate(8);
+    modules.truncate(6);
     if modules.is_empty() {
         return Ok(Vec::new());
     }
@@ -258,7 +258,7 @@ fn related_module_candidates(
                 bm25(search_fts, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 7.0, 3.0, 1.0)
          FROM search_fts WHERE search_fts MATCH ?1 AND module = ?2
            AND owner IN (SELECT owner FROM active_search_scopes)
-         LIMIT 192",
+         LIMIT 96",
     )?;
     let fts = fts_query(&tokens.join(" "));
     let mut related = Vec::new();
