@@ -1319,6 +1319,14 @@ impl Searcher {
                 return Ok(exact_search_result(hits, base_warming || warming));
             }
         }
+        let resolved_declaration_head = declaration_list_terms(query)
+            .and_then(|terms| terms.first().copied())
+            .is_some_and(|term| {
+                ranked.iter().any(|candidate| {
+                    !matches!(candidate.hit.kind.as_str(), "file" | "imports")
+                        && qualified_name_matches(&candidate.hit.name, term)
+                })
+            });
         let missing_specific_term = specific_query_tokens(query).iter().any(|token| {
             !ranked.iter().any(|candidate| {
                 !matches!(candidate.hit.kind.as_str(), "file" | "imports")
@@ -1378,7 +1386,8 @@ impl Searcher {
                 .take(3)
                 .count()
                 == 3;
-        if !warm_name_coverage
+        if !resolved_declaration_head
+            && !warm_name_coverage
             && (ranked.len() < 3
                 || missing_specific_term
                 || missing_source_identifier
@@ -3115,6 +3124,19 @@ fn declaration_name_query(query: &str) -> bool {
         && query
             .chars()
             .all(|character| character.is_alphanumeric() || matches!(character, '_' | '.' | '\''))
+}
+
+fn declaration_list_terms(query: &str) -> Option<Vec<&str>> {
+    let terms = query.split_whitespace().collect::<Vec<_>>();
+    (terms.len() >= 2
+        && terms.len() <= 6
+        && terms.iter().all(|term| {
+            declaration_name_query(term)
+                && term.chars().count() >= 6
+                && (term.contains(['.', '_'])
+                    || term.chars().skip(1).any(char::is_uppercase))
+        }))
+    .then_some(terms)
 }
 
 fn declaration_suffix_base(query: &str) -> Option<&str> {
@@ -5029,6 +5051,11 @@ end Demo
         assert!(declaration_name_query("Ring.inverse_eq_inv'"));
         assert!(declaration_name_query("transportAmbient"));
         assert!(!declaration_name_query("Finsupp.sum add"));
+        assert_eq!(
+            declaration_list_terms("matrixFinBlockClass matrixFinBlockClass_one"),
+            Some(vec!["matrixFinBlockClass", "matrixFinBlockClass_one"])
+        );
+        assert_eq!(declaration_list_terms("continuous support"), None);
         assert_eq!(
             explicit_declaration_name("theorem Bundle.Trivialization.apply_mk_symm"),
             Some("Bundle.Trivialization.apply_mk_symm")
