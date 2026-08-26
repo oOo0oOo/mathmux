@@ -776,7 +776,9 @@ pub(super) fn fallback_source_hits(
     query: &str,
     query_tokens: &[String],
 ) -> Result<Vec<RankedHit>> {
-    let deadline = Instant::now() + SOURCE_FALLBACK_BUDGET;
+    let started = Instant::now();
+    let scan_deadline = started + SOURCE_SCAN_BUDGET;
+    let fallback_deadline = started + SOURCE_FALLBACK_BUDGET;
     let workspace = fs::canonicalize(workspace)?;
     let packages = fs::canonicalize(workspace.join(".lake/packages")).ok();
     let generic = [
@@ -873,15 +875,15 @@ pub(super) fn fallback_source_hits(
         &workspace,
         packages.as_deref(),
         &declaration_terms,
-        deadline,
+        scan_deadline,
     )?;
     let strong_paths =
-        source_scan_paths(&workspace, packages.as_deref(), &strong_terms, deadline)?;
+        source_scan_paths(&workspace, packages.as_deref(), &strong_terms, scan_deadline)?;
     let named_argument_paths = source_scan_paths(
         &workspace,
         packages.as_deref(),
         &named_argument_terms,
-        deadline,
+        scan_deadline,
     )?;
     let mut balanced_paths = if symbolic_term.is_some() {
         strong_paths.iter().cloned().map(|path| (path, 1)).collect()
@@ -890,7 +892,7 @@ pub(super) fn fallback_source_hits(
             &workspace,
             packages.as_deref(),
             &rare_terms.into_iter().take(12).collect::<Vec<_>>(),
-            deadline,
+            scan_deadline,
         )?
     };
     balanced_paths.sort_by(|(left_path, left_score), (right_path, right_score)| {
@@ -926,7 +928,7 @@ pub(super) fn fallback_source_hits(
             &workspace,
             packages.as_deref(),
             &source_specific_query_tokens(query),
-            deadline,
+            scan_deadline,
         )?
     };
     let mut paths = direct_paths
@@ -943,7 +945,7 @@ pub(super) fn fallback_source_hits(
     let remaining_paths = if terms == strong_terms {
         strong_paths.clone()
     } else {
-        source_scan_paths(&workspace, packages.as_deref(), &terms, deadline)?
+        source_scan_paths(&workspace, packages.as_deref(), &terms, scan_deadline)?
     };
     for candidates in [
         declaration_paths,
@@ -965,7 +967,10 @@ pub(super) fn fallback_source_hits(
     let imports_query = query_tokens
         .iter()
         .any(|token| matches!(token.as_str(), "import" | "imports"));
-    for path in paths.into_iter().take(96) {
+    'paths: for path in paths.into_iter().take(96) {
+        if Instant::now() >= fallback_deadline {
+            break;
+        }
         let path = if path.is_absolute() {
             path
         } else {
@@ -984,6 +989,9 @@ pub(super) fn fallback_source_hits(
             .unwrap_or((workspace.as_path(), SourceKind::Project));
         let module = module_name(&path, root, kind);
         for entry in parse_source(&source, &module) {
+            if Instant::now() >= fallback_deadline {
+                break 'paths;
+            }
             let searchable =
                 format!("{} {} {}", entry.name, entry.signature, entry.body).to_lowercase();
             let score = terms
