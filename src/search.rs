@@ -1347,7 +1347,7 @@ impl Searcher {
                     });
                 }
             }
-        } else if name_search && base_warming {
+        } else if name_search && base_warming && specific_query_tokens(query).is_empty() {
             let (mut loogle_hits, is_warming) = self.loogle_hits(workspace, query);
             warming |= is_warming;
             let exact_positions = loogle_hits
@@ -6002,6 +6002,11 @@ end Demo
             source_specific_query_tokens("ContinuousMap IsUnit unitsLift"),
             vec!["unitslift"]
         );
+        assert_eq!(
+            specific_query_tokens("projectionRangeComplexVectorBundleConstant"),
+            vec!["projectionrangecomplexvectorbundleconstant"]
+        );
+        assert!(specific_query_tokens("Homeomorph").is_empty());
         assert!(words_match("weight", "weights"));
         assert!(hit_name_matches(
             "Matrix.conjTranspose_mul",
