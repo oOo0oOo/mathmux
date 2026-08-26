@@ -4294,11 +4294,16 @@ fn fallback_source_hits(
                 0
             };
             let is_imports = entry.kind == "imports";
+            let signature = if is_file {
+                file_query_coverage_signature(&source_lower, query_tokens)
+            } else {
+                nonempty(entry.signature)
+            };
             ranked.push(RankedHit {
                 hit: SearchHit {
                     name: entry.name,
                     kind: entry.kind,
-                    signature: nonempty(entry.signature),
+                    signature,
                     module: module.clone(),
                     path: display_path(&path, &workspace, root, kind),
                     line: matched_line,
@@ -4343,6 +4348,29 @@ fn fallback_source_hits(
     promote_query_coverage(&mut ranked, query_tokens);
     ranked.truncate(RESULT_LIMIT);
     Ok(ranked)
+}
+
+fn file_query_coverage_signature(source: &str, tokens: &[String]) -> Option<String> {
+    let mut tokens = tokens.iter().map(String::as_str).collect::<Vec<_>>();
+    tokens.sort_unstable();
+    tokens.dedup();
+    if tokens.len() < 2 {
+        return None;
+    }
+    let missing = tokens
+        .iter()
+        .filter(|token| !source.contains(**token))
+        .copied()
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "partial source match {}/{}; missing {}",
+        tokens.len() - missing.len(),
+        tokens.len(),
+        missing.into_iter().take(3).collect::<Vec<_>>().join(", ")
+    ))
 }
 
 fn symbolic_source_term(query: &str) -> Option<String> {
@@ -5704,6 +5732,14 @@ end Demo
         assert!(excerpt.contains("def firstNeedle"));
         assert!(excerpt.contains("theorem secondNeedle"));
         assert!(excerpt.lines().count() <= SOURCE_PREVIEW_LINES);
+        assert_eq!(
+            file_query_coverage_signature(
+                "the first needle is present",
+                &["first".into(), "second".into()]
+            )
+            .as_deref(),
+            Some("partial source match 1/2; missing second")
+        );
 
         let structure = "structure Config where\n  first : Nat\n  second : String\n  third : Bool\n\n/-- The next declaration. -/\ndef next := 1\n";
         let (excerpt, line) = detailed_source_excerpt(
