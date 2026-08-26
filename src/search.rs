@@ -1028,9 +1028,20 @@ impl Searcher {
         if !type_search && declaration_name_query(query) {
             let mut exact_query = query.to_owned();
             let mut exact_rows = self.exact_candidates(query, scopes)?;
+            let continuations = if exact_rows.is_empty()
+                && declaration_suffix_base(query).is_some()
+            {
+                self.direct_continuations(query, scopes)?
+            } else {
+                Vec::new()
+            };
+            if let [continuation] = continuations.as_slice() {
+                exact_query = continuation.clone();
+                exact_rows = self.exact_candidates(continuation, scopes)?;
+            }
             if exact_rows.is_empty()
                 && let Some(base) = declaration_suffix_base(query)
-                && !self.has_direct_continuation(query, scopes)?
+                && continuations.is_empty()
             {
                 let base_rows = self.exact_candidates(base, scopes)?;
                 if !base_rows.is_empty() {
@@ -1667,11 +1678,11 @@ impl Searcher {
             .map_err(anyhow::Error::from)
     }
 
-    fn has_direct_continuation(
+    fn direct_continuations(
         &self,
         query: &str,
         scopes: &HashSet<String>,
-    ) -> Result<bool> {
+    ) -> Result<Vec<String>> {
         let connection = self.open()?;
         install_active_scopes(&connection, scopes)?;
         let mut statement = connection.prepare(
@@ -1684,9 +1695,13 @@ impl Searcher {
         let names = statement
             .query_map([fts], |row| row.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(names
-            .iter()
-            .any(|name| direct_continuation_name_matches(name, query)))
+        let mut names = names
+            .into_iter()
+            .filter(|name| direct_continuation_name_matches(name, query))
+            .collect::<Vec<_>>();
+        names.sort();
+        names.dedup();
+        Ok(names)
     }
 
     fn api_neighborhood(
