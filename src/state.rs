@@ -69,6 +69,8 @@ pub struct CheckProfile {
 pub struct FileCheckProfile {
     pub target: String,
     pub mode: String,
+    #[serde(default)]
+    pub reused_prefix_lines: Option<u64>,
     pub dependencies_ms: u64,
     pub cache_ms: u64,
     pub setup_ms: u64,
@@ -100,8 +102,12 @@ impl CheckProfile {
     pub fn render(&self) -> String {
         let mut output = format!("profile:\n  planning {}ms", self.planning_ms);
         for file in self.files.iter().take(32) {
+            let reuse = file
+                .reused_prefix_lines
+                .map(|lines| format!(", reused {lines} lines"))
+                .unwrap_or_default();
             output.push_str(&format!(
-                "\n  {} {} {}ms (dependencies {}ms, cache {}ms, setup {}ms, elaborate {}ms)",
+                "\n  {} {} {}ms (dependencies {}ms, cache {}ms, setup {}ms, elaborate {}ms{})",
                 file.target,
                 file.mode,
                 file.total_ms,
@@ -109,6 +115,7 @@ impl CheckProfile {
                 file.cache_ms,
                 file.setup_ms,
                 file.elaborate_ms,
+                reuse,
             ));
         }
         if self.files.len() > 32 {

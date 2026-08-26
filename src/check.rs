@@ -363,6 +363,7 @@ impl Checker {
                 profile: FileCheckProfile {
                     target: target_name,
                     mode: "deleted".into(),
+                    reused_prefix_lines: None,
                     dependencies_ms: 0,
                     cache_ms: 0,
                     setup_ms: 0,
@@ -380,6 +381,7 @@ impl Checker {
             cached.profile = FileCheckProfile {
                 target: target_name,
                 mode: "cached".into(),
+                reused_prefix_lines: None,
                 dependencies_ms,
                 cache_ms: phase.elapsed().as_millis() as u64,
                 setup_ms: 0,
@@ -397,7 +399,7 @@ impl Checker {
             .with_context(|| format!("cannot read {}", target.display()))?;
 
         let phase = Instant::now();
-        let (response, mode) =
+        let (response, mode, reused_prefix_lines) =
             self.run_worker(workspace, target, &setup_path, &environment, &source, true)?;
         let elaborate_ms = phase.elapsed().as_millis() as u64;
         ensure!(
@@ -429,6 +431,7 @@ impl Checker {
             profile: FileCheckProfile {
                 target: target_name,
                 mode: mode.into(),
+                reused_prefix_lines,
                 dependencies_ms,
                 cache_ms,
                 setup_ms,
@@ -470,6 +473,7 @@ impl Checker {
             profile: FileCheckProfile {
                 target: target.to_string_lossy().into_owned(),
                 mode: "cached".into(),
+                reused_prefix_lines: None,
                 dependencies_ms: 0,
                 cache_ms: 0,
                 setup_ms: 0,
@@ -487,7 +491,7 @@ impl Checker {
         environment: &str,
         source: &str,
         allow_fallback: bool,
-    ) -> Result<(WorkerResponse, &'static str)> {
+    ) -> Result<(WorkerResponse, &'static str, Option<u64>)> {
         let mut workers = self.workers.lock().expect("worker map poisoned");
         let key = (workspace.reference.clone(), target.to_path_buf());
         let replace = workers
@@ -516,7 +520,7 @@ impl Checker {
                     self.record_worker_failure(&format!("start: {error:#}"));
                     if allow_fallback {
                         return fallback_check(&self.repo, &workspace.path, target)
-                            .map(|response| (response, "fallback"))
+                            .map(|response| (response, "fallback", None))
                             .with_context(|| format!("direct Lean worker unavailable: {error:#}"));
                     }
                     return Err(error).context("direct Lean worker unavailable");
@@ -527,22 +531,23 @@ impl Checker {
             .get_mut(&key)
             .context("Lean worker did not start")?;
         match worker.check(source) {
-            Ok((response, reused)) => Ok((
+            Ok((response, reuse)) => Ok((
                 response,
                 if replace {
                     "cold-worker"
-                } else if reused {
+                } else if reuse.identical {
                     "worker-cache"
                 } else {
-                    "warm-worker"
+                    "incremental"
                 },
+                (!replace).then_some(reuse.prefix_lines),
             )),
             Err(error) => {
                 self.record_worker_failure(&format!("request: {error:#}"));
                 workers.remove(&key);
                 if allow_fallback {
                     fallback_check(&self.repo, &workspace.path, target)
-                        .map(|response| (response, "fallback"))
+                        .map(|response| (response, "fallback", None))
                         .with_context(|| format!("direct Lean worker failed: {error:#}"))
                 } else {
                     Err(error).context("direct Lean worker failed")
@@ -560,7 +565,7 @@ impl Checker {
         let target = resolve_target(&workspace.path, requested)?;
         let dependencies = transitive_dependencies(&workspace.path, &target)?;
         let (setup_path, environment) = self.worker_setup(workspace, &target, &dependencies)?;
-        let (response, _) =
+        let (response, _, _) =
             self.run_worker(workspace, &target, &setup_path, &environment, source, false)?;
         let ok = response.ok;
         Ok((
@@ -870,6 +875,11 @@ struct LeanWorker {
     last_response: Option<WorkerResponse>,
 }
 
+struct WorkerReuse {
+    identical: bool,
+    prefix_lines: u64,
+}
+
 impl LeanWorker {
     fn start(
         repo: &Repo,
@@ -913,13 +923,24 @@ impl LeanWorker {
         })
     }
 
-    fn check(&mut self, source: &str) -> Result<(WorkerResponse, bool)> {
+    fn check(&mut self, source: &str) -> Result<(WorkerResponse, WorkerReuse)> {
         self.last_used = Instant::now();
         if self.last_source.as_deref() == Some(source)
             && let Some(response) = &self.last_response
         {
-            return Ok((response.clone(), true));
+            return Ok((
+                response.clone(),
+                WorkerReuse {
+                    identical: true,
+                    prefix_lines: source.lines().count() as u64,
+                },
+            ));
         }
+        let prefix_lines = self
+            .last_source
+            .as_deref()
+            .map(|previous| common_prefix_lines(previous, source))
+            .unwrap_or(0);
         self.version += 1;
         serde_json::to_writer(
             &mut self.stdin,
@@ -942,12 +963,26 @@ impl LeanWorker {
         let response = deduplicate_diagnostics(response);
         self.last_source = Some(source.to_owned());
         self.last_response = Some(response.clone());
-        Ok((response, false))
+        Ok((
+            response,
+            WorkerReuse {
+                identical: false,
+                prefix_lines,
+            },
+        ))
     }
 
     fn alive(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
     }
+}
+
+fn common_prefix_lines(previous: &str, current: &str) -> u64 {
+    previous
+        .split_inclusive('\n')
+        .zip(current.split_inclusive('\n'))
+        .take_while(|(left, right)| left == right)
+        .count() as u64
 }
 
 impl Drop for LeanWorker {

@@ -2382,10 +2382,14 @@ fn strip_search_modifiers(query: &str) -> String {
 fn refined_search_query(base: &str, refinement: &str) -> String {
     let refinement = refinement.trim();
     let facet = refinement.to_ascii_lowercase();
+    if matches!(
+        facet.as_str(),
+        "field" | "fields" | "projection" | "projections" | "constructor" | "constructors"
+    ) {
+        return format!("{base}.mk");
+    }
     let refinement = match facet.as_str() {
-        "usage" | "usages" | "references" | "field" | "fields" | "projection"
-        | "projections" => "",
-        "constructor" | "constructors" => "mk",
+        "usage" | "usages" | "references" => "",
         "coercion" | "coercions" => "coe",
         "lemma" | "lemmas" => "theorem",
         _ => refinement,
@@ -6278,7 +6282,8 @@ end Demo
             ),
             "Matrix.fromBlocks finSumFinEquiv.symm Continuous"
         );
-        assert_eq!(refined_search_query("Homeomorph", "constructors"), "Homeomorph mk");
+        assert_eq!(refined_search_query("Homeomorph", "constructors"), "Homeomorph.mk");
+        assert_eq!(refined_search_query("Homeomorph", "fields"), "Homeomorph.mk");
         assert_eq!(refined_search_query("Homeomorph", "usages"), "Homeomorph");
         assert_eq!(
             diagnostic_position(

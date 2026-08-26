@@ -79,10 +79,12 @@ enum TopCommand {
     ///
     /// Query forms are inferred. FILE:LINE[:COLUMN] searches the goal at that
     /// position, while FILE:tail shows bounded source context at the end of a file.
+    /// A check reference searches its diagnostic context; a search reference plus
+    /// more terms refines that search. Exact declarations include their nearby API.
     /// Every other query combines declaration, type, and source search. Full results
     /// and references are stored under the returned reference.
     Search {
-        /// Search terms, a Lean type pattern, FILE:LINE[:COLUMN], or FILE:tail.
+        /// Terms, a type, FILE:LINE, cREF, or qREF followed by refinements.
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
         /// Return complete stored results instead of the compact preview.
