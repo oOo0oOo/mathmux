@@ -118,6 +118,12 @@ pub fn run(repo: Repo) -> Result<()> {
             }
         }
         let active_clients = clients.load(Ordering::SeqCst);
+        if retiring.load(Ordering::SeqCst) && listener.take().is_some() {
+            // Existing streams remain valid after unlinking a Unix socket. Let a
+            // replacement daemon serve new clients while this image drains its
+            // active checks and validation work.
+            let _ = fs::remove_file(&repo.socket_path);
+        }
         let has_workers = if active_clients == 0 {
             let has_check_workers = service
                 .checker
@@ -134,10 +140,6 @@ pub fn run(repo: Repo) -> Result<()> {
             && active_clients == 0
             && !service.state.has_running_validation().unwrap_or(true)
         {
-            // Keep serving with the compatible old image while an asynchronous
-            // validation drains. Closing the listener earlier freezes every
-            // command behind the client startup lock until that build finishes.
-            listener.take();
             break;
         }
         if active_clients == 0
@@ -148,7 +150,9 @@ pub fn run(repo: Repo) -> Result<()> {
             break;
         }
     }
-    let _ = fs::remove_file(&repo.socket_path);
+    if listener.is_some() {
+        let _ = fs::remove_file(&repo.socket_path);
+    }
     Ok(())
 }
 
