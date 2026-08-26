@@ -679,7 +679,7 @@ pub(super) fn resolve_goal_path(
             .expect("single-component Lean path has a file name")
             .to_string_lossy();
         let mut matches = files
-            .into_iter()
+            .iter()
             .filter(|candidate| {
                 candidate.file_name().is_some_and(|name| {
                     name.to_string_lossy()
@@ -693,8 +693,50 @@ pub(super) fn resolve_goal_path(
         if let [resolved] = matches.as_slice() {
             return Ok(Some((resolved.clone(), None, true)));
         }
+        if matches.is_empty() {
+            let requested_stem = requested
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or_default();
+            let requested_parts = identifier_query_parts(requested_stem);
+            if requested_parts.len() >= 2 {
+                let mut matches = files
+                    .iter()
+                    .filter(|candidate| {
+                        let parts = candidate
+                            .file_stem()
+                            .and_then(|stem| stem.to_str())
+                            .map(identifier_query_parts)
+                            .unwrap_or_default();
+                        ordered_subset(&requested_parts, &parts)
+                    })
+                    .filter_map(|candidate| fs::canonicalize(root.join(candidate)).ok())
+                    .collect::<Vec<_>>();
+                matches.sort();
+                matches.dedup();
+                if let [resolved] = matches.as_slice() {
+                    return Ok(Some((resolved.clone(), None, true)));
+                }
+            }
+        }
     }
     Ok(None)
+}
+
+fn ordered_subset(needles: &[String], haystack: &[String]) -> bool {
+    let mut needles = needles.iter();
+    let Some(mut next) = needles.next() else {
+        return true;
+    };
+    for part in haystack {
+        if part == next {
+            let Some(needle) = needles.next() else {
+                return true;
+            };
+            next = needle;
+        }
+    }
+    false
 }
 
 pub(super) fn source_location_result(

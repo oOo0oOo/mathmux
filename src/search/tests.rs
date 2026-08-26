@@ -1589,6 +1589,30 @@ fn goal_and_source_query_regressions() {
     .unwrap()
     .unwrap();
     assert_eq!(recovered_guess.path, recovered.path);
+    let chart = project.join("FredholmFamilyKernelChart.lean");
+    fs::write(&chart, &source).unwrap();
+    let recovered_components = parse_source_occurrence_query(
+        directory.path(),
+        directory.path(),
+        None,
+        "FredholmKernelChart.lean:4-6 marker",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(recovered_components.path, fs::canonicalize(&chart).unwrap());
+    fs::write(project.join("FredholmLocalKernelChart.lean"), &source).unwrap();
+    assert!(
+        parse_source_occurrence_query(
+            directory.path(),
+            directory.path(),
+            None,
+            "FredholmKernelChart.lean:4-6 marker",
+        )
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("source file not found or ambiguous")
+    );
     let outline = parse_source_occurrence_query(
         directory.path(),
         directory.path(),
