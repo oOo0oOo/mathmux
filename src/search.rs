@@ -3584,14 +3584,16 @@ fn fallback_source_hits(
         "structure",
         "theorem",
     ];
-    let mut terms = query_tokens
-        .iter()
-        .flat_map(|token| std::iter::once(token.as_str()).chain(token.split(['.', '_'])))
-        .map(str::to_lowercase)
-        .filter(|term| term.len() >= 3 && !generic.contains(&term.as_str()))
-        .collect::<Vec<_>>();
-    if let Some(symbolic) = symbolic_source_term(query) {
-        terms.push(symbolic);
+    let symbolic_term = symbolic_source_term(query);
+    let mut terms = symbolic_term.iter().cloned().collect::<Vec<_>>();
+    if symbolic_term.is_none() {
+        terms.extend(
+            query_tokens
+                .iter()
+                .flat_map(|token| std::iter::once(token.as_str()).chain(token.split(['.', '_'])))
+                .map(str::to_lowercase)
+                .filter(|term| term.len() >= 3 && !generic.contains(&term.as_str())),
+        );
     }
     let named_argument_terms = named_argument_terms(query);
     terms.extend(named_argument_terms.iter().cloned());
@@ -3638,7 +3640,8 @@ fn fallback_source_hits(
             .filter_map(|token| token.rsplit_once('.').map(|(_, base)| base.to_lowercase())),
     );
     let mut declaration_terms = Vec::new();
-    if query_tokens.len() <= 2
+    if symbolic_term.is_none()
+        && query_tokens.len() <= 2
         && let Some(token) = query_tokens.last()
     {
         for name in token.split('.').filter(|name| name.len() >= 3) {
@@ -3664,11 +3667,19 @@ fn fallback_source_hits(
     let strong_paths = source_scan_paths(&workspace, packages.as_deref(), &strong_terms)?;
     let named_argument_paths =
         source_scan_paths(&workspace, packages.as_deref(), &named_argument_terms)?;
-    let mut balanced_paths = source_scan_path_counts(
-        &workspace,
-        packages.as_deref(),
-        &rare_terms.into_iter().take(12).collect::<Vec<_>>(),
-    )?;
+    let mut balanced_paths = if symbolic_term.is_some() {
+        strong_paths
+            .iter()
+            .cloned()
+            .map(|path| (path, 1))
+            .collect()
+    } else {
+        source_scan_path_counts(
+            &workspace,
+            packages.as_deref(),
+            &rare_terms.into_iter().take(12).collect::<Vec<_>>(),
+        )?
+    };
     balanced_paths.sort_by(|(left_path, left_score), (right_path, right_score)| {
         right_score.cmp(left_score).then_with(|| {
             let left_dependency = packages
@@ -3695,11 +3706,15 @@ fn fallback_source_hits(
     };
     let direct_paths = direct_module_paths(&workspace, packages.as_deref(), query);
     let direct_path_set = direct_paths.iter().cloned().collect::<HashSet<_>>();
-    let specific_paths = source_scan_paths(
-        &workspace,
-        packages.as_deref(),
-        &source_specific_query_tokens(query),
-    )?;
+    let specific_paths = if symbolic_term.is_some() {
+        Vec::new()
+    } else {
+        source_scan_paths(
+            &workspace,
+            packages.as_deref(),
+            &source_specific_query_tokens(query),
+        )?
+    };
     let mut paths = direct_paths
         .into_iter()
         .chain(specific_paths)
@@ -3711,11 +3726,16 @@ fn fallback_source_hits(
         )
         .collect::<Vec<_>>();
     let mut seen_paths = paths.iter().cloned().collect::<HashSet<_>>();
+    let remaining_paths = if terms == strong_terms {
+        strong_paths.clone()
+    } else {
+        source_scan_paths(&workspace, packages.as_deref(), &terms)?
+    };
     for candidates in [
         declaration_paths,
         balanced_paths,
         strong_paths,
-        source_scan_paths(&workspace, packages.as_deref(), &terms)?,
+        remaining_paths,
     ] {
         for path in candidates {
             if seen_paths.insert(path.clone()) {
@@ -3777,6 +3797,9 @@ fn fallback_source_hits(
                 .filter(|term| entry.signature.to_lowercase().contains(*term))
                 .count();
             let name = entry.name.to_lowercase();
+            let symbolic_name_match = symbolic_term
+                .as_ref()
+                .is_some_and(|term| name.contains(term));
             let base = name.rsplit('.').next().unwrap_or(&name);
             let name_segments = name.split('.').collect::<HashSet<_>>();
             let segment_score = terms
@@ -3847,6 +3870,7 @@ fn fallback_source_hits(
                     + named_argument_score as f64 * 200.0
                     + segment_score as f64 * 30.0
                     + if exact_name { 80.0 } else { 0.0 }
+                    + if symbolic_name_match { 600.0 } else { 0.0 }
                     + if qualified_leaf { 60.0 } else { 0.0 }
                     + qualified_owner_score as f64 * 250.0
                     + qualified_member_score
