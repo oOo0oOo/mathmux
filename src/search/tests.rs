@@ -320,6 +320,15 @@ fn query_parsing_scoring_and_ranking_regressions() {
     assert_eq!(declaration_suffix_base("short_E"), Some("short"));
     assert_eq!(declaration_suffix_base("abc_E"), None);
     assert_eq!(declaration_suffix_base("Demo.longDeclaration"), None);
+    assert_eq!(
+        declaration_predicate_base("Submodule.isClosed_of_finiteDimensional"),
+        Some("Submodule.closed_of_finiteDimensional".into())
+    );
+    assert_eq!(
+        declaration_predicate_base("Demo.is_ready"),
+        Some("Demo.ready".into())
+    );
+    assert_eq!(declaration_predicate_base("Demo.iso"), None);
     assert_eq!(more_search_reference("q4246 MORE"), Some("q4246"));
     assert_eq!(
         more_search_reference("projectionRangeInclusionHom q4246 MORE"),

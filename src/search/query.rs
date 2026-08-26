@@ -625,6 +625,25 @@ pub(super) fn declaration_suffix_base(query: &str) -> Option<&str> {
     .then_some(base)
 }
 
+pub(super) fn declaration_predicate_base(query: &str) -> Option<String> {
+    let (owner, leaf) = query
+        .rsplit_once('.')
+        .map_or((None, query), |(owner, leaf)| (Some(owner), leaf));
+    let rest = if let Some(rest) = leaf.strip_prefix("is_") {
+        rest.to_owned()
+    } else {
+        let rest = leaf.strip_prefix("is")?;
+        let first = rest.chars().next()?;
+        if !first.is_uppercase() {
+            return None;
+        }
+        let mut lowered = first.to_lowercase().collect::<String>();
+        lowered.push_str(&rest[first.len_utf8()..]);
+        lowered
+    };
+    (!rest.is_empty()).then(|| owner.map_or(rest.clone(), |owner| format!("{owner}.{rest}")))
+}
+
 pub(super) fn explicit_declaration_name(query: &str) -> Option<&str> {
     let mut terms = query.split_whitespace();
     let kind = terms.next()?;

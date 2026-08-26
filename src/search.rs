@@ -1534,7 +1534,17 @@ impl Searcher {
         if !type_search
             && let Some((anchor, refinement_tokens, requested_terms)) = anchored_api_query(query)
         {
-            let exact_rows = self.exact_candidates(anchor, scopes)?;
+            let mut exact_anchor = anchor.to_owned();
+            let mut exact_rows = self.exact_candidates(anchor, scopes)?;
+            if exact_rows.is_empty()
+                && let Some(base) = declaration_predicate_base(anchor)
+            {
+                let base_rows = self.exact_candidates(&base, scopes)?;
+                if !base_rows.is_empty() {
+                    exact_anchor = base;
+                    exact_rows = base_rows;
+                }
+            }
             if exact_rows.is_empty()
                 && let Some(mut result) = self.generated_exact_result(
                     workspace,
@@ -1558,8 +1568,8 @@ impl Searcher {
                 annotate_missing_hit_terms(&mut result, &requested_terms);
                 return Ok(result);
             }
-            let exact = ranked_exact_candidates(exact_rows, anchor, workspace);
-            if let Some(exact) = resolved_exact_candidates(exact, anchor) {
+            let exact = ranked_exact_candidates(exact_rows, &exact_anchor, workspace);
+            if let Some(exact) = resolved_exact_candidates(exact, &exact_anchor) {
                 let mut resolved = merge_exact_candidates(exact);
                 self.enrich_exact_source(&mut resolved.hit, scopes)?;
                 resolved.hit.usages = self.usages(&resolved.hit.name, scopes, workspace)?;
@@ -1576,12 +1586,28 @@ impl Searcher {
                 )?);
                 let mut result = exact_search_result(hits, base_warming);
                 annotate_missing_hit_terms(&mut result, &requested_terms);
+                if exact_anchor != anchor {
+                    let recovery = format!("closest name: {exact_anchor}");
+                    result.note = Some(match result.note.take() {
+                        Some(note) => format!("{recovery}; {note}"),
+                        None => recovery,
+                    });
+                }
                 return Ok(result);
             }
         }
         if !type_search && declaration_name_query(query) {
             let mut exact_query = query.to_owned();
             let mut exact_rows = self.exact_candidates(query, scopes)?;
+            if exact_rows.is_empty()
+                && let Some(base) = declaration_predicate_base(query)
+            {
+                let base_rows = self.exact_candidates(&base, scopes)?;
+                if !base_rows.is_empty() {
+                    exact_query = base;
+                    exact_rows = base_rows;
+                }
+            }
             if exact_rows.is_empty()
                 && let Some(result) = self.generated_exact_result(
                     workspace,
@@ -1604,7 +1630,7 @@ impl Searcher {
             }
             let has_qualified_match = exact_rows
                 .iter()
-                .any(|row| qualified_name_matches(&row.name, query));
+                .any(|row| qualified_name_matches(&row.name, &exact_query));
             if !has_qualified_match
                 && let Some(base) = declaration_suffix_base(query)
                 && continuations.is_empty()
