@@ -138,6 +138,16 @@ end Demo
 }
 
 #[test]
+fn source_parser_labels_private_declarations() {
+    let entries = parse_source(
+        "namespace Demo\nprivate theorem hidden : True := by trivial\nend Demo\n",
+        "Demo",
+    );
+    let hidden = entries.iter().find(|entry| entry.name == "Demo.hidden").unwrap();
+    assert!(hidden.signature.starts_with("[private]"));
+}
+
+#[test]
 fn pipe_alternatives_short_circuit_after_one_indexed_hit_covers_a_group() {
     let hit = SearchHit {
         name: "MatrixGL.gl_pathConnectedSpace".into(),

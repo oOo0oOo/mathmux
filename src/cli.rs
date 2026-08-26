@@ -370,8 +370,31 @@ fn exchange(mut stream: UnixStream, request: &Request) -> Result<Response> {
     serde_json::to_writer(&mut stream, &request)?;
     stream.write_all(b"\n")?;
     stream.flush()?;
+    let report_progress = matches!(request.command, Command::Check { .. });
+    if report_progress {
+        stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+    }
+    let started = Instant::now();
+    let mut reader = BufReader::new(stream);
     let mut line = String::new();
-    let bytes = BufReader::new(stream).read_line(&mut line)?;
+    let bytes = loop {
+        match reader.read_line(&mut line) {
+            Ok(bytes) => break bytes,
+            Err(error)
+                if report_progress
+                    && matches!(
+                        error.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) =>
+            {
+                eprintln!("check running {}s", started.elapsed().as_secs());
+                reader
+                    .get_ref()
+                    .set_read_timeout(Some(Duration::from_secs(60)))?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    };
     if bytes == 0 {
         return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
     }
