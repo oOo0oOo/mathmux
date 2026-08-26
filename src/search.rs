@@ -3873,6 +3873,11 @@ fn source_excerpt_with_limit(
         .position(|line| line.to_lowercase().contains(&query))
         .or_else(|| best_source_match(&lines, tokens))
         .unwrap_or(0);
+    if file_hit
+        && let Some(excerpt) = dispersed_file_excerpt(&lines, tokens, matched, line_limit)
+    {
+        return (Some(excerpt), matched as u64 + 1);
+    }
     let start = matched.saturating_sub(2);
     let excerpt = lines[start..lines.len().min(start + line_limit)].join("\n");
     let line = if file_hit {
@@ -3881,6 +3886,54 @@ fn source_excerpt_with_limit(
         declaration_line
     };
     (nonempty(excerpt), line)
+}
+
+fn dispersed_file_excerpt(
+    lines: &[&str],
+    tokens: &[String],
+    primary: usize,
+    line_limit: usize,
+) -> Option<String> {
+    let preview_limit = line_limit.min(SOURCE_PREVIEW_LINES);
+    if preview_limit < 8 || tokens.len() < 2 {
+        return None;
+    }
+    let lowered = lines
+        .iter()
+        .map(|line| line.to_lowercase())
+        .collect::<Vec<_>>();
+    let primary_start = primary.saturating_sub(2);
+    let primary_end = lowered.len().min(primary_start + preview_limit);
+    let uncovered = tokens
+        .iter()
+        .filter(|token| {
+            lowered[primary_start..primary_end]
+                .iter()
+                .all(|line| !line.contains(token.as_str()))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let secondary = best_source_match(lines, &uncovered)?;
+    if (primary_start..primary_end).contains(&secondary) {
+        return None;
+    }
+
+    let window_lines = preview_limit.saturating_sub(3) / 2;
+    let render_window = |center: usize| {
+        let start = center.saturating_sub(1);
+        let end = lines.len().min(start + window_lines);
+        format!(
+            "[lines {}-{}]\n{}",
+            start + 1,
+            end,
+            lines[start..end].join("\n")
+        )
+    };
+    Some(format!(
+        "{}\n…\n{}",
+        render_window(primary),
+        render_window(secondary)
+    ))
 }
 
 fn best_source_match(lines: &[&str], tokens: &[String]) -> Option<usize> {
@@ -5629,6 +5682,28 @@ end Demo
         assert!(excerpt.starts_with("-- line 10"));
         assert!(excerpt.contains("theorem exact_match"));
         assert_eq!(excerpt.lines().count(), 8);
+
+        let dispersed = (1..=40)
+            .map(|line| match line {
+                5 => "def firstNeedle := 1".to_owned(),
+                35 => "theorem secondNeedle : True := trivial".to_owned(),
+                _ => format!("-- line {line}"),
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (excerpt, line) = source_excerpt_with_limit(
+            &dispersed,
+            "firstNeedle secondNeedle",
+            &["firstneedle".into(), "secondneedle".into()],
+            1,
+            true,
+            48,
+        );
+        let excerpt = excerpt.unwrap();
+        assert_eq!(line, 5);
+        assert!(excerpt.contains("def firstNeedle"));
+        assert!(excerpt.contains("theorem secondNeedle"));
+        assert!(excerpt.lines().count() <= SOURCE_PREVIEW_LINES);
 
         let structure = "structure Config where\n  first : Nat\n  second : String\n  third : Bool\n\n/-- The next declaration. -/\ndef next := 1\n";
         let (excerpt, line) = detailed_source_excerpt(
