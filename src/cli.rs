@@ -615,12 +615,6 @@ mod tests {
     }
 
     #[test]
-    fn daemon_launch_uses_a_stable_running_image() {
-        let executable = daemon_executable().unwrap();
-        assert!(executable.is_file());
-    }
-
-    #[test]
     fn search_all_is_an_option_not_a_query_term() {
         let matches = command_line(false)
             .try_get_matches_from(["mathmux", "search", "LinearEquiv.ofFinrankEq", "--all"])

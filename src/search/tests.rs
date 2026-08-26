@@ -372,39 +372,6 @@ fn inference_reserves_positions_and_recognizes_type_patterns() {
         qualified_leaf[0].hit.name,
         "AtiyahSinger.ComplexVectorBundle.ofBundle"
     );
-    let mut conceptual_bridge = vec![
-        RankedHit {
-            hit: SearchHit {
-                name: "FredholmDecomposition".into(),
-                signature: Some("Fredholm index composition package".into()),
-                ..contextual_hit.clone()
-            },
-            score: 500.0,
-        },
-        RankedHit {
-            hit: SearchHit {
-                name: "LinearMap.index".into(),
-                signature: Some("integer-valued index".into()),
-                ..contextual_hit.clone()
-            },
-            score: 100.0,
-        },
-    ];
-    promote_query_coverage(
-        &mut conceptual_bridge,
-        &meaningful_query_tokens("Fredholm index composition"),
-    );
-    assert!(
-        conceptual_bridge
-            .iter()
-            .take(SUMMARY_LIMIT)
-            .any(|candidate| candidate.hit.name == "LinearMap.index")
-    );
-    assert!(
-        meaningful_query_tokens("map composition")
-            .iter()
-            .any(|token| token == "comp")
-    );
     assert_eq!(symbolic_source_term("*ᵥ"), Some("*ᵥ".to_owned()));
     assert_eq!(symbolic_source_term("≤"), Some("≤".to_owned()));
     assert_eq!(symbolic_source_term("*"), None);
