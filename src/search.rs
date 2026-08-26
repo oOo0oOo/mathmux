@@ -1028,11 +1028,31 @@ impl Searcher {
         if !type_search
             && let Some((anchor, refinement_tokens, requested_terms)) = anchored_api_query(query)
         {
-            let exact = ranked_exact_candidates(
-                self.exact_candidates(anchor, scopes)?,
-                anchor,
-                workspace,
-            );
+            let exact_rows = self.exact_candidates(anchor, scopes)?;
+            if exact_rows.is_empty()
+                && let Some(mut result) = self.generated_exact_result(
+                    workspace,
+                    anchor,
+                    scopes,
+                    import_context.as_ref(),
+                    base_warming,
+                )?
+                && !result.hits.is_empty()
+            {
+                let exact = result.hits.remove(0);
+                let mut hits = vec![exact];
+                hits.extend(self.api_neighborhood(
+                    &hits[0],
+                    scopes,
+                    workspace,
+                    import_context.as_ref(),
+                    &refinement_tokens,
+                )?);
+                result.hits = hits;
+                annotate_missing_hit_terms(&mut result, &requested_terms);
+                return Ok(result);
+            }
+            let exact = ranked_exact_candidates(exact_rows, anchor, workspace);
             if unique_qualified_hit_name(exact.iter().map(|candidate| &candidate.hit), anchor)
                 .is_some()
             {
@@ -1050,15 +1070,8 @@ impl Searcher {
                     import_context.as_ref(),
                     &refinement_tokens,
                 )?);
-                let missing = missing_hit_terms(&hits, &requested_terms);
                 let mut result = exact_search_result(hits, base_warming);
-                if !missing.is_empty() {
-                    let note = format!("no nearby match for {}", missing.join(", "));
-                    result.note = Some(match result.note {
-                        Some(existing) => format!("{note}; {existing}"),
-                        None => note,
-                    });
-                }
+                annotate_missing_hit_terms(&mut result, &requested_terms);
                 return Ok(result);
             }
         }
@@ -3412,6 +3425,18 @@ fn missing_hit_terms(hits: &[SearchHit], terms: &[String]) -> Vec<String> {
         .take(4)
         .cloned()
         .collect()
+}
+
+fn annotate_missing_hit_terms(result: &mut SearchResult, requested: &[String]) {
+    let missing = missing_hit_terms(&result.hits, requested);
+    if missing.is_empty() {
+        return;
+    }
+    let note = format!("no nearby match for {}", missing.join(", "));
+    result.note = Some(match result.note.take() {
+        Some(existing) => format!("{note}; {existing}"),
+        None => note,
+    });
 }
 
 fn specific_query_tokens(query: &str) -> Vec<String> {
