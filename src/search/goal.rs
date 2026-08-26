@@ -267,7 +267,14 @@ pub(super) fn source_occurrence_result(
             let number = index as u64 + 1;
             (number >= query.first_line
                 && number <= query.last_line
-                && (query.terms.is_empty() || query.terms.iter().any(|term| line.contains(term))))
+                && (query.terms.is_empty()
+                    || query.terms.iter().any(|term| {
+                        let trimmed = line.trim_start();
+                        line.contains(term)
+                            || (term.eq_ignore_ascii_case("imports")
+                                && (trimmed.starts_with("import ")
+                                    || trimmed.starts_with("public import ")))
+                    })))
             .then_some((number, line))
         })
         .collect::<Vec<_>>();

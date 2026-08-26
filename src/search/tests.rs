@@ -926,6 +926,27 @@ fn source_outline_lists_declarations_without_structure_fields() {
     });
     assert!(summary.contains("outline : 3 declarations, 9 lines  Outline.lean:3"));
     assert!(!summary.contains("source:"));
+    let imports = parse_source_occurrence_query(
+        directory.path(),
+        directory.path(),
+        None,
+        "Outline.lean imports",
+    )
+    .unwrap()
+    .unwrap();
+    let imports = source_occurrence_result(
+        &Workspace {
+            reference: "w1".into(),
+            name: "demo".into(),
+            path: directory.path().to_path_buf(),
+            branch: "demo".into(),
+            model: None,
+        },
+        imports,
+        false,
+    )
+    .unwrap();
+    assert_eq!(imports.hits[0].source.as_deref(), Some("    1  import Demo"));
 }
 
 #[test]
