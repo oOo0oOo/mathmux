@@ -971,6 +971,40 @@ fn source_outline_lists_declarations_without_structure_fields() {
     )
     .unwrap();
     assert_eq!(imports.hits[0].source.as_deref(), Some("    1  import Demo"));
+
+    fs::write(
+        directory.path().join("Imports.lean"),
+        "import Demo.Alpha\npublic import Demo.Beta\nimport Other.Gamma\n",
+    )
+    .unwrap();
+    let imports = parse_source_occurrence_query(
+        directory.path(),
+        directory.path(),
+        None,
+        "Imports.lean imports Demo.Beta",
+    )
+    .unwrap()
+    .unwrap();
+    let imports = source_occurrence_result(
+        &Workspace {
+            reference: "w1".into(),
+            name: "demo".into(),
+            path: directory.path().to_path_buf(),
+            branch: "demo".into(),
+            model: None,
+        },
+        imports,
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        imports.hits[0].source.as_deref(),
+        Some("    2  public import Demo.Beta")
+    );
+    assert_eq!(
+        imports.hits[0].signature.as_deref(),
+        Some("1 for imports Demo.Beta")
+    );
 }
 
 #[test]

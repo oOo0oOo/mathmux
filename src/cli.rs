@@ -45,6 +45,7 @@ const SEARCH_HELP: &str = r#"QUERY FORMS (inferred)
   FILE:tail                     bounded end-of-file context
   FILE:START-END                bounded source range
   FILE[:START-END] A|B          literal source occurrences
+  FILE imports [TERMS]          imports, optionally filtered
   FILE outline|declarations     declarations with lines and signatures
 
   NAME                          exact declaration plus nearby API
@@ -695,6 +696,7 @@ mod tests {
         for form in [
             "cREF [TERMS]",
             "FILE:LINE[:COLUMN]",
+            "FILE imports [TERMS]",
             "FILE outline|declarations",
             "STRUCTURE fields",
             "A|B",

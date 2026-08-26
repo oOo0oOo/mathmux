@@ -262,22 +262,34 @@ pub(super) fn source_occurrence_result(
     {
         return Ok(source_outline_result(workspace, &query, &source));
     }
+    let import_query = query
+        .terms
+        .iter()
+        .any(|term| term.eq_ignore_ascii_case("imports"));
+    let match_terms = query
+        .terms
+        .iter()
+        .filter(|term| !term.eq_ignore_ascii_case("imports"))
+        .collect::<Vec<_>>();
     let source_lines = source.lines().count() as u64;
     let matches = source
         .lines()
         .enumerate()
         .filter_map(|(index, line)| {
             let number = index as u64 + 1;
+            let trimmed = line.trim_start();
+            let is_import = trimmed.starts_with("import ")
+                || trimmed.starts_with("public import ");
             (number >= query.first_line
                 && number <= query.last_line
-                && (query.terms.is_empty()
-                    || query.terms.iter().any(|term| {
-                        let trimmed = line.trim_start();
-                        line.contains(term)
-                            || (term.eq_ignore_ascii_case("imports")
-                                && (trimmed.starts_with("import ")
-                                    || trimmed.starts_with("public import ")))
-                    })))
+                && if import_query {
+                    is_import
+                        && (match_terms.is_empty()
+                            || match_terms.iter().any(|term| line.contains(*term)))
+                } else {
+                    query.terms.is_empty()
+                        || query.terms.iter().any(|term| line.contains(term))
+                })
             .then_some((number, line))
         })
         .collect::<Vec<_>>();
@@ -309,6 +321,20 @@ pub(super) fn source_occurrence_result(
             .into_owned()
     });
     let omitted = matches.len().saturating_sub(limit);
+    let terms_label = if import_query {
+        let filters = match_terms
+            .iter()
+            .map(|term| term.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        if filters.is_empty() {
+            "imports".to_owned()
+        } else {
+            format!("imports {filters}")
+        }
+    } else {
+        query.terms.join(" | ")
+    };
     let hits = (!matches.is_empty())
         .then(|| SearchHit {
             name: if query.terms.is_empty() {
@@ -327,7 +353,7 @@ pub(super) fn source_occurrence_result(
                 format!(
                     "{} for {}",
                     matches.len(),
-                    query.terms.join(" | ")
+                    terms_label
                 )
             }),
             module: String::new(),
