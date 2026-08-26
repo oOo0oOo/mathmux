@@ -1504,6 +1504,52 @@ impl Searcher {
         import_context: Option<&ImportContext>,
         base_warming: bool,
     ) -> Result<Option<SearchResult>> {
+        if let Some(base) = query.strip_suffix(".mk") {
+            let structures = self
+                .exact_candidates(base, scopes)?
+                .into_iter()
+                .filter(|row| matches!(row.kind.as_str(), "class" | "structure"))
+                .collect::<Vec<_>>();
+            if let [row] = structures.as_slice() {
+                let tokens = meaningful_query_tokens(query);
+                let (source, _) = detailed_source_excerpt(
+                    &row.body,
+                    query,
+                    &tokens,
+                    row.line,
+                    &row.kind,
+                    &row.name,
+                );
+                let mut resolved = RankedHit {
+                    hit: SearchHit {
+                        name: format!("{}.mk", row.name),
+                        kind: "constructor".into(),
+                        signature: nonempty(row.signature.clone()),
+                        module: row.module.clone(),
+                        path: row.path.clone(),
+                        line: row.line,
+                        doc: nonempty(row.docs.clone()),
+                        source,
+                        usages: Vec::new(),
+                        applicable: false,
+                        required_import: None,
+                    },
+                    score: 900.0,
+                };
+                if let Some(context) = import_context {
+                    apply_import_context(&mut resolved, context);
+                }
+                let mut hits = vec![resolved.hit];
+                hits.extend(self.api_neighborhood(
+                    &hits[0],
+                    scopes,
+                    workspace,
+                    import_context,
+                    &[],
+                )?);
+                return Ok(Some(exact_search_result(hits, base_warming)));
+            }
+        }
         let name_pattern = format!("\"{}\"", query.replace('"', "\\\""));
         let (mut hits, warming) = self.loogle_hits(workspace, &name_pattern);
         let positions = hits
@@ -1755,12 +1801,14 @@ impl Searcher {
             "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0
              FROM search_fts
              WHERE search_fts MATCH ?1
+               AND (lower(name) = lower(?2)
+                    OR lower(substr(name, -(length(?2) + 1))) = ('.' || lower(?2)))
                AND owner IN (SELECT owner FROM active_search_scopes)
              LIMIT 128",
         )?;
         let exact = format!("name : \"{}\"", query.replace('"', "\"\""));
         statement
-            .query_map([exact], indexed_row_from_row)?
+            .query_map(params![exact, query], indexed_row_from_row)?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map(|rows| {
                 rows.into_iter()
