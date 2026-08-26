@@ -724,10 +724,11 @@ impl Checker {
         if !setup_path.is_file() {
             return Ok(base);
         }
+        let immutable_artifact_roots = self.immutable_artifact_roots();
         Ok(hash_bytes(
             format!(
                 "{base}{}",
-                setup_artifact_fingerprint(&setup_path, &self.repo.cache_dir.join("artifacts"))?
+                setup_artifact_fingerprint(&setup_path, &immutable_artifact_roots)?
             )
             .as_bytes(),
         ))
@@ -743,10 +744,11 @@ impl Checker {
         if !setup_path.is_file() {
             return Ok(base.to_owned());
         }
+        let immutable_artifact_roots = self.immutable_artifact_roots();
         Ok(hash_bytes(
             format!(
                 "{base}{}",
-                setup_artifact_fingerprint(&setup_path, &self.repo.cache_dir.join("artifacts"))?
+                setup_artifact_fingerprint(&setup_path, &immutable_artifact_roots)?
             )
             .as_bytes(),
         ))
@@ -844,6 +846,13 @@ impl Checker {
                 "{}.json",
                 hash_bytes(format!("{}\0{input_fingerprint}", target.display()).as_bytes())
             ))
+    }
+
+    fn immutable_artifact_roots(&self) -> [PathBuf; 2] {
+        [
+            self.repo.cache_dir.join("artifacts"),
+            self.repo.root.join(".lake/packages"),
+        ]
     }
 
     pub fn evict_workspace_workers(&self, workspace_ref: &str) {
@@ -1614,7 +1623,7 @@ pub fn certificate_fingerprint(
     Ok(hash_bytes(&material))
 }
 
-fn setup_artifact_fingerprint(path: &Path, immutable_artifact_root: &Path) -> Result<String> {
+fn setup_artifact_fingerprint(path: &Path, immutable_artifact_roots: &[PathBuf]) -> Result<String> {
     let bytes = fs::read(path)?;
     let value: serde_json::Value = serde_json::from_slice(&bytes)?;
     let mut paths = BTreeSet::new();
@@ -1622,7 +1631,10 @@ fn setup_artifact_fingerprint(path: &Path, immutable_artifact_root: &Path) -> Re
     let mut material = bytes;
     for artifact in paths {
         material.extend_from_slice(artifact.to_string_lossy().as_bytes());
-        if artifact.starts_with(immutable_artifact_root) {
+        if immutable_artifact_roots
+            .iter()
+            .any(|root| artifact.starts_with(root))
+        {
             continue;
         }
         match fs::metadata(&artifact) {
@@ -1783,9 +1795,9 @@ mod tests {
         )
         .unwrap();
         let immutable = directory.path().join("immutable");
-        let before = setup_artifact_fingerprint(&setup, &immutable).unwrap();
+        let before = setup_artifact_fingerprint(&setup, std::slice::from_ref(&immutable)).unwrap();
         fs::write(&artifact, "different size").unwrap();
-        let after = setup_artifact_fingerprint(&setup, &immutable).unwrap();
+        let after = setup_artifact_fingerprint(&setup, std::slice::from_ref(&immutable)).unwrap();
         assert_ne!(before, after);
     }
 
