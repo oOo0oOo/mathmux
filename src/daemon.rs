@@ -9,7 +9,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
-use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 
 use crate::check::{CheckOutcome, Checker};
 use crate::git::{self, dirty_lean_files, dirty_paths};
@@ -431,30 +431,33 @@ struct WorkspaceWatcher {
 
 impl WorkspaceWatcher {
     fn new(state: State, checker: Arc<Checker>) -> Result<Self> {
-        let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-            let Ok(event) = event else { return };
-            if matches!(event.kind, notify::EventKind::Access(_)) {
-                return;
-            }
-            for path in event.paths {
-                if path.components().any(|part| part.as_os_str() == ".lake") {
-                    continue;
+        let watcher = RecommendedWatcher::new(
+            move |event: notify::Result<notify::Event>| {
+                let Ok(event) = event else { return };
+                if matches!(event.kind, notify::EventKind::Access(_)) {
+                    return;
                 }
-                if !path
-                    .extension()
-                    .is_some_and(|extension| extension == "lean")
-                {
-                    continue;
+                for path in event.paths {
+                    if path.components().any(|part| part.as_os_str() == ".lake") {
+                        continue;
+                    }
+                    if !path
+                        .extension()
+                        .is_some_and(|extension| extension == "lean")
+                    {
+                        continue;
+                    }
+                    if let Ok(workspaces) = state.list_workspaces()
+                        && let Some(workspace) = workspaces
+                            .iter()
+                            .find(|workspace| path.starts_with(&workspace.path))
+                    {
+                        checker.handle_filesystem_change(workspace, &path);
+                    }
                 }
-                if let Ok(workspaces) = state.list_workspaces()
-                    && let Some(workspace) = workspaces
-                        .iter()
-                        .find(|workspace| path.starts_with(&workspace.path))
-                {
-                    checker.handle_filesystem_change(workspace, &path);
-                }
-            }
-        })?;
+            },
+            Config::default().with_follow_symlinks(false),
+        )?;
         Ok(Self {
             watcher: Mutex::new(watcher),
         })
