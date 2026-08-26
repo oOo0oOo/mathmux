@@ -1178,6 +1178,9 @@ fn reap_stale_workers(worker_path: &Path) -> usize {
         {
             continue;
         }
+        if worker_has_daemon_parent(&process.path()) {
+            continue;
+        }
         let group = unsafe { libc::getpgid(pid) };
         if group > 0 && group != own_group {
             groups.insert(group);
@@ -1189,6 +1192,31 @@ fn reap_stale_workers(worker_path: &Path) -> usize {
         }
     }
     groups.len()
+}
+
+fn worker_has_daemon_parent(process: &Path) -> bool {
+    let parent = fs::read_to_string(process.join("status"))
+        .ok()
+        .and_then(|status| {
+            status.lines().find_map(|line| {
+                line.strip_prefix("PPid:")?.trim().parse::<u32>().ok()
+            })
+        });
+    let Some(parent) = parent else {
+        return false;
+    };
+    fs::read(
+        process
+            .parent()
+            .unwrap_or(Path::new("/proc"))
+            .join(parent.to_string())
+            .join("cmdline"),
+    )
+    .is_ok_and(|command| {
+            command
+                .split(|byte| *byte == 0)
+                .any(|argument| argument == b"__daemon")
+        })
 }
 
 fn compact_dependency_failure(stderr: &[u8]) -> String {
@@ -2549,6 +2577,20 @@ noncomputable def second : Nat := 2
                 .as_deref()
                 .is_some_and(|context| context.contains(">    3 | problem"))
         );
+    }
+
+    #[test]
+    fn live_daemon_workers_are_not_reaped_during_replacement() {
+        let proc = tempdir().unwrap();
+        let worker = proc.path().join("101");
+        let daemon = proc.path().join("42");
+        fs::create_dir(&worker).unwrap();
+        fs::create_dir(&daemon).unwrap();
+        fs::write(worker.join("status"), "Name:\tlean\nPPid:\t42\n").unwrap();
+        fs::write(daemon.join("cmdline"), b"mathmux\0__daemon\0--repo\0Demo").unwrap();
+        assert!(worker_has_daemon_parent(&worker));
+        fs::write(daemon.join("cmdline"), b"init\0").unwrap();
+        assert!(!worker_has_daemon_parent(&worker));
     }
 
     #[test]
