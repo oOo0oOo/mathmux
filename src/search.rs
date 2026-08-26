@@ -1974,6 +1974,12 @@ impl Searcher {
         if name_query && let Some((owner, leaf)) = query.rsplit_once('.')
         {
             let owner = owner.rsplit('.').next().unwrap_or(owner).to_lowercase();
+            let namespace_query = format!("name : \"{}\"", owner.replace('"', "\"\""));
+            rows.extend(
+                qualified
+                    .query_map([namespace_query], indexed_row_from_row)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?,
+            );
             let mut seen = HashSet::new();
             for part in identifier_query_parts(leaf)
                 .into_iter()
