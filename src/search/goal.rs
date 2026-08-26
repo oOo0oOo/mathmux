@@ -178,15 +178,24 @@ pub(super) fn parse_source_occurrence_query(
     if terms.is_empty() && range.is_none() {
         return Ok(None);
     }
-    if Path::new(path)
+    let requested_path = path;
+    let inferred_outline_path = Path::new(path).extension().is_none()
+        && terms.len() == 1
+        && matches!(terms[0].to_ascii_lowercase().as_str(), "outline" | "declarations");
+    let resolved_path = inferred_outline_path
+        .then(|| format!("{path}.lean"))
+        .unwrap_or_else(|| path.to_owned());
+    if Path::new(&resolved_path)
         .extension()
         .and_then(|extension| extension.to_str())
         != Some("lean")
     {
         return Ok(None);
     }
-    let requested_path = path;
-    let Some((path, display_path, _)) = resolve_goal_path(root, cwd, requested_path)? else {
+    let Some((path, display_path, _)) = resolve_goal_path(root, cwd, &resolved_path)? else {
+        if inferred_outline_path {
+            return Ok(None);
+        }
         bail!(missing_source_message(root, main_root, requested_path)?);
     };
     let main_path = if main_root
@@ -194,7 +203,7 @@ pub(super) fn parse_source_occurrence_query(
         && !Path::new(requested_path).is_absolute()
     {
         let main_root = main_root.expect("checked above");
-        resolve_goal_path(main_root, main_root, requested_path)?.map(|(path, _, _)| path)
+        resolve_goal_path(main_root, main_root, &resolved_path)?.map(|(path, _, _)| path)
     } else {
         None
     };

@@ -1035,8 +1035,8 @@ pub(super) fn promote_query_coverage(ranked: &mut Vec<RankedHit>, tokens: &[Stri
             }
         }
     }
-    remaining.sort_by(|left, right| {
-        hit_query_coverage(&right.hit, tokens).cmp(&hit_query_coverage(&left.hit, tokens))
+    remaining.sort_by_cached_key(|candidate| {
+        std::cmp::Reverse(hit_query_coverage(&candidate.hit, tokens))
     });
     if promoted.len() < SUMMARY_LIMIT && !remaining.is_empty() {
         promoted.push(remaining.remove(0));
@@ -1326,7 +1326,11 @@ pub(super) fn merge_duplicate_hit(existing: &mut SearchHit, candidate: &mut Sear
     if existing.doc.is_none() {
         existing.doc = candidate.doc.take();
     }
-    if existing.source.is_none() {
+    if existing
+        .source
+        .as_deref()
+        .is_none_or(|source| source.trim().is_empty())
+    {
         existing.source = candidate.source.take();
     }
     if existing.usages.is_empty() {

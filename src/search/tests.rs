@@ -1404,6 +1404,15 @@ fn goal_and_source_query_regressions() {
         recovered.path,
         fs::canonicalize(project.join("Nested.lean")).unwrap()
     );
+    let outline = parse_source_occurrence_query(
+        directory.path(),
+        directory.path(),
+        None,
+        "Nested outline",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(outline.path, recovered.path);
     assert!(
             parse_source_occurrence_query(
                 directory.path(),

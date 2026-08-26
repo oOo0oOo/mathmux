@@ -749,6 +749,16 @@ pub(super) fn detailed_source_excerpt(
     }
     let name = name.to_lowercase();
     let leaf = name.rsplit('.').next().unwrap_or(&name);
+    if body.starts_with("-- ambient context")
+        && (query.eq_ignore_ascii_case(&name) || query.eq_ignore_ascii_case(leaf))
+    {
+        let excerpt = body
+            .lines()
+            .take(DECLARATION_DETAIL_LINES)
+            .collect::<Vec<_>>()
+            .join("\n");
+        return (nonempty(excerpt), declaration_line);
+    }
     let focused_tokens = tokens
         .iter()
         .filter(|token| token.as_str() != name && token.as_str() != leaf)
@@ -1123,6 +1133,7 @@ pub(super) fn fallback_source_hits(
             .partial_cmp(&left.score)
             .unwrap_or(Ordering::Equal)
     });
+    ranked.truncate(RESULT_LIMIT * 8);
     promote_query_coverage(&mut ranked, query_tokens);
     ranked.truncate(RESULT_LIMIT);
     Ok(ranked)

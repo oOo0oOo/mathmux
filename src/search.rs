@@ -52,8 +52,8 @@ const INDEX_COMMIT_BATCH: usize = 64;
 const SEARCH_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 const DIAGNOSTIC_PROBE_MAX_CHECK_MS: u64 = 2_000;
 const DIAGNOSTIC_PROBE_BUDGET: Duration = Duration::from_millis(750);
-const SOURCE_SCAN_BUDGET: Duration = Duration::from_secs(1);
-const SOURCE_FALLBACK_BUDGET: Duration = Duration::from_secs(2);
+const SOURCE_SCAN_BUDGET: Duration = Duration::from_millis(300);
+const SOURCE_FALLBACK_BUDGET: Duration = Duration::from_millis(750);
 
 pub struct Searcher {
     repo: Repo,
@@ -1483,12 +1483,14 @@ impl Searcher {
         import_target: Option<&Path>,
         show_all: bool,
     ) -> Result<SearchResult> {
+        let search_started = Instant::now();
         let field_inventory = field_inventory_query(query);
         let explicit_declaration = explicit_declaration_name(query);
         let query = explicit_declaration.unwrap_or(query);
         let type_search = type_search_enabled() && type_shaped(query);
         let query_tokens = meaningful_query_tokens(query);
         let import_context = self.import_context(workspace, scopes, base_warming, import_target);
+        let import_ms = search_started.elapsed().as_millis() as u64;
         if let Some(structure) = field_inventory
             && let Some(result) = self.field_inventory_result(
                 structure,
@@ -1608,7 +1610,9 @@ impl Searcher {
                 return Ok(result);
             }
         }
+        let candidates_started = Instant::now();
         let rows = self.candidates(query, &query_tokens, type_search, scopes)?;
+        let candidates_ms = candidates_started.elapsed().as_millis() as u64;
         let name_search = !type_search && declaration_name_query(query);
         let mut ranked = Vec::new();
         let mut warming = false;
@@ -1777,7 +1781,9 @@ impl Searcher {
                 score,
             });
         }
+        let project_started = Instant::now();
         ranked.extend(self.project_source_hits(workspace, query, &query_tokens));
+        let project_ms = project_started.elapsed().as_millis() as u64;
         if name_search {
             let exact_name = unique_qualified_hit_name(
                 ranked
@@ -1877,6 +1883,8 @@ impl Searcher {
                 == 3;
         let pipe_alternative_covered = query.contains('|')
             && pipe_alternative_covered(query, ranked.iter().map(|candidate| &candidate.hit));
+        let fallback_started = Instant::now();
+        let mut fallback_used = false;
         if !resolved_declaration_head
             && !warm_name_coverage
             && !pipe_alternative_covered
@@ -1889,6 +1897,7 @@ impl Searcher {
                     && !type_search
                     && (query.contains('|') || !named_argument_terms(query).is_empty())))
         {
+            fallback_used = true;
             match fallback_source_hits(&workspace.path, query, &query_tokens) {
                 Ok(hits) => ranked.extend(hits),
                 Err(error) => append_log(
@@ -1897,6 +1906,8 @@ impl Searcher {
                 ),
             }
         }
+        let fallback_ms = fallback_started.elapsed().as_millis() as u64;
+        let finish_started = Instant::now();
         let glob_name_miss = apply_declaration_glob(&mut ranked, query);
         if let Some(context) = &import_context {
             for candidate in &mut ranked {
@@ -1964,7 +1975,7 @@ impl Searcher {
                 None => detail.into(),
             });
         }
-        Ok(SearchResult {
+        let result = SearchResult {
             hits: ranked.into_iter().map(|candidate| candidate.hit).collect(),
             inference: if type_search {
                 "hybrid+applicability".into()
@@ -1975,7 +1986,31 @@ impl Searcher {
             },
             note,
             ok: true,
-        })
+        };
+        let total_ms = search_started.elapsed().as_millis() as u64;
+        if total_ms >= 2_000
+            && development_enabled(&self.repo)
+            && let Ok(store) = TelemetryStore::global()
+        {
+            let detail = format!(
+                "import={import_ms}ms candidates={candidates_ms}ms project={project_ms}ms fallback={fallback_ms}ms used={fallback_used} finish={}ms hits={}",
+                finish_started.elapsed().as_millis(),
+                result.hits.len(),
+            );
+            let _ = store.record_operation(
+                &self.repo,
+                &TelemetryOperation {
+                    workspace: Some(&workspace.reference),
+                    verb: "search_profile",
+                    reference: None,
+                    ok: true,
+                    duration_ms: total_ms,
+                    detail: &detail,
+                    rss_kib: None,
+                },
+            );
+        }
+        Ok(result)
     }
 
     fn generated_exact_result(
@@ -2558,7 +2593,12 @@ impl Searcher {
     }
 
     fn enrich_exact_source(&self, hit: &mut SearchHit, scopes: &HashSet<String>) -> Result<()> {
-        if hit.source.is_some() && hit.signature.is_some() {
+        if hit
+            .source
+            .as_deref()
+            .is_some_and(|source| source.starts_with("-- ambient context"))
+            && hit.signature.is_some()
+        {
             return Ok(());
         }
         let leaf = hit.name.rsplit('.').next().unwrap_or(&hit.name);
@@ -2601,6 +2641,25 @@ impl Searcher {
             applicable: false,
             required_import: None,
         };
+        let candidate_has_context = source_hit
+            .source
+            .as_deref()
+            .is_some_and(|source| source.starts_with("-- ambient context"));
+        let existing_has_context = hit
+            .source
+            .as_deref()
+            .is_some_and(|source| source.starts_with("-- ambient context"));
+        if candidate_has_context && !existing_has_context
+            || !hit
+                .source
+                .as_deref()
+                .is_some_and(|source| source_has_complete_declaration_header(hit, source))
+                && source_hit.source.as_deref().is_some_and(|source| {
+                    source_has_complete_declaration_header(&source_hit, source)
+                })
+        {
+            hit.source = source_hit.source.take();
+        }
         merge_duplicate_hit(hit, &mut source_hit);
         Ok(())
     }
