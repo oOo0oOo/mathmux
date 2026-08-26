@@ -226,10 +226,10 @@ fn resolve_source_directory(root: &Path, cwd: &Path, scope: &str) -> Result<Path
     } else {
         vec![cwd.join(requested), root.join(requested)]
     };
-    let packages = root.join(".lake/packages");
-    if !requested.is_absolute() && packages.is_dir() {
+    let packages = fs::canonicalize(root.join(".lake/packages")).ok();
+    if !requested.is_absolute() && let Some(packages) = &packages {
         candidates.push(packages.join(requested));
-        for package in fs::read_dir(&packages)?.flatten() {
+        for package in fs::read_dir(packages)?.flatten() {
             candidates.push(package.path().join(requested));
             if let Ok(source_roots) = fs::read_dir(package.path()) {
                 candidates.extend(
@@ -250,7 +250,11 @@ fn resolve_source_directory(root: &Path, cwd: &Path, scope: &str) -> Result<Path
     let [resolved] = candidates.as_slice() else {
         bail!("source directory not found or ambiguous: {scope}")
     };
-    ensure!(resolved.starts_with(&root), "source regex scope is outside the workspace");
+    ensure!(
+        resolved.starts_with(&root)
+            || packages.as_ref().is_some_and(|packages| resolved.starts_with(packages)),
+        "source regex scope is outside the workspace"
+    );
     Ok(resolved.clone())
 }
 

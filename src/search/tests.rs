@@ -2010,9 +2010,12 @@ fn source_regex_queries_scan_a_bounded_scope_with_context() {
     .unwrap();
     assert_eq!(ranged.hits.iter().map(|hit| hit.line).collect::<Vec<_>>(), [3]);
 
-    let dependency = directory.path().join(".lake/packages/demo/Mathlib/Analysis");
+    let packages = tempfile::tempdir().unwrap();
+    let dependency = packages.path().join("demo/Mathlib/Analysis");
     fs::create_dir_all(&dependency).unwrap();
     fs::write(dependency.join("Api.lean"), "theorem dependency_hit := by trivial\n").unwrap();
+    fs::create_dir(directory.path().join(".lake")).unwrap();
+    std::os::unix::fs::symlink(packages.path(), directory.path().join(".lake/packages")).unwrap();
     let dependency = parse_source_regex_query(
         directory.path(),
         directory.path(),
