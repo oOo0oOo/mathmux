@@ -1323,6 +1323,7 @@ impl Searcher {
                 || missing_specific_term
                 || missing_source_identifier
                 || missing_named_detail
+                || symbolic_source_term(query).is_some()
                 || (!base_warming
                     && !type_search
                     && (query.contains('|') || !named_argument_terms(query).is_empty())))
