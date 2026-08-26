@@ -1,6 +1,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
@@ -204,6 +205,15 @@ pub struct Checker {
 impl Checker {
     pub fn new(repo: Repo, state: State) -> Result<Self> {
         let worker_path = repo.state_dir.join("MathmuxWorker.lean");
+        let reaped = reap_stale_workers(&worker_path);
+        if reaped > 0
+            && let Ok(mut log) = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&repo.log_path)
+        {
+            let _ = writeln!(log, "reaped {reaped} stale Lean worker group(s)");
+        }
         if fs::read_to_string(&worker_path).ok().as_deref() != Some(WORKER_SOURCE) {
             fs::write(&worker_path, WORKER_SOURCE)
                 .with_context(|| format!("cannot write {}", worker_path.display()))?;
@@ -910,6 +920,43 @@ impl Checker {
         );
         Ok(references)
     }
+}
+
+fn reap_stale_workers(worker_path: &Path) -> usize {
+    let Ok(processes) = fs::read_dir("/proc") else {
+        return 0;
+    };
+    let worker_path = worker_path.as_os_str().as_bytes();
+    let own_group = unsafe { libc::getpgrp() };
+    let mut groups = HashSet::new();
+    for process in processes.flatten() {
+        let Some(pid) = process
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<i32>().ok())
+        else {
+            continue;
+        };
+        let Ok(command) = fs::read(process.path().join("cmdline")) else {
+            continue;
+        };
+        if !command
+            .split(|byte| *byte == 0)
+            .any(|argument| argument == worker_path)
+        {
+            continue;
+        }
+        let group = unsafe { libc::getpgid(pid) };
+        if group > 0 && group != own_group {
+            groups.insert(group);
+        }
+    }
+    for group in &groups {
+        unsafe {
+            libc::kill(-group, libc::SIGTERM);
+        }
+    }
+    groups.len()
 }
 
 fn setup_fingerprint_path(setup_path: &Path) -> PathBuf {
