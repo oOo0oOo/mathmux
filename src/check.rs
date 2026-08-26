@@ -254,29 +254,39 @@ impl Checker {
         let Some(target) = current.failed.as_deref() else {
             return Ok(None);
         };
-        let Some(diagnostic) = current.diagnostics.first() else {
+        let Some(primary) = current.diagnostics.first() else {
             return Ok(None);
         };
-        let fingerprint = diagnostic_fingerprint(&diagnostic.text);
-        if fingerprint.is_empty() {
-            return Ok(None);
-        }
-        let matches = self
+        let primary_fingerprint = diagnostic_fingerprint(&primary.text);
+        let mut fingerprints = vec![primary_fingerprint];
+        fingerprints.extend(
+            current
+                .diagnostics
+                .iter()
+                .skip(1)
+                .map(|diagnostic| diagnostic_fingerprint(&diagnostic.text))
+                .filter(|fingerprint| fingerprint.contains("deterministic timeout")),
+        );
+        fingerprints.retain(|fingerprint| !fingerprint.is_empty());
+        fingerprints.dedup();
+
+        let recent = self
             .state
-            .recent_failed_checks(&current.workspace_ref, 64)?
-            .into_iter()
-            .filter(|run| run.failed.as_deref() == Some(target))
-            .filter(|run| {
-                run.diagnostics
-                    .first()
-                    .is_some_and(|diagnostic| {
+            .recent_failed_checks(&current.workspace_ref, 64)?;
+        let Some(matches) = fingerprints.into_iter().find_map(|fingerprint| {
+            let matches = recent
+                .iter()
+                .filter(|run| run.failed.as_deref() == Some(target))
+                .filter(|run| {
+                    run.diagnostics.iter().any(|diagnostic| {
                         diagnostic_fingerprint(&diagnostic.text) == fingerprint
                     })
-            })
-            .collect::<Vec<_>>();
-        if matches.len() < 3 {
+                })
+                .collect::<Vec<_>>();
+            (matches.len() >= 3).then_some(matches)
+        }) else {
             return Ok(None);
-        }
+        };
         Ok(Some(CheckRepetition {
             count: matches.len(),
             first_reference: matches
