@@ -311,6 +311,7 @@ impl Searcher {
         }
         let started = Instant::now();
         let query = normalize_lean_inspection_query(query);
+        let requested_query = query.clone();
         let expanded = self.expand_reference_query(workspace, &query)?;
         let location = parse_goal_location(
             &workspace.path,
@@ -321,9 +322,19 @@ impl Searcher {
         let show_all = all || (location.is_none() && search_more_requested(&expanded.query));
         let query = strip_search_modifiers(&expanded.query);
         let query = query.as_str();
-        ensure!(!query.is_empty(), "search query is empty");
+        ensure!(
+            !query.is_empty() || !expanded.context.is_empty(),
+            "search query is empty"
+        );
         let reference = self.state.next_ref('q')?;
-        let result = if let Some(location) = location {
+        let result = if query.is_empty() {
+            SearchResult {
+                hits: Vec::new(),
+                inference: "diagnostic".into(),
+                note: Some("timeout context only; declaration search skipped".into()),
+                ok: true,
+            }
+        } else if let Some(location) = location {
             self.goal_search(workspace, location)?
         } else if let Some(query) =
             parse_source_regex_query(&workspace.path, cwd, query)?
@@ -365,7 +376,11 @@ impl Searcher {
         let run = SearchRun {
             reference: reference.clone(),
             workspace_ref: workspace.reference.clone(),
-            query: query.to_owned(),
+            query: if query.is_empty() {
+                requested_query
+            } else {
+                query.to_owned()
+            },
             inference: result.inference,
             hits: result.hits,
             note: result.note,
@@ -467,7 +482,7 @@ impl Searcher {
                 diagnostic_query = nearest;
             }
             ensure!(
-                !diagnostic_query.is_empty() || !refinement.is_empty(),
+                !diagnostic_query.is_empty() || !refinement.is_empty() || diagnostic.is_some(),
                 "{reference} has no diagnostic to search"
             );
             let target = run

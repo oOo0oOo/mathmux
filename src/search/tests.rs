@@ -1375,6 +1375,10 @@ fn goal_and_source_query_regressions() {
         ),
         "changeModel TotalSpace TopologicalSpace"
     );
+    assert!(diagnostic_search_query(
+        "Demo:9:2: error: (deterministic) timeout at `whnf`, maximum number of heartbeats has been reached"
+    )
+    .is_empty());
     let source = (1..=30)
         .map(|line| format!("line {line}"))
         .collect::<Vec<_>>()

@@ -291,6 +291,9 @@ pub(super) fn diagnostic_type_detail(diagnostic: &str) -> Option<String> {
 }
 
 pub(super) fn diagnostic_search_query(diagnostic: &str) -> String {
+    if diagnostic.contains("(deterministic) timeout at") {
+        return String::new();
+    }
     let lines = diagnostic.lines().collect::<Vec<_>>();
     if diagnostic.contains("unsolved goals")
         && let Some(index) = lines
