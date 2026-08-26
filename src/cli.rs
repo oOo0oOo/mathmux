@@ -391,7 +391,7 @@ pub fn run() -> Result<u8> {
                 "daemon build changed repeatedly; retry command"
             );
             handoffs += 1;
-            handoff_stream = Some(replace_daemon(&repo)?);
+            handoff_stream = Some(replace_daemon(&repo, &request)?);
         } else {
             ensure!(
                 retirement_waits < 2,
@@ -548,9 +548,28 @@ fn connect_or_start(repo: &Repo) -> Result<UnixStream> {
     connect_or_start_locked(repo)
 }
 
-fn replace_daemon(repo: &Repo) -> Result<UnixStream> {
+fn replace_daemon(repo: &Repo, request: &Request) -> Result<UnixStream> {
     let startup_lock = startup_lock(repo)?;
     startup_lock.lock_exclusive()?;
+    if let Ok(stream) = UnixStream::connect(&repo.socket_path) {
+        let probe = Request {
+            build: request.build.clone(),
+            generation: request.generation,
+            cwd: request.cwd.clone(),
+            command: Command::Show {
+                reference: "q0".into(),
+                all: false,
+            },
+        };
+        match exchange(stream, &probe) {
+            Ok(response) if !response.retry && response.build == request.build => {
+                return UnixStream::connect(&repo.socket_path).map_err(Into::into);
+            }
+            Ok(_) => {}
+            Err(error) if transient_transport_error(&error) => {}
+            Err(error) => return Err(error),
+        }
+    }
     wait_for_daemon_exit(repo)?;
     connect_or_start_locked(repo)
 }
