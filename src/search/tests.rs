@@ -1186,6 +1186,12 @@ fn goal_and_source_query_regressions() {
         (Some("Demo/Proof.lean".into()), 43)
     );
     assert!(diagnostic_context("error: mismatch", Some(">   42 | bad")).contains("42 | bad"));
+    let goal_context = diagnostic_context(
+        "error: unsolved goals\nA : Type\nx : A\nh₁ : P x\nh₂ : Q x\nh₃ : R x\nh₄ : S x\nh₅ : T x\nh₆ : U x\nh₇ : V x\nh₈ : W x\n⊢ lhs x =\n    rhs x",
+        Some(">   12 | exact h"),
+    );
+    assert!(goal_context.contains("goal\n⊢ lhs x =\n    rhs x"));
+    assert!(goal_context.contains("12 | exact h"));
     let mismatch = diagnostic_type_detail(
             "Demo:1:1: error: Type mismatch\nterm\nhas type\n  @Map A oldTopology oldInstance\nbut is expected to have type\n  @Map A newTopology oldInstance\nin the application\n  use term",
         )

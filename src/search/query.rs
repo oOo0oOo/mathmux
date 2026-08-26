@@ -151,13 +151,22 @@ pub(super) fn diagnostic_position(
 
 pub(super) fn diagnostic_context(diagnostic: &str, source_context: Option<&str>) -> String {
     let type_detail = diagnostic_type_detail(diagnostic);
+    let goal_detail = diagnostic_goal_detail(diagnostic);
     let mut lines = diagnostic.lines().collect::<Vec<_>>();
-    let diagnostic_limit = if type_detail.is_some() { 8 } else { 16 };
+    let diagnostic_limit = if type_detail.is_some() || goal_detail.is_some() {
+        8
+    } else {
+        16
+    };
     if lines.len() > diagnostic_limit {
         lines.truncate(diagnostic_limit);
     }
     let mut rendered = lines.join("\n");
     if let Some(detail) = type_detail {
+        rendered.push('\n');
+        rendered.push_str(&detail);
+    }
+    if let Some(detail) = goal_detail {
         rendered.push('\n');
         rendered.push_str(&detail);
     }
@@ -169,6 +178,28 @@ pub(super) fn diagnostic_context(diagnostic: &str, source_context: Option<&str>)
         }
     }
     rendered
+}
+
+fn diagnostic_goal_detail(diagnostic: &str) -> Option<String> {
+    if !diagnostic.contains("unsolved goals") {
+        return None;
+    }
+    let lines = diagnostic.lines().collect::<Vec<_>>();
+    let start = lines
+        .iter()
+        .rposition(|line| line.trim_start().starts_with('⊢'))?;
+    let goal = lines[start..]
+        .iter()
+        .copied()
+        .take_while(|line| {
+            let trimmed = line.trim_start().trim_start_matches('>').trim_start();
+            !trimmed
+                .split_once('|')
+                .is_some_and(|(prefix, _)| prefix.trim().chars().all(|c| c.is_ascii_digit()))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!goal.is_empty()).then(|| format!("goal\n{goal}"))
 }
 
 pub(super) fn diagnostic_type_detail(diagnostic: &str) -> Option<String> {
