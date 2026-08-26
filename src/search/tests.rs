@@ -1266,6 +1266,11 @@ fn goal_and_source_query_regressions() {
     );
     assert_eq!(edit_distance("compp", "comp"), 1);
     assert_eq!(
+        invalid_field_leaf("And.add_isCompact_both"),
+        Some("add_isCompact_both")
+    );
+    assert_eq!(invalid_field_leaf("field with context"), None);
+    assert_eq!(
         diagnostic_goal_query(
             "⊢ Continuous fun a => Matrix.fromBlocks (A a) 0 0 (D a) (finSumFinEquiv.symm i)",
             &HashSet::from(["a", "A", "D", "i"])

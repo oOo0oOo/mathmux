@@ -517,10 +517,12 @@ impl Searcher {
                 diagnostic_text,
                 diagnostic.and_then(|value| value.context.as_deref()),
             );
-            if diagnostic_text.contains("Invalid field")
-                && let Some(nearest) = self.nearest_field_declaration(&diagnostic_query)?
-            {
-                diagnostic_query = nearest;
+            if diagnostic_text.contains("Invalid field") {
+                if let Some(nearest) = self.nearest_field_declaration(&diagnostic_query)? {
+                    diagnostic_query = nearest;
+                } else if let Some(leaf) = invalid_field_leaf(&diagnostic_query) {
+                    diagnostic_query = leaf.to_owned();
+                }
             }
             ensure!(
                 !diagnostic_query.is_empty() || !refinement.is_empty() || diagnostic.is_some(),
@@ -2791,6 +2793,12 @@ impl Searcher {
         }
         Ok(usages)
     }
+}
+
+fn invalid_field_leaf(query: &str) -> Option<&str> {
+    declaration_name_query(query)
+        .then(|| query.rsplit_once('.').map(|(_, leaf)| leaf))
+        .flatten()
 }
 
 fn search_index_writer_lock(repo: &Repo) -> Result<fs::File> {
