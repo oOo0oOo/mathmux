@@ -2183,10 +2183,14 @@ impl Searcher {
         {
             return Ok(None);
         }
-        let mut parent = merge_exact_candidates(exact);
-        if !matches!(parent.hit.kind.as_str(), "class" | "structure") {
+        let structural = exact
+            .into_iter()
+            .filter(|candidate| matches!(candidate.hit.kind.as_str(), "class" | "structure"))
+            .collect::<Vec<_>>();
+        if structural.is_empty() {
             return Ok(None);
         }
+        let mut parent = merge_exact_candidates(structural);
         if let Some(context) = import_context {
             apply_import_context(&mut parent, context);
         }
