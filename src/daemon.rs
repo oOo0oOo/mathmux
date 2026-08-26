@@ -441,13 +441,18 @@ fn check_summary(outcome: &CheckOutcome) -> String {
             ));
         }
         if let Some(repetition) = &outcome.repetition {
+            let next = if repetition.deterministic_timeout {
+                "check --profile".to_owned()
+            } else {
+                format!("search {}", outcome.reference)
+            };
             output.push_str(&format!(
-                "\nrepeated blocker: {} checks ({}..{}, previous {}); search {}",
+                "\nrepeated blocker: {} checks ({}..{}, previous {}); {}",
                 repetition.count,
                 repetition.first_reference,
                 outcome.reference,
                 repetition.previous_reference,
-                outcome.reference
+                next
             ));
         }
     }
@@ -548,6 +553,7 @@ mod tests {
                 count: 3,
                 first_reference: "c8".into(),
                 previous_reference: "c9".into(),
+                deterministic_timeout: false,
             }),
         });
         assert!(summary.contains("Demo.Proof:3:1"));
@@ -555,6 +561,27 @@ mod tests {
         assert!(summary.contains(">    3 | failing tactic"));
         assert!(summary.contains("full diagnostic: show c1"));
         assert!(summary.contains("repeated blocker: 3 checks (c8..c1, previous c9); search c1"));
+    }
+
+    #[test]
+    fn repeated_timeout_recommends_profile() {
+        let summary = check_summary(&CheckOutcome {
+            reference: "c3".into(),
+            ok: false,
+            elapsed_ms: 10,
+            warnings: Vec::new(),
+            linters: Vec::new(),
+            suggestions: Vec::new(),
+            diagnostics: Vec::new(),
+            profile: None,
+            repetition: Some(crate::check::CheckRepetition {
+                count: 4,
+                first_reference: "c1".into(),
+                previous_reference: "c2".into(),
+                deterministic_timeout: true,
+            }),
+        });
+        assert!(summary.contains("repeated blocker: 4 checks (c1..c3, previous c2); check --profile"));
     }
 
     #[test]

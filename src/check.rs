@@ -74,6 +74,7 @@ pub struct CheckRepetition {
     pub count: usize,
     pub first_reference: String,
     pub previous_reference: String,
+    pub deterministic_timeout: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -294,7 +295,7 @@ impl Checker {
         let recent = self
             .state
             .recent_failed_checks(&current.workspace_ref, 64)?;
-        let Some(matches) = fingerprints.into_iter().find_map(|fingerprint| {
+        let Some((fingerprint, matches)) = fingerprints.into_iter().find_map(|fingerprint| {
             let matches = recent
                 .iter()
                 .filter(|run| run.failed.as_deref() == Some(target))
@@ -304,7 +305,7 @@ impl Checker {
                     })
                 })
                 .collect::<Vec<_>>();
-            (matches.len() >= 3).then_some(matches)
+            (matches.len() >= 3).then_some((fingerprint, matches))
         }) else {
             return Ok(None);
         };
@@ -319,6 +320,7 @@ impl Checker {
                 .find(|run| run.reference != current.reference)
                 .map(|run| run.reference.clone())
                 .unwrap_or_else(|| current.reference.clone()),
+            deterministic_timeout: fingerprint.contains("deterministic timeout"),
         }))
     }
 
