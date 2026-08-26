@@ -1646,7 +1646,26 @@ fn partition_diagnostics(
     deduplicate(&mut linters);
     deduplicate(&mut suggestions);
     deduplicate(&mut errors);
+    errors.sort_by_key(|diagnostic| !is_syntax_diagnostic(diagnostic));
+    if errors
+        .iter()
+        .any(|diagnostic| diagnostic.text.contains("failed to synthesize instance of type class\n  LE Type"))
+        && let Some(syntax) = errors.iter_mut().find(|diagnostic| is_syntax_diagnostic(diagnostic))
+    {
+        syntax.text.push_str(
+            "\nhint: a notation may be inactive; open its scope or use its named declaration",
+        );
+    }
     (warnings, linters, suggestions, errors)
+}
+
+fn is_syntax_diagnostic(diagnostic: &Diagnostic) -> bool {
+    let kind = diagnostic.kind.to_ascii_lowercase();
+    kind.contains("parser")
+        || kind.contains("syntax")
+        || diagnostic.text.lines().next().is_some_and(|line| {
+            line.contains("expected token") || line.contains("unexpected token")
+        })
 }
 
 fn is_tactic_suggestion(diagnostic: &WorkerDiagnostic) -> bool {
@@ -2253,6 +2272,16 @@ mod tests {
                 text: "Proof.lean:3:1: error: type mismatch".into(),
             },
             WorkerDiagnostic {
+                severity: "error".into(),
+                kind: "[anonymous]".into(),
+                text: "Proof.lean:1:8: error: expected token".into(),
+            },
+            WorkerDiagnostic {
+                severity: "error".into(),
+                kind: "lean.synthInstanceFailed".into(),
+                text: "Proof.lean:1:9: error: failed to synthesize instance of type class\n  LE Type".into(),
+            },
+            WorkerDiagnostic {
                 severity: "information".into(),
                 kind: "tactic".into(),
                 text: "Proof.lean:4:1: information: Try this: simp".into(),
@@ -2277,15 +2306,17 @@ mod tests {
                 suggestions.len(),
                 errors.len()
             ),
-            (1, 1, 2, 1)
+            (1, 1, 2, 3)
         );
+        assert!(errors[0].text.contains("expected token"));
+        assert!(errors[0].text.contains("notation may be inactive"));
         attach_source_context(
             &mut errors,
             Path::new("Proof.lean"),
             "first\nsecond\nproblem\nfourth\nfifth\n",
         );
         assert_eq!(
-            errors[0].context.as_deref(),
+            errors[1].context.as_deref(),
             Some(
                 "     1 | first\n     2 | second\n>    3 | problem\n     4 | fourth\n     5 | fifth"
             )
@@ -2299,15 +2330,15 @@ mod tests {
         }]);
         assert!(notation_errors[0].text.contains("open its scoped notation"));
 
-        errors[0].text = "Demo.Nested.Proof:3:1: error: type mismatch".into();
-        errors[0].context = None;
+        errors[1].text = "Demo.Nested.Proof:3:1: error: type mismatch".into();
+        errors[1].context = None;
         attach_source_context(
             &mut errors,
             Path::new("Demo/Nested/Proof.lean"),
             "first\nsecond\nproblem\nfourth\nfifth\n",
         );
         assert!(
-            errors[0]
+            errors[1]
                 .context
                 .as_deref()
                 .is_some_and(|context| context.contains(">    3 | problem"))
