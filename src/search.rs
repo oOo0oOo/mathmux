@@ -317,7 +317,11 @@ impl Searcher {
                 !diagnostic_query.is_empty() || !refinement.is_empty(),
                 "{reference} has no diagnostic to search"
             );
-            let target = run.failed.as_deref().map(PathBuf::from);
+            let target = run
+                .failed
+                .as_deref()
+                .or_else(|| run.files.first().map(String::as_str))
+                .map(PathBuf::from);
             let mut context = diagnostic.into_iter().map(|diagnostic| {
                 let (path, line) = diagnostic_position(&diagnostic.text, run.failed.as_deref());
                 SearchHit {
