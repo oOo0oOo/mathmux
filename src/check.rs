@@ -7,7 +7,7 @@ use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock, TryLockError, Weak};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -196,7 +196,7 @@ impl Checker {
 
         for target in &targets {
             let target_name = target.to_string_lossy().into_owned();
-            report(&format!("waiting for {target_name}"));
+            report(&format!("checking {target_name}"));
             match self.check_one(workspace, target, &reference, include_profile, report) {
                 Ok(result) => {
                     file_profiles.push(result.profile.clone());
@@ -349,7 +349,13 @@ impl Checker {
                 lock
             })
         };
-        let _check_guard = check_lock.lock().expect("target check lock poisoned");
+        let _check_guard = check_lock.try_lock().unwrap_or_else(|error| match error {
+            TryLockError::WouldBlock => {
+                report(&format!("queued for shared check of {}", target.display()));
+                check_lock.lock().expect("target check lock poisoned")
+            }
+            TryLockError::Poisoned(_) => panic!("target check lock poisoned"),
+        });
         let lock_directory = self.repo.state_dir.join("check-locks");
         fs::create_dir_all(&lock_directory)?;
         let process_lock = fs::OpenOptions::new()
@@ -362,9 +368,18 @@ impl Checker {
                 workspace.reference,
                 hash_bytes(target.to_string_lossy().as_bytes())
             )))?;
-        process_lock.lock_exclusive().with_context(|| {
-            format!("cannot lock check target {}", target.display())
-        })?;
+        if let Err(error) = process_lock.try_lock_exclusive() {
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                report(&format!("queued for shared check of {}", target.display()));
+                process_lock.lock_exclusive().with_context(|| {
+                    format!("cannot lock check target {}", target.display())
+                })?;
+            } else {
+                return Err(error).with_context(|| {
+                    format!("cannot lock check target {}", target.display())
+                });
+            }
+        }
         report(&format!("resolving imports for {}", target.display()));
         let queue_ms = file_started.elapsed().as_millis() as u64;
         let target_name = target.to_string_lossy().into_owned();
