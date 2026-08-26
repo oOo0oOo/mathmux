@@ -18,7 +18,7 @@ use crate::daemon;
 use crate::issue::development_enabled;
 #[cfg(feature = "development")]
 use crate::issue::{IssueStore, TelemetryStore};
-use crate::protocol::{Command, Request, Response};
+use crate::protocol::{Command, Progress, Request, Response};
 use crate::repo::Repo;
 
 const WORKFLOW_HELP: &str = r#"AGENT RULES
@@ -428,10 +428,28 @@ fn exchange(mut stream: UnixStream, request: &Request) -> Result<Response> {
     }
     let started = Instant::now();
     let mut reader = BufReader::new(stream);
-    let mut line = String::new();
-    let bytes = loop {
+    let mut progress = String::from("running");
+    let mut next_report = Duration::from_secs(30);
+    loop {
+        let elapsed = started.elapsed();
+        if report_progress {
+            let timeout = next_report
+                .saturating_sub(elapsed)
+                .max(Duration::from_millis(1));
+            reader.get_ref().set_read_timeout(Some(timeout))?;
+        }
+        let mut line = String::new();
         match reader.read_line(&mut line) {
-            Ok(bytes) => break bytes,
+            Ok(0) => {
+                return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
+            }
+            Ok(_) => {
+                if let Ok(frame) = serde_json::from_str::<Progress>(&line) {
+                    progress = frame.progress;
+                    continue;
+                }
+                return serde_json::from_str(&line).context("invalid daemon response");
+            }
             Err(error)
                 if report_progress
                     && matches!(
@@ -439,18 +457,12 @@ fn exchange(mut stream: UnixStream, request: &Request) -> Result<Response> {
                         std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
                     ) =>
             {
-                eprintln!("check running {}s", started.elapsed().as_secs());
-                reader
-                    .get_ref()
-                    .set_read_timeout(Some(Duration::from_secs(60)))?;
+                eprintln!("check {progress} {}s", started.elapsed().as_secs());
+                next_report += Duration::from_secs(60);
             }
             Err(error) => return Err(error.into()),
         }
-    };
-    if bytes == 0 {
-        return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
     }
-    serde_json::from_str(&line).context("invalid daemon response")
 }
 
 fn transient_transport_error(error: &anyhow::Error) -> bool {
@@ -638,6 +650,43 @@ fn daemon_executable() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exchange_consumes_progress_before_the_final_response() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let server_thread = std::thread::spawn(move || {
+            let mut request = String::new();
+            BufReader::new(server.try_clone().unwrap())
+                .read_line(&mut request)
+                .unwrap();
+            serde_json::to_writer(
+                &mut server,
+                &Progress {
+                    progress: "preparing imports for Demo.lean".into(),
+                },
+            )
+            .unwrap();
+            server.write_all(b"\n").unwrap();
+            serde_json::to_writer(&mut server, &Response::ok("ok c1 1ms")).unwrap();
+            server.write_all(b"\n").unwrap();
+        });
+        let response = exchange(
+            client,
+            &Request {
+                build: String::new(),
+                generation: 0,
+                cwd: "/tmp".into(),
+                command: Command::Check {
+                    file: None,
+                    profile: false,
+                },
+            },
+        )
+        .unwrap();
+        server_thread.join().unwrap();
+        assert!(response.ok);
+        assert_eq!(response.summary, "ok c1 1ms");
+    }
 
     #[cfg(not(feature = "development"))]
     #[test]

@@ -150,6 +150,7 @@ impl Checker {
         workspace: &Workspace,
         requested: Option<&Path>,
         include_profile: bool,
+        report: &mut dyn FnMut(&str),
     ) -> Result<CheckOutcome> {
         let started = Instant::now();
         let targets = match requested {
@@ -181,7 +182,8 @@ impl Checker {
 
         for target in &targets {
             let target_name = target.to_string_lossy().into_owned();
-            match self.check_one(workspace, target, &reference) {
+            report(&format!("waiting for {target_name}"));
+            match self.check_one(workspace, target, &reference, report) {
                 Ok(result) => {
                     file_profiles.push(result.profile.clone());
                     warnings.extend(result.warnings);
@@ -312,6 +314,7 @@ impl Checker {
         workspace: &Workspace,
         target: &Path,
         reference: &str,
+        report: &mut dyn FnMut(&str),
     ) -> Result<FileCheck> {
         let file_started = Instant::now();
         let check_lock = {
@@ -340,6 +343,7 @@ impl Checker {
         process_lock.lock_exclusive().with_context(|| {
             format!("cannot lock check target {}", target.display())
         })?;
+        report(&format!("resolving imports for {}", target.display()));
         let queue_ms = file_started.elapsed().as_millis() as u64;
         let target_name = target.to_string_lossy().into_owned();
         let target_absolute = workspace.path.join(target);
@@ -393,6 +397,7 @@ impl Checker {
         }
         let cache_ms = phase.elapsed().as_millis() as u64;
         let phase = Instant::now();
+        report(&format!("preparing imports for {}", target.display()));
         let (setup_path, environment) = self.worker_setup(workspace, target, &dependencies)?;
         let setup_ms = phase.elapsed().as_millis() as u64;
         let fingerprint = self.full_fingerprint(workspace, target, &dependencies)?;
@@ -400,6 +405,7 @@ impl Checker {
             .with_context(|| format!("cannot read {}", target.display()))?;
 
         let phase = Instant::now();
+        report(&format!("elaborating {}", target.display()));
         let (response, mode, reused_prefix_lines) =
             self.run_worker(
                 workspace,

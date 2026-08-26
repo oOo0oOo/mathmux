@@ -14,7 +14,7 @@ use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use crate::check::{CheckOutcome, Checker};
 use crate::git::{self, dirty_lean_files, dirty_paths};
 use crate::issue::{TelemetryOperation, TelemetryStore, development_enabled};
-use crate::protocol::{Command, Request, Response};
+use crate::protocol::{Command, Progress, Request, Response};
 use crate::repo::Repo;
 use crate::search::Searcher;
 use crate::state::{State, Submission};
@@ -168,7 +168,17 @@ fn serve_client(mut stream: UnixStream, service: &Service) -> Result<()> {
                 service.retiring.store(true, Ordering::SeqCst);
                 Response::retry()
             } else {
-                handled_response(service, request)
+                let mut report = |progress: &str| {
+                    let _ = serde_json::to_writer(
+                        &mut stream,
+                        &Progress {
+                            progress: progress.to_owned(),
+                        },
+                    );
+                    let _ = stream.write_all(b"\n");
+                    let _ = stream.flush();
+                };
+                handled_response(service, request, &mut report)
             }
         }
         Err(error) => Response::error(format!("invalid request: {error}")),
@@ -199,8 +209,12 @@ fn build_precedes(
     !other.is_empty() && other != current && other_generation > current_generation
 }
 
-fn handled_response(service: &Service, request: Request) -> Response {
-    match service.handle(request) {
+fn handled_response(
+    service: &Service,
+    request: Request,
+    report: &mut dyn FnMut(&str),
+) -> Response {
+    match service.handle(request, report) {
         Ok(summary) => Response::ok(summary),
         Err(error) => Response::error(format!("{error:#}")),
     }
@@ -218,7 +232,7 @@ struct Service {
 }
 
 impl Service {
-    fn handle(&self, request: Request) -> Result<String> {
+    fn handle(&self, request: Request, report: &mut dyn FnMut(&str)) -> Result<String> {
         let cwd = PathBuf::from(request.cwd);
         match request.command {
             Command::WsCreate { name, model } => {
@@ -285,7 +299,7 @@ impl Service {
                 git::prepare_workspace(&self.repo, &workspace.path)?;
                 let outcome =
                     self.checker
-                        .check(&workspace, file.as_deref().map(Path::new), profile)?;
+                        .check(&workspace, file.as_deref().map(Path::new), profile, report)?;
                 let summary = check_summary(&outcome);
                 if outcome.ok {
                     Ok(format!("ok {summary}"))

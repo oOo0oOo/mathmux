@@ -93,6 +93,11 @@ pub struct Response {
     pub rss_kib: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Progress {
+    pub progress: String,
+}
+
 impl Response {
     pub fn ok(summary: impl Into<String>) -> Self {
         Self::new(true, false, summary)
