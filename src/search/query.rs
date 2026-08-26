@@ -33,13 +33,13 @@ pub(super) fn normalize_lean_inspection_query(query: &str) -> String {
         query = rest.trim_start();
     }
     let Some(application) = query.strip_prefix('@') else {
-        return query.to_owned();
+        return query.strip_prefix("_root_.").unwrap_or(query).to_owned();
     };
     let mut terms = application.split_whitespace();
     let Some(name) = terms.next() else {
         return query.to_owned();
     };
-    std::iter::once(name)
+    std::iter::once(name.strip_prefix("_root_.").unwrap_or(name))
         .chain(terms.filter(|term| {
             term.eq_ignore_ascii_case("more")
                 || matches!(term.to_ascii_lowercase().as_str(), "body" | "proof")

@@ -240,6 +240,14 @@ fn lean_inspection_syntax_normalizes_to_search_terms() {
         "Demo.useful"
     );
     assert_eq!(
+        normalize_lean_inspection_query("_root_.Demo.useful"),
+        "Demo.useful"
+    );
+    assert_eq!(
+        normalize_lean_inspection_query("#check @_root_.Demo.useful x"),
+        "Demo.useful"
+    );
+    assert_eq!(
         normalize_lean_inspection_query("#synth TopologicalSpace X"),
         "TopologicalSpace X"
     );
