@@ -96,6 +96,17 @@ fn indexed_row_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexedRow>
     })
 }
 
+fn install_active_scopes(connection: &Connection, scopes: &HashSet<String>) -> Result<()> {
+    connection.execute_batch(
+        "CREATE TEMP TABLE active_search_scopes (owner TEXT PRIMARY KEY) WITHOUT ROWID",
+    )?;
+    let mut insert = connection.prepare("INSERT INTO active_search_scopes(owner) VALUES (?1)")?;
+    for scope in scopes {
+        insert.execute([scope])?;
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 enum SourceKind {
     Project,
@@ -1468,16 +1479,7 @@ impl Searcher {
         scopes: &HashSet<String>,
     ) -> Result<Vec<IndexedRow>> {
         let connection = self.open()?;
-        connection.execute_batch(
-            "CREATE TEMP TABLE active_search_scopes (owner TEXT PRIMARY KEY) WITHOUT ROWID",
-        )?;
-        {
-            let mut insert =
-                connection.prepare("INSERT INTO active_search_scopes(owner) VALUES (?1)")?;
-            for scope in scopes {
-                insert.execute([scope])?;
-            }
-        }
+        install_active_scopes(&connection, scopes)?;
         let fts_query = fts_query(&tokens.join(" "));
         let name_query = declaration_name_query(query);
         let sql = if fts_query.is_empty() && include_all_signatures {
@@ -1576,26 +1578,33 @@ impl Searcher {
         import_context: Option<&ImportContext>,
     ) -> Result<Vec<SearchHit>> {
         let connection = self.open()?;
+        install_active_scopes(&connection, scopes)?;
         let prefix = format!("{}.", exact.name);
         let leaf = exact.name.rsplit('.').next().unwrap_or(&exact.name);
-        let mut statement = connection.prepare(
+        let mut nested = connection.prepare(
             "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0
              FROM search_fts
              WHERE search_fts MATCH ?1
-             LIMIT 1024",
+               AND owner IN (SELECT owner FROM active_search_scopes)
+             LIMIT 128",
         )?;
-        let queries = [
-            format!("name : \"{}\"*", exact.name.replace('"', "\"\"")),
-            format!("signature : \"{}\"*", leaf.replace('"', "\"\"")),
-        ];
-        let mut rows = Vec::new();
-        for query in queries {
-            rows.extend(
-                statement
-                    .query_map([query], indexed_row_from_row)?
-                    .collect::<rusqlite::Result<Vec<_>>>()?,
-            );
-        }
+        let mut same_module = connection.prepare(
+            "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0
+             FROM search_fts
+             WHERE search_fts MATCH ?1 AND module = ?2
+               AND owner IN (SELECT owner FROM active_search_scopes)
+             LIMIT 128",
+        )?;
+        let nested_query = format!("name : \"{}\"*", exact.name.replace('"', "\"\""));
+        let signature_query = format!("signature : \"{}\"*", leaf.replace('"', "\"\""));
+        let mut rows = nested
+            .query_map([nested_query], indexed_row_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.extend(
+            same_module
+                .query_map(params![signature_query, exact.module], indexed_row_from_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?,
+        );
         let mut seen = HashSet::new();
         let mut ranked = rows
             .into_iter()
