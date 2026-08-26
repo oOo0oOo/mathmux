@@ -26,14 +26,18 @@ const CHECK_RESULT_VERSION: &[u8] = b"check-result-v2";
 const CHECK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug)]
-struct CheckTimeout;
+struct CheckTimeout(Duration);
 
 impl std::fmt::Display for CheckTimeout {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "Lean elaboration exceeded five minutes; split the file or simplify the current declaration"
-        )
+        if self.0 == CHECK_TIMEOUT {
+            write!(
+                formatter,
+                "Lean elaboration exceeded five minutes; split the file or simplify the current declaration"
+            )
+        } else {
+            write!(formatter, "Lean probe exceeded {} seconds", self.0.as_secs())
+        }
     }
 }
 
@@ -356,7 +360,15 @@ impl Checker {
 
         let phase = Instant::now();
         let (response, mode, reused_prefix_lines) =
-            self.run_worker(workspace, target, &setup_path, &environment, &source, true)?;
+            self.run_worker(
+                workspace,
+                target,
+                &setup_path,
+                &environment,
+                &source,
+                true,
+                CHECK_TIMEOUT,
+            )?;
         let elaborate_ms = phase.elapsed().as_millis() as u64;
         ensure!(
             response.version > 0,
@@ -447,6 +459,7 @@ impl Checker {
         environment: &str,
         source: &str,
         allow_fallback: bool,
+        timeout: Duration,
     ) -> Result<(WorkerResponse, &'static str, Option<u64>)> {
         let key = (workspace.reference.clone(), target.to_path_buf());
         let (worker, inserted) = {
@@ -520,7 +533,7 @@ impl Checker {
                 }
             }
         }
-        match worker_guard.check(source) {
+        match worker_guard.check(source, timeout) {
             Ok((response, reuse)) => Ok((
                 response,
                 if inserted || replace {
@@ -566,11 +579,29 @@ impl Checker {
         requested: &Path,
         source: &str,
     ) -> Result<(bool, String)> {
+        self.probe_source_with_timeout(workspace, requested, source, CHECK_TIMEOUT)
+    }
+
+    fn probe_source_with_timeout(
+        &self,
+        workspace: &Workspace,
+        requested: &Path,
+        source: &str,
+        timeout: Duration,
+    ) -> Result<(bool, String)> {
         let target = resolve_target(&workspace.path, requested)?;
         let dependencies = transitive_dependencies(&workspace.path, &target)?;
         let (setup_path, environment) = self.worker_setup(workspace, &target, &dependencies)?;
         let (response, _, _) =
-            self.run_worker(workspace, &target, &setup_path, &environment, source, false)?;
+            self.run_worker(
+                workspace,
+                &target,
+                &setup_path,
+                &environment,
+                source,
+                false,
+                timeout,
+            )?;
         let ok = response.ok;
         Ok((
             ok,
@@ -608,7 +639,13 @@ impl Checker {
         if !ready {
             return Ok(None);
         }
-        self.probe_source(workspace, requested, source).map(Some)
+        self.probe_source_with_timeout(
+            workspace,
+            requested,
+            source,
+            Duration::from_secs(2),
+        )
+        .map(Some)
     }
 
     fn worker_setup(
@@ -970,7 +1007,11 @@ impl LeanWorker {
         })
     }
 
-    fn check(&mut self, source: &str) -> Result<(WorkerResponse, WorkerReuse)> {
+    fn check(
+        &mut self,
+        source: &str,
+        timeout: Duration,
+    ) -> Result<(WorkerResponse, WorkerReuse)> {
         self.last_used = Instant::now();
         if self.last_source.as_deref() == Some(source)
             && let Some(response) = &self.last_response
@@ -1007,7 +1048,7 @@ impl LeanWorker {
             libc::poll(
                 &mut descriptor,
                 1,
-                CHECK_TIMEOUT.as_millis().min(i32::MAX as u128) as i32,
+                timeout.as_millis().min(i32::MAX as u128) as i32,
             )
         };
         if ready == 0 {
@@ -1016,7 +1057,7 @@ impl LeanWorker {
                 libc::kill(-pid, libc::SIGTERM);
             }
             let _ = self.child.wait();
-            return Err(CheckTimeout.into());
+            return Err(CheckTimeout(timeout).into());
         }
         if ready < 0 {
             return Err(std::io::Error::last_os_error().into());
