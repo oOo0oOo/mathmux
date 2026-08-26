@@ -24,7 +24,6 @@ pub struct ValidationQueue {
 
 impl ValidationQueue {
     pub fn start(repo: Repo, state: State, retiring: Arc<AtomicBool>) -> Result<Self> {
-        state.recover_validation()?;
         let queue = Self {
             signal: Arc::new((Mutex::new(false), Condvar::new())),
         };
@@ -47,7 +46,20 @@ fn validation_loop(repo: Repo, state: State, signal: ValidationSignal, retiring:
         if retiring.load(Ordering::SeqCst) {
             return;
         }
-        match state.next_validation() {
+        let validation_lock = match acquire_validation_lock(&repo.validation_lock) {
+            Ok(lock) => lock,
+            Err(_) => {
+                thread::sleep(Duration::from_secs(1));
+                continue;
+            }
+        };
+        if retiring.load(Ordering::SeqCst) {
+            return;
+        }
+        let next = state
+            .recover_validation()
+            .and_then(|_| state.next_validation());
+        match next {
             Ok(Some(submission)) => {
                 let started = Instant::now();
                 let result = validate(&repo, &submission);
@@ -79,26 +91,34 @@ fn validation_loop(repo: Repo, state: State, signal: ValidationSignal, retiring:
                 }
             }
             Ok(None) => {
+                drop(validation_lock);
                 let (lock, condition) = &*signal;
                 let pending = lock.lock().expect("validation signal poisoned");
                 let _ = condition
                     .wait_timeout_while(pending, Duration::from_secs(30), |value| !*value)
                     .map(|(mut pending, _)| *pending = false);
             }
-            Err(_) => thread::sleep(Duration::from_secs(1)),
+            Err(_) => {
+                drop(validation_lock);
+                thread::sleep(Duration::from_secs(1));
+            }
         }
     }
 }
 
-fn validate(repo: &Repo, submission: &Submission) -> Result<ValidationReport> {
-    let started = Instant::now();
-    let validation_lock = fs::OpenOptions::new()
+fn acquire_validation_lock(path: &Path) -> Result<fs::File> {
+    let lock = fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
-        .open(&repo.validation_lock)?;
-    validation_lock.lock_exclusive()?;
+        .open(path)?;
+    lock.lock_exclusive()?;
+    Ok(lock)
+}
+
+fn validate(repo: &Repo, submission: &Submission) -> Result<ValidationReport> {
+    let started = Instant::now();
     let root = prepare_worktree(repo, &submission.main_commit)?;
     let (roots, project_modules) = deliverable_modules(&root);
     invalidate_newer_project_artifacts(&root)?;
@@ -421,6 +441,64 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::state::Workspace;
+
+    #[test]
+    fn a_new_queue_does_not_recover_an_active_validator() {
+        let directory = tempdir().unwrap();
+        let state_dir = directory.path().join("state");
+        fs::create_dir_all(&state_dir).unwrap();
+        let repo = Repo {
+            root: directory.path().join("root"),
+            common_git_dir: directory.path().join("git"),
+            state_dir: state_dir.clone(),
+            socket_path: state_dir.join("daemon.sock"),
+            db_path: state_dir.join("state.sqlite3"),
+            search_db_path: state_dir.join("search.sqlite3"),
+            log_path: state_dir.join("daemon.log"),
+            cache_dir: state_dir.join("cache"),
+            integration_lock: state_dir.join("integration.lock"),
+            validation_lock: state_dir.join("validation.lock"),
+            startup_lock: state_dir.join("startup.lock"),
+        };
+        let state = State::new(repo.db_path.clone()).unwrap();
+        state
+            .add_workspace(&Workspace {
+                reference: "w1".into(),
+                name: "agent".into(),
+                path: directory.path().join("agent"),
+                branch: "mathmux/agent".into(),
+                model: None,
+            })
+            .unwrap();
+        state
+            .add_submission(&Submission {
+                reference: "s1".into(),
+                workspace_ref: "w1".into(),
+                workspace_commit: "workspace".into(),
+                main_commit: "main".into(),
+                base_commit: "base".into(),
+                checks: vec!["c1".into()],
+                validation_status: "queued".into(),
+                validation_detail: None,
+                build_output: None,
+                axioms: Vec::new(),
+                sorries: Vec::new(),
+                validation_duration_ms: None,
+                validated_by: None,
+                created_at: 1,
+            })
+            .unwrap();
+        assert_eq!(state.next_validation().unwrap().unwrap().reference, "s1");
+        let active_lock = acquire_validation_lock(&repo.validation_lock).unwrap();
+        let retiring = Arc::new(AtomicBool::new(false));
+        let _queue = ValidationQueue::start(repo, state.clone(), retiring.clone()).unwrap();
+
+        assert!(state.has_running_validation().unwrap());
+        retiring.store(true, Ordering::SeqCst);
+        drop(active_lock);
+        thread::sleep(Duration::from_millis(20));
+    }
 
     #[test]
     fn deliverable_modules_are_unimported_project_roots() {
