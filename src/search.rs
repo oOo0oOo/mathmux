@@ -886,11 +886,6 @@ impl Searcher {
                 [SOURCE_INDEX_KIND],
             )?;
         }
-        connection.execute(
-            "DELETE FROM search_origins
-             WHERE rowid NOT IN (SELECT rowid FROM search_fts)",
-            [],
-        )?;
         let origins_mapped = connection
             .query_row(
                 "SELECT value FROM search_meta WHERE key = 'origins_mapped'",
@@ -1666,69 +1661,6 @@ impl Searcher {
                         score: 180.0 - position as f64,
                     });
                 }
-            }
-        } else if name_search && base_warming && specific_query_tokens(query).is_empty() {
-            let (mut loogle_hits, is_warming) = self.loogle_hits(workspace, query);
-            warming |= is_warming;
-            let exact_positions = loogle_hits
-                .iter()
-                .enumerate()
-                .filter(|(_, hit)| qualified_name_matches(&hit.name, query))
-                .map(|(position, _)| position)
-                .collect::<Vec<_>>();
-            if let [position] = exact_positions.as_slice() {
-                let position = *position;
-                let hit = loogle_hits.remove(position);
-                let usages = self.usages(&hit.name, scopes, workspace)?;
-                let mut resolved = RankedHit {
-                    hit: SearchHit {
-                        path: format!("{}.lean", hit.module.replace('.', "/")),
-                        line: 1,
-                        kind: "declaration".into(),
-                        signature: nonempty(hit.signature),
-                        doc: hit.doc,
-                        source: None,
-                        usages,
-                        name: hit.name,
-                        module: hit.module,
-                        applicable: false,
-                        required_import: None,
-                    },
-                    score: 900.0,
-                };
-                self.enrich_exact_source(&mut resolved.hit, scopes)?;
-                if let Some(context) = &import_context {
-                    apply_import_context(&mut resolved, context);
-                }
-                let mut hits = vec![resolved.hit];
-                hits.extend(self.api_neighborhood(
-                    &hits[0],
-                    scopes,
-                    workspace,
-                    import_context.as_ref(),
-                    &[],
-                )?);
-                return Ok(exact_search_result(hits, base_warming));
-            }
-            for (position, hit) in loogle_hits.into_iter().enumerate() {
-                let usages = self.usages(&hit.name, scopes, workspace)?;
-                let member_score = qualified_member_score(query, &hit.name);
-                ranked.push(RankedHit {
-                    hit: SearchHit {
-                        path: format!("{}.lean", hit.module.replace('.', "/")),
-                        line: 1,
-                        kind: "declaration".into(),
-                        signature: nonempty(hit.signature),
-                        doc: hit.doc,
-                        source: None,
-                        usages,
-                        name: hit.name,
-                        module: hit.module,
-                        applicable: false,
-                        required_import: None,
-                    },
-                    score: 160.0 - position as f64 + member_score,
-                });
             }
         }
         for row in rows.into_iter().filter(|row| scopes.contains(&row.owner)) {
