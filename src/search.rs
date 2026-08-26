@@ -31,6 +31,7 @@ const LOCATION_PREVIEW_LINES: usize = 32;
 const LOCATION_MORE_LINES: usize = 96;
 const SOURCE_OCCURRENCE_LIMIT: usize = 64;
 const SOURCE_OCCURRENCE_ALL_LIMIT: usize = 200;
+const RELATED_RESULT_LIMIT: usize = 8;
 const GOAL_STATE_BEGIN: &str = "MATHMUX_GOAL_BEGIN";
 const GOAL_STATE_END: &str = "MATHMUX_GOAL_END";
 const SEARCH_INDEX_VERSION: i64 = 7;
@@ -260,6 +261,7 @@ impl Searcher {
                 &scopes,
                 base_warming,
                 expanded.import_target.as_deref(),
+                show_all,
             )?
         };
         let mut result = result;
@@ -1214,6 +1216,7 @@ impl Searcher {
         scopes: &HashSet<String>,
         base_warming: bool,
         import_target: Option<&Path>,
+        show_all: bool,
     ) -> Result<SearchResult> {
         let explicit_declaration = explicit_declaration_name(query);
         let query = explicit_declaration.unwrap_or(query);
@@ -1655,7 +1658,12 @@ impl Searcher {
         } else {
             promote_query_coverage(&mut ranked, &query_tokens);
         }
-        ranked.truncate(RESULT_LIMIT);
+        let exact_name_miss = name_search
+            && !ranked.iter().any(|candidate| {
+                !matches!(candidate.hit.kind.as_str(), "file" | "imports")
+                    && qualified_name_matches(&candidate.hit.name, query)
+            });
+        ranked.truncate(result_limit(exact_name_miss, show_all));
         for candidate in &mut ranked {
             if candidate.hit.usages.is_empty()
                 && !matches!(candidate.hit.kind.as_str(), "file" | "imports")
@@ -1663,11 +1671,6 @@ impl Searcher {
                 candidate.hit.usages = self.usages(&candidate.hit.name, scopes, workspace)?;
             }
         }
-        let exact_name_miss = name_search
-            && !ranked.iter().any(|candidate| {
-                !matches!(candidate.hit.kind.as_str(), "file" | "imports")
-                    && qualified_name_matches(&candidate.hit.name, query)
-            });
         let no_hits = ranked.is_empty();
         let dependency_sources_missing = dependency_sources_missing(&workspace.path);
         let mut note = match (base_warming, warming, no_hits && dependency_sources_missing) {
@@ -3811,6 +3814,14 @@ fn qualified_name_matches(name: &str, query: &str) -> bool {
         || name
             .strip_suffix(&query)
             .is_some_and(|prefix| prefix.ends_with('.'))
+}
+
+fn result_limit(exact_name_miss: bool, show_all: bool) -> usize {
+    if exact_name_miss && !show_all {
+        RELATED_RESULT_LIMIT
+    } else {
+        RESULT_LIMIT
+    }
 }
 
 fn direct_continuation_name_matches(name: &str, query: &str) -> bool {
@@ -6129,6 +6140,9 @@ end Demo
             "AtiyahSinger.ComplexVectorSubbundle.transportAmbient",
             "VectorSubbundle.transportAmbient"
         ));
+        assert_eq!(result_limit(true, false), RELATED_RESULT_LIMIT);
+        assert_eq!(result_limit(true, true), RESULT_LIMIT);
+        assert_eq!(result_limit(false, false), RESULT_LIMIT);
         assert!(direct_continuation_name_matches(
             "AtiyahSinger.Topology.VectorBundle.MatrixGL.circleResolventFunction_commutes_on_sphere",
             "circleResolventFunction_commutes"
