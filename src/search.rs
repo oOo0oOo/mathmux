@@ -2112,11 +2112,26 @@ impl Searcher {
              FROM search_fts WHERE search_fts MATCH ?1
                AND owner IN (SELECT owner FROM active_search_scopes) LIMIT 256",
         )?;
+        let mut exact_leaf = connection.prepare(
+            "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0
+             FROM search_fts
+             WHERE search_fts MATCH ?1
+               AND (lower(name) = lower(?2)
+                    OR lower(substr(name, -(length(?2) + 1))) = ('.' || lower(?2)))
+               AND owner IN (SELECT owner FROM active_search_scopes)
+             LIMIT 32",
+        )?;
         let mut contains_tokens = Vec::new();
         for token in tokens
             .iter()
             .filter(|token| token.len() >= 4 && token.as_str() != "_")
         {
+            let exact_query = format!("name : \"{}\"", token.replace('"', "\"\""));
+            rows.extend(
+                exact_leaf
+                    .query_map(params![exact_query, token], indexed_row_from_row)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?,
+            );
             let name_query = format!("name : \"{}\"*", token.replace('"', "\"\""));
             let named_rows = named
                 .query_map([name_query], indexed_row_from_row)?

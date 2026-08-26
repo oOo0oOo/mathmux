@@ -861,6 +861,7 @@ pub(super) fn meaningful_query_tokens(query: &str) -> Vec<String> {
         .iter()
         .filter_map(|token| match token.as_str() {
             "addition" => Some("add"),
+            "composition" => Some("comp"),
             "continuity" => Some("continuous"),
             "multiplication" => Some("mul"),
             "projection" => Some("proj"),
@@ -1051,21 +1052,26 @@ pub(super) fn promote_query_coverage(ranked: &mut Vec<RankedHit>, tokens: &[Stri
             !matches!(candidate.hit.kind.as_str(), "file" | "imports")
                 || matches!(token.as_str(), "import" | "imports")
         };
-        if let Some(position) = remaining
-            .iter()
-            .enumerate()
-            .filter(|(_, candidate)| {
-                eligible(candidate) && hit_name_matches(&candidate.hit.name, token)
-            })
-            .max_by_key(|(_, candidate)| {
-                candidate
-                    .hit
-                    .name
-                    .split(['.', '_'])
-                    .filter(|segment| tokens.iter().any(|facet| words_match(segment, facet)))
-                    .count()
-            })
-            .map(|(position, _)| position)
+        let exact_leaf = remaining.iter().position(|candidate| {
+            eligible(candidate) && qualified_name_matches(&candidate.hit.name, token)
+        });
+        if let Some(position) = exact_leaf.or_else(|| {
+            remaining
+                .iter()
+                .enumerate()
+                .filter(|(_, candidate)| {
+                    eligible(candidate) && hit_name_matches(&candidate.hit.name, token)
+                })
+                .max_by_key(|(_, candidate)| {
+                    candidate
+                        .hit
+                        .name
+                        .split(['.', '_'])
+                        .filter(|segment| tokens.iter().any(|facet| words_match(segment, facet)))
+                        .count()
+                })
+                .map(|(position, _)| position)
+        })
         {
             promoted.push(remaining.remove(position));
         } else if token.len() >= 6

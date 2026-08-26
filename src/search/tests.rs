@@ -400,6 +400,11 @@ fn inference_reserves_positions_and_recognizes_type_patterns() {
             .take(SUMMARY_LIMIT)
             .any(|candidate| candidate.hit.name == "LinearMap.index")
     );
+    assert!(
+        meaningful_query_tokens("map composition")
+            .iter()
+            .any(|token| token == "comp")
+    );
     assert_eq!(symbolic_source_term("*ᵥ"), Some("*ᵥ".to_owned()));
     assert_eq!(symbolic_source_term("≤"), Some("≤".to_owned()));
     assert_eq!(symbolic_source_term("*"), None);
