@@ -5,7 +5,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
@@ -295,6 +295,25 @@ impl Searcher {
         let reference = parts.next().unwrap_or_default();
         let refinement = parts.next().unwrap_or_default().trim();
         if reference
+            .strip_prefix('s')
+            .is_some_and(|digits| !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()))
+        {
+            let submission = self
+                .state
+                .submission(reference)?
+                .with_context(|| format!("unknown submission reference {reference}"))?;
+            let (subject, context) = self.submission_search_context(&submission)?;
+            return Ok(ExpandedQuery {
+                query: [subject.as_str(), refinement]
+                    .into_iter()
+                    .filter(|part| !part.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                context,
+                import_target: None,
+            });
+        }
+        if reference
             .strip_prefix('q')
             .is_some_and(|digits| !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()))
         {
@@ -401,6 +420,73 @@ impl Searcher {
             });
         }
         Ok(ExpandedQuery::plain(query))
+    }
+
+    fn submission_search_context(
+        &self,
+        submission: &crate::state::Submission,
+    ) -> Result<(String, Vec<SearchHit>)> {
+        let subject = git_text(
+            &self.repo.root,
+            &["show", "-s", "--format=%s", &submission.main_commit],
+        )?
+        .trim()
+        .to_owned();
+        let changed = git_text(
+            &self.repo.root,
+            &[
+                "diff",
+                "--name-only",
+                "--diff-filter=ACMR",
+                &submission.base_commit,
+                &submission.main_commit,
+            ],
+        )?;
+        let mut added = Vec::new();
+        for path in changed.lines().filter(|path| path.ends_with(".lean")) {
+            let module = project_module_name(&self.repo.root, Path::new(path));
+            let before = git_file_at(&self.repo.root, &submission.base_commit, path)?;
+            let after = git_file_at(&self.repo.root, &submission.main_commit, path)?
+                .with_context(|| format!("submission file unavailable: {path}"))?;
+            let prior = before
+                .as_deref()
+                .map(|source| {
+                    parse_source(source, &module)
+                        .into_iter()
+                        .map(|entry| (entry.name, entry.kind))
+                        .collect::<HashSet<_>>()
+                })
+                .unwrap_or_default();
+            added.extend(
+                parse_source(&after, &module)
+                    .into_iter()
+                    .filter(|entry| !matches!(entry.kind.as_str(), "file" | "imports" | "notation"))
+                    .filter(|entry| !prior.contains(&(entry.name.clone(), entry.kind.clone())))
+                    .map(|entry| (path.to_owned(), module.clone(), entry)),
+            );
+        }
+        let has_public = added
+            .iter()
+            .any(|(_, _, entry)| !source_entry_is_private(entry));
+        let context = added
+            .into_iter()
+            .filter(|(_, _, entry)| !has_public || !source_entry_is_private(entry))
+            .take(12)
+            .map(|(path, module, entry)| SearchHit {
+                name: entry.name,
+                kind: entry.kind,
+                signature: nonempty(entry.signature),
+                module,
+                path,
+                line: entry.line,
+                doc: nonempty(entry.docs),
+                source: None,
+                usages: Vec::new(),
+                applicable: false,
+                required_import: None,
+            })
+            .collect();
+        Ok((subject, context))
     }
 
     fn nearest_field_declaration(&self, missing: &str) -> Result<Option<String>> {
@@ -3201,6 +3287,35 @@ fn append_log(repo: &Repo, detail: &str) {
     }
 }
 
+fn git_text(root: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .stdin(Stdio::null())
+        .output()
+        .context("cannot inspect submission commit")?;
+    ensure!(
+        output.status.success(),
+        "cannot inspect submission commit: {}",
+        clean_line(&String::from_utf8_lossy(&output.stderr))
+    );
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn git_file_at(root: &Path, commit: &str, path: &str) -> Result<Option<String>> {
+    let spec = format!("{commit}:{path}");
+    let output = Command::new("git")
+        .args(["show", &spec])
+        .current_dir(root)
+        .stdin(Stdio::null())
+        .output()
+        .context("cannot inspect submission source")?;
+    Ok(output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned()))
+}
+
 #[derive(Debug)]
 struct SourceEntry {
     line: u64,
@@ -3209,6 +3324,16 @@ struct SourceEntry {
     signature: String,
     docs: String,
     body: String,
+}
+
+fn source_entry_is_private(entry: &SourceEntry) -> bool {
+    entry.body.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with("private ")
+            && line
+                .split_whitespace()
+                .any(|word| word == entry.kind)
+    })
 }
 
 fn parse_source(source: &str, module: &str) -> Vec<SourceEntry> {
