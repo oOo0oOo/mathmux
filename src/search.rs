@@ -1610,6 +1610,15 @@ impl Searcher {
                 }
             }
             if exact_rows.is_empty()
+                && let Some(base) = declaration_suffix_base(anchor)
+            {
+                let base_rows = self.exact_candidates(base, scopes)?;
+                if !base_rows.is_empty() {
+                    exact_anchor = base.to_owned();
+                    exact_rows = base_rows;
+                }
+            }
+            if exact_rows.is_empty()
                 && let Some(mut result) = self.generated_exact_result(
                     workspace,
                     anchor,
