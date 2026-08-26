@@ -58,6 +58,7 @@ pub struct Searcher {
     index_lock: Mutex<()>,
     last_refresh: Mutex<HashMap<String, Instant>>,
     dirty_cache: Mutex<HashMap<String, (Instant, Vec<PathBuf>)>>,
+    source_cache: Mutex<HashMap<PathBuf, CachedSource>>,
     base_lock: Arc<Mutex<()>>,
     loogle: Mutex<LoogleState>,
     base: Mutex<HashMap<String, BaseState>>,
@@ -210,6 +211,14 @@ struct SourceRoot {
     kind: SourceKind,
 }
 
+#[derive(Clone)]
+struct CachedSource {
+    modified_ns: i64,
+    size: u64,
+    source: Arc<str>,
+    entries: Arc<Vec<SourceEntry>>,
+}
+
 impl Searcher {
     pub fn new(repo: Repo, state: State, checker: Arc<Checker>) -> Result<Self> {
         let searcher = Self::initialized(repo, state, checker);
@@ -225,6 +234,7 @@ impl Searcher {
             index_lock: Mutex::new(()),
             last_refresh: Mutex::new(HashMap::new()),
             dirty_cache: Mutex::new(HashMap::new()),
+            source_cache: Mutex::new(HashMap::new()),
             base_lock: Arc::new(Mutex::new(())),
             loogle: Mutex::new(LoogleState::Empty),
             base: Mutex::new(HashMap::new()),
@@ -1088,12 +1098,25 @@ impl Searcher {
         for batch in changed.chunks(INDEX_COMMIT_BATCH) {
             let transaction = connection.transaction()?;
             for path in batch {
-                let source = fs::read_to_string(path)
-                    .with_context(|| format!("cannot index {}", path.display()))?;
                 let display =
                     display_path(path, workspace_root, &source_root.root, source_root.kind);
                 let module = module_name(path, &source_root.root, source_root.kind);
-                let entries = parse_source(&source, &module);
+                let cached = if matches!(source_root.kind, SourceKind::Project) {
+                    Some(self.project_source(path, &module)?)
+                } else {
+                    None
+                };
+                let source = match &cached {
+                    Some(cached) => cached.source.clone(),
+                    None => Arc::from(
+                        fs::read_to_string(path)
+                            .with_context(|| format!("cannot index {}", path.display()))?,
+                    ),
+                };
+                let entries = match &cached {
+                    Some(cached) => cached.entries.clone(),
+                    None => Arc::new(parse_source(&source, &module)),
+                };
                 delete_search_origin(
                     &transaction,
                     &source_root.owner,
@@ -1129,7 +1152,7 @@ impl Searcher {
                          ON CONFLICT(rowid) DO UPDATE SET
                             owner = excluded.owner, origin = excluded.origin",
                     )?;
-                    for entry in entries {
+                    for entry in entries.iter() {
                         insert.execute(params![
                             source_root.owner,
                             path.to_string_lossy(),
@@ -1628,7 +1651,7 @@ impl Searcher {
                 score,
             });
         }
-        ranked.extend(project_source_hits(
+        ranked.extend(self.project_source_hits(
             workspace,
             query,
             &query_tokens,
@@ -2496,93 +2519,125 @@ fn search_index_writer_lock(repo: &Repo) -> Result<fs::File> {
     Ok(file)
 }
 
-fn project_source_hits(
-    workspace: &Workspace,
-    query: &str,
-    query_tokens: &[String],
-    scan_all: bool,
-) -> Vec<RankedHit> {
-    let paths = if scan_all {
-        project_lean_files(&workspace.path)
-    } else {
-        let Ok(paths) = dirty_lean_files(&workspace.path) else {
-            return Vec::new();
-        };
-        paths
-    };
-    let mut ranked = Vec::new();
-    // Small projects should be searchable immediately while their persistent
-    // index is still warming. Keep a generous bound so ordinary projects are
-    // not silently truncated, while still bounding cold-start filesystem work.
-    for path in paths.into_iter().take(256) {
-        let absolute = workspace.path.join(&path);
-        let Ok(source) = fs::read_to_string(&absolute) else {
-            continue;
-        };
-        let module = project_module_name(&workspace.path, &path);
-        for entry in parse_source(&source, &module) {
-            let name = entry.name.to_lowercase();
-            let searchable = format!("{} {} {}", name, entry.signature, entry.body).to_lowercase();
-            let matched_tokens = query_tokens
-                .iter()
-                .filter(|token| text_matches_token(&searchable, token))
-                .collect::<Vec<_>>();
-            if matched_tokens.is_empty() {
-                continue;
-            }
-            let relevance = matched_tokens
-                .iter()
-                .map(|token| token.len().min(20))
-                .sum::<usize>();
-            let base = name.rsplit('.').next().unwrap_or(&name);
-            let exact_name = query_tokens
-                .iter()
-                .any(|token| token == base || token == &name);
-            let named = query_tokens
-                .iter()
-                .filter(|token| hit_name_matches(&name, token))
-                .count();
-            let (source, line) = detailed_source_excerpt(
-                &entry.body,
-                query,
-                query_tokens,
-                entry.line,
-                &entry.kind,
-                &entry.name,
-            );
-            let is_file_like = matches!(entry.kind.as_str(), "file" | "imports");
-            let import_query = query_tokens
-                .iter()
-                .any(|token| matches!(token.as_str(), "import" | "imports"));
-            ranked.push(RankedHit {
-                hit: SearchHit {
-                    name: entry.name,
-                    kind: entry.kind,
-                    signature: nonempty(entry.signature),
-                    module: module.clone(),
-                    path: path.to_string_lossy().into_owned(),
-                    line,
-                    doc: nonempty(entry.docs),
-                    source,
-                    usages: Vec::new(),
-                    applicable: false,
-                    required_import: None,
-                },
-                score: 320.0
-                    + relevance as f64 * 4.0
-                    + named as f64 * 45.0
-                    + if exact_name { 140.0 } else { 0.0 }
-                    - if is_file_like && !import_query {
-                        300.0
-                    } else if is_file_like {
-                        60.0
-                    } else {
-                        0.0
-                    },
-            });
+impl Searcher {
+    fn project_source(&self, path: &Path, module: &str) -> Result<CachedSource> {
+        let metadata = fs::metadata(path)
+            .with_context(|| format!("cannot inspect {}", path.display()))?;
+        let stamp = modified_ns(&metadata);
+        let size = metadata.len();
+        let mut cache = self
+            .source_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(cached) = cache.get(path)
+            && cached.modified_ns == stamp
+            && cached.size == size
+        {
+            return Ok(cached.clone());
         }
+        let source: Arc<str> = fs::read_to_string(path)
+            .with_context(|| format!("cannot read {}", path.display()))?
+            .into();
+        let cached = CachedSource {
+            modified_ns: stamp,
+            size,
+            entries: Arc::new(parse_source(&source, module)),
+            source,
+        };
+        cache.insert(path.to_path_buf(), cached.clone());
+        Ok(cached)
     }
-    ranked
+
+    fn project_source_hits(
+        &self,
+        workspace: &Workspace,
+        query: &str,
+        query_tokens: &[String],
+        scan_all: bool,
+    ) -> Vec<RankedHit> {
+        let paths = if scan_all {
+            project_lean_files(&workspace.path)
+        } else {
+            let Ok(paths) = dirty_lean_files(&workspace.path) else {
+                return Vec::new();
+            };
+            paths
+        };
+        let mut ranked = Vec::new();
+        // Small projects should be searchable immediately while their persistent
+        // index is still warming. Keep a generous bound so ordinary projects are
+        // not silently truncated, while still bounding cold-start filesystem work.
+        for path in paths.into_iter().take(256) {
+            let absolute = workspace.path.join(&path);
+            let module = project_module_name(&workspace.path, &path);
+            let Ok(cached) = self.project_source(&absolute, &module) else {
+                continue;
+            };
+            for entry in cached.entries.iter() {
+                let name = entry.name.to_lowercase();
+                let searchable =
+                    format!("{} {} {}", name, entry.signature, entry.body).to_lowercase();
+                let matched_tokens = query_tokens
+                    .iter()
+                    .filter(|token| text_matches_token(&searchable, token))
+                    .collect::<Vec<_>>();
+                if matched_tokens.is_empty() {
+                    continue;
+                }
+                let relevance = matched_tokens
+                    .iter()
+                    .map(|token| token.len().min(20))
+                    .sum::<usize>();
+                let base = name.rsplit('.').next().unwrap_or(&name);
+                let exact_name = query_tokens
+                    .iter()
+                    .any(|token| token == base || token == &name);
+                let named = query_tokens
+                    .iter()
+                    .filter(|token| hit_name_matches(&name, token))
+                    .count();
+                let (source, line) = detailed_source_excerpt(
+                    &entry.body,
+                    query,
+                    query_tokens,
+                    entry.line,
+                    &entry.kind,
+                    &entry.name,
+                );
+                let is_file_like = matches!(entry.kind.as_str(), "file" | "imports");
+                let import_query = query_tokens
+                    .iter()
+                    .any(|token| matches!(token.as_str(), "import" | "imports"));
+                ranked.push(RankedHit {
+                    hit: SearchHit {
+                        name: entry.name.clone(),
+                        kind: entry.kind.clone(),
+                        signature: nonempty(entry.signature.clone()),
+                        module: module.clone(),
+                        path: path.to_string_lossy().into_owned(),
+                        line,
+                        doc: nonempty(entry.docs.clone()),
+                        source,
+                        usages: Vec::new(),
+                        applicable: false,
+                        required_import: None,
+                    },
+                    score: 320.0
+                        + relevance as f64 * 4.0
+                        + named as f64 * 45.0
+                        + if exact_name { 140.0 } else { 0.0 }
+                        - if is_file_like && !import_query {
+                            300.0
+                        } else if is_file_like {
+                            60.0
+                        } else {
+                            0.0
+                        },
+                });
+            }
+        }
+        ranked
+    }
 }
 
 const LOOGLE_FILES: &[(&str, &str)] = &[
