@@ -68,13 +68,7 @@ pub fn run(repo: Repo) -> Result<()> {
     let mut listener = Some(listener);
 
     loop {
-        if retiring.load(Ordering::SeqCst) {
-            // Stop admitting work while retaining the socket path as an exit
-            // marker. Replacement waits for active requests to drain and for
-            // the path to be removed below before binding a new listener.
-            listener.take();
-            thread::sleep(Duration::from_millis(50));
-        } else if let Some(listener) = &listener {
+        if let Some(listener) = &listener {
             match listener.accept() {
                 Ok((stream, _)) => {
                     last_activity = Instant::now();
@@ -109,6 +103,10 @@ pub fn run(repo: Repo) -> Result<()> {
             && active_clients == 0
             && !service.state.has_running_validation().unwrap_or(true)
         {
+            // Keep serving with the compatible old image while an asynchronous
+            // validation drains. Closing the listener earlier freezes every
+            // command behind the client startup lock until that build finishes.
+            listener.take();
             break;
         }
         if active_clients == 0
@@ -128,12 +126,12 @@ fn serve_client(mut stream: UnixStream, service: &Service) -> Result<()> {
     let mut line = String::new();
     BufReader::new(stream.try_clone()?).read_line(&mut line)?;
     let mut response = match serde_json::from_str::<Request>(&line) {
-        Ok(_request) if service.retiring.load(Ordering::SeqCst) => Response::retry(),
-        Ok(request) if client_build_is_newer(&request) => {
-            service.retiring.store(true, Ordering::SeqCst);
-            Response::retry()
+        Ok(request) => {
+            if client_build_is_newer(&request) {
+                service.retiring.store(true, Ordering::SeqCst);
+            }
+            handled_response(service, request)
         }
-        Ok(request) => handled_response(service, request),
         Err(error) => Response::error(format!("invalid request: {error}")),
     };
     response.daemon_ms = started.elapsed().as_millis() as u64;
