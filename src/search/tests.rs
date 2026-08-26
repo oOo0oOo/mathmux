@@ -223,7 +223,7 @@ fn lean_inspection_syntax_normalizes_to_search_terms() {
 }
 
 #[test]
-fn inference_reserves_positions_and_recognizes_type_patterns() {
+fn query_parsing_scoring_and_ranking_regressions() {
     assert!(type_shaped("_ → Injective _"));
     assert!(!type_shaped("injective function"));
     assert!(!type_shaped("norm_inner_le_norm"));
@@ -1030,7 +1030,7 @@ fn references_decode_from_ilean_keys() {
 }
 
 #[test]
-fn goal_suggestions_accept_leans_multiline_output() {
+fn goal_and_source_query_regressions() {
     assert_eq!(
         try_this_suggestions("Try this:\n  [apply] exact useful h\n"),
         vec!["exact useful h"]

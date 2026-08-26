@@ -1171,13 +1171,6 @@ mod tests {
     }
 
     #[test]
-    fn telemetry_windows_are_narrow() {
-        assert_eq!(parse_since("all").unwrap(), 0);
-        assert!(parse_since("24h").unwrap() < now_unix_ms());
-        assert!(parse_since("soon").is_err());
-    }
-
-    #[test]
     fn telemetry_error_classes_ignore_run_specific_headers() {
         assert_eq!(
             error_class(

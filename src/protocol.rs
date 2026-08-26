@@ -116,25 +116,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_responses_do_not_request_a_retry() {
+    fn legacy_protocol_defaults_are_backward_compatible() {
         let response: Response =
             serde_json::from_str(r#"{"build":"old","ok":true,"summary":"ok"}"#).unwrap();
         assert!(!response.retry);
         assert_eq!(response.generation, 0);
         assert!(Response::retry().retry);
-    }
 
-    #[test]
-    fn legacy_requests_have_no_build_generation() {
         let request: Request = serde_json::from_str(
             r#"{"build":"old","cwd":"/project","command":{"verb":"ws_list"}}"#,
         )
         .unwrap();
         assert_eq!(request.generation, 0);
-    }
 
-    #[test]
-    fn legacy_search_requests_are_compact() {
         let request: Request = serde_json::from_str(
             r#"{"cwd":"/project","command":{"verb":"search","query":"demo"}}"#,
         )
