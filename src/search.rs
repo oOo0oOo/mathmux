@@ -1209,8 +1209,12 @@ impl Searcher {
                 &row.kind,
                 &row.name,
             );
+            let symbolic_name_score = symbolic_source_term(query)
+                .filter(|term| row.name.to_lowercase().contains(term))
+                .map_or(0.0, |_| 600.0);
             let score = lexical
                 + type_score
+                + symbolic_name_score
                 + if row.owner == format!("workspace:{}", workspace.reference) {
                     8.0
                 } else {
@@ -1511,6 +1515,20 @@ impl Searcher {
                 .map_err(anyhow::Error::from)?
         };
         drop(statement);
+        if let Some(symbolic) = symbolic_source_term(query) {
+            let mut symbolic_names = connection.prepare(
+                "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0
+                 FROM search_fts
+                 WHERE instr(lower(name), ?1) > 0
+                   AND owner IN (SELECT owner FROM active_search_scopes)
+                 LIMIT 32",
+            )?;
+            rows.extend(
+                symbolic_names
+                    .query_map([symbolic], indexed_row_from_row)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?,
+            );
+        }
         let mut named = connection.prepare(
             "SELECT owner, file, module, line, name, kind, signature, docs, body,
                     bm25(search_fts, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 7.0, 3.0, 1.0)
