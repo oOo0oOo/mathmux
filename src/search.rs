@@ -1579,16 +1579,19 @@ impl Searcher {
         let mut statement = connection.prepare(
             "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0
              FROM search_fts
-             WHERE (name = ?1 COLLATE NOCASE
-                    OR (length(name) > length(?1)
-                        AND substr(name, -length(?1)) = ?1 COLLATE NOCASE
-                        AND substr(name, -length(?1) - 1, 1) = '.'))
+             WHERE search_fts MATCH ?1
                AND owner IN (SELECT owner FROM active_search_scopes)
              LIMIT 128",
         )?;
+        let exact = format!("name : \"{}\"", query.replace('"', "\"\""));
         statement
-            .query_map([query], indexed_row_from_row)?
+            .query_map([exact], indexed_row_from_row)?
             .collect::<rusqlite::Result<Vec<_>>>()
+            .map(|rows| {
+                rows.into_iter()
+                    .filter(|row| qualified_name_matches(&row.name, query))
+                    .collect()
+            })
             .map_err(anyhow::Error::from)
     }
 
