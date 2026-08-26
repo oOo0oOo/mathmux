@@ -5310,10 +5310,8 @@ fn source_occurrence_result(
             .then_some((number, line))
         })
         .collect::<Vec<_>>();
-    let limit = if all {
+    let limit = if all || query.terms.is_empty() {
         SOURCE_OCCURRENCE_ALL_LIMIT
-    } else if query.terms.is_empty() {
-        LOCATION_MORE_LINES
     } else {
         SOURCE_OCCURRENCE_LIMIT
     };
@@ -5375,7 +5373,9 @@ fn source_occurrence_result(
             })
         } else if omitted > 0 {
             Some(if query.terms.is_empty() {
-                format!("+{omitted} lines omitted; use --all")
+                format!("+{omitted} lines omitted; narrow the range")
+            } else if all {
+                format!("+{omitted} matches omitted; narrow the query")
             } else {
                 format!("+{omitted} matches omitted; use --all")
             })
@@ -6553,6 +6553,38 @@ end Demo
         assert_eq!(range.hits[0].signature.as_deref(), Some("3 source lines"));
         assert_eq!(range.hits[0].kind, "source-range");
         assert_eq!(range.hits[0].source.as_deref().unwrap().lines().count(), 3);
+
+        let long_source = (1..=250)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(directory.path().join("Long.lean"), long_source).unwrap();
+        let long_range = parse_source_occurrence_query(
+            directory.path(),
+            directory.path(),
+            "Long.lean:1-250",
+        )
+        .unwrap()
+        .unwrap();
+        let long_range = source_occurrence_result(
+            &Workspace {
+                reference: "w1".into(),
+                name: "demo".into(),
+                path: directory.path().to_path_buf(),
+                branch: "demo".into(),
+            },
+            long_range,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            long_range.hits[0].source.as_deref().unwrap().lines().count(),
+            SOURCE_OCCURRENCE_ALL_LIMIT
+        );
+        assert_eq!(
+            long_range.note.as_deref(),
+            Some("+50 lines omitted; narrow the range")
+        );
         assert_eq!(parse_source_line_range("3-3"), Some((3, 3)));
         assert_eq!(parse_source_line_range("4-3"), None);
         assert_eq!(parse_source_line_range("0-3"), None);
