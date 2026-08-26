@@ -1568,12 +1568,22 @@ impl Searcher {
             "SELECT owner, file, module, line, name, kind, signature, docs, body,
                     bm25(search_fts, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 7.0, 3.0, 1.0)
              FROM search_fts WHERE search_fts MATCH ?1
-               AND owner IN (SELECT owner FROM active_search_scopes) LIMIT 128",
+               AND owner IN (SELECT owner FROM active_search_scopes)
+             ORDER BY CASE
+               WHEN owner LIKE 'workspace:%' OR owner LIKE 'artifacts:%' THEN 0
+               ELSE 1
+             END, bm25(search_fts, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 7.0, 3.0, 1.0)
+             LIMIT 128",
         )?;
         let mut named_contains = connection.prepare(
             "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0
              FROM search_fts WHERE name LIKE ?1 COLLATE NOCASE
-               AND owner IN (SELECT owner FROM active_search_scopes) LIMIT 32",
+               AND owner IN (SELECT owner FROM active_search_scopes)
+             ORDER BY CASE
+               WHEN owner LIKE 'workspace:%' OR owner LIKE 'artifacts:%' THEN 0
+               ELSE 1
+             END
+             LIMIT 32",
         )?;
         let mut qualified = connection.prepare(
             "SELECT owner, file, module, line, name, kind, signature, docs, body,
