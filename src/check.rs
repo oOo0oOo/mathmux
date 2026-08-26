@@ -1365,11 +1365,11 @@ fn partition_diagnostics(
             context: None,
         };
         match diagnostic.severity.as_str() {
-            "warning" if is_linter(diagnostic) => linters.push(value),
-            "warning" => warnings.push(value),
-            "information" | "info" if is_tactic_suggestion(diagnostic) => {
+            "warning" | "information" | "info" if is_tactic_suggestion(diagnostic) => {
                 suggestions.push(value)
             }
+            "warning" if is_linter(diagnostic) => linters.push(value),
+            "warning" => warnings.push(value),
             "error" => errors.push(value),
             _ => {}
         }
@@ -1876,6 +1876,11 @@ mod tests {
                 text: "Proof.lean:4:1: information: Try this: simp".into(),
             },
             WorkerDiagnostic {
+                severity: "warning".into(),
+                kind: "declaration".into(),
+                text: "Proof.lean:4:1: warning: Try this: simp".into(),
+            },
+            WorkerDiagnostic {
                 severity: "information".into(),
                 kind: "trace".into(),
                 text: "Proof.lean:5:1: information: ordinary trace".into(),
@@ -1890,7 +1895,7 @@ mod tests {
                 suggestions.len(),
                 errors.len()
             ),
-            (1, 1, 1, 1)
+            (1, 1, 2, 1)
         );
         attach_source_context(
             &mut errors,
