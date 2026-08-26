@@ -11,6 +11,7 @@ use display::{render_check_run, render_search_run, render_submission, validate_r
 
 const SEARCH_HISTORY_LIMIT: i64 = 20_000;
 const SEARCH_HISTORY_AGE_MS: i64 = 48 * 60 * 60 * 1000;
+const STORED_PROFILE_LIMIT_BYTES: usize = 512 * 1024;
 pub(crate) const SEARCH_USAGE_LIMIT: usize = 8;
 
 #[derive(Debug, Clone)]
@@ -343,6 +344,23 @@ impl State {
                  VALUES ('legacy_search_removed', 1);",
             )?;
         }
+        let oversized_profiles_compacted: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM state_meta WHERE key = 'oversized_profiles_compacted')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !oversized_profiles_compacted {
+            connection.execute(
+                "UPDATE check_runs SET profile_json = NULL
+                 WHERE length(profile_json) > ?1",
+                [STORED_PROFILE_LIMIT_BYTES as i64],
+            )?;
+            connection.execute(
+                "INSERT INTO state_meta(key, value)
+                 VALUES ('oversized_profiles_compacted', 1)",
+                [],
+            )?;
+        }
         Ok(())
     }
 
@@ -533,6 +551,11 @@ impl State {
     pub fn add_check_run(&self, run: &CheckRun, certificates: &[CheckRecord]) -> Result<()> {
         let mut connection = self.open()?;
         let transaction = connection.transaction()?;
+        let profile_json = run
+            .profile
+            .as_ref()
+            .map(stored_profile_json)
+            .transpose()?;
         transaction.execute(
             "INSERT INTO check_runs(
                 ref, workspace_ref, status, files_json, passed_json, failed, not_checked_json,
@@ -551,10 +574,7 @@ impl State {
                 serde_json::to_string(&run.linters)?,
                 serde_json::to_string(&run.suggestions)?,
                 serde_json::to_string(&run.diagnostics)?,
-                run.profile
-                    .as_ref()
-                    .map(serde_json::to_string)
-                    .transpose()?,
+                profile_json,
                 run.duration_ms,
                 run.created_at,
             ],
@@ -1027,6 +1047,18 @@ fn submission_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Submission> 
     })
 }
 
+fn stored_profile_json(profile: &CheckProfile) -> Result<String> {
+    let encoded = serde_json::to_string(profile)?;
+    if encoded.len() <= STORED_PROFILE_LIMIT_BYTES {
+        return Ok(encoded);
+    }
+    let mut compact = profile.clone();
+    for file in &mut compact.files {
+        file.entries.clear();
+    }
+    Ok(serde_json::to_string(&compact)?)
+}
+
 fn migrate_legacy_checks(connection: &Connection) -> Result<()> {
     let legacy = {
         let mut statement = connection.prepare(
@@ -1071,6 +1103,36 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[test]
+    fn oversized_profiles_keep_phase_totals_without_trace_payloads() {
+        let profile = CheckProfile {
+            planning_ms: 3,
+            files: vec![FileCheckProfile {
+                target: "Proof.lean".into(),
+                mode: "profile".into(),
+                reused_prefix_lines: None,
+                queue_ms: 1,
+                dependencies_ms: 2,
+                cache_ms: 3,
+                setup_ms: 4,
+                elaborate_ms: 5,
+                total_ms: 15,
+                entries: vec![CheckProfileEntry {
+                    line: 1,
+                    column: 1,
+                    kind: "trace".into(),
+                    detail: "x".repeat(STORED_PROFILE_LIMIT_BYTES),
+                    duration_ms: 5.0,
+                }],
+            }],
+        };
+        let encoded = stored_profile_json(&profile).unwrap();
+        let stored: CheckProfile = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(stored.files[0].total_ms, 15);
+        assert!(stored.files[0].entries.is_empty());
+        assert!(encoded.len() < STORED_PROFILE_LIMIT_BYTES);
+    }
 
     #[test]
     fn references_persist_and_show_requires_a_typed_reference() {
