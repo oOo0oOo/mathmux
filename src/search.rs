@@ -4911,32 +4911,56 @@ fn resolve_goal_path(
         }
     }
 
-    let packages = root.join(".lake/packages");
-    let Ok(packages) = fs::canonicalize(packages) else {
-        return Ok(None);
-    };
-    let mut candidates = Vec::new();
-    let direct_package = packages.join(&requested);
-    if direct_package.is_file() {
-        candidates.push(fs::canonicalize(direct_package)?);
-    }
-    for package in fs::read_dir(&packages)?.flatten() {
-        let candidate = package.path().join(&requested);
-        if candidate.is_file() {
-            candidates.push(fs::canonicalize(candidate)?);
+    let root = fs::canonicalize(root)?;
+    let packages = fs::canonicalize(root.join(".lake/packages")).ok();
+    let mut variants = vec![requested.clone()];
+    if !requested.is_absolute() {
+        let components = requested.components().collect::<Vec<_>>();
+        for start in 1..components.len().saturating_sub(1) {
+            let mut suffix = PathBuf::new();
+            for component in &components[start..] {
+                suffix.push(component.as_os_str());
+            }
+            variants.push(suffix);
         }
     }
-    candidates.sort();
-    candidates.dedup();
-    candidates.retain(|candidate| candidate.starts_with(&packages));
-    let [resolved] = candidates.as_slice() else {
-        return Ok(None);
-    };
-    Ok(Some((
-        resolved.clone(),
-        Some(display.to_owned()),
-        false,
-    )))
+    for variant in variants {
+        let mut candidates = Vec::new();
+        let project = root.join(&variant);
+        if project.is_file() {
+            candidates.push(fs::canonicalize(project)?);
+        }
+        if let Some(packages) = &packages {
+            let direct_package = packages.join(&variant);
+            if direct_package.is_file() {
+                candidates.push(fs::canonicalize(direct_package)?);
+            }
+            for package in fs::read_dir(packages)?.flatten() {
+                let candidate = package.path().join(&variant);
+                if candidate.is_file() {
+                    candidates.push(fs::canonicalize(candidate)?);
+                }
+            }
+        }
+        candidates.sort();
+        candidates.dedup();
+        let [resolved] = candidates.as_slice() else {
+            if candidates.is_empty() {
+                continue;
+            }
+            return Ok(None);
+        };
+        let project = resolved.starts_with(&root)
+            && packages
+                .as_ref()
+                .is_none_or(|packages| !resolved.starts_with(packages));
+        return Ok(Some((
+            resolved.clone(),
+            (!project).then(|| display.to_owned()),
+            project,
+        )));
+    }
+    Ok(None)
 }
 
 fn source_location_result(
@@ -5768,6 +5792,22 @@ end Demo
         assert_eq!(parse_source_line_range("3-3"), Some((3, 3)));
         assert_eq!(parse_source_line_range("4-3"), None);
         assert_eq!(parse_source_line_range("0-3"), None);
+
+        let project = directory.path().join("Project");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("Nested.lean"), &source).unwrap();
+        let recovered = parse_source_occurrence_query(
+            directory.path(),
+            directory.path(),
+            "Mathlib/Project/Nested.lean:4-6",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            recovered.path,
+            fs::canonicalize(project.join("Nested.lean")).unwrap()
+        );
+        assert!(recovered.display_path.is_none());
 
         let dependency = directory
             .path()
