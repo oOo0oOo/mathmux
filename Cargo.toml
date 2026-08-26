@@ -6,6 +6,10 @@ rust-version = "1.97"
 description = "Fast local Lean checks in isolated Git worktrees"
 license = "MIT"
 
+[features]
+default = []
+development = []
+
 [dependencies]
 anyhow = "1.0"
 blake3 = "1.8"

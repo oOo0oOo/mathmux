@@ -728,7 +728,7 @@ impl Searcher {
                 let started = Instant::now();
                 let result =
                     LoogleWorker::start(&repo, &workspace).map_err(|error| format!("{error:#}"));
-                if development_enabled(&repo)
+                if development_enabled()
                     && let Ok(store) = TelemetryStore::global()
                 {
                     let detail = result
@@ -1093,7 +1093,7 @@ impl Searcher {
                             .refresh_base(&workspace)
                             .map_err(|error| format!("{error:#}"))
                     };
-                    if development_enabled(&repo)
+                    if development_enabled()
                         && let Ok(store) = TelemetryStore::global()
                     {
                         let detail = result
@@ -1954,7 +1954,7 @@ impl Searcher {
         };
         let total_ms = search_started.elapsed().as_millis() as u64;
         if total_ms >= 2_000
-            && development_enabled(&self.repo)
+            && development_enabled()
             && let Ok(store) = TelemetryStore::global()
         {
             let detail = format!(

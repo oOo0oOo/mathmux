@@ -633,16 +633,8 @@ pub fn record_exchange(
     Ok(())
 }
 
-pub fn development_enabled(repo: &Repo) -> bool {
-    std::env::var("MATHMUX_DEVELOPMENT")
-        .ok()
-        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes"))
-        || repo.state_dir.join("development-enabled").is_file()
-}
-
-pub fn enable_development(repo: &Repo) -> Result<()> {
-    fs::write(repo.state_dir.join("development-enabled"), b"enabled\n")?;
-    Ok(())
+pub const fn development_enabled() -> bool {
+    cfg!(feature = "development")
 }
 
 fn prune_telemetry(transaction: &rusqlite::Transaction<'_>, now: i64) -> Result<()> {

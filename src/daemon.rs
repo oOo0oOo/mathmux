@@ -58,7 +58,7 @@ pub fn run(repo: Repo) -> Result<()> {
         watcher.watch(&workspace.path)?;
     }
     let workspaces_ms = phase.elapsed().as_millis() as u64;
-    if development_enabled(&repo)
+    if development_enabled()
         && let Ok(store) = TelemetryStore::global()
     {
         let detail = format!(

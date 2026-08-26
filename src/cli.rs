@@ -2,16 +2,22 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+#[cfg(feature = "development")]
+use std::path::Path;
 use std::process::{Command as ProcessCommand, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
-use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+#[cfg(feature = "development")]
+use clap::ValueEnum;
 use fs2::FileExt;
 
 use crate::daemon;
-use crate::issue::{IssueStore, TelemetryStore, development_enabled, enable_development};
+use crate::issue::development_enabled;
+#[cfg(feature = "development")]
+use crate::issue::{IssueStore, TelemetryStore};
 use crate::protocol::{Command, Request, Response};
 use crate::repo::Repo;
 
@@ -62,8 +68,6 @@ output is compact; --all prints the complete current result."#;
     after_help = WORKFLOW_HELP
 )]
 struct Args {
-    #[arg(long, global = true, hide = true)]
-    development: bool,
     #[command(subcommand)]
     command: TopCommand,
 }
@@ -136,24 +140,22 @@ enum TopCommand {
         #[arg(long)]
         all: bool,
     },
-    /// Report or triage mathmux tooling issues.
-    #[command(hide = true)]
+    /// Report mathmux tooling problems (proving agents).
+    ///
+    /// Available only in development builds. Report missing or inefficient tooling;
+    /// do not report formalization or project-API gaps.
+    #[cfg(feature = "development")]
     Issue {
         #[command(subcommand)]
         command: IssueCommand,
     },
-    /// Summarize mathmux development telemetry.
-    #[command(hide = true)]
-    Telemetry {
-        /// Time window such as 30m, 24h, 7d, or all.
-        #[arg(long, default_value = "24h")]
-        since: String,
-        /// Restrict to one recorded verb.
-        #[arg(long)]
-        verb: Option<String>,
-        /// Show N slowest events instead of aggregates.
-        #[arg(long)]
-        slow: Option<usize>,
+    /// Maintain mathmux itself (tooling developers only).
+    ///
+    /// Proving agents should use `issue report`, never this command.
+    #[cfg(feature = "development")]
+    Dev {
+        #[command(subcommand)]
+        command: DevCommand,
     },
     #[command(name = "__daemon", hide = true)]
     Daemon {
@@ -195,6 +197,41 @@ enum IssueCommand {
         #[arg(long = "ref")]
         reference: Option<String>,
     },
+}
+
+#[cfg(feature = "development")]
+#[derive(Subcommand)]
+enum DevCommand {
+    /// Triage reported tooling issues.
+    Issue {
+        #[command(subcommand)]
+        command: DevIssueCommand,
+    },
+    /// Summarize development telemetry.
+    Telemetry {
+        /// Time window such as 30m, 24h, 7d, or all.
+        #[arg(long, default_value = "24h")]
+        since: String,
+        /// Restrict to one recorded verb.
+        #[arg(long)]
+        verb: Option<String>,
+        /// Show N slowest events instead of aggregates.
+        #[arg(long)]
+        slow: Option<usize>,
+    },
+    /// Show a stored issue or telemetry event.
+    Show {
+        /// Stored iREF or eREF.
+        reference: String,
+        /// Include complete captured context.
+        #[arg(long)]
+        all: bool,
+    },
+}
+
+#[cfg(feature = "development")]
+#[derive(Subcommand)]
+enum DevIssueCommand {
     /// List recorded mathmux issues.
     List {
         /// Issue status to include.
@@ -222,6 +259,7 @@ enum IssueCommand {
     },
 }
 
+#[cfg(feature = "development")]
 #[derive(Clone, Copy, ValueEnum)]
 enum IssueFilter {
     Open,
@@ -230,6 +268,7 @@ enum IssueFilter {
     All,
 }
 
+#[cfg(feature = "development")]
 impl IssueFilter {
     fn as_str(self) -> &'static str {
         match self {
@@ -242,51 +281,24 @@ impl IssueFilter {
 }
 
 pub fn run() -> Result<u8> {
-    let development = development_requested();
-    if !development && matches!(requested_top_command().as_deref(), Some("telemetry")) {
-        bail!("development commands are disabled");
-    }
-    let command = command_line(development);
+    let command = command_line();
     let matches = command.get_matches();
     let args = Args::from_arg_matches(&matches)?;
-    let development = development || args.development;
-    if let TopCommand::Daemon { repo } = args.command {
+    if let TopCommand::Daemon { repo } = &args.command {
         daemon::run(Repo::from_root(&repo)?)?;
         return Ok(0);
     }
     let cwd = std::env::current_dir()?;
-    if development && let Ok(repo) = Repo::discover(&cwd) {
-        let _ = enable_development(&repo);
+    #[cfg(feature = "development")]
+    if let TopCommand::Issue { command } = &args.command {
+        return run_issue_report(command, &cwd);
     }
-    if let TopCommand::Issue { command } = args.command {
-        ensure!(
-            development || matches!(command, IssueCommand::Report { .. }),
-            "development commands are disabled"
-        );
-        return run_issue(command, &cwd);
-    }
-    if let TopCommand::Telemetry { since, verb, slow } = args.command {
-        ensure!(development, "development commands are disabled");
-        println!(
-            "{}",
-            TelemetryStore::global()?.summary(&since, verb.as_deref(), slow)?
-        );
-        return Ok(0);
-    }
-    if let TopCommand::Show { reference, all } = &args.command
-        && matches!(reference.as_bytes().first(), Some(b'i' | b'e'))
-    {
-        ensure!(development, "development commands are disabled");
-        let summary = if reference.starts_with('i') {
-            IssueStore::global()?.show(reference, *all)?
-        } else {
-            TelemetryStore::global()?.show(reference, *all)?
-        };
-        println!("{summary}");
-        return Ok(0);
+    #[cfg(feature = "development")]
+    if let TopCommand::Dev { command } = &args.command {
+        return run_dev(command, &cwd);
     }
     let repo = Repo::discover(&cwd)?;
-    let project_development = development || development_enabled(&repo);
+    let development = development_enabled();
     let command = match args.command {
         TopCommand::Ws { command } => match command {
             WsCommand::Create { name, model } => Command::WsCreate { name, model },
@@ -316,9 +328,9 @@ pub fn run() -> Result<u8> {
         TopCommand::Sync { push } => Command::Sync { push },
         TopCommand::Submit { message } => Command::Submit { message },
         TopCommand::Show { reference, all } => Command::Show { reference, all },
-        TopCommand::Issue { .. } | TopCommand::Telemetry { .. } | TopCommand::Daemon { .. } => {
-            unreachable!()
-        }
+        #[cfg(feature = "development")]
+        TopCommand::Issue { .. } | TopCommand::Dev { .. } => unreachable!(),
+        TopCommand::Daemon { .. } => unreachable!(),
     };
     let request = Request {
         build: crate::util::build_id().to_owned(),
@@ -332,7 +344,7 @@ pub fn run() -> Result<u8> {
             Ok(detail) => Response::ok(format!("ok pushed main\n{detail}")),
             Err(error) => Response::error(format!("{error:#}")),
         };
-        if project_development {
+        if development {
             let _ = crate::issue::record_exchange(
                 &repo,
                 &request,
@@ -354,7 +366,7 @@ pub fn run() -> Result<u8> {
     let response = loop {
         let stream = match handoff_stream.take() {
             Some(stream) => Ok(stream),
-            None => connect_or_start(&repo, project_development),
+            None => connect_or_start(&repo),
         };
         let response = match stream.and_then(|stream| exchange(stream, &request)) {
             Ok(response) => response,
@@ -378,7 +390,7 @@ pub fn run() -> Result<u8> {
                 "daemon build changed repeatedly; retry command"
             );
             handoffs += 1;
-            handoff_stream = Some(replace_daemon(&repo, project_development)?);
+            handoff_stream = Some(replace_daemon(&repo)?);
         } else {
             ensure!(
                 retirement_waits < 2,
@@ -388,7 +400,7 @@ pub fn run() -> Result<u8> {
             handoff_stream = Some(wait_for_replacement(&repo)?);
         }
     };
-    if project_development {
+    if development {
         let _ = crate::issue::record_exchange(
             &repo,
             &request,
@@ -478,76 +490,68 @@ fn wait_for_replacement(repo: &Repo) -> Result<UnixStream> {
     bail!("replacement daemon did not start")
 }
 
-fn run_issue(command: IssueCommand, cwd: &Path) -> Result<u8> {
+#[cfg(feature = "development")]
+fn run_issue_report(command: &IssueCommand, cwd: &Path) -> Result<u8> {
     let store = IssueStore::global()?;
     let summary = match command {
         IssueCommand::Report { summary, reference } => {
             store.create(cwd, &summary, reference.as_deref())?
         }
-        IssueCommand::List { status } => store.list(status.as_str())?,
-        IssueCommand::Resolve {
-            issue,
-            fixed_by,
-            note,
-        } => store.resolve(&issue, fixed_by.as_deref(), note.as_deref())?,
-        IssueCommand::Dismiss { issue, reason } => store.dismiss(&issue, &reason)?,
     };
     println!("{summary}");
     Ok(0)
 }
 
-fn development_requested() -> bool {
-    let environment = std::env::var("MATHMUX_DEVELOPMENT")
-        .ok()
-        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes"));
-    environment || std::env::args_os().any(|argument| argument == "--development")
+#[cfg(feature = "development")]
+fn run_dev(command: &DevCommand, _cwd: &Path) -> Result<u8> {
+    let summary = match command {
+        DevCommand::Issue { command } => {
+            let store = IssueStore::global()?;
+            match command {
+                DevIssueCommand::List { status } => store.list(status.as_str())?,
+                DevIssueCommand::Resolve {
+                    issue,
+                    fixed_by,
+                    note,
+                } => store.resolve(issue, fixed_by.as_deref(), note.as_deref())?,
+                DevIssueCommand::Dismiss { issue, reason } => store.dismiss(issue, reason)?,
+            }
+        }
+        DevCommand::Telemetry { since, verb, slow } => {
+            TelemetryStore::global()?.summary(since, verb.as_deref(), *slow)?
+        }
+        DevCommand::Show { reference, all } => {
+            if reference.starts_with('i') {
+                IssueStore::global()?.show(reference, *all)?
+            } else if reference.starts_with('e') {
+                TelemetryStore::global()?.show(reference, *all)?
+            } else {
+                bail!("dev show expects iREF or eREF")
+            }
+        }
+    };
+    println!("{summary}");
+    Ok(0)
 }
 
-fn requested_top_command() -> Option<String> {
-    std::env::args_os()
-        .skip(1)
-        .filter(|argument| argument != "--development")
-        .find(|argument| !argument.to_string_lossy().starts_with('-'))
-        .map(|argument| argument.to_string_lossy().into_owned())
+fn command_line() -> clap::Command {
+    Args::command()
 }
 
-fn command_line(development: bool) -> clap::Command {
-    let mut command = Args::command();
-    if development {
-        command = command
-            .mut_subcommand("issue", |command| {
-                command
-                    .hide(false)
-                    .mut_subcommand("list", |command| command.hide(false))
-                    .mut_subcommand("resolve", |command| command.hide(false))
-                    .mut_subcommand("dismiss", |command| command.hide(false))
-            })
-            .mut_subcommand("telemetry", |command| command.hide(false));
-    } else {
-        command = command.mut_subcommand("issue", |command| {
-            command
-                .mut_subcommand("list", |command| command.hide(true))
-                .mut_subcommand("resolve", |command| command.hide(true))
-                .mut_subcommand("dismiss", |command| command.hide(true))
-        });
-    }
-    command
-}
-
-fn connect_or_start(repo: &Repo, development: bool) -> Result<UnixStream> {
+fn connect_or_start(repo: &Repo) -> Result<UnixStream> {
     if let Ok(stream) = UnixStream::connect(&repo.socket_path) {
         return Ok(stream);
     }
     let startup_lock = startup_lock(repo)?;
     startup_lock.lock_exclusive()?;
-    connect_or_start_locked(repo, development)
+    connect_or_start_locked(repo)
 }
 
-fn replace_daemon(repo: &Repo, development: bool) -> Result<UnixStream> {
+fn replace_daemon(repo: &Repo) -> Result<UnixStream> {
     let startup_lock = startup_lock(repo)?;
     startup_lock.lock_exclusive()?;
     wait_for_daemon_exit(repo)?;
-    connect_or_start_locked(repo, development)
+    connect_or_start_locked(repo)
 }
 
 fn startup_lock(repo: &Repo) -> Result<File> {
@@ -560,11 +564,11 @@ fn startup_lock(repo: &Repo) -> Result<File> {
         .map_err(Into::into)
 }
 
-fn connect_or_start_locked(repo: &Repo, development: bool) -> Result<UnixStream> {
+fn connect_or_start_locked(repo: &Repo) -> Result<UnixStream> {
     if let Ok(stream) = UnixStream::connect(&repo.socket_path) {
         return Ok(stream);
     }
-    start_daemon(repo, development)?;
+    start_daemon(repo)?;
     let started = Instant::now();
     while started.elapsed() < Duration::from_secs(10) {
         match UnixStream::connect(&repo.socket_path) {
@@ -575,7 +579,7 @@ fn connect_or_start_locked(repo: &Repo, development: bool) -> Result<UnixStream>
     bail!("daemon did not start; see {}", repo.log_path.display())
 }
 
-fn start_daemon(repo: &Repo, development: bool) -> Result<()> {
+fn start_daemon(repo: &Repo) -> Result<()> {
     let executable = daemon_executable()?;
     let log = File::options()
         .create(true)
@@ -590,9 +594,6 @@ fn start_daemon(repo: &Repo, development: bool) -> Result<()> {
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(error_log));
-    if development {
-        command.env("MATHMUX_DEVELOPMENT", "1");
-    }
     unsafe {
         command.pre_exec(|| {
             if libc::setsid() == -1 {
@@ -618,22 +619,27 @@ fn daemon_executable() -> Result<PathBuf> {
 mod tests {
     use super::*;
 
+    #[cfg(not(feature = "development"))]
     #[test]
-    fn development_commands_stay_out_of_normal_help() {
-        let normal = command_line(false).render_help().to_string();
-        let development = command_line(true).render_help().to_string();
-        assert!(!normal.contains("issue"));
-        assert!(!normal.contains("telemetry"));
-        assert!(development.contains("issue"));
-        assert!(development.contains("telemetry"));
-        assert!(normal.contains("never git, lean, lake build"));
-        assert!(normal.contains("Use Lean modules"));
+    fn production_help_omits_development_api() {
+        let mut command = command_line();
+        assert!(command.find_subcommand_mut("issue").is_none());
+        assert!(command.find_subcommand_mut("dev").is_none());
+        let help = command.render_help().to_string();
+        assert!(help.contains("never git, lean, lake build"));
+        assert!(help.contains("Use Lean modules"));
     }
 
+    #[cfg(feature = "development")]
     #[test]
-    fn managed_workspaces_can_report_but_not_triage_issues() {
-        let mut normal = command_line(false);
-        let issue_help = normal
+    fn development_help_separates_reporting_from_maintenance() {
+        let mut command = command_line();
+        let help = command.render_help().to_string();
+        assert!(help.contains("issue"));
+        assert!(help.contains("dev"));
+        assert!(help.contains("proving agents"));
+        assert!(help.contains("tooling developers only"));
+        let issue_help = command
             .find_subcommand_mut("issue")
             .unwrap()
             .render_help()
@@ -641,7 +647,7 @@ mod tests {
         assert!(issue_help.contains("report"));
         assert!(!issue_help.contains("resolve"));
         assert!(!issue_help.contains("dismiss"));
-        let matches = command_line(false)
+        let matches = command_line()
             .try_get_matches_from(["mathmux", "issue", "report", "search missed an exact name"])
             .unwrap();
         let args = Args::from_arg_matches(&matches).unwrap();
@@ -651,11 +657,23 @@ mod tests {
                 command: IssueCommand::Report { .. }
             }
         ));
+        let matches = command_line()
+            .try_get_matches_from(["mathmux", "dev", "issue", "list"])
+            .unwrap();
+        let args = Args::from_arg_matches(&matches).unwrap();
+        assert!(matches!(
+            args.command,
+            TopCommand::Dev {
+                command: DevCommand::Issue {
+                    command: DevIssueCommand::List { .. }
+                }
+            }
+        ));
     }
 
     #[test]
     fn search_all_is_an_option_not_a_query_term() {
-        let matches = command_line(false)
+        let matches = command_line()
             .try_get_matches_from(["mathmux", "search", "LinearEquiv.ofFinrankEq", "--all"])
             .unwrap();
         let args = Args::from_arg_matches(&matches).unwrap();
@@ -668,7 +686,7 @@ mod tests {
 
     #[test]
     fn search_help_lists_inferred_query_forms() {
-        let mut command = command_line(false);
+        let mut command = command_line();
         let help = command
             .find_subcommand_mut("search")
             .unwrap()

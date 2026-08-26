@@ -681,7 +681,7 @@ impl Checker {
         {
             let _ = writeln!(log, "direct worker fallback: {detail}");
         }
-        if development_enabled(&self.repo)
+        if development_enabled()
             && let Ok(store) = TelemetryStore::global()
         {
             let _ = store.record_operation(

@@ -59,7 +59,7 @@ pub fn render(repo: &Repo, state: &State) -> Result<String> {
     let code = current_code(&repo.root)?;
     let sorries = audited_sorry_count(state, &revision)?;
     let context = submission_context(repo, state, (now - DAY_SECS) * 1000);
-    let activity_events = development_enabled(repo)
+    let activity_events = development_enabled()
         .then(|| {
             TelemetryStore::global().and_then(|store| {
                 store.context_events(repo, (now - DAY_SECS - ACTIVE_SECS) * 1000)
@@ -497,7 +497,7 @@ fn net_lean_lines(root: &Path, since: i64) -> Result<i64> {
 }
 
 fn submission_context(repo: &Repo, state: &State, since: i64) -> Vec<SubmissionContext> {
-    if !development_enabled(repo) {
+    if !development_enabled() {
         return Vec::new();
     }
     let Ok(submissions) = state.submission_intervals(since) else {
