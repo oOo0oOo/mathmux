@@ -3360,6 +3360,7 @@ fn meaningful_query_tokens(query: &str) -> Vec<String> {
         "def",
         "instance",
         "lemma",
+        "name",
         "structure",
         "theorem",
     ];
@@ -4025,6 +4026,7 @@ fn fallback_source_hits(
         "def",
         "instance",
         "lemma",
+        "name",
         "structure",
         "theorem",
     ];
@@ -5315,6 +5317,10 @@ end Demo
             "MatrixGL.circleResolventFunction_commutes"
         ));
         assert_eq!(meaningful_query_tokens("precomp (L :=)"), vec!["precomp"]);
+        assert_eq!(
+            meaningful_query_tokens("name LinearEquiv.ofFinrankEq"),
+            vec!["linearequiv.offinrankeq", "finrank"]
+        );
         assert_eq!(
             meaningful_query_tokens("LinearEquiv.ofFinrankEq --all"),
             vec!["linearequiv.offinrankeq", "finrank"]
