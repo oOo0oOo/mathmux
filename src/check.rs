@@ -725,7 +725,11 @@ impl Checker {
             return Ok(base);
         }
         Ok(hash_bytes(
-            format!("{base}{}", setup_artifact_fingerprint(&setup_path)?).as_bytes(),
+            format!(
+                "{base}{}",
+                setup_artifact_fingerprint(&setup_path, &self.repo.cache_dir.join("artifacts"))?
+            )
+            .as_bytes(),
         ))
     }
 
@@ -740,7 +744,11 @@ impl Checker {
             return Ok(base.to_owned());
         }
         Ok(hash_bytes(
-            format!("{base}{}", setup_artifact_fingerprint(&setup_path)?).as_bytes(),
+            format!(
+                "{base}{}",
+                setup_artifact_fingerprint(&setup_path, &self.repo.cache_dir.join("artifacts"))?
+            )
+            .as_bytes(),
         ))
     }
 
@@ -1606,7 +1614,7 @@ pub fn certificate_fingerprint(
     Ok(hash_bytes(&material))
 }
 
-fn setup_artifact_fingerprint(path: &Path) -> Result<String> {
+fn setup_artifact_fingerprint(path: &Path, immutable_artifact_root: &Path) -> Result<String> {
     let bytes = fs::read(path)?;
     let value: serde_json::Value = serde_json::from_slice(&bytes)?;
     let mut paths = BTreeSet::new();
@@ -1614,6 +1622,9 @@ fn setup_artifact_fingerprint(path: &Path) -> Result<String> {
     let mut material = bytes;
     for artifact in paths {
         material.extend_from_slice(artifact.to_string_lossy().as_bytes());
+        if artifact.starts_with(immutable_artifact_root) {
+            continue;
+        }
         match fs::metadata(&artifact) {
             Ok(metadata) if metadata.is_file() => {
                 let modified = metadata
@@ -1771,9 +1782,10 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({ "path": artifact })).unwrap(),
         )
         .unwrap();
-        let before = setup_artifact_fingerprint(&setup).unwrap();
+        let immutable = directory.path().join("immutable");
+        let before = setup_artifact_fingerprint(&setup, &immutable).unwrap();
         fs::write(&artifact, "different size").unwrap();
-        let after = setup_artifact_fingerprint(&setup).unwrap();
+        let after = setup_artifact_fingerprint(&setup, &immutable).unwrap();
         assert_ne!(before, after);
     }
 
