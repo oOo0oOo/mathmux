@@ -3281,7 +3281,16 @@ fn promote_query_coverage(ranked: &mut Vec<RankedHit>, tokens: &[String]) {
         }
     }
     if promoted.len() < SUMMARY_LIMIT && !remaining.is_empty() {
-        promoted.push(remaining.remove(0));
+        let best = remaining
+            .iter()
+            .map(|candidate| hit_query_coverage(&candidate.hit, tokens))
+            .max()
+            .unwrap_or_default();
+        let position = remaining
+            .iter()
+            .position(|candidate| hit_query_coverage(&candidate.hit, tokens) == best)
+            .unwrap_or_default();
+        promoted.push(remaining.remove(position));
     }
     for token in tokens.iter().filter(|token| token.len() >= 3) {
         if promoted
@@ -3340,10 +3349,29 @@ fn hit_name_matches(name: &str, token: &str) -> bool {
 
 fn hit_matches_token(hit: &SearchHit, token: &str) -> bool {
     hit_name_matches(&hit.name, token)
-        || hit
-            .source
-            .as_deref()
-            .is_some_and(|source| text_matches_token(&source.to_lowercase(), token))
+        || [
+            hit.signature.as_deref(),
+            hit.doc.as_deref(),
+            hit.source.as_deref(),
+            Some(hit.module.as_str()),
+            Some(hit.path.as_str()),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|text| text_matches_token(&text.to_lowercase(), token))
+}
+
+fn hit_query_coverage(hit: &SearchHit, tokens: &[String]) -> (usize, usize) {
+    (
+        tokens
+            .iter()
+            .filter(|token| hit_matches_token(hit, token))
+            .count(),
+        tokens
+            .iter()
+            .filter(|token| hit_name_matches(&hit.name, token))
+            .count(),
+    )
 }
 
 fn text_matches_token(text: &str, token: &str) -> bool {
@@ -4703,6 +4731,26 @@ end Demo
         assert_eq!(strip_search_modifiers("declaration MORE terms more"), "declaration terms");
         assert_eq!(strip_search_modifiers("declaration terms"), "declaration terms");
         assert_eq!(strip_search_modifiers("MORE"), "");
+        let contextual_hit = SearchHit {
+            name: "Demo.projectionRange_nearby_isomorphic".into(),
+            kind: "theorem".into(),
+            signature: Some("Isomorphic X Y".into()),
+            module: "Demo.Pullback".into(),
+            path: "Demo/Pullback.lean".into(),
+            line: 1,
+            doc: None,
+            source: None,
+            usages: Vec::new(),
+            applicable: false,
+            required_import: None,
+        };
+        assert_eq!(
+            hit_query_coverage(
+                &contextual_hit,
+                &["projectionrange".into(), "pullback".into(), "isomorphic".into()]
+            ),
+            (3, 2)
+        );
         assert_eq!(symbolic_source_term("*ᵥ"), Some("*ᵥ".to_owned()));
         assert_eq!(symbolic_source_term("≤"), Some("≤".to_owned()));
         assert_eq!(symbolic_source_term("*"), None);
