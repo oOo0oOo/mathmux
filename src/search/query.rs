@@ -290,7 +290,10 @@ pub(super) fn diagnostic_type_detail(diagnostic: &str) -> Option<String> {
     ))
 }
 
-pub(super) fn diagnostic_search_query(diagnostic: &str) -> String {
+pub(super) fn diagnostic_search_query(
+    diagnostic: &str,
+    source_context: Option<&str>,
+) -> String {
     if diagnostic.contains("(deterministic) timeout at") {
         return String::new();
     }
@@ -351,6 +354,15 @@ pub(super) fn diagnostic_search_query(diagnostic: &str) -> String {
         structural.reverse();
         specific.extend(structural);
         if !specific.is_empty() {
+            if specific.iter().all(|term| {
+                matches!(
+                    term.as_str(),
+                    "Type" | "Sort" | "Prop" | "OfNat" | "LE" | "LT"
+                )
+            }) && let Some(query) = highlighted_tactic_query(source_context)
+            {
+                return query;
+            }
             return specific.join(" ");
         }
         return goal.to_owned();
@@ -390,6 +402,36 @@ pub(super) fn diagnostic_search_query(diagnostic: &str) -> String {
     } else {
         selected.join(" ")
     }
+}
+
+fn highlighted_tactic_query(source_context: Option<&str>) -> Option<String> {
+    let code = source_context?
+        .lines()
+        .find_map(|line| line.trim_start().strip_prefix('>'))?
+        .split_once('|')?
+        .1
+        .trim();
+    let mut identifiers = code
+        .split(|character: char| {
+            !character.is_alphanumeric() && !matches!(character, '_' | '.' | '\'')
+        })
+        .filter(|token| !token.is_empty());
+    let tactic = identifiers.next()?;
+    if !matches!(
+        tactic,
+        "apply" | "change" | "exact" | "refine" | "rw" | "simpa" | "simp"
+    ) {
+        return None;
+    }
+    identifiers
+        .find(|token| {
+            !matches!(
+                *token,
+                "at" | "by" | "fun" | "only" | "using" | "with" | "Type" | "Prop"
+            ) && token.chars().any(char::is_alphabetic)
+                && declaration_name_query(token)
+        })
+        .map(str::to_owned)
 }
 
 pub(super) fn diagnostic_goal_query(goal: &str, locals: &HashSet<&str>) -> String {

@@ -1347,36 +1347,49 @@ fn goal_and_source_query_regressions() {
     );
     assert_eq!(
         diagnostic_search_query(
-            "error: unsolved goals\nX : Type\nf g : X → X\nhf : Continuous f\n⊢ Continuous (f ∘ g)\n   3 | example"
+            "error: unsolved goals\nX : Type\nf g : X → X\nhf : Continuous f\n⊢ Continuous (f ∘ g)\n   3 | example",
+            None,
         ),
         "⊢ Continuous (_ ∘ _)"
     );
     assert_eq!(
         diagnostic_search_query(
-            "Demo:12:4: error: Tactic `rfl` failed: The left-hand side\n  (projectionRangePullbackMapAt P x) ((Trivialization.symmL ℂ e x) v)\nis not definitionally equal to the right-hand side\n  (Trivialization.symmL ℂ e' x) v\n\ncase refl\nP : C X Y"
+            "Demo:12:4: error: Tactic `rfl` failed: The left-hand side\n  (projectionRangePullbackMapAt P x) ((Trivialization.symmL ℂ e x) v)\nis not definitionally equal to the right-hand side\n  (Trivialization.symmL ℂ e' x) v\n\ncase refl\nP : C X Y",
+            None,
         ),
         "projectionRangePullbackMapAt Trivialization.symmL"
     );
     assert_eq!(
         diagnostic_search_query(
-            "Demo:12:4: error: Type mismatch: term\n  Eq.symm (local_repair_lemma x)\nhas type\n  Left x\nbut is expected to have type\n  Right x"
+            "Demo:12:4: error: Type mismatch: term\n  Eq.symm (local_repair_lemma x)\nhas type\n  Left x\nbut is expected to have type\n  Right x",
+            None,
         ),
         "local_repair_lemma Eq.symm"
     );
     assert_eq!(
         diagnostic_search_query(
-            "Demo:12:4: error: Type mismatch: After simplification, term\n  LinearEquiv.apply_symm_apply e x\n has type\n  e (e.symm x) = x\n but is expected to have type\n  e.toContinuousLinearEquiv (e.symm.toContinuousLinearEquiv x) = x"
+            "Demo:12:4: error: Type mismatch: After simplification, term\n  LinearEquiv.apply_symm_apply e x\n has type\n  e (e.symm x) = x\n but is expected to have type\n  e.toContinuousLinearEquiv (e.symm.toContinuousLinearEquiv x) = x",
+            None,
         ),
         "ContinuousLinearEquiv.apply_symm_apply LinearEquiv.apply_symm_apply e.symm e.toContinuousLinearEquiv e.symm.toContinuousLinearEquiv"
     );
     assert_eq!(
         diagnostic_search_query(
-            "Demo:1:1: error(lean.synthInstanceFailed): failed to synthesize instance of type class\n  TopologicalSpace (TotalSpace (X.changeModel eF).F X.E)\n\nHint: inspect it"
+            "Demo:1:1: error(lean.synthInstanceFailed): failed to synthesize instance of type class\n  TopologicalSpace (TotalSpace (X.changeModel eF).F X.E)\n\nHint: inspect it",
+            None,
         ),
         "changeModel TotalSpace TopologicalSpace"
     );
+    assert_eq!(
+        diagnostic_search_query(
+            "Demo:28:36: error(lean.synthInstanceFailed): failed to synthesize instance of type class\n  LE Type\n\nHint: inspect it",
+            Some("    27 | intro (x : l2Space ι)\n>   28 | change lp (fun _ : ι => ℂ) (2 : ℝ≥0∞) at x\n    29 | exact h"),
+        ),
+        "lp"
+    );
     assert!(diagnostic_search_query(
-        "Demo:9:2: error: (deterministic) timeout at `whnf`, maximum number of heartbeats has been reached"
+        "Demo:9:2: error: (deterministic) timeout at `whnf`, maximum number of heartbeats has been reached",
+        None,
     )
     .is_empty());
     assert_eq!(

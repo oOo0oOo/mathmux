@@ -476,7 +476,10 @@ impl Searcher {
                 .or_else(|| run.warnings.first())
                 .or_else(|| run.suggestions.first());
             let diagnostic_text = diagnostic.map(|value| value.text.as_str()).unwrap_or_default();
-            let mut diagnostic_query = diagnostic_search_query(diagnostic_text);
+            let mut diagnostic_query = diagnostic_search_query(
+                diagnostic_text,
+                diagnostic.and_then(|value| value.context.as_deref()),
+            );
             if diagnostic_text.contains("Invalid field")
                 && let Some(nearest) = self.nearest_field_declaration(&diagnostic_query)?
             {
