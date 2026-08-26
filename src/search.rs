@@ -5541,18 +5541,46 @@ fn goal_probe_replacement(in_tactic: bool, indent: &str, tactic: &str) -> String
 
 fn try_this_suggestions(output: &str) -> Vec<String> {
     let mut suggestions = Vec::new();
-    let mut next_is_suggestion = false;
-    for line in output.lines() {
-        if let Some(suggestion) = line.split("Try this:").nth(1) {
+    let mut lines = output.lines().peekable();
+    while let Some(line) = lines.next() {
+        if let Some((_, suggestion)) = line.split_once("Try this:") {
             let suggestion = suggestion.trim();
-            if suggestion.is_empty() {
-                next_is_suggestion = true;
-            } else {
+            if !suggestion.is_empty() {
                 push_suggestion(&mut suggestions, suggestion);
+                continue;
             }
-        } else if next_is_suggestion && !line.trim().is_empty() {
-            push_suggestion(&mut suggestions, line.trim());
-            next_is_suggestion = false;
+            while lines.peek().is_some_and(|line| line.trim().is_empty()) {
+                lines.next();
+            }
+            let Some(first) = lines.peek() else {
+                break;
+            };
+            let indent = first.len() - first.trim_start().len();
+            if indent == 0 {
+                continue;
+            }
+            let mut block = Vec::new();
+            let mut length = 0;
+            while let Some(next) = lines.peek() {
+                if next.trim().is_empty() {
+                    lines.next();
+                    break;
+                }
+                let next_indent = next.len() - next.trim_start().len();
+                if next_indent < indent || block.len() >= 8 || length >= 1_200 {
+                    break;
+                }
+                let normalized = next[indent..].trim_end();
+                if normalized.starts_with("-- Remaining subgoals:") {
+                    break;
+                }
+                length += normalized.len();
+                block.push(normalized);
+                lines.next();
+            }
+            if !block.is_empty() {
+                push_suggestion(&mut suggestions, &block.join("\n"));
+            }
         }
     }
     suggestions
@@ -6175,6 +6203,18 @@ end Demo
         assert_eq!(
             try_this_suggestions("Try this:\n  [apply] exact useful h\n"),
             vec!["exact useful h"]
+        );
+        assert_eq!(
+            try_this_suggestions(
+                "Try this:\n  [apply] obtain ⟨value, property⟩ := b\n  simp_all only [Prod.mk.injEq,\n    true_and]\n\nwarning: later\n"
+            ),
+            vec!["obtain ⟨value, property⟩ := b\nsimp_all only [Prod.mk.injEq,\n  true_and]"]
+        );
+        assert_eq!(
+            try_this_suggestions(
+                "Try this:\n  [apply] refine useful ?_\n  -- Remaining subgoals:\n  -- ⊢ True\n"
+            ),
+            vec!["refine useful ?_"]
         );
         assert_eq!(
             traced_goal_state(
