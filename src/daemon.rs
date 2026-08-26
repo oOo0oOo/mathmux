@@ -348,6 +348,15 @@ fn check_summary(outcome: &CheckOutcome) -> String {
                 outcome.reference
             ));
         }
+        if let Some(repetition) = &outcome.repetition {
+            output.push_str(&format!(
+                "\nrepeated blocker: {} checks ({}..{}, previous {})",
+                repetition.count,
+                repetition.first_reference,
+                outcome.reference,
+                repetition.previous_reference
+            ));
+        }
     }
     if let Some(profile) = &outcome.profile {
         output.push('\n');
@@ -436,11 +445,17 @@ mod tests {
                 context: Some(">    3 | failing tactic".into()),
             }],
             profile: None,
+            repetition: Some(crate::check::CheckRepetition {
+                count: 3,
+                first_reference: "c8".into(),
+                previous_reference: "c9".into(),
+            }),
         });
         assert!(summary.contains("Demo.Proof:3:1"));
         assert!(summary.contains("final target"));
         assert!(summary.contains(">    3 | failing tactic"));
         assert!(summary.contains("full diagnostic: show c1"));
+        assert!(summary.contains("repeated blocker: 3 checks (c8..c1, previous c9)"));
     }
 
     #[test]
@@ -458,6 +473,7 @@ mod tests {
             suggestions: Vec::new(),
             diagnostics: Vec::new(),
             profile: None,
+            repetition: None,
         });
         assert!(summary.contains("linters: 1; show c1 --all"));
     }

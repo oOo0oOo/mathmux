@@ -5,10 +5,11 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Instant, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail, ensure};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use crate::git::{dirty_lean_files, lake_command, merge_in_progress, project_lean_files};
@@ -150,6 +151,14 @@ pub struct CheckOutcome {
     pub suggestions: Vec<Diagnostic>,
     pub diagnostics: Vec<Diagnostic>,
     pub profile: Option<CheckProfile>,
+    pub repetition: Option<CheckRepetition>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CheckRepetition {
+    pub count: usize,
+    pub first_reference: String,
+    pub previous_reference: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -322,6 +331,7 @@ impl Checker {
         self.state
             .add_check_run(&run, if ok { &certificates } else { &[] })?;
         self.state.touch_workspace(&workspace.reference)?;
+        let repetition = self.repeated_blocker(&run)?;
         Ok(CheckOutcome {
             reference,
             ok,
@@ -331,7 +341,49 @@ impl Checker {
             suggestions,
             diagnostics,
             profile: run.profile,
+            repetition,
         })
+    }
+
+    fn repeated_blocker(&self, current: &CheckRun) -> Result<Option<CheckRepetition>> {
+        let Some(target) = current.failed.as_deref() else {
+            return Ok(None);
+        };
+        let Some(diagnostic) = current.diagnostics.first() else {
+            return Ok(None);
+        };
+        let fingerprint = diagnostic_fingerprint(&diagnostic.text);
+        if fingerprint.is_empty() {
+            return Ok(None);
+        }
+        let matches = self
+            .state
+            .recent_failed_checks(&current.workspace_ref, 64)?
+            .into_iter()
+            .filter(|run| run.failed.as_deref() == Some(target))
+            .filter(|run| {
+                run.diagnostics
+                    .first()
+                    .is_some_and(|diagnostic| {
+                        diagnostic_fingerprint(&diagnostic.text) == fingerprint
+                    })
+            })
+            .collect::<Vec<_>>();
+        if matches.len() < 3 {
+            return Ok(None);
+        }
+        Ok(Some(CheckRepetition {
+            count: matches.len(),
+            first_reference: matches
+                .last()
+                .map(|run| run.reference.clone())
+                .unwrap_or_else(|| current.reference.clone()),
+            previous_reference: matches
+                .iter()
+                .find(|run| run.reference != current.reference)
+                .map(|run| run.reference.clone())
+                .unwrap_or_else(|| current.reference.clone()),
+        }))
     }
 
     fn check_one(
@@ -1138,6 +1190,25 @@ fn deduplicate_diagnostics(mut response: WorkerResponse) -> WorkerResponse {
     response
 }
 
+fn diagnostic_fingerprint(diagnostic: &str) -> String {
+    static LOCATION: OnceLock<Regex> = OnceLock::new();
+    static GENERATED: OnceLock<Regex> = OnceLock::new();
+    static DAGGER_SUFFIX: OnceLock<Regex> = OnceLock::new();
+    let location = LOCATION.get_or_init(|| {
+        Regex::new(r"^[^:\n]+:\d+:\d+:\s*").expect("valid diagnostic location regex")
+    });
+    let generated = GENERATED.get_or_init(|| {
+        Regex::new(r"\?[A-Za-z]+\.\d+").expect("valid generated name regex")
+    });
+    let dagger_suffix = DAGGER_SUFFIX.get_or_init(|| {
+        Regex::new(r"✝[⁰¹²³⁴⁵⁶⁷⁸⁹]+").expect("valid dagger suffix regex")
+    });
+    let without_location = location.replace(diagnostic, "");
+    let without_generated = generated.replace_all(&without_location, "?_");
+    let without_daggers = dagger_suffix.replace_all(&without_generated, "✝");
+    without_daggers.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 fn invalidates_worker(root: &Path, path: &Path, target: &Path) -> bool {
     let other_lean_file = path
         .components()
@@ -1619,6 +1690,14 @@ mod tests {
 
     #[test]
     fn diagnostics_are_deduplicated_and_linters_are_separate() {
+        assert_eq!(
+            diagnostic_fingerprint(
+                "Demo.Proof:3:1: error: Type mismatch\n  ?m.127 x✝¹⁷ has type A"
+            ),
+            diagnostic_fingerprint(
+                "Demo.Proof:30:9: error: Type mismatch\n ?m.42 x✝² has type A"
+            )
+        );
         let ordinary = WorkerDiagnostic {
             severity: "warning".into(),
             kind: "declaration".into(),

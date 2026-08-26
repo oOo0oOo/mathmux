@@ -22,7 +22,7 @@ use crate::repo::Repo;
 use crate::state::{SearchHit, SearchRun, SearchUsage, State, Workspace};
 use crate::util::{
     SOURCE_PREVIEW_LINES, clean_line, hash_bytes, now_unix_ms, query_requests_proof_body,
-    single_line, truncate_line,
+    single_line, truncate_line, truncate_middle,
 };
 
 const RESULT_LIMIT: usize = 24;
@@ -2445,19 +2445,113 @@ fn diagnostic_position(diagnostic: &str, fallback: Option<&str>) -> (Option<Stri
 }
 
 fn diagnostic_context(diagnostic: &str, source_context: Option<&str>) -> String {
+    let type_detail = diagnostic_type_detail(diagnostic);
     let mut lines = diagnostic.lines().collect::<Vec<_>>();
-    if lines.len() > 16 {
-        lines.truncate(16);
+    let diagnostic_limit = if type_detail.is_some() { 8 } else { 16 };
+    if lines.len() > diagnostic_limit {
+        lines.truncate(diagnostic_limit);
     }
     let mut rendered = lines.join("\n");
+    if let Some(detail) = type_detail {
+        rendered.push('\n');
+        rendered.push_str(&detail);
+    }
     if let Some(context) = source_context {
-        let context = context.lines().take(7).collect::<Vec<_>>().join("\n");
+        let context = context.lines().take(5).collect::<Vec<_>>().join("\n");
         if !context.is_empty() {
             rendered.push('\n');
             rendered.push_str(&context);
         }
     }
     rendered
+}
+
+fn diagnostic_type_detail(diagnostic: &str) -> Option<String> {
+    const SYNTHESIS: &str = "failed to synthesize instance of type class";
+    let lines = diagnostic.lines().collect::<Vec<_>>();
+    if let Some(index) = lines.iter().position(|line| line.contains(SYNTHESIS)) {
+        let mut goal = lines[index]
+            .split_once(SYNTHESIS)
+            .map(|(_, suffix)| suffix.trim())
+            .filter(|suffix| !suffix.is_empty())
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        goal.extend(
+            lines[index + 1..]
+                .iter()
+                .map(|line| line.trim())
+                .take_while(|line| {
+                    !line.is_empty()
+                        && !line.starts_with("Hint:")
+                        && !line.starts_with("Note:")
+                })
+                .map(str::to_owned),
+        );
+        let goal = goal.join(" ");
+        if !goal.is_empty() {
+            return Some(format!(
+                "instance goal\n{}",
+                truncate_middle(&goal, 480)
+            ));
+        }
+    }
+
+    let actual_start = lines.iter().position(|line| line.trim() == "has type")? + 1;
+    let expected_marker = lines[actual_start..]
+        .iter()
+        .position(|line| line.trim() == "but is expected to have type")?
+        + actual_start;
+    let expected_start = expected_marker + 1;
+    let expected_end = lines[expected_start..]
+        .iter()
+        .position(|line| {
+            let line = line.trim();
+            line.starts_with("in the application")
+                || line.starts_with("the following variables")
+                || line.starts_with("Hint:")
+                || line.starts_with("Note:")
+        })
+        .map_or(lines.len(), |offset| expected_start + offset);
+    let actual = lines[actual_start..expected_marker]
+        .iter()
+        .flat_map(|line| line.split_whitespace())
+        .collect::<Vec<_>>();
+    let expected = lines[expected_start..expected_end]
+        .iter()
+        .flat_map(|line| line.split_whitespace())
+        .collect::<Vec<_>>();
+    if actual.is_empty() || expected.is_empty() || actual == expected {
+        return None;
+    }
+    let prefix = actual
+        .iter()
+        .zip(&expected)
+        .take_while(|(actual, expected)| actual == expected)
+        .count();
+    let suffix = actual[prefix..]
+        .iter()
+        .rev()
+        .zip(expected[prefix..].iter().rev())
+        .take_while(|(actual, expected)| actual == expected)
+        .count();
+    let actual_end = actual.len().saturating_sub(suffix).max(prefix);
+    let expected_end = expected.len().saturating_sub(suffix).max(prefix);
+    let actual_difference = actual[prefix..actual_end].join(" ");
+    let expected_difference = expected[prefix..expected_end].join(" ");
+    Some(format!(
+        "first type difference\nactual: {}\nexpected: {}",
+        if actual_difference.is_empty() {
+            "<end>".into()
+        } else {
+            truncate_middle(&actual_difference, 360)
+        },
+        if expected_difference.is_empty() {
+            "<end>".into()
+        } else {
+            truncate_middle(&expected_difference, 360)
+        }
+    ))
 }
 
 fn diagnostic_search_query(diagnostic: &str) -> String {
@@ -6329,6 +6423,20 @@ end Demo
             (Some("Demo/Proof.lean".into()), 43)
         );
         assert!(diagnostic_context("error: mismatch", Some(">   42 | bad")).contains("42 | bad"));
+        let mismatch = diagnostic_type_detail(
+            "Demo:1:1: error: Type mismatch\nterm\nhas type\n  @Map A oldTopology oldInstance\nbut is expected to have type\n  @Map A newTopology oldInstance\nin the application\n  use term",
+        )
+        .unwrap();
+        assert!(mismatch.contains("actual: oldTopology"));
+        assert!(mismatch.contains("expected: newTopology"));
+        assert!(!mismatch.contains("oldInstance"));
+        assert_eq!(
+            diagnostic_type_detail(
+                "Demo:1:1: error(lean.synthInstanceFailed): failed to synthesize instance of type class\n  TopologicalSpace (Fiber x)\n\nHint: inspect it"
+            )
+            .as_deref(),
+            Some("instance goal\nTopologicalSpace (Fiber x)")
+        );
         assert_eq!(
             append_goal_tactic(
                 "example (h : True) : True := by\n  skip\n\nexample : True := by\n  trivial\n",

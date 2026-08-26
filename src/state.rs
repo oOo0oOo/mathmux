@@ -579,6 +579,25 @@ impl State {
             .map_err(Into::into)
     }
 
+    pub fn recent_failed_checks(
+        &self,
+        workspace_ref: &str,
+        limit: usize,
+    ) -> Result<Vec<CheckRun>> {
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            "SELECT ref, workspace_ref, status, files_json, passed_json, failed,
+                    not_checked_json, warnings_json, linters_json, diagnostics_json,
+                    suggestions_json, profile_json, duration_ms, created_at
+             FROM check_runs
+             WHERE workspace_ref = ?1 AND status = 'failed'
+             ORDER BY created_at DESC LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![workspace_ref, limit as i64], check_run_from_row)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
     pub fn checks_for_workspace(&self, workspace_ref: &str) -> Result<Vec<CheckRecord>> {
         let connection = self.open()?;
         let mut statement = connection.prepare(
