@@ -3867,23 +3867,12 @@ fn source_specific_query_tokens(query: &str) -> Vec<String> {
 
 fn meaningful_query_tokens(query: &str) -> Vec<String> {
     let mut tokens = query_tokens(query);
-    let generic = [
-        "class",
-        "constructor",
-        "constructors",
-        "def",
-        "instance",
-        "lemma",
-        "name",
-        "structure",
-        "theorem",
-    ];
     if tokens.len() > 1
         && tokens
             .iter()
-            .any(|token| !generic.contains(&token.as_str()))
+            .any(|token| !search_syntax_token(token))
     {
-        tokens.retain(|token| !generic.contains(&token.as_str()));
+        tokens.retain(|token| !search_syntax_token(token));
     }
     if tokens.len() > 1 {
         tokens.retain(|token| token.chars().count() >= 2);
@@ -3925,6 +3914,7 @@ fn meaningful_query_tokens(query: &str) -> Vec<String> {
         .flat_map(|token| identifier_query_parts(token.rsplit('.').next().unwrap_or(token)))
         .filter(|part| {
             part.chars().count() >= 3
+                && !search_syntax_token(part)
                 && !matches!(
                     part.as_str(),
                     "all" | "and" | "for" | "from" | "the" | "with"
@@ -3935,6 +3925,31 @@ fn meaningful_query_tokens(query: &str) -> Vec<String> {
     let mut seen = HashSet::new();
     tokens.retain(|token| seen.insert(token.clone()));
     tokens
+}
+
+fn search_syntax_token(token: &str) -> bool {
+    matches!(
+        token,
+        "aesop"
+            | "apply"
+            | "assumption"
+            | "class"
+            | "constructor"
+            | "constructors"
+            | "def"
+            | "exact"
+            | "instance"
+            | "lemma"
+            | "name"
+            | "only"
+            | "rfl"
+            | "rw"
+            | "simp"
+            | "simpa"
+            | "structure"
+            | "theorem"
+            | "using"
+    )
 }
 
 fn identifier_query_parts(token: &str) -> Vec<String> {
@@ -5998,6 +6013,20 @@ end Demo
             "MatrixGL.circleResolventFunction_commutes"
         ));
         assert_eq!(meaningful_query_tokens("precomp (L :=)"), vec!["precomp"]);
+        assert_eq!(
+            meaningful_query_tokens("exact? eTarget.symm"),
+            vec!["etarget.symm"]
+        );
+        assert_eq!(
+            meaningful_query_tokens("simpa only [precomp_classOf, ContinuousMap.comp_assoc]"),
+            vec![
+                "precomp_classof",
+                "continuousmap.comp_assoc",
+                "precomp",
+                "comp",
+                "assoc"
+            ]
+        );
         assert_eq!(
             meaningful_query_tokens("name LinearEquiv.ofFinrankEq"),
             vec!["linearequiv.offinrankeq", "finrank"]
