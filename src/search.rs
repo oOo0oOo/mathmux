@@ -754,10 +754,11 @@ impl Searcher {
         if !type_search_enabled() || !workspace.path.join(".lake/packages/mathlib").is_dir() {
             return (Vec::new(), false);
         }
-        let mut state = self
-            .loogle
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = match self.loogle.try_lock() {
+            Ok(state) => state,
+            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return (Vec::new(), true),
+        };
         let stopped = match &mut *state {
             LoogleState::Running(worker) => !worker.alive(),
             _ => false,
