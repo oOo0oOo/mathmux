@@ -13,6 +13,7 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 
 use crate::check::{CheckOutcome, Checker};
 use crate::git::{self, dirty_lean_files, dirty_paths};
+use crate::issue::{TelemetryOperation, TelemetryStore, development_enabled};
 use crate::protocol::{Command, Request, Response};
 use crate::repo::Repo;
 use crate::search::Searcher;
@@ -24,6 +25,7 @@ use crate::util::{
 use crate::validation::ValidationQueue;
 
 pub fn run(repo: Repo) -> Result<()> {
+    let startup_started = Instant::now();
     let _ = build_id();
     if repo.socket_path.exists() {
         match UnixStream::connect(&repo.socket_path) {
@@ -37,15 +39,44 @@ pub fn run(repo: Repo) -> Result<()> {
     fs::set_permissions(&repo.socket_path, fs::Permissions::from_mode(0o600))?;
     listener.set_nonblocking(true)?;
 
+    let phase = Instant::now();
     let state = State::new(&repo.db_path)?;
+    let state_ms = phase.elapsed().as_millis() as u64;
     let checker = Arc::new(Checker::new(repo.clone(), state.clone())?);
+    let phase = Instant::now();
     let searcher = Searcher::new(repo.clone(), state.clone(), checker.clone())?;
+    let search_ms = phase.elapsed().as_millis() as u64;
     let retiring = Arc::new(AtomicBool::new(false));
+    let phase = Instant::now();
     let validation = ValidationQueue::start(repo.clone(), state.clone(), retiring.clone())?;
+    let validation_ms = phase.elapsed().as_millis() as u64;
+    let phase = Instant::now();
     let watcher = WorkspaceWatcher::new(state.clone(), checker.clone())?;
-    for workspace in state.list_workspaces()? {
+    let workspaces = state.list_workspaces()?;
+    for workspace in &workspaces {
         git::prepare_workspace(&repo, &workspace.path)?;
         watcher.watch(&workspace.path)?;
+    }
+    let workspaces_ms = phase.elapsed().as_millis() as u64;
+    if development_enabled(&repo)
+        && let Ok(store) = TelemetryStore::global()
+    {
+        let detail = format!(
+            "state={state_ms}ms search={search_ms}ms validation={validation_ms}ms workspaces={workspaces_ms}ms count={}",
+            workspaces.len()
+        );
+        let _ = store.record_operation(
+            &repo,
+            &TelemetryOperation {
+                workspace: None,
+                verb: "daemon_startup",
+                reference: None,
+                ok: true,
+                duration_ms: startup_started.elapsed().as_millis() as u64,
+                detail: &detail,
+                rss_kib: resident_memory_kib(),
+            },
+        );
     }
     let service = Arc::new(Service {
         repo: repo.clone(),
