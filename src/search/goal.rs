@@ -544,6 +544,14 @@ pub(super) fn resolve_goal_path(
                 if candidate.is_file() {
                     candidates.push(fs::canonicalize(candidate)?);
                 }
+                if let Ok(source_roots) = fs::read_dir(package.path()) {
+                    for source_root in source_roots.flatten() {
+                        let candidate = source_root.path().join(variant);
+                        if candidate.is_file() {
+                            candidates.push(fs::canonicalize(candidate)?);
+                        }
+                    }
+                }
             }
         }
         candidates.sort();

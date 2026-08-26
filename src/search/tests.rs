@@ -1249,6 +1249,19 @@ fn goal_suggestions_accept_leans_multiline_output() {
         dependency.display_path.as_deref(),
         Some("Mathlib/Topology/Basic.lean")
     );
+    let dependency_without_library = parse_goal_location(
+        directory.path(),
+        directory.path(),
+        None,
+        "Topology/Basic.lean:15",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(dependency_without_library.path, dependency.path);
+    assert_eq!(
+        dependency_without_library.display_path.as_deref(),
+        Some("Topology/Basic.lean")
+    );
 }
 
 #[test]
