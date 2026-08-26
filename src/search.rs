@@ -7,7 +7,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
 use regex::Regex;
@@ -51,6 +51,7 @@ const DECLARATION_DETAIL_LINES: usize = 48;
 const INDEX_COMMIT_BATCH: usize = 64;
 const SEARCH_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 const DIAGNOSTIC_PROBE_MAX_CHECK_MS: u64 = 2_000;
+const DIAGNOSTIC_PROBE_BUDGET: Duration = Duration::from_millis(750);
 
 pub struct Searcher {
     repo: Repo,
@@ -613,25 +614,35 @@ impl Searcher {
         let Ok(source) = fs::read_to_string(&absolute) else {
             return Vec::new();
         };
+        let started = Instant::now();
         let mut suggestions = Vec::new();
         if let Some(probe) = append_goal_tactic(
             &source,
             line,
             "first | exact? | simp? | apply? | rw?",
-        ) && let Ok(Some((_, rendered))) = self
-            .checker
-            .probe_source_if_ready(workspace, &absolute, &probe)
+        ) && let Ok(Some((_, rendered))) = self.checker.probe_source_if_ready(
+            workspace,
+            &absolute,
+            &probe,
+            DIAGNOSTIC_PROBE_BUDGET,
+        )
         {
             suggestions.extend(try_this_suggestions(&rendered));
         }
         if suggestions.is_empty() {
             for candidate in local_method_candidates(diagnostic).into_iter().take(3) {
+                let Some(remaining) = DIAGNOSTIC_PROBE_BUDGET.checked_sub(started.elapsed()) else {
+                    break;
+                };
+                if remaining.is_zero() {
+                    break;
+                }
                 let Some(probe) = append_goal_tactic(&source, line, &candidate) else {
                     break;
                 };
                 if self
                     .checker
-                    .probe_source_if_ready(workspace, &absolute, &probe)
+                    .probe_source_if_ready(workspace, &absolute, &probe, remaining)
                     .is_ok_and(|result| result.is_some_and(|(ok, _)| ok))
                 {
                     suggestions.push(candidate);

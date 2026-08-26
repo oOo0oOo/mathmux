@@ -622,6 +622,7 @@ impl Checker {
         workspace: &Workspace,
         requested: &Path,
         source: &str,
+        timeout: Duration,
     ) -> Result<Option<(bool, String)>> {
         let target = resolve_target(&workspace.path, requested)?;
         let worker = match self.workers.try_lock() {
@@ -642,13 +643,8 @@ impl Checker {
         if !ready {
             return Ok(None);
         }
-        self.probe_source_with_timeout(
-            workspace,
-            requested,
-            source,
-            Duration::from_secs(2),
-        )
-        .map(Some)
+        self.probe_source_with_timeout(workspace, requested, source, timeout)
+            .map(Some)
     }
 
     fn worker_setup(
