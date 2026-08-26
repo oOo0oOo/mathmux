@@ -364,16 +364,15 @@ fn source_outline_result(
         .iter()
         .take(SOURCE_OCCURRENCE_ALL_LIMIT)
         .map(|entry| {
-            let signature = (!entry.signature.is_empty())
-                .then(|| format!(" : {}", entry.signature))
-                .unwrap_or_default();
-            truncate_line(
-                &format!(
-                    "{:>5}  {} {}{}",
-                    entry.line, entry.kind, entry.name, signature
-                ),
-                200,
-            )
+            let prefix = format!("{:>5}  {} {}", entry.line, entry.kind, entry.name);
+            if entry.signature.is_empty() || prefix.chars().count() >= OUTLINE_LINE_CHARS {
+                prefix
+            } else {
+                truncate_line(
+                    &format!("{prefix} : {}", entry.signature),
+                    OUTLINE_LINE_CHARS,
+                )
+            }
         })
         .collect::<Vec<_>>()
         .join("\n");
