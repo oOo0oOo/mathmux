@@ -555,7 +555,7 @@ impl Searcher {
         if let Some(probe) = append_goal_tactic(
             &source,
             line,
-            "first | exact? | aesop? | simp? | apply? | rw?",
+            "first | exact? | simp? | apply? | rw?",
         ) && let Ok(Some((_, rendered))) = self
             .checker
             .probe_source_if_ready(workspace, &absolute, &probe)

@@ -817,7 +817,10 @@ pub(super) fn push_suggestion(suggestions: &mut Vec<String>, suggestion: &str) {
         .strip_prefix("[apply] ")
         .or_else(|| suggestion.strip_prefix("[exact] "))
         .unwrap_or(suggestion);
-    if !suggestions.iter().any(|seen| seen == suggestion) {
+    let has_placeholder = suggestion
+        .split(|character: char| !(character.is_alphanumeric() || character == '_'))
+        .any(|word| matches!(word, "sorry" | "admit"));
+    if !has_placeholder && !suggestions.iter().any(|seen| seen == suggestion) {
         suggestions.push(suggestion.to_owned());
     }
 }

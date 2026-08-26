@@ -869,6 +869,8 @@ fn goal_suggestions_accept_leans_multiline_output() {
         ),
         vec!["refine useful ?_"]
     );
+    assert!(try_this_suggestions("Try this: simp_all; sorry\n").is_empty());
+    assert!(try_this_suggestions("Try this:\n  exact h\n  admit\n").is_empty());
     assert_eq!(
         traced_goal_state(
             "MATHMUX_GOAL_BEGIN\nX : Type\nh : True\n⊢ True\nMATHMUX_GOAL_END\nTry this: exact h"
