@@ -127,6 +127,7 @@ enum TopCommand {
     ///
     /// Requires current check coverage for all dirty Lean files. Integrates into
     /// managed main, queues build and axiom validation, and returns sREF immediately.
+    /// New root Scratch*.lean files are check-only and cannot be submitted.
     Submit {
         /// Integration commit message.
         #[arg(short = 'm')]

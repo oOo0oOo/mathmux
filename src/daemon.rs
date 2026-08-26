@@ -342,6 +342,17 @@ impl Service {
                     !targets.is_empty(),
                     "submission has no checked Lean changes"
                 );
+                for path in &targets {
+                    if is_root_scratch(path)
+                        && workspace.path.join(path).is_file()
+                        && !git::tracked_at_head(&workspace.path, path)?
+                    {
+                        bail!(
+                            "{} is a check-only scratch file; move the result into a project module or remove it before submit",
+                            path.display()
+                        );
+                    }
+                }
                 let checks = self.checker.valid_certificates(&workspace, &targets)?;
                 let message = message
                     .filter(|value| !value.trim().is_empty())
@@ -468,6 +479,15 @@ fn check_summary(outcome: &CheckOutcome) -> String {
     output
 }
 
+fn is_root_scratch(path: &Path) -> bool {
+    path.parent().is_none_or(|parent| parent.as_os_str().is_empty())
+        && path.extension().is_some_and(|extension| extension == "lean")
+        && path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .is_some_and(|stem| stem.to_ascii_lowercase().starts_with("scratch"))
+}
+
 fn default_submit_message(paths: &[PathBuf]) -> String {
     if let [path] = paths {
         format!("Update {}", path.display())
@@ -531,6 +551,14 @@ impl WorkspaceWatcher {
 mod tests {
     use super::*;
     use crate::state::Diagnostic;
+
+    #[test]
+    fn root_scratch_files_are_ephemeral() {
+        assert!(is_root_scratch(Path::new("Scratch.lean")));
+        assert!(is_root_scratch(Path::new("ScratchHard.lean")));
+        assert!(!is_root_scratch(Path::new("Demo/Scratch.lean")));
+        assert!(!is_root_scratch(Path::new("Scratch.md")));
+    }
 
     #[test]
     fn check_summary_keeps_source_and_both_ends_of_long_diagnostics() {

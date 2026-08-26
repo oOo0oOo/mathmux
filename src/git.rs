@@ -200,6 +200,11 @@ pub fn dirty_lean_files(root: &Path) -> Result<Vec<PathBuf>> {
         .collect())
 }
 
+pub fn tracked_at_head(root: &Path, path: &Path) -> Result<bool> {
+    let object = format!("HEAD:{}", path.to_string_lossy());
+    Ok(run_output("git", ["cat-file", "-e", &object], root)?.status.success())
+}
+
 pub fn project_lean_files(root: &Path) -> Vec<PathBuf> {
     WalkDir::new(root)
         .into_iter()
