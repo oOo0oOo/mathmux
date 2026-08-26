@@ -3576,7 +3576,18 @@ fn declaration_suffix_base(query: &str) -> Option<&str> {
 fn explicit_declaration_name(query: &str) -> Option<&str> {
     let mut terms = query.split_whitespace();
     let kind = terms.next()?;
-    if !matches!(kind.to_ascii_lowercase().as_str(), "def" | "lemma" | "theorem") {
+    if !matches!(
+        kind.to_ascii_lowercase().as_str(),
+        "abbrev"
+            | "class"
+            | "def"
+            | "definition"
+            | "inductive"
+            | "instance"
+            | "lemma"
+            | "structure"
+            | "theorem"
+    ) {
         return None;
     }
     let name = terms.next()?;
@@ -3584,7 +3595,7 @@ fn explicit_declaration_name(query: &str) -> Option<&str> {
         || !terms.all(|term| {
             matches!(
                 term.to_ascii_lowercase().as_str(),
-                "body" | "implementation" | "proof" | "source"
+                "body" | "constructors" | "fields" | "implementation" | "proof" | "source"
             )
         })
     {
@@ -5778,6 +5789,14 @@ end Demo
         assert_eq!(
             explicit_declaration_name("def Demo.useful proof body"),
             Some("Demo.useful")
+        );
+        assert_eq!(
+            explicit_declaration_name("structure ContinuousLinearBundleHom fields"),
+            Some("ContinuousLinearBundleHom")
+        );
+        assert_eq!(
+            explicit_declaration_name("inductive List constructors"),
+            Some("List")
         );
         assert_eq!(explicit_declaration_name("theorem search terms"), None);
         assert_eq!(declaration_suffix_base("Demo.longDeclaration_E"), Some("Demo.longDeclaration"));
