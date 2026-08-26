@@ -2939,11 +2939,21 @@ fn parse_notations(
 }
 
 fn generated_parent_projection(name: &str, signature: &str) -> Option<String> {
-    let parent = signature.split_once("extends ")?.1.trim_start();
-    let parent = parent
+    let extension = signature.split_once("extends ")?.1.trim_start();
+    let parent = extension
         .split(|character: char| !(character.is_alphanumeric() || matches!(character, '_' | '.')))
         .next()?;
     if parent.is_empty() {
+        return None;
+    }
+    let remainder = extension[parent.len()..].trim_start();
+    if remainder
+        .chars()
+        .next()
+        .is_some_and(|character| {
+            !character.is_alphanumeric() && !matches!(character, '(' | '[' | '{')
+        })
+    {
         return None;
     }
     Some(format!("{name}.to{}", parent.replace('.', "")))
@@ -3463,7 +3473,15 @@ fn anchored_api_query(query: &str) -> Option<(&str, Vec<String>, Vec<String>)> {
 fn missing_hit_terms(hits: &[SearchHit], terms: &[String]) -> Vec<String> {
     let searchable = hits
         .iter()
-        .map(|hit| format!("{} {}", hit.name, hit.signature.as_deref().unwrap_or_default()))
+        .map(|hit| {
+            format!(
+                "{} {} {} {}",
+                hit.name,
+                hit.signature.as_deref().unwrap_or_default(),
+                hit.doc.as_deref().unwrap_or_default(),
+                hit.source.as_deref().unwrap_or_default()
+            )
+        })
         .collect::<Vec<_>>()
         .join(" ")
         .to_lowercase();
@@ -5329,6 +5347,13 @@ end Demo
         assert!(structure[0].signature.contains(
             "generated parent projection: InnerProductSpace.Core.toPreInnerProductSpaceCore"
         ));
+        let infix_parent = parse_source(
+            "structure Homeomorph (X Y : Type*) extends X ≃ Y where\n  continuous_toFun : True\n",
+            "Homeomorph",
+        );
+        assert!(!infix_parent[0]
+            .signature
+            .contains("generated parent projection"));
 
         let contextual = parse_source(
             "namespace Demo\nuniverse u\nvariable {α : Type u} [Group α]\nsection Closed\nvariable [TopologicalSpace α]\nend Closed\nstructure Box where\n  value : α\nend Demo\n",
