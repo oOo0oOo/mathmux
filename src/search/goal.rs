@@ -155,6 +155,153 @@ pub(super) struct SourceOccurrenceQuery {
     pub(super) terms: Vec<String>,
 }
 
+pub(super) struct SourceRegexQuery {
+    pub(super) scope: PathBuf,
+    pub(super) pattern: String,
+}
+
+pub(super) fn parse_source_regex_query(
+    root: &Path,
+    cwd: &Path,
+    query: &str,
+) -> Result<Option<SourceRegexQuery>> {
+    let query = query.trim();
+    let start = if query.starts_with('/') {
+        0
+    } else if let Some(start) = query.find(" /") {
+        start + 1
+    } else {
+        return Ok(None);
+    };
+    let Some(end) = query.rfind('/') else {
+        return Ok(None);
+    };
+    if end <= start + 1 {
+        return Ok(None);
+    }
+    let pattern = &query[start + 1..end];
+    ensure!(pattern.len() <= 500, "source regex is too long");
+    Regex::new(pattern).context("invalid source regex")?;
+    let scope = format!("{} {}", &query[..start], &query[end + 1..]);
+    let scope = scope.trim();
+    ensure!(
+        scope.split_whitespace().count() <= 1,
+        "source regex accepts at most one file or directory scope"
+    );
+    let scope = if scope.is_empty() {
+        fs::canonicalize(root)?
+    } else if Path::new(scope).extension().is_some_and(|extension| extension == "lean") {
+        resolve_goal_path(root, cwd, scope)?
+            .map(|(path, _, _)| path)
+            .with_context(|| format!("source file not found or ambiguous: {scope}"))?
+    } else {
+        let direct = if Path::new(scope).is_absolute() {
+            PathBuf::from(scope)
+        } else if cwd.join(scope).is_dir() {
+            cwd.join(scope)
+        } else {
+            root.join(scope)
+        };
+        let direct = fs::canonicalize(&direct)
+            .with_context(|| format!("source directory not found: {scope}"))?;
+        let root = fs::canonicalize(root)?;
+        ensure!(direct.starts_with(&root), "source regex scope is outside the workspace");
+        ensure!(direct.is_dir(), "source regex scope is not a directory");
+        direct
+    };
+    Ok(Some(SourceRegexQuery {
+        scope,
+        pattern: pattern.to_owned(),
+    }))
+}
+
+pub(super) fn source_regex_result(
+    workspace: &Workspace,
+    query: SourceRegexQuery,
+    all: bool,
+) -> Result<SearchResult> {
+    let regex = Regex::new(&query.pattern).context("invalid source regex")?;
+    let files = if query.scope.is_file() {
+        vec![query.scope.clone()]
+    } else {
+        project_lean_files(&query.scope)
+            .into_iter()
+            .map(|path| query.scope.join(path))
+            .collect()
+    };
+    let limit = if all { SOURCE_OCCURRENCE_LIMIT } else { 12 };
+    let deadline = Instant::now() + SOURCE_FALLBACK_BUDGET;
+    let mut hits = Vec::new();
+    let mut total = 0usize;
+    let mut timed_out = false;
+    for path in files {
+        if Instant::now() >= deadline {
+            timed_out = true;
+            break;
+        }
+        let source = fs::read_to_string(&path)?;
+        let lines = source.lines().collect::<Vec<_>>();
+        for (index, line) in lines.iter().enumerate() {
+            if !regex.is_match(line) {
+                continue;
+            }
+            total += 1;
+            if hits.len() >= limit {
+                continue;
+            }
+            let first = index.saturating_sub(2);
+            let last = (index + 3).min(lines.len());
+            let excerpt = lines[first..last]
+                .iter()
+                .enumerate()
+                .map(|(offset, source)| {
+                    let number = first + offset + 1;
+                    let marker = if number == index + 1 { '>' } else { ' ' };
+                    format!("{marker}{number:>5} | {source}")
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let relative = path
+                .strip_prefix(&workspace.path)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .into_owned();
+            hits.push(SearchHit {
+                name: truncate_line(line.trim(), 200),
+                kind: "source-regex".into(),
+                signature: None,
+                module: String::new(),
+                path: relative,
+                line: index as u64 + 1,
+                doc: None,
+                source: Some(excerpt),
+                usages: Vec::new(),
+                applicable: false,
+                required_import: None,
+            });
+        }
+    }
+    let omitted = total.saturating_sub(hits.len());
+    Ok(SearchResult {
+        hits,
+        inference: "source-regex".into(),
+        note: if timed_out {
+            Some("source regex scan timed out; narrow the scope".into())
+        } else if total == 0 {
+            Some("no regex source matches".into())
+        } else if omitted > 0 {
+            Some(if all {
+                format!("+{omitted} matches omitted; narrow the scope")
+            } else {
+                format!("+{omitted} matches omitted; use --all")
+            })
+        } else {
+            None
+        },
+        ok: true,
+    })
+}
+
 pub(super) fn parse_source_occurrence_query(
     root: &Path,
     cwd: &Path,

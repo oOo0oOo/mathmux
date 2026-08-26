@@ -1884,6 +1884,46 @@ fn source_excerpts_prefer_local_context_covering_the_query() {
 }
 
 #[test]
+fn source_regex_queries_scan_a_bounded_scope_with_context() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::create_dir(directory.path().join("Nested")).unwrap();
+    fs::write(
+        directory.path().join("Nested/One.lean"),
+        "def before := 0\ntheorem alpha_apply := by trivial\ndef after := 1\n",
+    )
+    .unwrap();
+    fs::write(
+        directory.path().join("Nested/Two.lean"),
+        "theorem beta_apply := by trivial\n",
+    )
+    .unwrap();
+    let query = parse_source_regex_query(
+        directory.path(),
+        directory.path(),
+        "Nested /^(theorem) .*_apply/",
+    )
+    .unwrap()
+    .unwrap();
+    let result = source_regex_result(
+        &Workspace {
+            reference: "w1".into(),
+            name: "demo".into(),
+            path: directory.path().to_path_buf(),
+            branch: "demo".into(),
+            model: None,
+        },
+        query,
+        false,
+    )
+    .unwrap();
+    assert_eq!(result.inference, "source-regex");
+    assert_eq!(result.hits.len(), 2);
+    assert_eq!(result.hits[1].name, "theorem beta_apply := by trivial");
+    assert!(result.hits[0].source.as_deref().unwrap().contains(">    2 | theorem alpha_apply"));
+    assert!(result.hits[1].path.ends_with("Nested/Two.lean"));
+}
+
+#[test]
 fn warming_fallback_finds_local_dependency_declarations() {
     let directory = tempfile::tempdir().unwrap();
     let package = directory.path().join(".lake/packages/demo/Demo");

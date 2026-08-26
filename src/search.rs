@@ -325,6 +325,10 @@ impl Searcher {
         let reference = self.state.next_ref('q')?;
         let result = if let Some(location) = location {
             self.goal_search(workspace, location)?
+        } else if let Some(query) =
+            parse_source_regex_query(&workspace.path, cwd, query)?
+        {
+            source_regex_result(workspace, query, show_all)?
         } else if let Some(location) =
             parse_source_occurrence_query(
                 &workspace.path,
