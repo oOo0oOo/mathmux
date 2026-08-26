@@ -2379,7 +2379,7 @@ fn search_refinement_facet(refinement: &str) -> bool {
 fn diagnostic_position(diagnostic: &str, fallback: Option<&str>) -> (Option<String>, u64) {
     static LOCATION: OnceLock<Regex> = OnceLock::new();
     let location = LOCATION.get_or_init(|| {
-        Regex::new(r"^(?P<path>.+\.lean):(?P<line>[0-9]+)(?::[0-9]+)?(?::|$)")
+        Regex::new(r"^(?P<label>.+?):(?P<line>[0-9]+)(?::[0-9]+)?(?::|$)")
             .expect("valid diagnostic location regex")
     });
     let parsed = diagnostic
@@ -2388,8 +2388,9 @@ fn diagnostic_position(diagnostic: &str, fallback: Option<&str>) -> (Option<Stri
         .and_then(|line| location.captures(line));
     let path = parsed
         .as_ref()
-        .and_then(|captures| captures.name("path"))
-        .map(|path| path.as_str().to_owned())
+        .and_then(|captures| captures.name("label"))
+        .filter(|label| label.as_str().ends_with(".lean"))
+        .map(|label| label.as_str().to_owned())
         .or_else(|| fallback.map(str::to_owned));
     let line = parsed
         .as_ref()
@@ -6094,6 +6095,13 @@ end Demo
                 Some("Fallback.lean")
             ),
             (Some("Demo/Proof.lean".into()), 42)
+        );
+        assert_eq!(
+            diagnostic_position(
+                "Demo.Proof:43:8: error: unsolved goals",
+                Some("Demo/Proof.lean")
+            ),
+            (Some("Demo/Proof.lean".into()), 43)
         );
         assert!(diagnostic_context("error: mismatch", Some(">   42 | bad")).contains("42 | bad"));
         assert_eq!(
