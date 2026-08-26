@@ -1423,7 +1423,7 @@ impl Searcher {
                 )?);
                 let mut result = exact_search_result(hits, base_warming);
                 if exact_query != query {
-                    let recovery = format!("no exact {query}; showing {exact_query}");
+                    let recovery = format!("closest name: {exact_query}");
                     result.note = Some(match result.note {
                         Some(note) => format!("{recovery}; {note}"),
                         None => recovery,
@@ -1780,14 +1780,14 @@ impl Searcher {
             (false, false, false) => None,
         };
         if glob_name_miss {
-            let detail = "no matching declaration name; showing related results";
+            let detail = "related results (no name match)";
             note = Some(match note {
                 Some(existing) => format!("{detail}; {existing}"),
                 None => detail.into(),
             });
         }
         if exact_name_miss {
-            let detail = "no exact declaration found; showing related results";
+            let detail = "related results (no exact match)";
             note = Some(match note {
                 Some(existing) => format!("{detail}; {existing}"),
                 None => detail.into(),
@@ -5369,7 +5369,20 @@ fn render_summary(run: &SearchRun) -> String {
     for (index, hit) in run.hits.iter().take(SUMMARY_LIMIT).enumerate() {
         output.push('\n');
         output.push_str(&hit.name);
-        if let Some(signature) = &hit.signature {
+        let displayed_source = hit.source.as_deref().filter(|_| {
+            index == 0
+                || (!proof_body_requested
+                    && (declaration_leaf_matches(&hit.name, &run.query)
+                        || (index < 3
+                            && matches!(
+                                hit.kind.as_str(),
+                                "class" | "inductive" | "structure"
+                            ))))
+        });
+        if let Some(signature) = &hit.signature
+            && !displayed_source
+                .is_some_and(|source| source_has_complete_declaration_header(hit, source))
+        {
             output.push_str(" : ");
             output.push_str(&truncate_line(&single_line(signature), 240));
         }
@@ -5380,18 +5393,7 @@ fn render_summary(run: &SearchRun) -> String {
         if let Some(module) = &hit.required_import {
             output.push_str(&format!("\n  import {module}"));
         }
-        let explicitly_named = !matches!(hit.kind.as_str(), "file" | "imports")
-            && declaration_leaf_matches(&hit.name, &run.query);
-        if (index == 0
-            || (!proof_body_requested
-                && (explicitly_named
-                    || (index < 3
-                        && matches!(
-                            hit.kind.as_str(),
-                            "class" | "inductive" | "structure"
-                        )))))
-            && let Some(source) = &hit.source
-        {
+        if let Some(source) = displayed_source {
             let source_lines = if index == 0 && proof_body_requested {
                 DECLARATION_DETAIL_LINES
             } else {
@@ -5406,7 +5408,8 @@ fn render_summary(run: &SearchRun) -> String {
                 }
             };
             for line in source.lines().take(source_lines) {
-                output.push_str(&format!("\n  | {}", truncate_line(line.trim(), 200)));
+                output.push_str("\n  ");
+                output.push_str(&truncate_line(line.trim_end(), 200));
             }
         }
     }
@@ -5421,6 +5424,23 @@ fn render_summary(run: &SearchRun) -> String {
         output.push_str(&format!("\n{note}"));
     }
     output
+}
+
+fn source_has_complete_declaration_header(hit: &SearchHit, source: &str) -> bool {
+    let Some(leaf) = hit.name.rsplit('.').next() else {
+        return false;
+    };
+    let declaration = source.lines().skip_while(|line| {
+        let line = line.trim_start();
+        !line.contains(leaf) || !line.split_whitespace().any(|word| word == hit.kind)
+    });
+    let header = declaration.collect::<Vec<_>>().join("\n");
+    if header.is_empty() {
+        return false;
+    }
+    header.contains(":=")
+        || matches!(hit.kind.as_str(), "class" | "inductive" | "instance" | "structure")
+            && header.split_whitespace().any(|word| word == "where")
 }
 
 struct GoalLocation {
@@ -5511,7 +5531,7 @@ fn source_occurrence_result(
     let excerpt = matches
         .iter()
         .take(limit)
-        .map(|(line, source)| format!("{line:>5} | {source}"))
+        .map(|(line, source)| format!("{line:>5}  {source}"))
         .collect::<Vec<_>>()
         .join("\n");
     let relative = query.display_path.unwrap_or_else(|| {
@@ -5680,19 +5700,19 @@ fn resolve_goal_path(
             variants.push(suffix);
         }
     }
-    for variant in variants {
+    for variant in &variants {
         let mut candidates = Vec::new();
-        let project = root.join(&variant);
+        let project = root.join(variant);
         if project.is_file() {
             candidates.push(fs::canonicalize(project)?);
         }
         if let Some(packages) = &packages {
-            let direct_package = packages.join(&variant);
+            let direct_package = packages.join(variant);
             if direct_package.is_file() {
                 candidates.push(fs::canonicalize(direct_package)?);
             }
             for package in fs::read_dir(packages)?.flatten() {
-                let candidate = package.path().join(&variant);
+                let candidate = package.path().join(variant);
                 if candidate.is_file() {
                     candidates.push(fs::canonicalize(candidate)?);
                 }
@@ -5715,6 +5735,20 @@ fn resolve_goal_path(
             (!project).then(|| display.to_owned()),
             project,
         )));
+    }
+    for variant in variants.iter().skip(1) {
+        let mut matches = project_lean_files(&root)
+            .into_iter()
+            .filter(|candidate| candidate.ends_with(variant))
+            .filter_map(|candidate| fs::canonicalize(root.join(candidate)).ok())
+            .collect::<Vec<_>>();
+        matches.sort();
+        matches.dedup();
+        match matches.as_slice() {
+            [resolved] => return Ok(Some((resolved.clone(), None, true))),
+            [] => {}
+            _ => return Ok(None),
+        }
     }
     if requested.components().count() == 1 {
         let mut matches = project_lean_files(&root)
@@ -5796,7 +5830,7 @@ fn location_source_excerpt(source: &str, requested_line: u64, line_limit: usize)
     lines[start..end]
         .iter()
         .enumerate()
-        .map(|(offset, line)| format!("{:>5} | {line}", start + offset + 1))
+        .map(|(offset, line)| format!("{:>5}  {line}", start + offset + 1))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -6528,7 +6562,8 @@ end Demo
             duration_ms: 1,
             created_at: 0,
         });
-        assert!(summary.contains("  | n + 1"));
+        assert!(summary.contains("\n    n + 1"));
+        assert!(!summary.contains("matrixLaurentShift : Nat → Nat"));
     }
 
     #[test]
@@ -6560,6 +6595,7 @@ end Demo
             created_at: 0,
         });
         assert!(summary.contains("requested body"));
+        assert!(summary.contains("Demo.proof : True"));
         assert!(summary.contains("Other.proof : True"));
         assert!(!summary.contains("alternative body"));
     }
@@ -6750,7 +6786,7 @@ end Demo
             .collect::<Vec<_>>()
             .join("\n");
         let excerpt = location_source_excerpt(&source, 15, LOCATION_PREVIEW_LINES);
-        assert!(excerpt.contains("   15 | line 15"));
+        assert!(excerpt.contains("   15  line 15"));
         assert_eq!(excerpt.lines().count(), 30);
 
         let directory = tempfile::tempdir().unwrap();
@@ -6766,6 +6802,38 @@ end Demo
             duplicated_root.0,
             fs::canonicalize(directory.path().join("Demo.lean")).unwrap()
         );
+        fs::create_dir_all(directory.path().join("Actual/Topology")).unwrap();
+        fs::write(
+            directory.path().join("Actual/Topology/Unique.lean"),
+            "def unique := true\n",
+        )
+        .unwrap();
+        let recovered_suffix = resolve_goal_path(
+            directory.path(),
+            directory.path(),
+            "Wrong/Topology/Unique.lean",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            recovered_suffix.0,
+            fs::canonicalize(directory.path().join("Actual/Topology/Unique.lean")).unwrap()
+        );
+        fs::create_dir_all(directory.path().join("Other/Topology")).unwrap();
+        fs::write(
+            directory.path().join("Other/Topology/Unique.lean"),
+            "def other := true\n",
+        )
+        .unwrap();
+        assert!(
+            resolve_goal_path(
+                directory.path(),
+                directory.path(),
+                "Wrong/Topology/Unique.lean",
+            )
+            .unwrap()
+            .is_none()
+        );
         let location = parse_goal_location(directory.path(), directory.path(), "Demo.lean:tail")
             .unwrap()
             .unwrap();
@@ -6776,7 +6844,7 @@ end Demo
         assert!(location.display_path.is_none());
         let tail = location_source_excerpt(&source, location.line, SOURCE_PREVIEW_LINES);
         assert_eq!(tail.lines().count(), 16);
-        assert!(tail.contains("   30 | line 30"));
+        assert!(tail.contains("   30  line 30"));
 
         let more = parse_goal_location(
             directory.path(),
@@ -6816,9 +6884,9 @@ end Demo
         .unwrap();
         assert_eq!(result.hits.len(), 1);
         let matches = result.hits[0].source.as_deref().unwrap();
-        assert!(matches.contains("    2 | /- open"));
-        assert!(matches.contains("    3 | inside /-! doc"));
-        assert!(matches.contains("    4 | -/ close"));
+        assert!(matches.contains("    2  /- open"));
+        assert!(matches.contains("    3  inside /-! doc"));
+        assert!(matches.contains("    4  -/ close"));
         let range = parse_source_occurrence_query(
             directory.path(),
             directory.path(),
