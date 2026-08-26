@@ -20,15 +20,18 @@ structure Response where
   version : Nat
 deriving ToJson
 
-def setupImports (setup : ModuleSetup) (stx : HeaderSyntax) :
+def setupImports (setup : ModuleSetup) (profile : Bool) (stx : HeaderSyntax) :
     Language.ProcessingT IO
       (Except Language.Lean.HeaderProcessedSnapshot Language.Lean.SetupImportsResult) := do
   let header := stx.toModuleHeader
+  let opts := if profile then
+    profiler.set setup.options.toOptions true
+  else setup.options.toOptions
   return .ok {
     mainModuleName := setup.name
     isModule := setup.isModule || header.isModule
     imports := setup.imports?.getD header.imports
-    opts := Elab.async.setIfNotSet setup.options.toOptions true
+    opts := Elab.async.setIfNotSet opts true
     importArts := setup.importArts
     plugins := setup.plugins
   }
@@ -96,14 +99,14 @@ partial def firstErrorOrFinal (task : Language.SnapshotTask Language.Lean.Comman
     return (false, result.cmdState.messages)
 
 def renderMessages (messages : MessageLog) : BaseIO (Array Diagnostic) := do
-  let mut output := #[]
+  let mut diagnostics := #[]
   for message in messages.reportedPlusUnreported do
-    output := output.push {
+    diagnostics := diagnostics.push {
       severity := message.severity.toString
       kind := message.kind.toString
       text := ← message.toString
     }
-  return output
+  return diagnostics
 
 def failureResponse (detail : String) (version : Nat) : Response :=
   { ok := false,
@@ -111,9 +114,11 @@ def failureResponse (detail : String) (version : Nat) : Response :=
     version := version }
 
 def processSnapshot (snapshot : Language.Lean.InitialSnapshot) (version : Nat) : BaseIO Response := do
-  let some header := snapshot.result? | return ← failureWithDiagnostics snapshot "header parsing failed" version
+  let some header := snapshot.result? |
+    return ← failureWithDiagnostics snapshot "header parsing failed" version
   let processed := header.processedSnap.get
-  let some processed := processed.result? | return ← failureWithDiagnostics snapshot "import processing failed" version
+  let some processed := processed.result? |
+    return ← failureWithDiagnostics snapshot "import processing failed" version
   let (failed, commandMessages) ← firstErrorOrFinal processed.firstCmdSnap
   let messages ← if failed then pure commandMessages else collectTree (Language.toSnapshotTree snapshot)
   let diagnostics ← renderMessages messages
@@ -133,10 +138,10 @@ def writeResponse (response : Response) : IO Unit := do
   stdout.putStrLn (toJson response).compress
   stdout.flush
 
-unsafe def runServer (setup : ModuleSetup) : IO Unit := do
+unsafe def runServer (setup : ModuleSetup) (profile : Bool) : IO Unit := do
   enableInitializersExecution
   setup.dynlibs.forM loadDynlib
-  let processor ← Language.mkIncrementalProcessor (Language.Lean.process (setupImports setup))
+  let processor ← Language.mkIncrementalProcessor (Language.Lean.process (setupImports setup profile))
   let stdin ← IO.getStdin
   let rec loop : IO Unit := do
     let line ← stdin.getLine
@@ -148,13 +153,21 @@ unsafe def runServer (setup : ModuleSetup) : IO Unit := do
       loop
     | .ok (request : Request) =>
       enableInitializersExecution
-      let snapshot ← processor (Parser.mkInputContext request.source setup.name.toString)
-      writeResponse (← processSnapshot snapshot request.version)
+      let input := Parser.mkInputContext request.source setup.name.toString
+      let snapshot ← if profile then
+        let fresh ← Language.mkIncrementalProcessor (Language.Lean.process (setupImports setup true))
+        fresh input
+      else
+        processor input
+      let response ← processSnapshot snapshot request.version
+      if profile then Lean.displayCumulativeProfilingTimes
+      writeResponse response
       loop
   loop
 
 unsafe def main (args : List String) : IO UInt32 := do
   initSearchPath (← findSysroot)
   match args with
-  | [setupPath] => runServer (← ModuleSetup.load setupPath); return 0
-  | _ => IO.eprintln "usage: MathmuxWorker SETUP_JSON"; return 2
+  | [setupPath] => runServer (← ModuleSetup.load setupPath) false; return 0
+  | [setupPath, "--profile"] => runServer (← ModuleSetup.load setupPath) true; return 0
+  | _ => IO.eprintln "usage: MathmuxWorker SETUP_JSON [--profile]"; return 2

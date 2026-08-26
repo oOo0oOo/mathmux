@@ -9,9 +9,17 @@ use crate::util::{
 };
 
 impl CheckProfile {
-    pub fn render(&self) -> String {
+    pub fn render(&self, all: bool) -> String {
         let mut output = format!("profile:\n  planning {}ms", self.planning_ms);
         for file in self.files.iter().take(32) {
+            let target = if self.files.len() == 1 {
+                std::path::Path::new(&file.target)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or(&file.target)
+            } else {
+                &file.target
+            };
             let reuse = file
                 .reused_prefix_lines
                 .map(|lines| format!(", reused {lines} lines"))
@@ -22,8 +30,8 @@ impl CheckProfile {
                 String::new()
             };
             output.push_str(&format!(
-                "\n  {} {} {}ms (dependencies {}ms, cache {}ms, setup {}ms, elaborate {}ms{}{})",
-                file.target,
+                "\n  {} {} {}ms (deps {}, cache {}, setup {}, Lean {}ms{}{})",
+                target,
                 file.mode,
                 file.total_ms,
                 file.dependencies_ms,
@@ -36,6 +44,81 @@ impl CheckProfile {
         }
         if self.files.len() > 32 {
             output.push_str(&format!("\n  +{} files", self.files.len() - 32));
+        }
+        let mut hotspots = self
+            .files
+            .iter()
+            .flat_map(|file| {
+                file.entries
+                    .iter()
+                    .map(move |entry| (file.target.as_str(), entry))
+            })
+            .collect::<Vec<_>>();
+        hotspots.sort_by(|(_, left), (_, right)| {
+            right
+                .duration_ms
+                .partial_cmp(&left.duration_ms)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        if !hotspots.is_empty() {
+            let limit = if all { hotspots.len() } else { 8 };
+            let mut seen = HashSet::new();
+            let source = hotspots
+                .iter()
+                .filter(|(_, entry)| entry.line > 0)
+                .filter(|(target, entry)| {
+                    seen.insert((*target, entry.line, entry.kind.as_str(), entry.detail.as_str()))
+                })
+                .take(limit)
+                .collect::<Vec<_>>();
+            if !source.is_empty() {
+                output.push_str("\n  source hotspots:");
+                for (target, entry) in source {
+                    let location = if self.files.len() == 1 {
+                        format!("{}:{}", entry.line, entry.column)
+                    } else {
+                        format!("{}:{}:{}", target, entry.line, entry.column)
+                    };
+                    let detail = if entry.detail.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" {}", truncate_line(&single_line(&entry.detail), 160))
+                    };
+                    output.push_str(&format!(
+                        "\n    {} {:.0}ms {}{}",
+                        location, entry.duration_ms, entry.kind, detail
+                    ));
+                }
+            }
+            let named = hotspots
+                .iter()
+                .filter(|(_, entry)| entry.line == 0 && !entry.detail.is_empty())
+                .take(if all { usize::MAX } else { 6 })
+                .collect::<Vec<_>>();
+            if !named.is_empty() {
+                output.push_str("\n  Lean hotspots:");
+                for (_, entry) in named {
+                    output.push_str(&format!(
+                        "\n    {:.0}ms {} {}",
+                        entry.duration_ms,
+                        entry.kind,
+                        truncate_line(&single_line(&entry.detail), if all { 500 } else { 160 }),
+                    ));
+                }
+            }
+            let components = hotspots
+                .iter()
+                .filter(|(_, entry)| entry.line == 0 && entry.detail.is_empty())
+                .take(limit)
+                .collect::<Vec<_>>();
+            if !components.is_empty() {
+                output.push_str("\n  Lean components:");
+                for (_, entry) in components {
+                    output.push_str(&format!("\n    {:.0}ms {}", entry.duration_ms, entry.kind));
+                }
+            }
+        } else if self.files.iter().any(|file| file.mode == "profile") {
+            output.push_str("\n  hotspots: none captured");
         }
         output
     }
@@ -169,7 +252,7 @@ pub(super) fn render_check_run(run: &CheckRun, all: bool) -> String {
     }
     if let Some(profile) = &run.profile {
         output.push('\n');
-        output.push_str(&profile.render());
+        output.push_str(&profile.render(all));
     }
     output
 }

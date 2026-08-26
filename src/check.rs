@@ -19,7 +19,8 @@ use crate::git::{dirty_lean_files, lake_command, merge_in_progress, project_lean
 use crate::issue::{TelemetryOperation, TelemetryStore, development_enabled};
 use crate::repo::Repo;
 use crate::state::{
-    CheckProfile, CheckRecord, CheckRun, Diagnostic, FileCheckProfile, State, Workspace,
+    CheckProfile, CheckProfileEntry, CheckRecord, CheckRun, Diagnostic, FileCheckProfile, State,
+    Workspace,
 };
 use crate::util::{hash_bytes, hash_file, now_unix_ms};
 
@@ -27,6 +28,7 @@ const WORKER_SOURCE: &str = include_str!("MathmuxWorker.lean");
 const CHECK_RESULT_VERSION: &[u8] = b"check-result-v2";
 const CHECK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const SLOW_CHECK_PROFILE_MS: u64 = 5_000;
+const PROFILE_ENTRY_LIMIT: usize = 512;
 
 #[derive(Debug)]
 struct CheckTimeout(Duration);
@@ -78,6 +80,8 @@ struct WorkerRequest<'a> {
 struct WorkerResponse {
     ok: bool,
     diagnostics: Vec<WorkerDiagnostic>,
+    #[serde(default)]
+    profile: Vec<CheckProfileEntry>,
     version: u64,
 }
 
@@ -103,13 +107,15 @@ struct LakeSetup {
     name: String,
 }
 
-type WorkerKey = (String, PathBuf);
-type CheckLocks = Mutex<HashMap<WorkerKey, Weak<Mutex<()>>>>;
+type WorkerKey = (String, PathBuf, bool);
+type CheckKey = (String, PathBuf);
+type CheckLocks = Mutex<HashMap<CheckKey, Weak<Mutex<()>>>>;
 
 #[derive(Clone, Copy)]
 enum WorkerRun {
     Check,
     Probe(Duration),
+    Profile,
 }
 
 pub struct Checker {
@@ -183,7 +189,7 @@ impl Checker {
         for target in &targets {
             let target_name = target.to_string_lossy().into_owned();
             report(&format!("waiting for {target_name}"));
-            match self.check_one(workspace, target, &reference, report) {
+            match self.check_one(workspace, target, &reference, include_profile, report) {
                 Ok(result) => {
                     file_profiles.push(result.profile.clone());
                     warnings.extend(result.warnings);
@@ -314,6 +320,7 @@ impl Checker {
         workspace: &Workspace,
         target: &Path,
         reference: &str,
+        include_profile: bool,
         report: &mut dyn FnMut(&str),
     ) -> Result<FileCheck> {
         let file_started = Instant::now();
@@ -373,6 +380,7 @@ impl Checker {
                     setup_ms: 0,
                     elaborate_ms: 0,
                     total_ms: file_started.elapsed().as_millis() as u64,
+                    entries: Vec::new(),
                 },
             });
         }
@@ -380,19 +388,23 @@ impl Checker {
         let dependencies = transitive_dependencies(&workspace.path, target)?;
         let dependencies_ms = phase.elapsed().as_millis() as u64;
         let phase = Instant::now();
-        if let Some(cached) = self.cached_check(workspace, target, &dependencies, reference)? {
+        if let Some(cached) =
+            self.cached_check(workspace, target, &dependencies, reference, include_profile)?
+        {
             let mut cached = cached;
-            cached.profile = FileCheckProfile {
-                target: target_name,
-                mode: "cached".into(),
-                reused_prefix_lines: None,
-                queue_ms,
-                dependencies_ms,
-                cache_ms: phase.elapsed().as_millis() as u64,
-                setup_ms: 0,
-                elaborate_ms: 0,
-                total_ms: file_started.elapsed().as_millis() as u64,
+            cached.profile.target = target_name;
+            cached.profile.mode = if include_profile {
+                "profile-cache".into()
+            } else {
+                "cached".into()
             };
+            cached.profile.reused_prefix_lines = None;
+            cached.profile.queue_ms = queue_ms;
+            cached.profile.dependencies_ms = dependencies_ms;
+            cached.profile.cache_ms = phase.elapsed().as_millis() as u64;
+            cached.profile.setup_ms = 0;
+            cached.profile.elaborate_ms = 0;
+            cached.profile.total_ms = file_started.elapsed().as_millis() as u64;
             return Ok(cached);
         }
         let cache_ms = phase.elapsed().as_millis() as u64;
@@ -413,7 +425,11 @@ impl Checker {
                 &setup_path,
                 &environment,
                 &source,
-                WorkerRun::Check,
+                if include_profile {
+                    WorkerRun::Profile
+                } else {
+                    WorkerRun::Check
+                },
             )?;
         let elaborate_ms = phase.elapsed().as_millis() as u64;
         ensure!(
@@ -452,6 +468,7 @@ impl Checker {
                 setup_ms,
                 elaborate_ms,
                 total_ms: file_started.elapsed().as_millis() as u64,
+                entries: response.profile,
             },
         })
     }
@@ -462,6 +479,7 @@ impl Checker {
         target: &Path,
         dependencies: &[PathBuf],
         reference: &str,
+        require_profile: bool,
     ) -> Result<Option<FileCheck>> {
         let fingerprint = self.full_fingerprint(workspace, target, dependencies)?;
         let target_name = target.to_string_lossy();
@@ -476,6 +494,21 @@ impl Checker {
         let Some(run) = self.state.check_run(&certificate.reference)? else {
             return Ok(None);
         };
+        let stored_profile = run
+            .profile
+            .as_ref()
+            .and_then(|profile| profile.files.iter().find(|file| file.target == target_name));
+        if require_profile
+            && stored_profile.is_none_or(|profile| {
+                profile.entries.is_empty()
+                    || profile
+                        .entries
+                        .iter()
+                        .all(|entry| entry.duration_ms < 0.01)
+            })
+        {
+            return Ok(None);
+        }
         certificate.reference = reference.to_owned();
         certificate.created_at = now_unix_ms();
         Ok(Some(FileCheck {
@@ -485,7 +518,7 @@ impl Checker {
             suggestions: run.suggestions,
             diagnostics: Vec::new(),
             ok: true,
-            profile: FileCheckProfile {
+            profile: stored_profile.cloned().unwrap_or_else(|| FileCheckProfile {
                 target: target.to_string_lossy().into_owned(),
                 mode: "cached".into(),
                 reused_prefix_lines: None,
@@ -495,7 +528,8 @@ impl Checker {
                 setup_ms: 0,
                 elaborate_ms: 0,
                 total_ms: 0,
-            },
+                entries: Vec::new(),
+            }),
         }))
     }
 
@@ -511,8 +545,10 @@ impl Checker {
         let (allow_fallback, timeout) = match run {
             WorkerRun::Check => (true, CHECK_TIMEOUT),
             WorkerRun::Probe(timeout) => (false, timeout),
+            WorkerRun::Profile => (false, CHECK_TIMEOUT),
         };
-        let key = (workspace.reference.clone(), target.to_path_buf());
+        let profile = matches!(run, WorkerRun::Profile);
+        let key = (workspace.reference.clone(), target.to_path_buf(), profile);
         let (worker, inserted) = {
             let mut workers = self.workers.lock().expect("worker map poisoned");
             if let Some(worker) = workers.get(&key) {
@@ -520,12 +556,12 @@ impl Checker {
             } else {
                 let workspace_workers = workers
                     .keys()
-                    .filter(|(reference, _)| reference == &workspace.reference)
+                    .filter(|(reference, _, _)| reference == &workspace.reference)
                     .count();
                 if workspace_workers >= 3
                     && let Some(oldest) = workers
                         .iter()
-                        .filter(|((reference, _), _)| reference == &workspace.reference)
+                        .filter(|((reference, _, _), _)| reference == &workspace.reference)
                         .filter_map(|(key, worker)| {
                             worker
                                 .try_lock()
@@ -542,6 +578,7 @@ impl Checker {
                     &workspace.path,
                     setup_path,
                     environment,
+                    profile,
                 ) {
                     Ok(worker) => {
                         let worker = Arc::new(Mutex::new(worker));
@@ -567,7 +604,13 @@ impl Checker {
         let replace = !inserted
             && (worker_guard.environment != environment || !worker_guard.alive());
         if replace {
-            match LeanWorker::start(&self.repo, &workspace.path, setup_path, environment) {
+            match LeanWorker::start(
+                &self.repo,
+                &workspace.path,
+                setup_path,
+                environment,
+                profile,
+            ) {
                 Ok(replacement) => *worker_guard = replacement,
                 Err(error) => {
                     drop(worker_guard);
@@ -584,17 +627,19 @@ impl Checker {
                 }
             }
         }
-        match worker_guard.check(source, timeout) {
+        match worker_guard.check(source, timeout, !profile) {
             Ok((response, reuse)) => Ok((
                 response,
-                if inserted || replace {
+                if profile {
+                    "profile"
+                } else if inserted || replace {
                     "cold-worker"
                 } else if reuse.identical {
                     "worker-cache"
                 } else {
                     "incremental"
                 },
-                (!replace).then_some(reuse.prefix_lines),
+                (!profile && !replace).then_some(reuse.prefix_lines),
             )),
             Err(error) => {
                 let timed_out = error.downcast_ref::<CheckTimeout>().is_some();
@@ -674,11 +719,11 @@ impl Checker {
         let target = resolve_target(&workspace.path, requested)?;
         let worker = match self.workers.try_lock() {
             Ok(workers) => workers
-                .get(&(workspace.reference.clone(), target))
+                .get(&(workspace.reference.clone(), target, false))
                 .cloned(),
             Err(std::sync::TryLockError::Poisoned(error)) => error
                 .into_inner()
-                .get(&(workspace.reference.clone(), target))
+                .get(&(workspace.reference.clone(), target, false))
                 .cloned(),
             Err(std::sync::TryLockError::WouldBlock) => None,
         };
@@ -752,7 +797,7 @@ impl Checker {
             .workers
             .lock()
             .expect("worker map poisoned")
-            .get(&(workspace.reference.clone(), target.to_path_buf()))
+            .get(&(workspace.reference.clone(), target.to_path_buf(), false))
             .cloned()?;
         let mut worker = worker.lock().expect("Lean worker poisoned");
         (worker.environment == environment && worker.alive()).then(|| worker.setup_path.clone())
@@ -913,7 +958,7 @@ impl Checker {
         self.workers
             .lock()
             .expect("worker map poisoned")
-            .retain(|(reference, _), _| reference != workspace_ref);
+            .retain(|(reference, _, _), _| reference != workspace_ref);
     }
 
     pub fn handle_filesystem_change(&self, workspace: &Workspace, path: &Path) {
@@ -924,7 +969,7 @@ impl Checker {
         self.workers
             .lock()
             .expect("worker map poisoned")
-            .retain(|(reference, target), _| {
+            .retain(|(reference, target, _), _| {
                 reference != &workspace.reference
                     || !invalidates_worker(&workspace.path, relative, target)
             });
@@ -1171,6 +1216,7 @@ struct LeanWorker {
     last_used: Instant,
     last_source: Option<String>,
     last_response: Option<WorkerResponse>,
+    profile_baseline: HashMap<String, f64>,
 }
 
 struct WorkerReuse {
@@ -1184,12 +1230,17 @@ impl LeanWorker {
         root: &Path,
         setup_path: &Path,
         environment: &str,
+        profile: bool,
     ) -> Result<Self> {
         let mut command = lake_command(repo, root);
         command
             .args(["env", "lean", "--run"])
             .arg(repo.state_dir.join("MathmuxWorker.lean"))
-            .arg(setup_path)
+            .arg(setup_path);
+        if profile {
+            command.arg("--profile");
+        }
+        command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -1201,9 +1252,21 @@ impl LeanWorker {
         let stderr = Arc::new(Mutex::new(String::new()));
         let stderr_copy = stderr.clone();
         std::thread::spawn(move || {
-            let mut contents = String::new();
-            let _ = std::io::Read::read_to_string(&mut stderr_pipe, &mut contents);
-            *stderr_copy.lock().expect("stderr buffer poisoned") = contents;
+            let mut reader = BufReader::new(&mut stderr_pipe);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                let Ok(read) = reader.read_line(&mut line) else {
+                    break;
+                };
+                if read == 0 {
+                    break;
+                }
+                stderr_copy
+                    .lock()
+                    .expect("stderr buffer poisoned")
+                    .push_str(&line);
+            }
         });
         Ok(Self {
             child,
@@ -1216,6 +1279,7 @@ impl LeanWorker {
             last_used: Instant::now(),
             last_source: None,
             last_response: None,
+            profile_baseline: HashMap::new(),
         })
     }
 
@@ -1223,9 +1287,11 @@ impl LeanWorker {
         &mut self,
         source: &str,
         timeout: Duration,
+        reuse_response: bool,
     ) -> Result<(WorkerResponse, WorkerReuse)> {
         self.last_used = Instant::now();
-        if self.last_source.as_deref() == Some(source)
+        if reuse_response
+            && self.last_source.as_deref() == Some(source)
             && let Some(response) = &self.last_response
         {
             return Ok((
@@ -1242,6 +1308,7 @@ impl LeanWorker {
             .map(|previous| common_prefix_lines(previous, source))
             .unwrap_or(0);
         self.version += 1;
+        let stderr_start = self.stderr.lock().expect("stderr buffer poisoned").len();
         serde_json::to_writer(
             &mut self.stdin,
             &WorkerRequest {
@@ -1280,9 +1347,33 @@ impl LeanWorker {
             let stderr = self.stderr.lock().expect("stderr buffer poisoned").clone();
             bail!("Lean worker exited: {stderr}");
         }
-        let response: WorkerResponse = serde_json::from_str(&line)
+        let mut response: WorkerResponse = serde_json::from_str(&line)
             .with_context(|| format!("invalid Lean response: {}", line.trim()))?;
         ensure!(response.version == self.version, "stale Lean response");
+        if !reuse_response {
+            for _ in 0..10 {
+                std::thread::sleep(Duration::from_millis(1));
+                let stderr = self.stderr.lock().expect("stderr buffer poisoned");
+                if stderr[stderr_start..].contains("cumulative profiling times:") {
+                    response.profile = parse_native_profile(&stderr[stderr_start..]);
+                    for entry in &mut response.profile {
+                        if !entry.detail.is_empty() {
+                            continue;
+                        }
+                        let cumulative = entry.duration_ms;
+                        entry.duration_ms = (cumulative
+                            - self
+                                .profile_baseline
+                                .get(&entry.kind)
+                                .copied()
+                                .unwrap_or_default())
+                        .max(0.0);
+                        self.profile_baseline.insert(entry.kind.clone(), cumulative);
+                    }
+                    break;
+                }
+            }
+        }
         let response = deduplicate_diagnostics(response);
         self.last_source = Some(source.to_owned());
         self.last_response = Some(response.clone());
@@ -1298,6 +1389,53 @@ impl LeanWorker {
     fn alive(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
     }
+}
+
+fn parse_native_profile(output: &str) -> Vec<CheckProfileEntry> {
+    let Some((events, cumulative)) = output.rsplit_once("cumulative profiling times:") else {
+        return Vec::new();
+    };
+    let mut entries = events
+        .lines()
+        .filter_map(|line| {
+            let (description, duration_ms) = parse_native_duration(line, " took ")?;
+            let (kind, detail) = description
+                .split_once(" of ")
+                .map_or((description, ""), |(kind, detail)| (kind, detail));
+            (!detail.is_empty()).then(|| CheckProfileEntry {
+                line: 0,
+                column: 0,
+                kind: kind.to_owned(),
+                detail: detail.to_owned(),
+                duration_ms,
+            })
+        })
+        .collect::<Vec<_>>();
+    entries.extend(cumulative
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let (kind, duration_ms) = parse_native_duration(line, " ")?;
+            Some(CheckProfileEntry {
+                line: 0,
+                column: 0,
+                kind: kind.to_owned(),
+                detail: String::new(),
+                duration_ms,
+            })
+        })
+    );
+    entries
+}
+
+fn parse_native_duration<'a>(line: &'a str, separator: &str) -> Option<(&'a str, f64)> {
+    let (description, value) = line.trim().rsplit_once(separator)?;
+    let (number, multiplier) = if let Some(number) = value.strip_suffix("ms") {
+        (number, 1.0)
+    } else {
+        (value.strip_suffix('s')?, 1_000.0)
+    };
+    Some((description, number.parse::<f64>().ok()? * multiplier))
 }
 
 fn common_prefix_lines(previous: &str, current: &str) -> u64 {
@@ -1344,6 +1482,7 @@ fn fallback_check(repo: &Repo, root: &Path, target: &Path) -> Result<WorkerRespo
     Ok(WorkerResponse {
         ok: output.status.success(),
         diagnostics,
+        profile: Vec::new(),
         version: 1,
     })
 }
@@ -1353,6 +1492,22 @@ fn deduplicate_diagnostics(mut response: WorkerResponse) -> WorkerResponse {
     response
         .diagnostics
         .retain(|diagnostic| seen.insert(diagnostic.clone()));
+    response.profile.sort_by(|left, right| {
+        right
+            .duration_ms
+            .partial_cmp(&left.duration_ms)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut seen = HashSet::new();
+    response.profile.retain(|entry| {
+        seen.insert((
+            entry.line,
+            entry.column,
+            entry.kind.clone(),
+            entry.detail.clone(),
+        ))
+    });
+    response.profile.truncate(PROFILE_ENTRY_LIMIT);
     response
 }
 
@@ -1868,6 +2023,18 @@ mod tests {
 
         fs::write(setup_fingerprint_path(&setup), "current").unwrap();
         assert!(setup_is_current(&setup, "current"));
+    }
+
+    #[test]
+    fn native_profile_parses_cumulative_components() {
+        let entries = parse_native_profile(
+            "import took 3.16s\ncumulative profiling times:\n\telaboration 199ms\n\timport 3.16s\n",
+        );
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].kind, "elaboration");
+        assert_eq!(entries[0].duration_ms, 199.0);
+        assert_eq!(entries[1].kind, "import");
+        assert_eq!(entries[1].duration_ms, 3160.0);
     }
 
     #[test]

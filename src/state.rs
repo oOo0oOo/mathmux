@@ -84,6 +84,18 @@ pub struct FileCheckProfile {
     pub setup_ms: u64,
     pub elaborate_ms: u64,
     pub total_ms: u64,
+    #[serde(default)]
+    pub entries: Vec<CheckProfileEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckProfileEntry {
+    pub line: u64,
+    pub column: u64,
+    pub kind: String,
+    pub detail: String,
+    #[serde(rename = "durationMs")]
+    pub duration_ms: f64,
 }
 
 #[derive(Debug, Clone, Default)]

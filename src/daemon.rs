@@ -453,7 +453,10 @@ fn check_summary(outcome: &CheckOutcome) -> String {
     }
     if let Some(profile) = &outcome.profile {
         output.push('\n');
-        output.push_str(&profile.render());
+        output.push_str(&profile.render(false));
+        if profile.files.iter().map(|file| file.entries.len()).sum::<usize>() > 8 {
+            output.push_str(&format!("\nfull profile: show {} --all", outcome.reference));
+        }
     }
     output
 }
