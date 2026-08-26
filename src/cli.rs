@@ -43,7 +43,7 @@ Query forms are inferred in this order:
   FILE:LINE[:COLUMN]            elaborate the goal at a position
   FILE:LINE MORE                show larger bounded source context
   FILE:tail                     show bounded end-of-file context
-  FILE:START-END                show an exact source range
+  FILE:START-END                show a bounded source range
   FILE[:START-END] A|B          find literal source occurrences
   FILE outline|declarations     list declarations, lines, and signatures
 

@@ -777,6 +777,72 @@ fn source_outline_lists_declarations_without_structure_fields() {
 }
 
 #[test]
+fn source_outline_summary_is_bounded_but_all_detail_is_complete() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = (1..=100)
+        .map(|index| format!("def item{index} : Nat := {index}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let entries = parse_source(&source, "Outline")
+        .into_iter()
+        .filter(|entry| !matches!(entry.kind.as_str(), "field" | "file" | "imports"))
+        .collect::<Vec<_>>();
+    let hit = SearchHit {
+        name: "source outline".into(),
+        kind: "outline".into(),
+        signature: Some("100 declarations".into()),
+        module: "Outline".into(),
+        path: "Outline.lean".into(),
+        line: 1,
+        doc: None,
+        source: Some(
+            entries
+                .iter()
+                .map(|entry| {
+                    format!(
+                        "{:>5}  {} {} : {}",
+                        entry.line, entry.kind, entry.name, entry.signature
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        usages: Vec::new(),
+        applicable: false,
+        required_import: None,
+    };
+    let run = SearchRun {
+        reference: "q123".into(),
+        workspace_ref: "w1".into(),
+        query: "Outline.lean outline".into(),
+        inference: "source".into(),
+        hits: vec![hit],
+        note: None,
+        duration_ms: 1,
+        created_at: 0,
+    };
+    let summary = render_summary(&run);
+    assert!(summary.contains("item64"));
+    assert!(!summary.contains("item65"));
+    assert!(
+        summary.contains("+36 declarations; show q123 --all"),
+        "{summary}"
+    );
+    let state = State::new(directory.path().join("state.sqlite3")).unwrap();
+    state
+        .add_workspace(&Workspace {
+            reference: "w1".into(),
+            name: "demo".into(),
+            path: directory.path().to_path_buf(),
+            branch: "demo".into(),
+        })
+        .unwrap();
+    state.add_search(&run).unwrap();
+    let detail = state.show("q123", true).unwrap();
+    assert!(detail.contains("item100"));
+}
+
+#[test]
 fn explicit_body_query_keeps_alternatives_compact() {
     let hit = |name: &str, source: &str| SearchHit {
         name: name.into(),

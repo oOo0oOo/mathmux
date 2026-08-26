@@ -41,6 +41,7 @@ const LOCATION_PREVIEW_LINES: usize = 32;
 const LOCATION_MORE_LINES: usize = 96;
 const SOURCE_OCCURRENCE_LIMIT: usize = 64;
 const SOURCE_OCCURRENCE_ALL_LIMIT: usize = 200;
+const OUTLINE_PREVIEW_LINES: usize = 64;
 const RELATED_RESULT_LIMIT: usize = 8;
 const GOAL_STATE_BEGIN: &str = "MATHMUX_GOAL_BEGIN";
 const GOAL_STATE_END: &str = "MATHMUX_GOAL_END";
@@ -3019,7 +3020,7 @@ fn render_summary(run: &SearchRun) -> String {
                     "class" | "inductive" | "structure" => 16,
                     "fields" => SOURCE_OCCURRENCE_ALL_LIMIT,
                     "imports" => 64,
-                    "outline" => SOURCE_OCCURRENCE_ALL_LIMIT,
+                    "outline" => OUTLINE_PREVIEW_LINES,
                     "location" => LOCATION_PREVIEW_LINES,
                     "location-more" => LOCATION_MORE_LINES,
                     "source-range" => SOURCE_OCCURRENCE_ALL_LIMIT,
@@ -3032,11 +3033,18 @@ fn render_summary(run: &SearchRun) -> String {
                 output.push_str(&truncate_line(line.trim_end(), 200));
             }
             let omitted = source.lines().count().saturating_sub(source_lines);
-            if omitted > 0 && matches!(hit.kind.as_str(), "class" | "structure") {
-                output.push_str(&format!(
-                    "\n+{omitted} lines; search {} fields",
-                    hit.name
-                ));
+            if omitted > 0 {
+                match hit.kind.as_str() {
+                    "class" | "structure" => output.push_str(&format!(
+                        "\n+{omitted} lines; search {} fields",
+                        hit.name
+                    )),
+                    "outline" => output.push_str(&format!(
+                        "\n+{omitted} declarations; show {} --all",
+                        run.reference
+                    )),
+                    _ => {}
+                }
             }
         }
     }
