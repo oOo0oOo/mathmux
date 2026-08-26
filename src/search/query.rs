@@ -956,6 +956,18 @@ pub(super) fn annotate_missing_hit_terms(result: &mut SearchResult, requested: &
     });
 }
 
+pub(super) fn suppress_inferred_missing_note(note: &mut Option<String>) {
+    let Some(current) = note.take() else {
+        return;
+    };
+    let retained = current
+        .split("; ")
+        .filter(|part| !part.starts_with("no nearby match for "))
+        .collect::<Vec<_>>()
+        .join("; ");
+    *note = (!retained.is_empty()).then_some(retained);
+}
+
 pub(super) fn specific_query_tokens(query: &str) -> Vec<String> {
     query
         .split(|character: char| {

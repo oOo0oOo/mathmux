@@ -370,6 +370,9 @@ impl Searcher {
             )?
         };
         let mut result = result;
+        if !expanded.context.is_empty() && requested_query.split_whitespace().count() == 1 {
+            suppress_inferred_missing_note(&mut result.note);
+        }
         if !expanded.context.is_empty() {
             result.hits.splice(0..0, expanded.context);
         }

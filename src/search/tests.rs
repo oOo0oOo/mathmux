@@ -1401,6 +1401,11 @@ fn goal_and_source_query_regressions() {
         local_method_candidates("n : ℕ\nh : 0 < n\n⊢ 1 + (n - 1) = n"),
         ["omega"]
     );
+    let mut inferred_note = Some(
+        "no nearby match for internal.instance; source index warming".to_owned(),
+    );
+    suppress_inferred_missing_note(&mut inferred_note);
+    assert_eq!(inferred_note.as_deref(), Some("source index warming"));
     let source = (1..=30)
         .map(|line| format!("line {line}"))
         .collect::<Vec<_>>()
