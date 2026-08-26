@@ -16,8 +16,8 @@ use crate::protocol::{Command, Request, Response};
 use crate::repo::Repo;
 
 const WORKFLOW_HELP: &str = r#"WORKFLOW
-  Work only in the current mathmux workspace. Use mathmux for all repository
-  coordination and certification. Do not run git, lean, lake build, or equivalent
+  Work only in the current mathmux workspace. Use mathmux for repository search,
+  coordination, and certification. Do not run git, lean, lake build, or equivalent
   commands directly. Do not enter managed main or another workspace.
 
   Check the smallest relevant file while editing. A bare check certifies all dirty
@@ -25,20 +25,19 @@ const WORKFLOW_HELP: &str = r#"WORKFLOW
   bring managed main into the workspace and submit to integrate certified work.
 
 LEAN
-  Keep each file focused on one coherent module. Split files when unrelated edits
-  cause costly suffix re-elaboration. Use the module system consistently, keep
-  imports explicit and narrow, and use public import only for module API.
+  Use Lean's module system. Keep each file coherent, imports explicit and narrow,
+  and public imports limited to module API. Align module names, namespaces, and
+  paths. Split files when unrelated edits cause costly suffix re-elaboration.
 
-  Align module names, namespaces, and paths. Keep foundational modules stable and
-  avoid broad umbrella imports. sorry is tracked and allowed during development;
-  extra axioms fail submission validation. Do not edit .lake or generated artifacts."#;
+  sorry is tracked and allowed during development; extra axioms fail submission
+  validation. Do not edit .lake or generated artifacts."#;
 
 #[derive(Parser)]
 #[command(
     name = "mathmux",
     version,
     disable_help_subcommand = true,
-    about = "Fast local Lean checks in isolated worktrees",
+    about = "Fast local Lean development in isolated worktrees",
     after_help = WORKFLOW_HELP
 )]
 struct Args {
@@ -536,7 +535,7 @@ mod tests {
         assert!(development.contains("issue"));
         assert!(development.contains("telemetry"));
         assert!(normal.contains("Do not run git, lean, lake build"));
-        assert!(normal.contains("Keep each file focused on one coherent module"));
+        assert!(normal.contains("Use Lean's module system"));
     }
 
     #[test]
