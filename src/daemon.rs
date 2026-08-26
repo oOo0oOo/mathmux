@@ -402,11 +402,12 @@ fn check_summary(outcome: &CheckOutcome) -> String {
         }
         if let Some(repetition) = &outcome.repetition {
             output.push_str(&format!(
-                "\nrepeated blocker: {} checks ({}..{}, previous {})",
+                "\nrepeated blocker: {} checks ({}..{}, previous {}); search {}",
                 repetition.count,
                 repetition.first_reference,
                 outcome.reference,
-                repetition.previous_reference
+                repetition.previous_reference,
+                outcome.reference
             ));
         }
     }
@@ -510,7 +511,7 @@ mod tests {
         assert!(summary.contains("final target"));
         assert!(summary.contains(">    3 | failing tactic"));
         assert!(summary.contains("full diagnostic: show c1"));
-        assert!(summary.contains("repeated blocker: 3 checks (c8..c1, previous c9)"));
+        assert!(summary.contains("repeated blocker: 3 checks (c8..c1, previous c9); search c1"));
     }
 
     #[test]

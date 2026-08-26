@@ -299,7 +299,7 @@ pub fn sync(repo: &Repo, workspace: &Workspace) -> Result<SyncResult> {
         if !conflicts.is_empty() {
             return Ok(SyncResult {
                 clean: false,
-                detail: conflict_detail(conflicts.iter().map(|path| path.to_string_lossy())),
+                detail: conflict_detail(&workspace.path, &conflicts),
             });
         }
         let detail = command_detail(&output);
@@ -320,9 +320,10 @@ pub fn sync(repo: &Repo, workspace: &Workspace) -> Result<SyncResult> {
     if conflicts.is_empty() {
         bail!("sync failed: {}", command_detail(&output));
     }
+    let conflicts = conflicts.lines().map(PathBuf::from).collect::<Vec<_>>();
     Ok(SyncResult {
         clean: false,
-        detail: conflict_detail(conflicts.lines()),
+        detail: conflict_detail(&workspace.path, &conflicts),
     })
 }
 
@@ -337,7 +338,7 @@ fn continue_autostash_sync(
     if !unresolved.is_empty() {
         return Ok(SyncResult {
             clean: false,
-            detail: conflict_detail(unresolved.iter().map(|path| path.to_string_lossy())),
+            detail: conflict_detail(&workspace.path, &unresolved),
         });
     }
     let mut args = vec!["add".into(), "--".into()];
@@ -364,7 +365,7 @@ fn continue_sync(workspace: &Workspace) -> Result<SyncResult> {
     if !unresolved.is_empty() {
         return Ok(SyncResult {
             clean: false,
-            detail: conflict_detail(unresolved.iter().map(|path| path.to_string_lossy())),
+            detail: conflict_detail(&workspace.path, &unresolved),
         });
     }
     if !conflicts.is_empty() {
@@ -390,7 +391,7 @@ fn continue_sync(workspace: &Workspace) -> Result<SyncResult> {
     }
     Ok(SyncResult {
         clean: false,
-        detail: conflict_detail(conflicts.iter().map(|path| path.to_string_lossy())),
+        detail: conflict_detail(&workspace.path, &conflicts),
     })
 }
 
@@ -423,15 +424,52 @@ fn has_conflict_markers(path: &Path) -> bool {
     })
 }
 
-fn conflict_detail(conflicts: impl IntoIterator<Item = impl AsRef<str>>) -> String {
+fn conflict_detail(root: &Path, conflicts: &[impl AsRef<Path>]) -> String {
     format!(
         "conflicts: {} (resolve them, check the affected files, then rerun mathmux sync)",
         conflicts
-            .into_iter()
-            .map(|path| path.as_ref().to_owned())
+            .iter()
+            .flat_map(|path| {
+                let path = path.as_ref();
+                let display = path.to_string_lossy();
+                let spans = conflict_spans(&root.join(path));
+                if spans.is_empty() {
+                    vec![display.into_owned()]
+                } else {
+                    spans
+                        .into_iter()
+                        .map(|(start, split, end)| {
+                            format!("{display}:{start}-{end} (split {split})")
+                        })
+                        .collect()
+                }
+            })
             .collect::<Vec<_>>()
             .join(", ")
     )
+}
+
+fn conflict_spans(path: &Path) -> Vec<(usize, usize, usize)> {
+    let Ok(source) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let mut start = None;
+    let mut split = None;
+    let mut spans = Vec::new();
+    for (index, line) in source.lines().enumerate() {
+        let line_number = index + 1;
+        if line.starts_with("<<<<<<< ") {
+            start = Some(line_number);
+            split = None;
+        } else if line == "=======" && start.is_some() {
+            split = Some(line_number);
+        } else if line.starts_with(">>>>>>> ")
+            && let (Some(start), Some(split)) = (start.take(), split.take())
+        {
+            spans.push((start, split, line_number));
+        }
+    }
+    spans
 }
 
 pub struct SubmitResult {
@@ -697,6 +735,7 @@ mod tests {
 
         let first = sync(&repo, &workspace).unwrap();
         assert!(!first.clean);
+        assert!(first.detail.contains("Proof.lean:1-5 (split 3)"));
         assert!(!merge_in_progress(&workspace.path));
         assert_eq!(unmerged_paths(&workspace.path).unwrap().len(), 1);
         assert!(has_conflict_markers(&workspace.path.join("Proof.lean")));

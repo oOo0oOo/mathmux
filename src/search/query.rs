@@ -458,8 +458,31 @@ pub(super) fn diagnostic_relation_query(diagnostic: &str) -> Option<String> {
             break;
         }
     }
+    if let Some(sibling) = related_namespace_sibling(diagnostic, &selected) {
+        selected.insert(0, sibling.as_str());
+        return Some(selected.join(" "));
+    }
     selected.sort_by_key(|token| !token.contains('_'));
     (!selected.is_empty()).then(|| selected.join(" "))
+}
+
+fn related_namespace_sibling<'a>(diagnostic: &'a str, selected: &[&str]) -> Option<String> {
+    let wrapper = diagnostic
+        .split(|character: char| {
+            !character.is_alphanumeric() && !matches!(character, '_' | '.' | '\'')
+        })
+        .filter_map(|token| token.rsplit('.').next())
+        .filter_map(|leaf| leaf.strip_prefix("to"))
+        .find(|leaf| {
+            leaf.chars().count() >= 4
+                && leaf.chars().next().is_some_and(char::is_uppercase)
+                && declaration_name_query(leaf)
+        })?;
+    selected.iter().find_map(|name| {
+        let (namespace, leaf) = name.rsplit_once('.')?;
+        (leaf.contains('_') && namespace.rsplit('.').next() != Some(wrapper))
+            .then(|| format!("{wrapper}.{leaf}"))
+    })
 }
 
 pub(super) fn anonymize_goal(goal: &str, locals: &HashSet<&str>) -> String {
