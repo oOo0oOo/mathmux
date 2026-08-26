@@ -18,7 +18,7 @@ impl Searcher {
                 &location,
                 &source,
                 Some("source only"),
-                false,
+                true,
             ));
         }
         let Some((start, end, in_tactic, indent)) = goal_probe(&source, location.line) else {
