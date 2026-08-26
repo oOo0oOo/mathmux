@@ -1651,12 +1651,7 @@ impl Searcher {
                 score,
             });
         }
-        ranked.extend(self.project_source_hits(
-            workspace,
-            query,
-            &query_tokens,
-            base_warming,
-        ));
+        ranked.extend(self.project_source_hits(workspace, query, &query_tokens));
         if name_search {
             let exact_name = unique_qualified_hit_name(
                 ranked
@@ -2553,20 +2548,13 @@ impl Searcher {
         workspace: &Workspace,
         query: &str,
         query_tokens: &[String],
-        scan_all: bool,
     ) -> Vec<RankedHit> {
-        let paths = if scan_all {
-            project_lean_files(&workspace.path)
-        } else {
-            let Ok(paths) = dirty_lean_files(&workspace.path) else {
-                return Vec::new();
-            };
-            paths
+        let Ok(paths) = dirty_lean_files(&workspace.path) else {
+            return Vec::new();
         };
         let mut ranked = Vec::new();
-        // Small projects should be searchable immediately while their persistent
-        // index is still warming. Keep a generous bound so ordinary projects are
-        // not silently truncated, while still bounding cold-start filesystem work.
+        // Dirty source must override the persistent index immediately. Cold clean
+        // workspaces use the targeted source fallback while indexing completes.
         for path in paths.into_iter().take(256) {
             let absolute = workspace.path.join(&path);
             let module = project_module_name(&workspace.path, &path);
