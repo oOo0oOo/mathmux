@@ -233,7 +233,12 @@ impl Searcher {
         }
         let started = Instant::now();
         let expanded = self.expand_reference_query(workspace, query.trim())?;
-        let location = parse_goal_location(&workspace.path, cwd, &expanded.query)?;
+        let location = parse_goal_location(
+            &workspace.path,
+            cwd,
+            Some(&self.repo.root),
+            &expanded.query,
+        )?;
         let show_all = all || (location.is_none() && search_more_requested(&expanded.query));
         let query = strip_search_modifiers(&expanded.query);
         let query = query.as_str();
@@ -242,7 +247,12 @@ impl Searcher {
         let result = if let Some(location) = location {
             self.goal_search(workspace, location)?
         } else if let Some(location) =
-            parse_source_occurrence_query(&workspace.path, cwd, query)?
+            parse_source_occurrence_query(
+                &workspace.path,
+                cwd,
+                Some(&self.repo.root),
+                query,
+            )?
         {
             source_occurrence_result(workspace, location, show_all)?
         } else {
@@ -5463,6 +5473,7 @@ struct SourceOccurrenceQuery {
 fn parse_source_occurrence_query(
     root: &Path,
     cwd: &Path,
+    main_root: Option<&Path>,
     query: &str,
 ) -> Result<Option<SourceOccurrenceQuery>> {
     let mut parts = query.split_whitespace();
@@ -5486,7 +5497,7 @@ fn parse_source_occurrence_query(
         return Ok(None);
     }
     let Some((path, display_path, _)) = resolve_goal_path(root, cwd, path)? else {
-        bail!("source file not found or ambiguous: {path}");
+        bail!(missing_source_message(root, main_root, path)?);
     };
     let (first_line, last_line) = range.unwrap_or((1, u64::MAX));
     Ok(Some(SourceOccurrenceQuery {
@@ -5599,7 +5610,12 @@ fn source_occurrence_result(
     })
 }
 
-fn parse_goal_location(root: &Path, cwd: &Path, query: &str) -> Result<Option<GoalLocation>> {
+fn parse_goal_location(
+    root: &Path,
+    cwd: &Path,
+    main_root: Option<&Path>,
+    query: &str,
+) -> Result<Option<GoalLocation>> {
     let (query, more) = query
         .rsplit_once(char::is_whitespace)
         .filter(|(_, modifier)| modifier.eq_ignore_ascii_case("more"))
@@ -5608,7 +5624,7 @@ fn parse_goal_location(root: &Path, cwd: &Path, query: &str) -> Result<Option<Go
         && suffix.eq_ignore_ascii_case("tail")
     {
         let Some((path, display_path, probe)) = resolve_goal_path(root, cwd, path)? else {
-            bail!("source file not found or ambiguous: {path}");
+            bail!(missing_source_message(root, main_root, path)?);
         };
         let line = fs::read_to_string(&path)?.lines().count().max(1) as u64;
         return Ok(Some(GoalLocation {
@@ -5639,7 +5655,7 @@ fn parse_goal_location(root: &Path, cwd: &Path, query: &str) -> Result<Option<Go
         (second, last_number)
     };
     let Some((path, display_path, probe)) = resolve_goal_path(root, cwd, path)? else {
-        bail!("source file not found or ambiguous: {path}");
+        bail!(missing_source_message(root, main_root, path)?);
     };
     ensure!(line > 0, "goal line starts at 1");
     Ok(Some(GoalLocation {
@@ -5650,6 +5666,31 @@ fn parse_goal_location(root: &Path, cwd: &Path, query: &str) -> Result<Option<Go
         more,
         probe,
     }))
+}
+
+fn missing_source_message(
+    root: &Path,
+    main_root: Option<&Path>,
+    requested: &str,
+) -> Result<String> {
+    let Some(main_root) = main_root else {
+        return Ok(format!("source file not found or ambiguous: {requested}"));
+    };
+    if fs::canonicalize(root).ok() == fs::canonicalize(main_root).ok() {
+        return Ok(format!("source file not found or ambiguous: {requested}"));
+    }
+    let requested_name = Path::new(requested).file_name();
+    let workspace_has_same_name = requested_name.is_some_and(|requested_name| {
+        project_lean_files(root)
+            .iter()
+            .any(|path| path.file_name() == Some(requested_name))
+    });
+    if !workspace_has_same_name
+        && resolve_goal_path(main_root, main_root, requested)?.is_some()
+    {
+        return Ok("source file is on managed main; run mathmux sync".into());
+    }
+    Ok(format!("source file not found or ambiguous: {requested}"))
 }
 
 fn resolve_goal_path(
@@ -6567,6 +6608,46 @@ end Demo
     }
 
     #[test]
+    fn stale_workspace_source_queries_recommend_sync() {
+        let main = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        fs::create_dir_all(main.path().join("Demo/Topology")).unwrap();
+        fs::write(
+            main.path().join("Demo/Topology/Recent.lean"),
+            "def recent := true\n",
+        )
+        .unwrap();
+
+        let error = match parse_source_occurrence_query(
+            workspace.path(),
+            workspace.path(),
+            Some(main.path()),
+            "Demo/Topology/Recent.lean:1-2 recent",
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("stale source unexpectedly resolved"),
+        };
+        assert_eq!(
+            error.to_string(),
+            "source file is on managed main; run mathmux sync"
+        );
+
+        let error = match parse_goal_location(
+            workspace.path(),
+            workspace.path(),
+            Some(main.path()),
+            "Demo/Topology/Missing.lean:1",
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("missing source unexpectedly resolved"),
+        };
+        assert_eq!(
+            error.to_string(),
+            "source file not found or ambiguous: Demo/Topology/Missing.lean"
+        );
+    }
+
+    #[test]
     fn explicit_body_query_keeps_alternatives_compact() {
         let hit = |name: &str, source: &str| SearchHit {
             name: name.into(),
@@ -6834,9 +6915,10 @@ end Demo
             .unwrap()
             .is_none()
         );
-        let location = parse_goal_location(directory.path(), directory.path(), "Demo.lean:tail")
-            .unwrap()
-            .unwrap();
+        let location =
+            parse_goal_location(directory.path(), directory.path(), None, "Demo.lean:tail")
+                .unwrap()
+                .unwrap();
         assert_eq!(location.line, 30);
         assert!(location.tail);
         assert!(!location.more);
@@ -6849,6 +6931,7 @@ end Demo
         let more = parse_goal_location(
             directory.path(),
             directory.path(),
+            None,
             "Demo.lean:15 MORE",
         )
         .unwrap()
@@ -6865,6 +6948,7 @@ end Demo
         let occurrences = parse_source_occurrence_query(
             directory.path(),
             directory.path(),
+            None,
             "Markers.lean:2-4 /- | -/ | /-!",
         )
         .unwrap()
@@ -6890,6 +6974,7 @@ end Demo
         let range = parse_source_occurrence_query(
             directory.path(),
             directory.path(),
+            None,
             "Markers.lean:2-4",
         )
         .unwrap()
@@ -6918,6 +7003,7 @@ end Demo
         let long_range = parse_source_occurrence_query(
             directory.path(),
             directory.path(),
+            None,
             "Long.lean:1-250",
         )
         .unwrap()
@@ -6951,6 +7037,7 @@ end Demo
         let recovered = parse_source_occurrence_query(
             directory.path(),
             directory.path(),
+            None,
             "Mathlib/Project/Nested.lean:4-6",
         )
         .unwrap()
@@ -6963,6 +7050,7 @@ end Demo
         let recovered = parse_source_occurrence_query(
             directory.path(),
             directory.path(),
+            None,
             "Nested.lean:4-6",
         )
         .unwrap()
@@ -6975,6 +7063,7 @@ end Demo
             parse_source_occurrence_query(
                 directory.path(),
                 directory.path(),
+                None,
                 "Missing.lean:4-6",
             )
             .err()
@@ -6991,6 +7080,7 @@ end Demo
         let dependency = parse_goal_location(
             directory.path(),
             directory.path(),
+            None,
             "Mathlib/Topology/Basic.lean:15 MORE",
         )
         .unwrap()
