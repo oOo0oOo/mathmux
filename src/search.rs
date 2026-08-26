@@ -2041,67 +2041,7 @@ impl Searcher {
             .map(|(position, _)| position)
             .collect::<Vec<_>>();
         let [position] = positions.as_slice() else {
-            let Some((_, leaf)) = query.rsplit_once('.') else {
-                return Ok(None);
-            };
-            let leaf_pattern = format!("\"{}\"", leaf.replace('"', "\\\""));
-            let (leaf_hits, leaf_warming) = self.loogle_hits(workspace, &leaf_pattern);
-            let mut leaf_hits = leaf_hits
-                .into_iter()
-                .filter(|hit| hit.name.rsplit('.').next() == Some(leaf))
-                .map(|hit| {
-                    let score = qualified_leaf_path_score(
-                        query,
-                        &hit.name,
-                        &hit.module,
-                        &format!("{}.lean", hit.module.replace('.', "/")),
-                    );
-                    (score, hit)
-                })
-                .collect::<Vec<_>>();
-            leaf_hits.sort_by(|(left_score, left), (right_score, right)| {
-                right_score
-                    .total_cmp(left_score)
-                    .then_with(|| left.name.cmp(&right.name))
-            });
-            let mut related = Vec::new();
-            for (_, hit) in leaf_hits.into_iter().take(SUMMARY_LIMIT) {
-                let usages = self.usages(&hit.name, scopes, workspace)?;
-                let mut resolved = RankedHit {
-                    hit: SearchHit {
-                        path: format!("{}.lean", hit.module.replace('.', "/")),
-                        line: 1,
-                        kind: "declaration".into(),
-                        signature: nonempty(hit.signature),
-                        doc: hit.doc,
-                        source: None,
-                        usages,
-                        name: hit.name,
-                        module: hit.module,
-                        applicable: false,
-                        required_import: None,
-                    },
-                    score: 0.0,
-                };
-                self.enrich_exact_source(&mut resolved.hit, scopes)?;
-                if let Some(context) = import_context {
-                    apply_import_context(&mut resolved, context);
-                }
-                related.push(resolved.hit);
-            }
-            if related.is_empty() {
-                return Ok(None);
-            }
-            return Ok(Some(SearchResult {
-                hits: related,
-                inference: "generated-member".into(),
-                note: Some(if base_warming || warming || leaf_warming {
-                    "related generated members (no exact match); source index warming".into()
-                } else {
-                    "related generated members (no exact match)".into()
-                }),
-                ok: true,
-            }));
+            return Ok(None);
         };
         let hit = hits.remove(*position);
         let usages = self.usages(&hit.name, scopes, workspace)?;
