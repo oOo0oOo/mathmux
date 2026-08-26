@@ -354,6 +354,8 @@ impl Service {
 
 fn check_summary(outcome: &CheckOutcome) -> String {
     const DIAGNOSTIC_PREVIEW_CHARS: usize = 1200;
+    const ADDITIONAL_DIAGNOSTIC_PREVIEW_CHARS: usize = 320;
+    const ADDITIONAL_DIAGNOSTIC_LIMIT: usize = 3;
 
     let mut output = format!("{} {}ms", outcome.reference, outcome.elapsed_ms);
     for warning in outcome.warnings.iter().take(3) {
@@ -395,10 +397,26 @@ fn check_summary(outcome: &CheckOutcome) -> String {
                 output.push_str(&format!("\nfull diagnostic: show {}", outcome.reference));
             }
         }
-        if outcome.diagnostics.len() > 1 {
+        let additional = outcome
+            .diagnostics
+            .iter()
+            .skip(1)
+            .take(ADDITIONAL_DIAGNOSTIC_LIMIT)
+            .collect::<Vec<_>>();
+        for diagnostic in &additional {
+            output.push_str(&format!(
+                "\nalso {}",
+                truncate_middle(
+                    &clean_line(&diagnostic.text),
+                    ADDITIONAL_DIAGNOSTIC_PREVIEW_CHARS
+                )
+            ));
+        }
+        let shown = usize::from(!outcome.diagnostics.is_empty()) + additional.len();
+        if outcome.diagnostics.len() > shown {
             output.push_str(&format!(
                 "\n+{} diagnostics; show {}",
-                outcome.diagnostics.len() - 1,
+                outcome.diagnostics.len() - shown,
                 outcome.reference
             ));
         }
@@ -534,6 +552,33 @@ mod tests {
             repetition: None,
         });
         assert!(summary.contains("linters: 1; show c1 --all"));
+    }
+
+    #[test]
+    fn failed_check_summary_previews_additional_errors() {
+        let diagnostics = (1..=5)
+            .map(|line| Diagnostic {
+                kind: "error".into(),
+                text: format!("Demo.Proof:{line}:1: error: failure {line}"),
+                context: Some(format!("> {line} | source {line}")),
+            })
+            .collect();
+        let summary = check_summary(&CheckOutcome {
+            reference: "c2".into(),
+            ok: false,
+            elapsed_ms: 10,
+            warnings: Vec::new(),
+            linters: Vec::new(),
+            suggestions: Vec::new(),
+            diagnostics,
+            profile: None,
+            repetition: None,
+        });
+        assert!(summary.contains("Demo.Proof:1:1: error: failure 1"));
+        assert!(summary.contains("also Demo.Proof:2:1: error: failure 2"));
+        assert!(summary.contains("also Demo.Proof:4:1: error: failure 4"));
+        assert!(!summary.contains("source 2"));
+        assert!(summary.contains("+1 diagnostics; show c2"));
     }
 
     #[test]
