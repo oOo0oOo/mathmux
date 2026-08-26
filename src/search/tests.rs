@@ -772,7 +772,7 @@ fn source_outline_lists_declarations_without_structure_fields() {
         duration_ms: 1,
         created_at: 0,
     });
-    assert!(summary.contains("source outline : 3 declarations  Outline.lean:3"));
+    assert!(summary.contains("outline : 3 declarations  Outline.lean:3"));
     assert!(!summary.contains("source:"));
 }
 
@@ -788,7 +788,7 @@ fn source_outline_summary_is_bounded_but_all_detail_is_complete() {
         .filter(|entry| !matches!(entry.kind.as_str(), "field" | "file" | "imports"))
         .collect::<Vec<_>>();
     let hit = SearchHit {
-        name: "source outline".into(),
+        name: "outline".into(),
         kind: "outline".into(),
         signature: Some("100 declarations".into()),
         module: "Outline".into(),
@@ -1201,7 +1201,7 @@ fn goal_suggestions_accept_leans_multiline_output() {
         false,
     )
     .unwrap();
-    assert_eq!(range.hits[0].signature.as_deref(), Some("3 source lines"));
+    assert_eq!(range.hits[0].signature.as_deref(), Some("3 lines"));
     assert_eq!(range.hits[0].kind, "source-range");
     assert_eq!(
         range.hits[0].source.as_deref(),

@@ -268,9 +268,9 @@ pub(super) fn source_occurrence_result(
     let hits = (!matches.is_empty())
         .then(|| SearchHit {
             name: if query.terms.is_empty() {
-                "source range".into()
+                "source".into()
             } else {
-                "source matches".into()
+                "matches".into()
             },
             kind: if query.terms.is_empty() {
                 "source-range".into()
@@ -278,10 +278,10 @@ pub(super) fn source_occurrence_result(
                 "source-occurrences".into()
             },
             signature: Some(if query.terms.is_empty() {
-                format!("{} source lines", matches.len())
+                format!("{} lines", matches.len())
             } else {
                 format!(
-                    "{} exact matches for {}",
+                    "{} for {}",
                     matches.len(),
                     query.terms.join(" | ")
                 )
@@ -368,7 +368,7 @@ fn source_outline_result(
     });
     let hits = (!entries.is_empty())
         .then(|| SearchHit {
-            name: "source outline".into(),
+            name: "outline".into(),
             kind: "outline".into(),
             signature: Some(format!("{total} declarations")),
             module,
