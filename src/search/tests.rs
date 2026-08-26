@@ -1573,6 +1573,16 @@ fn goal_and_source_query_regressions() {
         path_last.path,
         fs::canonicalize(directory.path().join("Markers.lean")).unwrap()
     );
+    let repeated = parse_source_occurrence_query(
+        directory.path(),
+        directory.path(),
+        None,
+        "Markers.lean imports first|Markers.lean imports second",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(repeated.path, path_last.path);
+    assert_eq!(repeated.terms, ["first", "imports", "second"]);
     let multiple = match parse_source_occurrence_query(
         directory.path(),
         directory.path(),

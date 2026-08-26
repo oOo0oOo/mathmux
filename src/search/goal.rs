@@ -365,6 +365,33 @@ pub(super) fn parse_source_occurrence_query(
     main_root: Option<&Path>,
     query: &str,
 ) -> Result<Option<SourceOccurrenceQuery>> {
+    let alternatives = query
+        .split('|')
+        .map(str::trim)
+        .filter(|alternative| !alternative.is_empty())
+        .collect::<Vec<_>>();
+    if alternatives.len() > 1 {
+        let parsed = alternatives
+            .iter()
+            .map(|alternative| parse_source_occurrence_query(root, cwd, main_root, alternative))
+            .collect::<Result<Vec<_>>>()?;
+        if parsed.iter().all(Option::is_some) {
+            let mut parsed = parsed.into_iter().flatten();
+            let mut combined = parsed.next().expect("multiple parsed alternatives");
+            for alternative in parsed {
+                ensure!(
+                    alternative.path == combined.path
+                        && alternative.first_line == combined.first_line
+                        && alternative.last_line == combined.last_line,
+                    "source queries accept one Lean file; search each file separately"
+                );
+                combined.terms.extend(alternative.terms);
+            }
+            combined.terms.sort();
+            combined.terms.dedup();
+            return Ok(Some(combined));
+        }
+    }
     let parts = query.split_whitespace().collect::<Vec<_>>();
     let Some(_) = parts.first() else {
         return Ok(None);
