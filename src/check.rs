@@ -833,6 +833,15 @@ impl Checker {
             materialize_setup(&shared, &path, input_fingerprint)?;
             return Ok(path);
         }
+        let validation_lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&self.repo.validation_lock)?;
+        // setup-file may build imported project modules, so do not let it race
+        // validation's exclusive mutation of the same workspace artifacts.
+        validation_lock.lock_shared()?;
         let output = lake_command(&self.repo, &workspace.path)
             .arg("setup-file")
             .arg(target)
