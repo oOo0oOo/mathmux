@@ -2922,6 +2922,7 @@ fn explicit_declaration_name(query: &str) -> Option<&str> {
 
 fn declaration_glob_query(query: &str) -> bool {
     query.contains('*')
+        && query.chars().filter(|character| character.is_alphanumeric()).count() >= 2
         && query.chars().all(|character| {
             character.is_alphanumeric() || matches!(character, '_' | '.' | '\'' | '*')
         })
@@ -4561,6 +4562,7 @@ end Demo
         assert_eq!(symbolic_source_term("ordinary"), None);
         assert_eq!(symbolic_source_term("A *ᵥ x"), None);
         assert!(declaration_glob_query("FiberBundle.*equiv"));
+        assert!(!declaration_glob_query("*ᵥ"));
         assert!(declaration_glob_matches(
             "Demo.FiberBundle.local_equiv",
             "FiberBundle.*equiv"
@@ -4987,6 +4989,24 @@ end Demo
         assert!(hits.iter().any(|hit| {
             hit.hit.name == "Bundle.ContinuousLinearMap.topologicalSpaceTotalSpace"
         }));
+    }
+
+    #[test]
+    fn fallback_finds_symbolic_notation_literally() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("Notation.lean"),
+            "def vectorAction (a : α) (v : β) := a *ᵥ v\n",
+        )
+        .unwrap();
+        let query = "*ᵥ";
+        let hits = fallback_source_hits(
+            directory.path(),
+            query,
+            &meaningful_query_tokens(query),
+        )
+        .unwrap();
+        assert!(hits.iter().any(|hit| hit.hit.name == "vectorAction"));
     }
 
     #[test]
