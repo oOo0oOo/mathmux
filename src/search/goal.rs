@@ -734,7 +734,18 @@ pub(super) fn resolve_goal_path(
     path: &str,
 ) -> Result<Option<(PathBuf, Option<String>, bool)>> {
     let display = path.strip_prefix("<dependency>/").unwrap_or(path);
-    let requested = PathBuf::from(display);
+    let requested = if !display.contains(['/', '\\'])
+        && display.contains('.')
+        && Path::new(display)
+            .extension()
+            .is_none_or(|extension| extension != "lean")
+    {
+        PathBuf::from(format!("{}.lean", display.replace('.', "/")))
+    } else if Path::new(display).extension().is_none() {
+        PathBuf::from(format!("{display}.lean"))
+    } else {
+        PathBuf::from(display)
+    };
     if requested
         .extension()
         .is_none_or(|extension| extension != "lean")

@@ -1462,6 +1462,11 @@ fn goal_and_source_query_regressions() {
         recovered_suffix.0,
         fs::canonicalize(directory.path().join("Actual/Topology/Unique.lean")).unwrap()
     );
+    let module_location =
+        resolve_goal_path(directory.path(), directory.path(), "Actual.Topology.Unique")
+            .unwrap()
+            .unwrap();
+    assert_eq!(module_location.0, recovered_suffix.0);
     fs::create_dir_all(directory.path().join("Other/Topology")).unwrap();
     fs::write(
         directory.path().join("Other/Topology/Unique.lean"),
