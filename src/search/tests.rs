@@ -1337,6 +1337,19 @@ fn goal_and_source_query_regressions() {
             Some("instance goal\nTopologicalSpace (Fiber x)")
         );
     assert_eq!(
+        diagnostic_instance_query(
+            "error(lean.synthInstanceFailed): failed to synthesize instance of type class\n  Norm C(X, E)"
+        )
+        .as_deref(),
+        Some("instNorm")
+    );
+    assert_eq!(
+        diagnostic_instance_query(
+            "error(lean.synthInstanceFailed): failed to synthesize instance of type class\n  LE Type"
+        ),
+        None
+    );
+    assert_eq!(
         append_goal_tactic(
             "example (h : True) : True := by\n  skip\n\nexample : True := by\n  trivial\n",
             1,

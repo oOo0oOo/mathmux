@@ -430,6 +430,25 @@ pub(super) fn diagnostic_search_query(
     }
 }
 
+pub(super) fn diagnostic_instance_query(diagnostic: &str) -> Option<String> {
+    let goal = diagnostic_type_detail(diagnostic)?
+        .strip_prefix("instance goal\n")?
+        .to_owned();
+    let class = goal
+        .split(|character: char| {
+            !character.is_alphanumeric() && character != '_' && character != '.'
+        })
+        .find(|token| !token.is_empty())?
+        .rsplit('.')
+        .next()?;
+    if class.chars().next().is_none_or(|character| !character.is_uppercase())
+        || matches!(class, "Type" | "Sort" | "Prop" | "OfNat" | "LE" | "LT")
+    {
+        return None;
+    }
+    Some(format!("inst{class}"))
+}
+
 fn highlighted_tactic_query(source_context: Option<&str>) -> Option<String> {
     let code = source_context?
         .lines()

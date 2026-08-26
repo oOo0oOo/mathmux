@@ -81,6 +81,7 @@ struct ExpandedQuery {
     query: String,
     context: Vec<SearchHit>,
     import_target: Option<PathBuf>,
+    auxiliary_query: Option<String>,
 }
 
 impl ExpandedQuery {
@@ -89,6 +90,7 @@ impl ExpandedQuery {
             query: query.into(),
             context: Vec::new(),
             import_target: None,
+            auxiliary_query: None,
         }
     }
 }
@@ -361,14 +363,43 @@ impl Searcher {
                     self.current_scopes(workspace)
                 }
             };
-            self.combined_search(
+            let mut result = self.combined_search(
                 workspace,
                 query,
                 &scopes,
                 base_warming,
                 expanded.import_target.as_deref(),
                 all,
-            )?
+            )?;
+            if let Some(auxiliary_query) = expanded.auxiliary_query.as_deref() {
+                let existing = result
+                    .hits
+                    .iter()
+                    .map(|hit| hit.name.clone())
+                    .collect::<HashSet<_>>();
+                let hints = self
+                    .combined_search(
+                        workspace,
+                        auxiliary_query,
+                        &scopes,
+                        base_warming,
+                        expanded.import_target.as_deref(),
+                        false,
+                    )?
+                    .hits
+                    .into_iter()
+                    .filter(|hit| {
+                        hit.name
+                            .rsplit('.')
+                            .next()
+                            .is_some_and(|leaf| leaf.eq_ignore_ascii_case(auxiliary_query))
+                            && !existing.contains(&hit.name)
+                    })
+                    .take(3)
+                    .collect::<Vec<_>>();
+                result.hits.splice(0..0, hints);
+            }
+            result
         };
         let mut result = result;
         if !expanded.context.is_empty() && requested_query.split_whitespace().count() == 1 {
@@ -424,6 +455,7 @@ impl Searcher {
                     .join(" "),
                 context,
                 import_target: None,
+                auxiliary_query: None,
             });
         }
         if reference
@@ -543,6 +575,7 @@ impl Searcher {
                     .join(" "),
                 context,
                 import_target: target.filter(|path| workspace.path.join(path).is_file()),
+                auxiliary_query: diagnostic_instance_query(diagnostic_text),
             });
         }
         Ok(ExpandedQuery::plain(query))
