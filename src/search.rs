@@ -2166,20 +2166,41 @@ impl Searcher {
         import_context: Option<&ImportContext>,
         base_warming: bool,
     ) -> Result<Option<SearchResult>> {
+        let miss = |detail: String| {
+            let mut result = exact_search_result(Vec::new(), base_warming);
+            result.note = Some(match result.note {
+                Some(note) => format!("{detail}; {note}"),
+                None => detail,
+            });
+            result
+        };
         let exact = ranked_exact_candidates(
             self.exact_candidates(structure, scopes)?,
             structure,
             workspace,
         );
         let Some(exact) = resolved_exact_candidates(exact, structure) else {
-            return Ok(None);
+            return Ok(Some(miss(format!(
+                "no unique class or structure named {structure}; qualify the name"
+            ))));
         };
+        let resolved_name = exact
+            .first()
+            .map(|candidate| candidate.hit.name.clone())
+            .unwrap_or_else(|| structure.to_owned());
+        let resolved_kind = exact
+            .iter()
+            .find(|candidate| candidate.hit.kind != "declaration")
+            .map(|candidate| candidate.hit.kind.clone())
+            .unwrap_or_else(|| "declaration".into());
         let structural = exact
             .into_iter()
             .filter(|candidate| matches!(candidate.hit.kind.as_str(), "class" | "structure"))
             .collect::<Vec<_>>();
         if structural.is_empty() {
-            return Ok(None);
+            return Ok(Some(miss(format!(
+                "{resolved_name} is {resolved_kind}, not a class or structure"
+            ))));
         }
         let mut parent = merge_exact_candidates(structural);
         if let Some(context) = import_context {
@@ -2212,7 +2233,10 @@ impl Searcher {
             })
             .collect::<Vec<_>>();
         if fields.is_empty() {
-            return Ok(None);
+            return Ok(Some(miss(format!(
+                "{} has no indexed fields",
+                parent.hit.name
+            ))));
         }
         let source = fields
             .iter()
