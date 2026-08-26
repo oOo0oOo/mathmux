@@ -828,6 +828,7 @@ fn stale_workspace_source_queries_recommend_sync() {
             name: "demo".into(),
             path: workspace.path().to_path_buf(),
             branch: "demo".into(),
+            model: None,
         },
         stale_range,
         false,
@@ -875,6 +876,7 @@ fn source_outline_lists_declarations_without_structure_fields() {
             name: "demo".into(),
             path: directory.path().to_path_buf(),
             branch: "demo".into(),
+            model: None,
         },
         query,
         false,
@@ -963,6 +965,7 @@ fn source_outline_summary_is_bounded_but_all_detail_is_complete() {
             name: "demo".into(),
             path: directory.path().to_path_buf(),
             branch: "demo".into(),
+            model: None,
         })
         .unwrap();
     state.add_search(&run).unwrap();
@@ -1331,6 +1334,7 @@ fn goal_and_source_query_regressions() {
             name: "demo".into(),
             path: directory.path().to_path_buf(),
             branch: "demo".into(),
+            model: None,
         },
         occurrences,
         false,
@@ -1352,6 +1356,7 @@ fn goal_and_source_query_regressions() {
             name: "demo".into(),
             path: directory.path().to_path_buf(),
             branch: "demo".into(),
+            model: None,
         },
         range,
         false,
@@ -1379,6 +1384,7 @@ fn goal_and_source_query_regressions() {
             name: "demo".into(),
             path: directory.path().to_path_buf(),
             branch: "demo".into(),
+            model: None,
         },
         long_range,
         false,

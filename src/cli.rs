@@ -86,7 +86,11 @@ enum TopCommand {
     ///
     /// Summarizes live project agents, Lean code size and growth, agent-normalized
     /// throughput, and recent check, build, and submission statistics.
-    Status,
+    Status {
+        /// Print a partially generated formalization.yaml draft.
+        #[arg(long)]
+        formalization_yaml: bool,
+    },
     /// Certify one Lean file, or every dirty Lean file.
     ///
     /// With FILE, synchronously certifies that file and its source dependencies.
@@ -172,6 +176,9 @@ enum WsCommand {
     Create {
         /// Unique workspace name.
         name: String,
+        /// Model assigned to this workspace, for persistent attribution.
+        #[arg(long)]
+        model: Option<String>,
     },
     /// List managed workspaces.
     List,
@@ -279,11 +286,15 @@ pub fn run() -> Result<u8> {
     let project_development = development || development_enabled(&repo);
     let command = match args.command {
         TopCommand::Ws { command } => match command {
-            WsCommand::Create { name } => Command::WsCreate { name },
+            WsCommand::Create { name, model } => Command::WsCreate { name, model },
             WsCommand::List => Command::WsList,
             WsCommand::Delete { name } => Command::WsDelete { name },
         },
-        TopCommand::Status => Command::Status,
+        TopCommand::Status {
+            formalization_yaml,
+        } => Command::Status {
+            formalization_yaml,
+        },
         TopCommand::Check { file, profile } => Command::Check {
             file: file.map(|path| {
                 let path = if path.is_absolute() {

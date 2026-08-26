@@ -182,9 +182,10 @@ impl Service {
     fn handle(&self, request: Request) -> Result<String> {
         let cwd = PathBuf::from(request.cwd);
         match request.command {
-            Command::WsCreate { name } => {
+            Command::WsCreate { name, model } => {
                 let _guard = self.mutations.lock().expect("mutation lock poisoned");
-                let workspace = git::create_workspace(&self.repo, &self.state, &name)?;
+                let workspace =
+                    git::create_workspace(&self.repo, &self.state, &name, model.as_deref())?;
                 self.watcher.watch(&workspace.path)?;
                 Ok(format!(
                     "{} {}",
@@ -203,16 +204,32 @@ impl Service {
                         let dirty = dirty_paths(&workspace.path)
                             .map(|paths| paths.len())
                             .unwrap_or(0);
+                        let model = workspace
+                            .model
+                            .as_deref()
+                            .map(|model| format!(" model:{model}"))
+                            .unwrap_or_default();
                         if dirty == 0 {
-                            format!("{} {} clean", workspace.reference, workspace.name)
+                            format!("{} {} clean{model}", workspace.reference, workspace.name)
                         } else {
-                            format!("{} {} dirty:{dirty}", workspace.reference, workspace.name)
+                            format!(
+                                "{} {} dirty:{dirty}{model}",
+                                workspace.reference, workspace.name
+                            )
                         }
                     })
                     .collect::<Vec<_>>()
                     .join("\n"))
             }
-            Command::Status => status::render(&self.repo, &self.state),
+            Command::Status {
+                formalization_yaml,
+            } => {
+                if formalization_yaml {
+                    status::render_formalization_yaml(&self.repo, &self.state)
+                } else {
+                    status::render(&self.repo, &self.state)
+                }
+            }
             Command::WsDelete { name } => {
                 let _guard = self.mutations.lock().expect("mutation lock poisoned");
                 let workspace = self

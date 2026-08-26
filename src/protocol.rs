@@ -15,6 +15,8 @@ pub struct Request {
 pub enum Command {
     WsCreate {
         name: String,
+        #[serde(default)]
+        model: Option<String>,
     },
     WsList,
     WsDelete {
@@ -30,7 +32,10 @@ pub enum Command {
         #[serde(default)]
         all: bool,
     },
-    Status,
+    Status {
+        #[serde(default)]
+        formalization_yaml: bool,
+    },
     Sync {
         #[serde(default)]
         push: bool,
@@ -52,7 +57,7 @@ impl Command {
             Self::WsDelete { .. } => "ws_delete",
             Self::Check { .. } => "check",
             Self::Search { .. } => "search",
-            Self::Status => "status",
+            Self::Status { .. } => "status",
             Self::Sync { .. } => "sync",
             Self::Submit { .. } => "submit",
             Self::Show { .. } => "show",
@@ -63,7 +68,7 @@ impl Command {
         matches!(
             self,
             Self::WsList
-                | Self::Status
+                | Self::Status { .. }
                 | Self::Check { .. }
                 | Self::Search { .. }
                 | Self::Sync { .. }
@@ -133,6 +138,15 @@ mod tests {
         assert_eq!(request.generation, 0);
 
         let request: Request = serde_json::from_str(
+            r#"{"cwd":"/project","command":{"verb":"status"}}"#,
+        )
+        .unwrap();
+        let Command::Status { formalization_yaml } = request.command else {
+            panic!("expected status command");
+        };
+        assert!(!formalization_yaml);
+
+        let request: Request = serde_json::from_str(
             r#"{"cwd":"/project","command":{"verb":"search","query":"demo"}}"#,
         )
         .unwrap();
@@ -154,7 +168,12 @@ mod tests {
     #[test]
     fn only_idempotent_commands_are_transport_retry_safe() {
         assert!(Command::Sync { push: false }.transport_retry_safe());
-        assert!(Command::Status.transport_retry_safe());
+        assert!(
+            Command::Status {
+                formalization_yaml: false
+            }
+            .transport_retry_safe()
+        );
         assert!(
             Command::Check {
                 file: None,
@@ -165,7 +184,8 @@ mod tests {
         assert!(!Command::Submit { message: None }.transport_retry_safe());
         assert!(
             !Command::WsCreate {
-                name: "agent".into()
+                name: "agent".into(),
+                model: None,
             }
             .transport_retry_safe()
         );

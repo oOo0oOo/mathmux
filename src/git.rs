@@ -32,8 +32,20 @@ pub fn workspace_limit() -> usize {
     (((gib.saturating_sub(8)) / 6) as usize).clamp(1, 8)
 }
 
-pub fn create_workspace(repo: &Repo, state: &State, name: &str) -> Result<Workspace> {
+pub fn create_workspace(
+    repo: &Repo,
+    state: &State,
+    name: &str,
+    model: Option<&str>,
+) -> Result<Workspace> {
     validate_name(name)?;
+    let model = model.map(str::trim).filter(|model| !model.is_empty());
+    if let Some(model) = model {
+        ensure!(
+            model.len() <= 128 && !model.chars().any(char::is_control),
+            "model must be at most 128 characters without control characters"
+        );
+    }
     ensure!(
         dirty_paths(&repo.root)?.is_empty(),
         "managed main worktree is not clean"
@@ -74,6 +86,7 @@ pub fn create_workspace(repo: &Repo, state: &State, name: &str) -> Result<Worksp
         name: name.to_owned(),
         path: canonical(&path)?,
         branch,
+        model: model.map(str::to_owned),
     };
     if let Err(error) =
         prepare_workspace(repo, &workspace.path).and_then(|()| state.add_workspace(&workspace))
@@ -593,7 +606,7 @@ mod tests {
 
         let repo = Repo::discover(&root).unwrap();
         let state = State::new(&repo.db_path).unwrap();
-        let workspace = create_workspace(&repo, &state, "agent").unwrap();
+        let workspace = create_workspace(&repo, &state, "agent", None).unwrap();
         assert_eq!(
             canonical(workspace.path.join(".lake/packages")).unwrap(),
             canonical(root.join(".lake/packages")).unwrap()
@@ -636,7 +649,7 @@ mod tests {
 
         let repo = Repo::discover(&root).unwrap();
         let state = State::new(&repo.db_path).unwrap();
-        let workspace = create_workspace(&repo, &state, "agent").unwrap();
+        let workspace = create_workspace(&repo, &state, "agent", None).unwrap();
         fs::write(workspace.path.join("Proof.lean"), "def value := 1\n").unwrap();
         run_checked("git", ["add", "."], &workspace.path).unwrap();
         run_checked("git", ["commit", "-m", "workspace"], &workspace.path).unwrap();
@@ -676,7 +689,7 @@ mod tests {
 
         let repo = Repo::discover(&root).unwrap();
         let state = State::new(&repo.db_path).unwrap();
-        let workspace = create_workspace(&repo, &state, "agent").unwrap();
+        let workspace = create_workspace(&repo, &state, "agent", None).unwrap();
         fs::write(workspace.path.join("Proof.lean"), "def value := 1\n").unwrap();
         fs::write(root.join("Proof.lean"), "def value := 2\n").unwrap();
         run_checked("git", ["add", "."], &root).unwrap();

@@ -405,6 +405,10 @@ fn find_sorries(root: &Path) -> Result<Vec<String>> {
     Ok(locations)
 }
 
+pub(crate) fn project_sorry_count(root: &Path) -> Result<usize> {
+    find_sorries(root).map(|locations| locations.len())
+}
+
 fn sorry_positions(source: &str) -> Vec<(usize, usize)> {
     let bytes = source.as_bytes();
     let mut positions = Vec::new();

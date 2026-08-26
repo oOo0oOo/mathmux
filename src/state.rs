@@ -24,6 +24,8 @@ pub struct Workspace {
     pub name: String,
     pub path: PathBuf,
     pub branch: String,
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -205,6 +207,7 @@ impl State {
                 name TEXT NOT NULL UNIQUE,
                 path TEXT NOT NULL UNIQUE,
                 branch TEXT NOT NULL,
+                model TEXT,
                 created_at INTEGER NOT NULL,
                 last_active INTEGER NOT NULL,
                 deleted_at INTEGER
@@ -286,6 +289,7 @@ impl State {
                 ON searches(created_at DESC);",
         )?;
         let _ = connection.execute("ALTER TABLE workspaces ADD COLUMN deleted_at INTEGER", []);
+        let _ = connection.execute("ALTER TABLE workspaces ADD COLUMN model TEXT", []);
         let _ = connection.execute(
             "ALTER TABLE checks ADD COLUMN source_version INTEGER NOT NULL DEFAULT 1",
             [],
@@ -346,13 +350,14 @@ impl State {
     pub fn add_workspace(&self, workspace: &Workspace) -> Result<()> {
         let now = now_unix_ms();
         self.open()?.execute(
-            "INSERT INTO workspaces(ref, name, path, branch, created_at, last_active)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+            "INSERT INTO workspaces(ref, name, path, branch, model, created_at, last_active)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
             params![
                 workspace.reference,
                 workspace.name,
                 workspace.path.to_string_lossy(),
                 workspace.branch,
+                workspace.model,
                 now
             ],
         )?;
@@ -379,7 +384,7 @@ impl State {
     pub fn list_workspaces(&self) -> Result<Vec<Workspace>> {
         let connection = self.open()?;
         let mut statement = connection.prepare(
-            "SELECT ref, name, path, branch FROM workspaces
+            "SELECT ref, name, path, branch, model FROM workspaces
                  WHERE deleted_at IS NULL ORDER BY created_at",
         )?;
         let rows = statement.query_map([], workspace_from_row)?;
@@ -390,7 +395,7 @@ impl State {
     pub fn workspace_named(&self, name: &str) -> Result<Option<Workspace>> {
         self.open()?
             .query_row(
-                "SELECT ref, name, path, branch FROM workspaces
+                "SELECT ref, name, path, branch, model FROM workspaces
                  WHERE name = ?1 AND deleted_at IS NULL",
                 [name],
                 workspace_from_row,
@@ -413,6 +418,14 @@ impl State {
         self.open()?.execute(
             "UPDATE workspaces SET last_active = ?2 WHERE ref = ?1",
             params![reference, now_unix_ms()],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_workspace_model(&self, reference: &str, model: &str) -> Result<()> {
+        self.open()?.execute(
+            "UPDATE workspaces SET model = ?2 WHERE ref = ?1 AND deleted_at IS NULL",
+            params![reference, model],
         )?;
         Ok(())
     }
@@ -909,6 +922,7 @@ fn workspace_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Workspace> {
         name: row.get(1)?,
         path: PathBuf::from(row.get::<_, String>(2)?),
         branch: row.get(3)?,
+        model: row.get(4)?,
     })
 }
 
@@ -1103,6 +1117,7 @@ mod tests {
                 name: "agent".into(),
                 path: directory.path().join("agent"),
                 branch: "mathmux/agent".into(),
+                model: None,
             })
             .unwrap();
         for (reference, created_at) in [("s1", 1), ("s2", 1)] {
@@ -1162,6 +1177,7 @@ mod tests {
                 name: "agent".into(),
                 path: directory.path().join("agent"),
                 branch: "mathmux/agent".into(),
+                model: None,
             })
             .unwrap();
         state
