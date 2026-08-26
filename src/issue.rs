@@ -800,10 +800,10 @@ fn response_reference(summary: &str) -> Option<String> {
 }
 
 fn error_class(summary: &str) -> String {
-    let value = summary
+    let lines = summary
         .lines()
         .map(str::trim)
-        .find(|line| {
+        .filter(|line| {
             let mut words = line.split_whitespace();
             let reference = words.next().unwrap_or_default();
             let duration = words.next().unwrap_or_default();
@@ -811,6 +811,16 @@ fn error_class(summary: &str) -> String {
                 && duration.ends_with("ms")
                 && words.next().is_none())
         })
+        .collect::<Vec<_>>();
+    let value = lines
+        .iter()
+        .copied()
+        .find(|line| {
+            line.contains("error(")
+                || line.contains(": error: ")
+                || line.starts_with("error: ")
+        })
+        .or_else(|| lines.first().copied())
         .unwrap_or("error");
     if let Some(rest) = value.split_once("error(").map(|(_, rest)| rest)
         && let Some((code, _)) = rest.split_once("): ")
@@ -1186,6 +1196,12 @@ mod tests {
         assert_eq!(
             error_class("source file is on managed main; run mathmux sync"),
             "source file is on managed main; run mathmux sync"
+        );
+        assert_eq!(
+            error_class(
+                "c5365 900ms\nwarning Demo:2:1: warning: unused variable\nDemo:9:2: error: Tactic `rfl` failed"
+            ),
+            "Tactic `rfl` failed"
         );
     }
 }
