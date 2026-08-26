@@ -148,6 +148,7 @@ pub(super) struct GoalLocation {
 
 pub(super) struct SourceOccurrenceQuery {
     pub(super) path: PathBuf,
+    pub(super) main_path: Option<PathBuf>,
     pub(super) display_path: Option<String>,
     pub(super) first_line: u64,
     pub(super) last_line: u64,
@@ -184,12 +185,23 @@ pub(super) fn parse_source_occurrence_query(
     {
         return Ok(None);
     }
-    let Some((path, display_path, _)) = resolve_goal_path(root, cwd, path)? else {
-        bail!(missing_source_message(root, main_root, path)?);
+    let requested_path = path;
+    let Some((path, display_path, _)) = resolve_goal_path(root, cwd, requested_path)? else {
+        bail!(missing_source_message(root, main_root, requested_path)?);
+    };
+    let main_path = if main_root
+        .is_some_and(|main_root| fs::canonicalize(root).ok() != fs::canonicalize(main_root).ok())
+        && !Path::new(requested_path).is_absolute()
+    {
+        let main_root = main_root.expect("checked above");
+        resolve_goal_path(main_root, main_root, requested_path)?.map(|(path, _, _)| path)
+    } else {
+        None
     };
     let (first_line, last_line) = range.unwrap_or((1, u64::MAX));
     Ok(Some(SourceOccurrenceQuery {
         path,
+        main_path,
         display_path,
         first_line,
         last_line,
@@ -210,6 +222,7 @@ pub(super) fn source_occurrence_result(
     all: bool,
 ) -> Result<SearchResult> {
     let source = fs::read_to_string(&query.path)?;
+    let source_lines = source.lines().count() as u64;
     let matches = source
         .lines()
         .enumerate()
@@ -282,7 +295,15 @@ pub(super) fn source_occurrence_result(
     Ok(SearchResult {
         hits,
         inference: "source".into(),
-        note: if matches.is_empty() {
+        note: if matches.is_empty()
+            && query.terms.is_empty()
+            && source_lines < query.first_line
+            && query.main_path.as_ref().is_some_and(|path| {
+                fs::read_to_string(path)
+                    .is_ok_and(|source| source.lines().count() as u64 >= query.first_line)
+            }) {
+            Some("workspace source is stale; run mathmux sync".into())
+        } else if matches.is_empty() {
             Some(if query.terms.is_empty() {
                 "no source lines in range".into()
             } else {

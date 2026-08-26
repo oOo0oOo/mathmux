@@ -674,6 +674,41 @@ fn stale_workspace_source_queries_recommend_sync() {
         "source file is on managed main; run mathmux sync"
     );
 
+    fs::write(
+        main.path().join("Demo/Topology/Shared.lean"),
+        "line 1\nline 2\nline 3\nline 4\n",
+    )
+    .unwrap();
+    fs::create_dir_all(workspace.path().join("Demo/Topology")).unwrap();
+    fs::write(
+        workspace.path().join("Demo/Topology/Shared.lean"),
+        "line 1\nline 2\n",
+    )
+    .unwrap();
+    let stale_range = parse_source_occurrence_query(
+        workspace.path(),
+        workspace.path(),
+        Some(main.path()),
+        "Demo/Topology/Shared.lean:3-4",
+    )
+    .unwrap()
+    .unwrap();
+    let stale_range = source_occurrence_result(
+        &Workspace {
+            reference: "w1".into(),
+            name: "demo".into(),
+            path: workspace.path().to_path_buf(),
+            branch: "demo".into(),
+        },
+        stale_range,
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        stale_range.note.as_deref(),
+        Some("workspace source is stale; run mathmux sync")
+    );
+
     let error = match parse_goal_location(
         workspace.path(),
         workspace.path(),
