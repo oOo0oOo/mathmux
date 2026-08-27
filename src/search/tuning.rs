@@ -131,6 +131,7 @@ pub(super) struct PresentationTuning {
     pub(super) related_result_limit: usize,
     pub(super) declaration_detail_lines: usize,
     pub(super) fallback_candidate_multiplier: usize,
+    pub(super) source_range_all_lines: usize,
 }
 
 pub(super) const SEARCH_TUNING: SearchTuning = SearchTuning {
@@ -226,6 +227,7 @@ pub(super) const SEARCH_TUNING: SearchTuning = SearchTuning {
         related_result_limit: 8,
         declaration_detail_lines: 48,
         fallback_candidate_multiplier: 8,
+        source_range_all_lines: 512,
     },
 };
 

@@ -47,6 +47,7 @@ const LOCATION_PREVIEW_LINES: usize = 32;
 const LOCATION_MORE_LINES: usize = 96;
 const SOURCE_OCCURRENCE_LIMIT: usize = 64;
 const SOURCE_RANGE_LIMIT: usize = 120;
+const SOURCE_RANGE_ALL_LIMIT: usize = SEARCH_TUNING.presentation.source_range_all_lines;
 const SOURCE_OCCURRENCE_ALL_LIMIT: usize = 200;
 const OUTLINE_PREVIEW_LINES: usize = 64;
 const OUTLINE_LINE_CHARS: usize = 120;
@@ -3343,7 +3344,7 @@ fn render_summary(run: &SearchRun) -> String {
                     "location" => LOCATION_PREVIEW_LINES,
                     "location-more" => LOCATION_MORE_LINES,
                     "diagnostic-context" => source.lines().count(),
-                    "source-range" => SOURCE_OCCURRENCE_ALL_LIMIT,
+                    "source-range" => SOURCE_RANGE_ALL_LIMIT,
                     "source-occurrences" => SOURCE_OCCURRENCE_LIMIT,
                     _ => SOURCE_PREVIEW_LINES,
                 }

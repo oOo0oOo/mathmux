@@ -580,7 +580,9 @@ pub(super) fn source_occurrence_result(
             .then_some((number, line))
         })
         .collect::<Vec<_>>();
-    let limit = if all {
+    let limit = if all && query.terms.is_empty() {
+        SOURCE_RANGE_ALL_LIMIT
+    } else if all {
         SOURCE_OCCURRENCE_ALL_LIMIT
     } else if query.terms.is_empty() {
         SOURCE_RANGE_LIMIT

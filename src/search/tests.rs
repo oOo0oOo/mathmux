@@ -2001,6 +2001,32 @@ fn goal_and_source_query_regressions() {
     assert!(long_summary.contains("\n120\tline 120\n"));
     assert!(!long_summary.contains("\n121\tline 121\n"));
     assert!(long_summary.ends_with("+130 lines omitted; use --all"));
+    let long_range =
+        parse_source_occurrence_query(directory.path(), directory.path(), None, "Long.lean:1-250")
+            .unwrap()
+            .unwrap();
+    let long_range = source_occurrence_result(
+        &Workspace {
+            reference: "w1".into(),
+            name: "demo".into(),
+            path: directory.path().to_path_buf(),
+            branch: "demo".into(),
+            model: None,
+        },
+        long_range,
+        true,
+    )
+    .unwrap();
+    assert_eq!(
+        long_range.hits[0]
+            .source
+            .as_deref()
+            .unwrap()
+            .lines()
+            .count(),
+        250
+    );
+    assert!(long_range.note.is_none());
     assert_eq!(parse_source_line_range("3-3"), Some((3, 3)));
     assert_eq!(parse_source_line_range("4-3"), None);
     assert_eq!(parse_source_line_range("0-3"), None);
