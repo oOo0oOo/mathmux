@@ -25,9 +25,8 @@ const WORKFLOW_HELP: &str = r#"AGENT RULES
   Workspace is preassigned; do not run ws or enter main/another workspace.
   Prefer experimenting in intended files over Scratch files; isolation makes this safe.
   Use mathmux, never git, lean, lake build, or equivalent commands directly.
-  Search first; edit -> check -> submit. For source scans use search 'PATH /REGEX/'
-  instead of rg, and search 'FILE outline' instead of ls. Use check FILE only to
-  isolate one of several dirty Lean files. Use sync to update.
+  Search first; use search --help for its query forms. Edit -> check -> submit.
+  Use check FILE only to isolate one of several dirty Lean files. Use sync to update.
   Use show REF for stored detail; do not rerun a command only for more output.
   Use Lean modules with explicit narrow imports and aligned module/namespace/path.
   Keep public imports to module API; split unrelated files with costly elaboration.
@@ -830,8 +829,6 @@ mod tests {
     fn workflow_help_prefers_direct_workspace_experimentation() {
         let help = command_line().render_help().to_string();
         assert!(help.contains("experimenting in intended files over Scratch files"));
-        for guidance in ["PATH /REGEX/", "instead of rg", "FILE outline", "instead of ls"] {
-            assert!(help.contains(guidance), "missing workflow guidance {guidance}");
-        }
+        assert!(help.contains("use search --help for its query forms"));
     }
 }
