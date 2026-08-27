@@ -27,6 +27,7 @@ use crate::util::{hash_bytes, hash_file, now_unix_ms};
 const WORKER_SOURCE: &str = include_str!("MathmuxWorker.lean");
 const CHECK_RESULT_VERSION: &[u8] = b"check-result-v2";
 const CHECK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const COLD_PROBE_TIMEOUT: Duration = Duration::from_secs(12);
 const SLOW_CHECK_PROFILE_MS: u64 = 5_000;
 const PROFILE_ENTRY_LIMIT: usize = 512;
 const PROJECT_CONFIG_FILES: [&str; 4] = [
@@ -895,7 +896,18 @@ impl Checker {
                 }
             }
         }
-        match worker_guard.request(source, &target.to_string_lossy(), timeout, !profile, action) {
+        let request_timeout = if matches!(run, WorkerRun::Probe { .. }) && (inserted || replace) {
+            timeout.max(COLD_PROBE_TIMEOUT)
+        } else {
+            timeout
+        };
+        match worker_guard.request(
+            source,
+            &target.to_string_lossy(),
+            request_timeout,
+            !profile,
+            action,
+        ) {
             Ok((response, reuse)) => Ok((
                 response,
                 if profile {
