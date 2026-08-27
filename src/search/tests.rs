@@ -830,6 +830,38 @@ fn search_summary_keeps_definition_body_after_ambient_context() {
 }
 
 #[test]
+fn broad_search_summary_prefers_ranked_signatures_over_source_body() {
+    let summary = render_summary(&SearchRun {
+        reference: "q-broad".into(),
+        workspace_ref: "w1".into(),
+        query: "adjoint isometry symm equiv unitary".into(),
+        inference: "hybrid".into(),
+        hits: vec![SearchHit {
+            name: "LinearIsometryEquiv.adjoint_eq_symm".into(),
+            kind: "theorem".into(),
+            signature: Some("e.adjoint = e.symm".into()),
+            module: "Mathlib.Analysis.InnerProductSpace.Adjoint".into(),
+            path: "Mathlib/Analysis/InnerProductSpace/Adjoint.lean".into(),
+            line: 865,
+            doc: None,
+            source: Some(
+                "theorem adjoint_eq_symm :\n    e.adjoint = e.symm := by\n  ext\n  simp"
+                    .into(),
+            ),
+            usages: Vec::new(),
+            applicable: false,
+            required_import: None,
+        }],
+        note: None,
+        duration_ms: 1,
+        created_at: 0,
+    });
+    assert!(summary.contains("adjoint_eq_symm : e.adjoint = e.symm"));
+    assert!(!summary.contains("source:"));
+    assert!(!summary.contains("  ext"));
+}
+
+#[test]
 fn structure_summary_points_to_complete_field_inventory() {
     let source = std::iter::once("structure Demo.Config where".to_owned())
         .chain((1..=20).map(|index| format!("  field{index} : Nat")))

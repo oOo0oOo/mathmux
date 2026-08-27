@@ -3241,14 +3241,26 @@ fn render_summary(run: &SearchRun) -> String {
         output.push_str(&hit.name);
         let displayed_source = hit.source.as_deref().filter(|_| {
             !related_results
-                && (index == 0
-                || (!proof_body_requested
-                    && (declaration_leaf_matches(&hit.name, &run.query)
-                        || (index < 3
-                            && matches!(
+                && ((index == 0 && proof_body_requested)
+                    || (!proof_body_requested
+                        && (declaration_leaf_matches(&hit.name, &run.query)
+                            || (index < 3
+                                && matches!(
+                                    hit.kind.as_str(),
+                                    "class" | "inductive" | "structure"
+                                ))
+                            || matches!(
                                 hit.kind.as_str(),
-                                "class" | "inductive" | "structure"
-                            )))))
+                                "diagnostic-context"
+                                    | "fields"
+                                    | "file"
+                                    | "imports"
+                                    | "location"
+                                    | "location-more"
+                                    | "outline"
+                                    | "source-occurrences"
+                                    | "source-range"
+                            ))))
         });
         if let Some(signature) = &hit.signature
             && !displayed_source
