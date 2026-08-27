@@ -626,10 +626,12 @@ fn static_probe_query(context: Option<&ProbeContext>, subject: &str, focus: Opti
         "source" => format!("{subject} source"),
         "fields" => format!("{subject} fields"),
         "constructors" => format!("{subject}.mk"),
-        "coercions" => format!("{subject} coe"),
-        "instances" => format!("{subject} instance"),
+        "coercions" => format!(
+            "declaration {subject}.instCoe*|{subject}.instFunLike*|{subject}.instCoeFun*|{subject}.hasCoe*|{subject}.toFun*"
+        ),
+        "instances" => format!("declaration {subject}.inst*|{subject}.instance*"),
         "ext" => format!("name:{subject}.ext"),
-        "simp" => format!("{subject} simp"),
+        "simp" => format!("declaration {subject}*"),
         "apply" => format!("{subject} theorem"),
         "usages" => format!("name:{subject}"),
         "types" if subject.starts_with("type:") => subject.to_owned(),
@@ -690,6 +692,18 @@ mod tests {
         assert_eq!(
             static_probe_query(None, "ContinuousMap", Some("ext")).unwrap(),
             "name:ContinuousMap.ext"
+        );
+        assert_eq!(
+            static_probe_query(None, "ContinuousMap", Some("instances")).unwrap(),
+            "declaration ContinuousMap.inst*|ContinuousMap.instance*"
+        );
+        assert_eq!(
+            static_probe_query(None, "ContinuousMap", Some("coercions")).unwrap(),
+            "declaration ContinuousMap.instCoe*|ContinuousMap.instFunLike*|ContinuousMap.instCoeFun*|ContinuousMap.hasCoe*|ContinuousMap.toFun*"
+        );
+        assert_eq!(
+            static_probe_query(None, "Demo.apply", Some("simp")).unwrap(),
+            "declaration Demo.apply*"
         );
         assert!(static_probe_query(
             Some(&ProbeContext::File("Demo.lean".into())),

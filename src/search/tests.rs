@@ -573,7 +573,7 @@ fn query_parsing_scoring_and_ranking_regressions() {
         origins: 0,
     }];
     assert!(apply_declaration_glob(&mut relational, "Matrix.*integral"));
-    assert_eq!(relational.len(), 1);
+    assert!(relational.is_empty());
     relational.push(Candidate {
         hit: SearchHit {
             name: "Demo.Matrix_entry_integral".into(),

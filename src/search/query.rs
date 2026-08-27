@@ -433,15 +433,9 @@ pub(super) fn apply_declaration_glob(candidates: &mut Vec<Candidate>, query: &st
     if !declaration_glob_query(query) {
         return false;
     }
-    if candidates
-        .iter()
-        .any(|candidate| declaration_alternative_matches(&candidate.hit.name, query))
-    {
-        candidates.retain(|candidate| declaration_alternative_matches(&candidate.hit.name, query));
-        false
-    } else {
-        !candidates.is_empty()
-    }
+    let had_candidates = !candidates.is_empty();
+    candidates.retain(|candidate| declaration_alternative_matches(&candidate.hit.name, query));
+    had_candidates && candidates.is_empty()
 }
 
 fn declaration_alternative_matches(name: &str, query: &str) -> bool {

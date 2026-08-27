@@ -1838,7 +1838,7 @@ impl Searcher {
             (false, false, false) => None,
         };
         if glob_name_miss {
-            prepend_search_note(&mut note, "related results (no name match)".into());
+            prepend_search_note(&mut note, "no name match".into());
         }
         if exact_name_miss {
             prepend_search_note(&mut note, "related results (no exact match)".into());
