@@ -268,6 +268,10 @@ fn lean_inspection_syntax_normalizes_to_search_terms() {
         "Finset.min'_mem|Finset.isLeast_min'"
     );
     assert_eq!(
+        normalize_lean_inspection_query(r"Demo.first\|Demo.second"),
+        "Demo.first|Demo.second"
+    );
+    assert_eq!(
         normalize_lean_inspection_query("LinearMap.mkContinuous2 FILE"),
         "LinearMap.mkContinuous2"
     );
@@ -457,6 +461,14 @@ fn query_parsing_scoring_and_ranking_regressions() {
             score: 100.0,
             origins: 0,
         },
+        Candidate {
+            hit: SearchHit {
+                name: "AtiyahSinger.matrixToeplitzOperator_add".into(),
+                ..contextual_hit.clone()
+            },
+            score: 50.0,
+            origins: 0,
+        },
     ];
     let alternatives_query = "matrixToeplitzOperator_add|matrixToeplitzOperator_smul";
     let alternative_tokens = meaningful_query_tokens(alternatives_query);
@@ -469,7 +481,7 @@ fn query_parsing_scoring_and_ranking_regressions() {
     );
     assert_eq!(
         alternatives[0].hit.name,
-        "AtiyahSinger.matrixToeplitzOperator_isFredholm"
+        "AtiyahSinger.matrixToeplitzOperator_add"
     );
     assert_eq!(symbolic_source_term("*ᵥ"), Some("*ᵥ".to_owned()));
     assert_eq!(symbolic_source_term("≤"), Some("≤".to_owned()));

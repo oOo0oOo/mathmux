@@ -22,7 +22,8 @@ pub(super) fn normalize_lean_inspection_query(query: &str) -> String {
         .trim()
         .replace("\\x27", "'")
         .replace("\\X27", "'")
-        .replace("\\'", "'");
+        .replace("\\'", "'")
+        .replace("\\|", "|");
     let without_file_placeholder = escaped_apostrophes
         .split_whitespace()
         .filter(|term| *term != "FILE")
@@ -1306,6 +1307,28 @@ pub(super) fn promote_query_coverage(
     }
     let mut remaining = std::mem::take(ranked);
     let mut promoted: Vec<Candidate> = Vec::new();
+    let alternative_queries = query
+        .split('|')
+        .map(str::trim)
+        .filter(|query| !query.is_empty())
+        .collect::<Vec<_>>();
+    if alternative_queries.len() > 1 {
+        for alternative in &alternative_queries {
+            let positions = remaining
+                .iter()
+                .enumerate()
+                .filter(|(_, candidate)| {
+                    !matches!(candidate.hit.kind.as_str(), "file" | "imports")
+                        && qualified_name_matches(&candidate.hit.name, alternative)
+                })
+                .map(|(position, _)| position)
+                .collect::<Vec<_>>();
+            if let [position] = positions.as_slice() {
+                promoted.push(remaining.remove(*position));
+                break;
+            }
+        }
+    }
     let qualified = tokens
         .iter()
         .filter(|token| token.contains('.') && !token.ends_with(".lean"))
@@ -1347,9 +1370,9 @@ pub(super) fn promote_query_coverage(
             }
         }
     }
-    let alternatives = query
-        .split('|')
-        .map(meaningful_query_tokens)
+    let alternatives = alternative_queries
+        .iter()
+        .map(|query| meaningful_query_tokens(query))
         .filter(|tokens| !tokens.is_empty())
         .collect::<Vec<_>>();
     remaining.sort_by_cached_key(|candidate| {
