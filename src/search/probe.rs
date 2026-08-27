@@ -303,10 +303,32 @@ impl Searcher {
             location,
         )?
         .with_context(|| format!("invalid probe location {location}"))?;
+        let stored_path = location.display_path.clone().unwrap_or_else(|| {
+            location
+                .path
+                .strip_prefix(&workspace.path)
+                .unwrap_or(&location.path)
+                .to_string_lossy()
+                .into_owned()
+        });
         let (operation, input) = match subject {
             None | Some("goal") => ("goal", ""),
             Some(subject) => ("term", subject),
         };
+        if operation == "goal" {
+            let source = fs::read_to_string(&location.path)?;
+            if source
+                .lines()
+                .nth(location.line.saturating_sub(1) as usize)
+                .is_some_and(is_declaration_header)
+            {
+                bail!(
+                    "goal needs an exact proof line, not a declaration header; use search {}:{} to read source",
+                    stored_path,
+                    location.line
+                );
+            }
+        }
         let (ok, detail) = self.checker.probe_context(
             workspace,
             &location.path,
@@ -315,17 +337,6 @@ impl Searcher {
             operation,
             input,
         )?;
-        let stored_path = location
-            .display_path
-            .clone()
-            .unwrap_or_else(|| {
-                location
-                    .path
-                    .strip_prefix(&workspace.path)
-                    .unwrap_or(&location.path)
-                    .to_string_lossy()
-                    .into_owned()
-            });
         let rendered = self.store_probe_result(
             workspace,
             &format!("{stored_path}:{} {operation}", location.line),
@@ -461,6 +472,28 @@ impl Searcher {
     }
 }
 
+fn is_declaration_header(line: &str) -> bool {
+    let mut line = line.trim_start();
+    loop {
+        let previous = line;
+        for modifier in ["noncomputable ", "private ", "protected ", "unsafe "] {
+            if let Some(rest) = line.strip_prefix(modifier) {
+                line = rest.trim_start();
+                break;
+            }
+        }
+        if line == previous {
+            break;
+        }
+    }
+    [
+        "abbrev ", "class ", "def ", "example ", "inductive ", "instance ", "lemma ",
+        "structure ", "theorem ",
+    ]
+    .iter()
+    .any(|keyword| line.starts_with(keyword))
+}
+
 fn static_probe_query(context: Option<&ProbeContext>, subject: &str, focus: Option<&str>) -> Result<String> {
     let scoped = match context {
         Some(ProbeContext::Scope(path)) if focus == Some("usages") => Some(path.as_str()),
@@ -527,5 +560,10 @@ mod tests {
                 .to_string(),
             "#check requires FILE, FILE:LINE, cREF, or qREF context; use NAME signature for a declaration"
         );
+        assert!(is_declaration_header(
+            "noncomputable def parameterizedBottThickClutchingCore"
+        ));
+        assert!(is_declaration_header("private theorem hidden"));
+        assert!(!is_declaration_header("  intro i"));
     }
 }
