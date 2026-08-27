@@ -1730,6 +1730,7 @@ impl Searcher {
         let mut ranked = Vec::new();
         let mut origins = HashMap::new();
         let mut warming = false;
+        let loogle_started = Instant::now();
         if type_search {
             let explicit_conclusion = conclusion_query(query);
             let applicability_query = if explicit_conclusion {
@@ -1764,6 +1765,8 @@ impl Searcher {
                 ranked.extend(loogle);
             }
         }
+        let loogle_ms = loogle_started.elapsed().as_millis() as u64;
+        let ranking_started = Instant::now();
         for row in rows.into_iter().filter(|row| scopes.contains(&row.owner)) {
             let type_score = if type_search {
                 structural_type_score(query, &row.signature)
@@ -1817,6 +1820,7 @@ impl Searcher {
                 CandidateOrigin::Index as u8;
             ranked.push(candidate);
         }
+        let ranking_ms = ranking_started.elapsed().as_millis() as u64;
         let project_started = Instant::now();
         let project = self.project_source_hits(workspace, query, &query_tokens);
         record_candidate_origins(&mut origins, CandidateOrigin::ProjectSource, &project);
@@ -1987,6 +1991,15 @@ impl Searcher {
             ok: true,
         };
         let total_ms = search_started.elapsed().as_millis() as u64;
+        let finish_ms = finish_started.elapsed().as_millis() as u64;
+        let accounted_ms = import_ms
+            + candidates_ms
+            + loogle_ms
+            + ranking_ms
+            + project_ms
+            + fallback_ms
+            + finish_ms;
+        let unaccounted_ms = total_ms.saturating_sub(accounted_ms);
         let sampled_fallback = fallback_used
             && query.bytes().fold(0_u8, |hash, byte| {
                 hash.wrapping_mul(31).wrapping_add(byte)
@@ -1996,8 +2009,7 @@ impl Searcher {
             && let Ok(store) = TelemetryStore::global()
         {
             let detail = format!(
-                "import={import_ms}ms candidates={candidates_ms}ms project={project_ms}ms fallback={fallback_ms}ms used={fallback_used} top={fallback_top} unique_top={fallback_unique_top} finish={}ms hits={}",
-                finish_started.elapsed().as_millis(),
+                "import={import_ms}ms candidates={candidates_ms}ms loogle={loogle_ms}ms rank={ranking_ms}ms project={project_ms}ms fallback={fallback_ms}ms used={fallback_used} top={fallback_top} unique_top={fallback_unique_top} finish={finish_ms}ms other={unaccounted_ms}ms hits={}",
                 result.hits.len(),
             );
             let _ = store.record_operation(
