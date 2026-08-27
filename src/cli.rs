@@ -60,8 +60,9 @@ const SEARCH_HELP: &str = r#"QUERY FORMS (inferred)
 
 Also accepts #check, #print, #synth, @NAME, and _root_.NAME. Ranking respects
 imports when a target file is known. Every result is stored under qREF. Default
-output is compact; --all prints the complete current result. Quote QUERY when it
-contains shell characters such as | or *."#;
+output is compact; --all prints the complete current result. --all is the only
+search option; express scopes, source/body, and facets inside QUERY. Quote QUERY
+when it contains shell characters such as | or *."#;
 
 #[derive(Parser)]
 #[command(
@@ -812,6 +813,8 @@ mod tests {
             "path/to/dir /REGEX/",
             "STRUCTURE fields",
             "A|B",
+            "--all is the only",
+            "facets inside QUERY",
             "Quote QUERY",
         ] {
             assert!(help.contains(form), "missing search form {form}");
