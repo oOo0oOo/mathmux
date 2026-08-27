@@ -368,7 +368,7 @@ pub fn run() -> Result<u8> {
             );
         }
         if response.ok {
-            println!("{}", response.summary);
+            output_summary(&response.summary)?;
             return Ok(0);
         }
         eprintln!("error {}", response.summary);
@@ -424,7 +424,7 @@ pub fn run() -> Result<u8> {
         );
     }
     if response.ok {
-        println!("{}", response.summary);
+        output_summary(&response.summary)?;
         Ok(0)
     } else {
         eprintln!("error {}", response.summary);
@@ -525,7 +525,7 @@ fn run_issue_report(command: &IssueCommand, cwd: &Path) -> Result<u8> {
             store.create(cwd, summary, reference.as_deref())?
         }
     };
-    println!("{summary}");
+    output_summary(&summary)?;
     Ok(0)
 }
 
@@ -557,8 +557,20 @@ fn run_dev(command: &DevCommand, _cwd: &Path) -> Result<u8> {
             }
         }
     };
-    println!("{summary}");
+    output_summary(&summary)?;
     Ok(0)
+}
+
+fn output_summary(summary: &str) -> Result<()> {
+    output_summary_to(std::io::stdout().lock(), summary)
+}
+
+fn output_summary_to(mut output: impl Write, summary: &str) -> Result<()> {
+    match writeln!(output, "{summary}") {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn command_line() -> clap::Command {
@@ -664,6 +676,23 @@ fn daemon_executable() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct BrokenPipe;
+
+    impl Write for BrokenPipe {
+        fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn closed_stdout_pipe_is_a_successful_early_exit() {
+        output_summary_to(BrokenPipe, "long search result").unwrap();
+    }
 
     #[test]
     fn exchange_consumes_progress_before_the_final_response() {
