@@ -274,7 +274,7 @@ pub(super) fn render_check_run(run: &CheckRun, all: bool) -> String {
     output
 }
 
-pub(super) fn render_submission(submission: &Submission, all: bool) -> String {
+pub(super) fn render_submission(submission: &Submission, files: &[String], all: bool) -> String {
     if submission.validation_status == "skipped" {
         return format!(
             "{} covered-by:{}",
@@ -285,6 +285,20 @@ pub(super) fn render_submission(submission: &Submission, all: bool) -> String {
     let mut output = format!("{} {}", submission.reference, submission.validation_status);
     if !submission.checks.is_empty() {
         output.push_str(&format!("\ncheck: {}", submission.checks.join(" ")));
+    }
+    if !files.is_empty() {
+        output.push_str("\nfiles:");
+        let limit = if all { files.len() } else { 12 };
+        for file in files.iter().take(limit) {
+            output.push_str(&format!("\n  {file}"));
+        }
+        if files.len() > limit {
+            output.push_str(&format!(
+                "\n  +{} files; show {} --all",
+                files.len() - limit,
+                submission.reference
+            ));
+        }
     }
     if let Some(duration) = submission.validation_duration_ms {
         output.push_str(&format!("\nbuild: {}", format_duration(duration)));

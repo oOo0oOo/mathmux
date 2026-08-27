@@ -911,10 +911,20 @@ impl State {
                 .check_run(reference)?
                 .map(|run| render_check_run(&run, all))
                 .with_context(|| format!("unknown reference {reference}")),
-            's' => self
-                .submission(reference)?
-                .map(|submission| render_submission(&submission, all))
-                .with_context(|| format!("unknown reference {reference}")),
+            's' => {
+                let submission = self
+                    .submission(reference)?
+                    .with_context(|| format!("unknown reference {reference}"))?;
+                let mut files = Vec::new();
+                for check in &submission.checks {
+                    if let Some(run) = self.check_run(check)? {
+                        files.extend(run.files);
+                    }
+                }
+                files.sort();
+                files.dedup();
+                Ok(render_submission(&submission, &files, all))
+            }
             'w' => self.show_workspace(reference, all),
             'u' => self.show_sync(reference, all),
             'q' => self
@@ -1285,10 +1295,73 @@ mod tests {
             validated_by: None,
             created_at: 0,
         };
-        let compact = render_submission(&submission, false);
+        let files = vec!["Demo/Changed.lean".into()];
+        let compact = render_submission(&submission, &files, false);
+        assert!(compact.contains("files:\n  Demo/Changed.lean"));
         assert!(compact.contains("build warnings: 2; show s1 --all"));
         assert!(!compact.contains("first warning"));
-        assert!(render_submission(&submission, true).contains("first warning"));
+        assert!(render_submission(&submission, &files, true).contains("first warning"));
+    }
+
+    #[test]
+    fn submission_show_includes_certified_files() {
+        let directory = tempdir().unwrap();
+        let state = State::new(directory.path().join("state.db")).unwrap();
+        state
+            .add_workspace(&Workspace {
+                reference: "w1".into(),
+                name: "agent".into(),
+                path: directory.path().join("agent"),
+                branch: "mathmux/agent".into(),
+                model: None,
+            })
+            .unwrap();
+        state
+            .add_check_run(
+                &CheckRun {
+                    reference: "c1".into(),
+                    workspace_ref: "w1".into(),
+                    status: "passed".into(),
+                    files: vec!["Demo/Changed.lean".into()],
+                    passed: vec!["Demo/Changed.lean".into()],
+                    failed: None,
+                    not_checked: Vec::new(),
+                    warnings: Vec::new(),
+                    linters: Vec::new(),
+                    suggestions: Vec::new(),
+                    diagnostics: Vec::new(),
+                    profile: None,
+                    duration_ms: 1,
+                    created_at: 1,
+                },
+                &[],
+            )
+            .unwrap();
+        state
+            .add_submission(&Submission {
+                reference: "s1".into(),
+                workspace_ref: "w1".into(),
+                workspace_commit: "workspace".into(),
+                main_commit: "main".into(),
+                base_commit: "base".into(),
+                checks: vec!["c1".into()],
+                validation_status: "passed".into(),
+                validation_detail: None,
+                build_output: None,
+                axioms: Vec::new(),
+                sorries: Vec::new(),
+                validation_duration_ms: Some(1),
+                validated_by: None,
+                created_at: 1,
+            })
+            .unwrap();
+
+        assert!(
+            state
+                .show("s1", false)
+                .unwrap()
+                .contains("files:\n  Demo/Changed.lean")
+        );
     }
 
     #[test]
