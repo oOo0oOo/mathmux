@@ -95,6 +95,12 @@ fn unquote(value: &str) -> &str {
     value
 }
 
+fn usage_path_matches_scope(path: &str, scope: &str) -> bool {
+    let path = path.trim_start_matches("./").trim_end_matches('/');
+    let scope = scope.trim_start_matches("./").trim_end_matches('/');
+    path == scope || path.strip_prefix(scope).is_some_and(|rest| rest.starts_with('/'))
+}
+
 fn parse_context(value: &str) -> Option<ProbeContext> {
     if reference(value, 'c') {
         return Some(ProbeContext::Check(value.into()));
@@ -160,6 +166,11 @@ impl Searcher {
             (Some(ProbeContext::Query(reference)), subject, focus) => {
                 self.probe_query_reference(workspace, cwd, reference, subject, focus)
             }
+            (
+                Some(context @ (ProbeContext::File(_) | ProbeContext::Scope(_))),
+                Some(subject),
+                Some("usages"),
+            ) => self.probe_scoped_usages(workspace, context, subject),
             (Some(ProbeContext::File(file)), Some(subject), None | Some("signature")) => {
                 self.run_lean_probe(
                     workspace,
@@ -189,6 +200,59 @@ impl Searcher {
             }
             _ => bail!("probe form is incomplete"),
         }
+    }
+
+    fn probe_scoped_usages(
+        &self,
+        workspace: &Workspace,
+        context: &ProbeContext,
+        subject: &str,
+    ) -> Result<String> {
+        let scope = match context {
+            ProbeContext::File(path) | ProbeContext::Scope(path) => path,
+            _ => unreachable!("scoped usages require a path context"),
+        };
+        let started = Instant::now();
+        let mut result = self.planned_text_search(
+            workspace,
+            subject,
+            TextSearchPlan::ExactFirst,
+            None,
+            None,
+            false,
+        )?;
+        result
+            .hits
+            .retain(|hit| qualified_name_matches(&hit.name, subject));
+        result.hits.truncate(1);
+        for hit in &mut result.hits {
+            hit.source = None;
+            hit.usages
+                .retain(|usage| usage_path_matches_scope(&usage.path, scope));
+        }
+        if result.hits.is_empty() {
+            result.note = Some(format!("declaration not found: {subject}"));
+            result.ok = false;
+        } else if result.hits[0].usages.is_empty()
+            && !result.note.as_deref().is_some_and(|note| note.contains("warming"))
+        {
+            result.note = Some(format!("no indexed usages under {scope}"));
+        }
+        let ok = result.ok;
+        let run = SearchRun {
+            reference: self.state.next_ref('q')?,
+            workspace_ref: workspace.reference.clone(),
+            query: format!("{scope} {subject} usages"),
+            inference: "exact".into(),
+            hits: result.hits,
+            note: result.note,
+            duration_ms: started.elapsed().as_millis() as u64,
+            created_at: now_unix_ms(),
+        };
+        self.state.add_search(&run)?;
+        self.state.touch_workspace(&workspace.reference)?;
+        let rendered = render_summary(&run);
+        if ok { Ok(rendered) } else { bail!(rendered) }
     }
 
     fn probe_check_reference(
@@ -549,14 +613,13 @@ fn is_declaration_header(line: &str) -> bool {
 }
 
 fn static_probe_query(context: Option<&ProbeContext>, subject: &str, focus: Option<&str>) -> Result<String> {
-    let scoped = match context {
-        Some(ProbeContext::Scope(path)) if focus == Some("usages") => Some(path.as_str()),
-        None => None,
+    match context {
+        None => {}
         Some(ProbeContext::File(_)) => {
             bail!("FILE with a declaration supports signature only; use probe NAME for API dossiers")
         }
         Some(_) => bail!("this probe requires a declaration or type subject"),
-    };
+    }
     let default_focus = if subject.starts_with("type:") { "types" } else { "signature" };
     let query = match focus.unwrap_or(default_focus) {
         "signature" => format!("name:{subject}"),
@@ -568,10 +631,7 @@ fn static_probe_query(context: Option<&ProbeContext>, subject: &str, focus: Opti
         "ext" => format!("name:{subject}.ext"),
         "simp" => format!("{subject} simp"),
         "apply" => format!("{subject} theorem"),
-        "usages" => match scoped {
-            Some(path) => format!("{path} {subject}"),
-            None => format!("name:{subject}"),
-        },
+        "usages" => format!("name:{subject}"),
         "types" if subject.starts_with("type:") => subject.to_owned(),
         other => bail!("focus `{other}` requires source or failure context"),
     };
@@ -606,6 +666,23 @@ mod tests {
             ProbeRequest::parse("Mathlib/ Demo.foo usages").unwrap().context,
             Some(ProbeContext::Scope("Mathlib/".into()))
         );
+        assert_eq!(
+            ProbeRequest::parse("Mathlib/Data/List.lean Demo.foo usages").unwrap(),
+            ProbeRequest {
+                context: Some(ProbeContext::File("Mathlib/Data/List.lean".into())),
+                subject: Some("Demo.foo".into()),
+                focus: Some("usages".into()),
+                directive: None,
+            }
+        );
+        assert!(usage_path_matches_scope(
+            "Mathlib/Data/List/Basic.lean",
+            "Mathlib/Data/List"
+        ));
+        assert!(!usage_path_matches_scope(
+            "Mathlib/Data/ListExtra.lean",
+            "Mathlib/Data/List"
+        ));
         assert_eq!(
             static_probe_query(None, "type:_ → _", None).unwrap(),
             "type:_ → _"
