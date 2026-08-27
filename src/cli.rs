@@ -74,7 +74,8 @@ RESULT
 RULES
   Context is mandatory for directives and never guessed. FILE uses its imports;
   FILE:LINE uses that exact line—there is no nearby-line fallback. Probe never
-  edits or certifies source; use check after editing. Quote directives."##;
+  edits or certifies source; use check after editing. Use NAME signature, not
+  NAME "#check NAME". Quote directives."##;
 
 #[derive(Parser)]
 #[command(
@@ -857,6 +858,7 @@ mod tests {
             "FILE:LINE [goal]",
             "cREF [types|defeq|rewrite|profile]",
             "Context is mandatory",
+            "Use NAME signature, not",
             "no nearby-line fallback",
         ] {
             assert!(probe_help.contains(contract), "missing probe contract {contract}");

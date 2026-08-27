@@ -50,6 +50,18 @@ impl ProbeRequest {
             ensure!(context.is_some(), "Lean directives require FILE, FILE:LINE, cREF, or qREF context");
             return Ok(Self { context, subject: None, focus: None, directive: Some(directive) });
         }
+        if context.is_none() {
+            if let Some(directive) = remainder
+                .split_whitespace()
+                .skip(1)
+                .map(|term| term.trim_matches(['\'', '"']))
+                .find(|term| matches!(*term, "#check" | "#synth" | "#reduce"))
+            {
+                bail!(
+                    "{directive} requires FILE, FILE:LINE, cREF, or qREF context; use NAME signature for a declaration"
+                );
+            }
+        }
         let mut terms = remainder.split_whitespace().collect::<Vec<_>>();
         let focus = terms
             .last()
@@ -509,5 +521,11 @@ mod tests {
         )
         .is_err());
         assert!(ProbeRequest::parse("#check Nat").is_err());
+        assert_eq!(
+            ProbeRequest::parse("Demo.foo \"#check Demo.foo\"")
+                .unwrap_err()
+                .to_string(),
+            "#check requires FILE, FILE:LINE, cREF, or qREF context; use NAME signature for a declaration"
+        );
     }
 }
