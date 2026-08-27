@@ -17,6 +17,16 @@ fn tuning_sql_exposes_fts_weights() {
 }
 
 #[test]
+fn submission_reference_requires_search_terms() {
+    let error = require_submission_refinement("s774", "").unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "s774 requires search terms; use show s774 first, then --all only if needed"
+    );
+    require_submission_refinement("s774", "block diagonal").unwrap();
+}
+
+#[test]
 fn source_parser_qualifies_names_and_keeps_types() {
     let source = r#"namespace Demo
 /-- Converts a hypothesis. -/

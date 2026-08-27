@@ -60,6 +60,14 @@ pub(super) fn search_refinement_facet(refinement: &str) -> bool {
     )
 }
 
+pub(super) fn require_submission_refinement(reference: &str, refinement: &str) -> Result<()> {
+    ensure!(
+        !refinement.trim().is_empty(),
+        "{reference} requires search terms; use show {reference} first, then --all only if needed"
+    );
+    Ok(())
+}
+
 pub(super) fn diagnostic_position(
     diagnostic: &str,
     fallback: Option<&str>,

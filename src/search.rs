@@ -619,6 +619,7 @@ impl Searcher {
                 .state
                 .submission(reference)?
                 .with_context(|| format!("unknown submission reference {reference}"))?;
+            require_submission_refinement(reference, refinement)?;
             let (subject, context) = self.submission_search_context(&submission, refinement)?;
             return Ok(ExpandedQuery {
                 query: [subject.as_str(), refinement]
