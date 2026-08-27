@@ -159,7 +159,19 @@ impl Searcher {
             }
             (context, Some(subject), focus) => {
                 let query = static_probe_query(context.as_ref(), subject, focus)?;
-                self.search(workspace, cwd, &query, None, false)
+                let rendered = self.search(workspace, cwd, &query, None, false)?;
+                let effective_focus = focus.unwrap_or(if subject.starts_with("type:") {
+                    "types"
+                } else {
+                    "signature"
+                });
+                let Some(reference) = rendered.split_whitespace().next().filter(|term| reference(term, 'q')) else {
+                    return Ok(rendered);
+                };
+                let Some(run) = self.state.search_run(reference)? else {
+                    return Ok(rendered);
+                };
+                Ok(render_static_probe_summary(&run, effective_focus))
             }
             (Some(ProbeContext::File(file)), None, Some("goal")) => {
                 bail!("goal requires an exact FILE:LINE context, not {file}")
@@ -480,6 +492,29 @@ impl Searcher {
     }
 }
 
+fn render_static_probe_summary(run: &SearchRun, focus: &str) -> String {
+    let mut run = run.clone();
+    match focus {
+        "signature" => {
+            run.inference = "exact".into();
+            for hit in &mut run.hits {
+                hit.source = None;
+            }
+        }
+        "source" => run.hits.truncate(1),
+        _ => {}
+    }
+    if matches!(focus, "signature" | "source")
+        && matches!(
+            run.note.as_deref(),
+            Some("search indexes warming" | "source index warming")
+        )
+    {
+        run.note = None;
+    }
+    render_summary(&run)
+}
+
 fn is_declaration_header(line: &str) -> bool {
     let mut line = line.trim_start();
     loop {
@@ -579,5 +614,44 @@ mod tests {
         ));
         assert!(is_declaration_header("private theorem hidden"));
         assert!(!is_declaration_header("  intro i"));
+    }
+
+    #[test]
+    fn probe_focus_keeps_initial_dossiers_bounded() {
+        let hit = |name: &str, source: &str| SearchHit {
+            name: name.into(),
+            kind: "theorem".into(),
+            signature: Some("(n : Nat) : n = n".into()),
+            module: "Demo".into(),
+            path: "Demo.lean".into(),
+            line: 10,
+            doc: None,
+            source: Some(source.into()),
+            usages: Vec::new(),
+            applicable: false,
+            required_import: None,
+        };
+        let run = SearchRun {
+            reference: "q1".into(),
+            workspace_ref: "w1".into(),
+            query: "Demo.first".into(),
+            inference: "exact".into(),
+            hits: vec![
+                hit("Demo.first", "theorem first (n : Nat) : n = n := by\n  rfl"),
+                hit("Demo.second", "theorem second (n : Nat) : n = n := by\n  rfl"),
+            ],
+            note: Some("search indexes warming".into()),
+            duration_ms: 1,
+            created_at: 0,
+        };
+
+        let signature = render_static_probe_summary(&run, "signature");
+        assert!(signature.contains("Demo.first : (n : Nat) : n = n"));
+        assert!(!signature.contains(":= by"));
+        assert!(!signature.contains("warming"));
+
+        let source = render_static_probe_summary(&run, "source");
+        assert!(source.contains("theorem first"));
+        assert!(!source.contains("Demo.second"));
     }
 }
