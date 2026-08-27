@@ -169,10 +169,12 @@ pub(super) fn parse_source_regex_query(
     query: &str,
 ) -> Result<Option<SourceRegexQuery>> {
     let query = query.trim();
-    let start = if query.starts_with('/') {
-        0
+    let (start, compact_scope) = if query.starts_with('/') {
+        (0, false)
     } else if let Some(start) = query.find(" /") {
-        start + 1
+        (start + 1, false)
+    } else if let Some(start) = query.find(":/") {
+        (start + 1, true)
     } else {
         return Ok(None);
     };
@@ -204,6 +206,11 @@ pub(super) fn parse_source_regex_query(
     Regex::new(pattern).context("invalid source regex")?;
     let scope = format!("{} {}", &query[..start], &query[end + 1..]);
     let scope = scope.trim();
+    let scope = if compact_scope {
+        scope.strip_suffix(':').unwrap_or(scope)
+    } else {
+        scope
+    };
     let scope = scope
         .strip_prefix('[')
         .and_then(|scope| scope.strip_suffix(']'))

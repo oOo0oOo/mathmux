@@ -46,7 +46,7 @@ const SEARCH_HELP: &str = r#"QUERY FORMS (inferred)
   FILE:tail                     bounded end-of-file context
   FILE:START-END                bounded source range
   FILE[:START-END] TERM[|TERM]  literal source occurrences
-  /REGEX/ | path/to/dir /REGEX/ bounded matches; file ranges and dependency dirs work
+  /REGEX/ | PATH /REGEX/ | FILE:/REGEX/ bounded matches; ranges and dependencies work
   FILE imports [TERMS]          imports, optionally filtered
   FILE outline|declarations     declarations with lines and signatures
 
@@ -810,7 +810,8 @@ mod tests {
             "FILE:LINE[:COLUMN]",
             "FILE imports [TERMS]",
             "FILE outline|declarations",
-            "path/to/dir /REGEX/",
+            "PATH /REGEX/",
+            "FILE:/REGEX/",
             "STRUCTURE fields",
             "quotient topology",
             "A|B",
