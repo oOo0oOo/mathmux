@@ -1326,7 +1326,7 @@ mod tests {
                     linters: Vec::new(),
                     suggestions: Vec::new(),
                     diagnostics: vec![crate::state::Diagnostic {
-                        kind: "lean".into(),
+                        kind: "lean.dependency".into(),
                         text: "type mismatch".into(),
                         context: None,
                     }],

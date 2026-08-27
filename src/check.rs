@@ -56,6 +56,26 @@ impl std::fmt::Display for CheckTimeout {
 
 impl std::error::Error for CheckTimeout {}
 
+#[derive(Debug)]
+struct DependencySetupFailure {
+    target: PathBuf,
+    detail: String,
+    formalization: bool,
+}
+
+impl std::fmt::Display for DependencySetupFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "dependency setup failed for {}: {}",
+            self.target.display(),
+            self.detail
+        )
+    }
+}
+
+impl std::error::Error for DependencySetupFailure {}
+
 #[derive(Debug, Clone)]
 pub struct CheckOutcome {
     pub reference: String,
@@ -542,7 +562,70 @@ impl Checker {
         }
         let phase = Instant::now();
         report(&format!("preparing imports for {}", target.display()));
-        let (setup_path, environment) = self.worker_setup(workspace, target, &dependencies)?;
+        let (setup_path, environment) = match self.worker_setup(workspace, target, &dependencies) {
+            Ok(setup) => setup,
+            Err(error) => {
+                let Some(failure) = error
+                    .downcast_ref::<DependencySetupFailure>()
+                    .filter(|failure| failure.formalization)
+                else {
+                    return Err(error);
+                };
+                let mut diagnostics = vec![Diagnostic {
+                    kind: "lean.dependency".into(),
+                    text: failure
+                        .detail
+                        .strip_prefix("error: ")
+                        .unwrap_or(&failure.detail)
+                        .to_owned(),
+                    context: None,
+                }];
+                for dependency in &dependencies {
+                    if let Ok(source) = fs::read_to_string(workspace.path.join(dependency)) {
+                        attach_source_context(&mut diagnostics, dependency, &source);
+                    }
+                    if diagnostics[0].context.is_some() {
+                        break;
+                    }
+                }
+                let result = FileCheck {
+                    certificate: CheckRecord {
+                        reference: reference.to_owned(),
+                        workspace_ref: workspace.reference.clone(),
+                        target: target_name.clone(),
+                        fingerprint,
+                        dependencies: dependencies
+                            .iter()
+                            .map(|path| path.to_string_lossy().into_owned())
+                            .collect(),
+                        source_version: 1,
+                        created_at: now_unix_ms(),
+                    },
+                    warnings: Vec::new(),
+                    linters: Vec::new(),
+                    suggestions: Vec::new(),
+                    diagnostics,
+                    ok: false,
+                    profile: FileCheckProfile {
+                        target: target_name,
+                        mode: "dependency-failure".into(),
+                        reused_prefix_lines: None,
+                        queue_ms,
+                        dependencies_ms,
+                        cache_ms,
+                        setup_ms: phase.elapsed().as_millis() as u64,
+                        elaborate_ms: 0,
+                        total_ms: file_started.elapsed().as_millis() as u64,
+                        entries: Vec::new(),
+                    },
+                };
+                self.failed_checks
+                    .lock()
+                    .expect("failed check cache poisoned")
+                    .insert(check_key, result.clone());
+                return Ok(result);
+            }
+        };
         let setup_ms = phase.elapsed().as_millis() as u64;
         let phase = Instant::now();
         report(&format!("elaborating {}", target.display()));
@@ -1088,11 +1171,12 @@ impl Checker {
                 )
             })?;
         if !output.status.success() {
-            bail!(
-                "dependency setup failed for {}: {}",
-                target.display(),
-                compact_dependency_failure(&output.stderr)
-            );
+            return Err(DependencySetupFailure {
+                target: target.to_path_buf(),
+                detail: compact_dependency_failure(&output.stderr),
+                formalization: dependency_failure_is_formalization(&output.stderr),
+            }
+            .into());
         }
         let setup: LakeSetup = serde_json::from_slice(&output.stdout)
             .with_context(|| format!("invalid Lake setup for {}", target.display()))?;
@@ -1405,6 +1489,13 @@ fn compact_dependency_failure(stderr: &[u8]) -> String {
         }
     }
     selected.join("\n")
+}
+
+fn dependency_failure_is_formalization(stderr: &[u8]) -> bool {
+    String::from_utf8_lossy(stderr).lines().any(|line| {
+        let line = line.trim_start();
+        line.contains(".lean:") && (line.starts_with("error:") || line.contains(": error:"))
+    })
 }
 
 fn setup_fingerprint_path(setup_path: &Path) -> PathBuf {
@@ -2745,6 +2836,27 @@ noncomputable def second : Nat := 2
         assert!(compact.contains("Failed to build module dependencies."));
         assert!(!compact.contains("old warning"));
         assert!(compact.lines().count() <= 36);
+        assert!(dependency_failure_is_formalization(stderr.as_bytes()));
+
+        let source = (1..=15)
+            .map(|line| format!("def line{line} := {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut diagnostics = vec![Diagnostic {
+            kind: "lean.dependency".into(),
+            text: compact.strip_prefix("error: ").unwrap_or(&compact).to_owned(),
+            context: None,
+        }];
+        attach_source_context(&mut diagnostics, Path::new("Demo.lean"), &source);
+        assert!(
+            diagnostics[0]
+                .context
+                .as_deref()
+                .is_some_and(|context| context.contains(">   12 | def line12 := 12"))
+        );
+        assert!(!dependency_failure_is_formalization(
+            b"error: missing Lake package\nFailed to build module dependencies.\n"
+        ));
     }
 
     #[test]
