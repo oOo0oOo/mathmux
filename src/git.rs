@@ -196,6 +196,7 @@ pub fn dirty_lean_files(root: &Path) -> Result<Vec<PathBuf>> {
             path.extension()
                 .is_some_and(|extension| extension == "lean")
                 && path.file_name().is_none_or(|name| name != "lakefile.lean")
+                && !belongs_to_nested_lake_project(root, path)
         })
         .collect())
 }
@@ -212,7 +213,9 @@ pub fn project_lean_files(root: &Path) -> Vec<PathBuf> {
             !matches!(
                 entry.file_name().to_str(),
                 Some(".git" | ".lake" | "target")
-            )
+            ) && (entry.path() == root
+                || !entry.file_type().is_dir()
+                || !is_lake_project_root(entry.path()))
         })
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_file())
@@ -224,6 +227,19 @@ pub fn project_lean_files(root: &Path) -> Vec<PathBuf> {
         })
         .filter_map(|path| path.strip_prefix(root).ok().map(Path::to_path_buf))
         .collect()
+}
+
+fn belongs_to_nested_lake_project(root: &Path, path: &Path) -> bool {
+    path.parent().is_some_and(|parent| {
+        parent
+            .ancestors()
+            .take_while(|directory| !directory.as_os_str().is_empty())
+            .any(|directory| is_lake_project_root(&root.join(directory)))
+    })
+}
+
+fn is_lake_project_root(path: &Path) -> bool {
+    path.join("lakefile.toml").is_file() || path.join("lakefile.lean").is_file()
 }
 
 pub fn head(root: &Path) -> Result<String> {

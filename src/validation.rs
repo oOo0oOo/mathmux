@@ -517,6 +517,10 @@ mod tests {
             "def other := 2\n",
         )
         .unwrap();
+        let comparator = directory.path().join("comparator");
+        fs::create_dir(&comparator).unwrap();
+        fs::write(comparator.join("lakefile.toml"), "name = \"comparator\"\n").unwrap();
+        fs::write(comparator.join("Challenge.lean"), "def challenge := 3\n").unwrap();
 
         let (roots, modules) = deliverable_modules(directory.path());
         assert_eq!(roots, ["Independent", "Result"]);
