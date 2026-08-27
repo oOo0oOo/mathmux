@@ -8,7 +8,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 
 use crate::git::{dirty_paths, head};
-use crate::protocol::{Request, Response};
+use crate::protocol::{Command, Request, Response};
 use crate::repo::Repo;
 use crate::state::State;
 use crate::util::{build_id, format_duration, hash_bytes, now_unix_ms, resident_memory_kib};
@@ -74,6 +74,7 @@ struct TelemetryEvent {
     verb: String,
     reference: Option<String>,
     ok: bool,
+    outcome_class: Option<String>,
     error_class: Option<String>,
     client_ms: u64,
     daemon_ms: u64,
@@ -349,6 +350,7 @@ impl TelemetryStore {
                 verb TEXT NOT NULL,
                 reference TEXT,
                 ok INTEGER NOT NULL,
+                outcome_class TEXT,
                 error_class TEXT,
                 client_ms INTEGER NOT NULL,
                 daemon_ms INTEGER NOT NULL,
@@ -365,6 +367,21 @@ impl TelemetryStore {
              CREATE INDEX IF NOT EXISTS telemetry_project_created
                 ON telemetry_events(project, created_at DESC);",
         )?;
+        if !table_has_column(&connection, "telemetry_events", "outcome_class")? {
+            connection.execute(
+                "ALTER TABLE telemetry_events ADD COLUMN outcome_class TEXT",
+                [],
+            )?;
+            connection.execute(
+                "UPDATE telemetry_events
+                 SET outcome_class = CASE
+                     WHEN ok = 0 AND verb = 'check' AND reference GLOB 'c[0-9]*'
+                         THEN 'formalization'
+                     WHEN ok = 0 THEN 'operational'
+                 END",
+                [],
+            )?;
+        }
         Ok(())
     }
 
@@ -377,21 +394,23 @@ impl TelemetryStore {
     ) -> Result<String> {
         let request_json = serde_json::to_string(request)?;
         let response_json = serde_json::to_string(response)?;
-        let workspace = State::existing(&repo.db_path)
+        let state = State::existing(&repo.db_path);
+        let workspace = state
             .workspace_for_path(Path::new(&request.cwd))
             .ok()
             .map(|workspace| workspace.reference);
         let reference = response_reference(&response.summary);
+        let outcome_class = failure_outcome_class(&state, request, response, reference.as_deref());
         let error_class = (!response.ok).then(|| error_class(&response.summary));
         let now = now_unix_ms();
         let mut connection = open_db(&self.path)?;
         let transaction = connection.transaction()?;
         transaction.execute(
             "INSERT INTO telemetry_events(
-                created_at, build, project, workspace, verb, reference, ok, error_class,
+                created_at, build, project, workspace, verb, reference, ok, outcome_class, error_class,
                 client_ms, daemon_ms, rss_kib, request_bytes, response_bytes,
                 request_json, response_json
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 now,
                 response.build,
@@ -400,6 +419,7 @@ impl TelemetryStore {
                 request.command.verb(),
                 reference,
                 response.ok,
+                outcome_class,
                 error_class,
                 client_ms,
                 response.daemon_ms,
@@ -461,10 +481,10 @@ impl TelemetryStore {
         let transaction = connection.transaction()?;
         transaction.execute(
             "INSERT INTO telemetry_events(
-                created_at, build, project, workspace, verb, reference, ok, error_class,
+                created_at, build, project, workspace, verb, reference, ok, outcome_class, error_class,
                 client_ms, daemon_ms, rss_kib, request_bytes, response_bytes,
                 request_json, response_json
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10, 2, ?11, '{}', ?12)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?11, 2, ?12, '{}', ?13)",
             params![
                 now,
                 build_id(),
@@ -473,6 +493,7 @@ impl TelemetryStore {
                 operation.verb,
                 operation.reference,
                 operation.ok,
+                (!operation.ok).then_some("operational"),
                 (!operation.ok).then(|| error_class(operation.detail)),
                 operation.duration_ms,
                 operation.rss_kib.or_else(resident_memory_kib),
@@ -518,7 +539,7 @@ impl TelemetryStore {
         let errors = events.iter().filter(|event| !event.ok).take(5);
         for (index, event) in errors.enumerate() {
             if index == 0 {
-                output.push_str("\nrecent errors");
+                output.push_str("\nrecent failures");
             }
             output.push('\n');
             output.push_str(&render_event_line(event));
@@ -534,7 +555,7 @@ impl TelemetryStore {
         let event = open_db(&self.path)?
             .query_row(
                 "SELECT id, created_at, build, project, workspace, verb, reference, ok,
-                        error_class, client_ms, daemon_ms, rss_kib, request_bytes,
+                        outcome_class, error_class, client_ms, daemon_ms, rss_kib, request_bytes,
                         response_bytes, request_json, response_json
                  FROM telemetry_events WHERE id = ?1",
                 [id],
@@ -548,7 +569,7 @@ impl TelemetryStore {
     fn events_since(&self, cutoff: i64, verb: Option<&str>) -> Result<Vec<TelemetryEvent>> {
         let connection = open_db(&self.path)?;
         let select = "SELECT id, created_at, build, project, workspace, verb, reference, ok,
-                             error_class, client_ms, daemon_ms, rss_kib, request_bytes,
+                             outcome_class, error_class, client_ms, daemon_ms, rss_kib, request_bytes,
                              response_bytes, request_json, response_json
                       FROM telemetry_events";
         let (sql, value) = match verb {
@@ -574,7 +595,7 @@ impl TelemetryStore {
         let connection = open_db(&self.path)?;
         let mut statement = connection.prepare(
             "SELECT id, created_at, build, project, workspace, verb, reference, ok,
-                    error_class, client_ms, daemon_ms, rss_kib, request_bytes,
+                    outcome_class, error_class, client_ms, daemon_ms, rss_kib, request_bytes,
                     response_bytes, request_json, response_json
              FROM telemetry_events
              WHERE project = ?1 AND (?2 IS NULL OR workspace = ?2)
@@ -634,6 +655,36 @@ pub const fn development_enabled() -> bool {
     cfg!(feature = "development")
 }
 
+fn failure_outcome_class(
+    state: &State,
+    request: &Request,
+    response: &Response,
+    reference: Option<&str>,
+) -> Option<&'static str> {
+    if response.ok {
+        return None;
+    }
+    let formalization = matches!(&request.command, Command::Check { .. })
+        && reference.is_some_and(|reference| {
+            state
+                .check_run(reference)
+                .ok()
+                .flatten()
+                .is_some_and(|run| {
+                    !run.diagnostics.is_empty()
+                        && run
+                            .diagnostics
+                            .iter()
+                            .all(|diagnostic| diagnostic.kind != "mathmux")
+                })
+        });
+    Some(if formalization {
+        "formalization"
+    } else {
+        "operational"
+    })
+}
+
 fn open_db(path: &Path) -> Result<Connection> {
     let connection = Connection::open(path)?;
     connection.busy_timeout(std::time::Duration::from_secs(10))?;
@@ -684,14 +735,15 @@ fn telemetry_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TelemetryEven
         verb: row.get(5)?,
         reference: row.get(6)?,
         ok: row.get(7)?,
-        error_class: row.get(8)?,
-        client_ms: row.get(9)?,
-        daemon_ms: row.get(10)?,
-        rss_kib: row.get(11)?,
-        request_bytes: row.get(12)?,
-        response_bytes: row.get(13)?,
-        request_json: row.get(14)?,
-        response_json: row.get(15)?,
+        outcome_class: row.get(8)?,
+        error_class: row.get(9)?,
+        client_ms: row.get(10)?,
+        daemon_ms: row.get(11)?,
+        rss_kib: row.get(12)?,
+        request_bytes: row.get(13)?,
+        response_bytes: row.get(14)?,
+        request_json: row.get(15)?,
+        response_json: row.get(16)?,
     })
 }
 
@@ -701,17 +753,29 @@ fn render_aggregate(verb: &str, events: &[&TelemetryEvent]) -> String {
         .map(|event| event.client_ms)
         .collect::<Vec<_>>();
     durations.sort_unstable();
-    let errors = events.iter().filter(|event| !event.ok).count();
+    let failures = events
+        .iter()
+        .filter(|event| event.outcome_class.as_deref() == Some("formalization"))
+        .count();
+    let errors = events
+        .iter()
+        .filter(|event| !event.ok && event.outcome_class.as_deref() != Some("formalization"))
+        .count();
     let rss = events.iter().filter_map(|event| event.rss_kib).max();
     let average = durations.iter().sum::<u64>() / durations.len() as u64;
+    let outcome = if failures == 0 {
+        format!("err:{errors}")
+    } else {
+        format!("fail:{failures} err:{errors}")
+    };
     let mut output = format!(
-        "{} {} avg:{} p50:{} p95:{} err:{}",
+        "{} {} avg:{} p50:{} p95:{} {}",
         verb,
         events.len(),
         format_duration(average),
         format_duration(percentile(&durations, 50)),
         format_duration(percentile(&durations, 95)),
-        errors
+        outcome
     );
     if let Some(rss) = rss {
         output.push_str(&format!(" rss:{}", format_memory(rss)));
@@ -725,7 +789,13 @@ fn percentile(sorted: &[u64], percentile: usize) -> u64 {
 }
 
 fn render_event_line(event: &TelemetryEvent) -> String {
-    let status = if event.ok { "ok" } else { "error" };
+    let status = if event.ok {
+        "ok"
+    } else if event.outcome_class.as_deref() == Some("formalization") {
+        "failed"
+    } else {
+        "error"
+    };
     let reference = event
         .reference
         .as_deref()
@@ -1126,29 +1196,36 @@ mod tests {
         let directory = tempdir().unwrap();
         let store = TelemetryStore::new(directory.path().join("development.db")).unwrap();
         let connection = open_db(&store.path).unwrap();
-        for (verb, duration, ok) in [
-            ("check", 12, true),
-            ("check", 1200, false),
-            ("search", 8, true),
+        for (verb, duration, ok, reference, outcome_class) in [
+            ("check", 12, true, None, None),
+            (
+                "check",
+                1200,
+                false,
+                Some("c1"),
+                Some("formalization"),
+            ),
+            ("search", 8, false, None, Some("operational")),
         ] {
             connection
                 .execute(
                     "INSERT INTO telemetry_events(
-                        created_at, build, project, workspace, verb, reference, ok, error_class,
+                        created_at, build, project, workspace, verb, reference, ok,
+                        outcome_class, error_class,
                         client_ms, daemon_ms, rss_kib, request_bytes, response_bytes,
                         request_json, response_json
-                     ) VALUES (?1, 'test', '/repo', 'w1', ?2, NULL, ?3, NULL,
-                               ?4, ?4, 1024, 10, 20, '{}', '{}')",
-                    params![now_unix_ms(), verb, ok, duration],
+                     ) VALUES (?1, 'test', '/repo', 'w1', ?2, ?3, ?4, ?5, NULL,
+                               ?6, ?6, 1024, 10, 20, '{}', '{}')",
+                    params![now_unix_ms(), verb, reference, ok, outcome_class, duration],
                 )
                 .unwrap();
         }
         let summary = store.summary("24h", None, None).unwrap();
-        assert!(summary.contains("check 2 avg:606ms p50:12ms p95:1.2s err:1"));
-        assert!(summary.contains("search 1 avg:8ms p50:8ms"));
-        assert!(summary.contains("recent errors\ne2 check 1.2s error"));
+        assert!(summary.contains("check 2 avg:606ms p50:12ms p95:1.2s fail:1 err:0"));
+        assert!(summary.contains("search 1 avg:8ms p50:8ms p95:8ms err:1"));
+        assert!(summary.contains("recent failures\ne3 search 8ms error\ne2 check 1.2s failed c1"));
         let slow = store.summary("all", None, Some(1)).unwrap();
-        assert!(slow.starts_with("e2 check 1.2s error"));
+        assert!(slow.starts_with("e2 check 1.2s failed c1"));
         assert!(store.show("e2", true).unwrap().contains("request: {}"));
         connection
             .execute(
@@ -1198,6 +1275,68 @@ mod tests {
                 "c5365 900ms\nwarning Demo:2:1: warning: unused variable\nDemo:9:2: error: Tactic `rfl` failed"
             ),
             "Tactic `rfl` failed"
+        );
+    }
+
+    #[test]
+    fn telemetry_distinguishes_lean_failures_from_operational_errors() {
+        let directory = tempdir().unwrap();
+        let state = State::new(directory.path().join("state.db")).unwrap();
+        state
+            .add_workspace(&crate::state::Workspace {
+                reference: "w1".into(),
+                name: "worker".into(),
+                path: directory.path().to_path_buf(),
+                branch: "worker".into(),
+                model: None,
+            })
+            .unwrap();
+        state
+            .add_check_run(
+                &crate::state::CheckRun {
+                    reference: "c1".into(),
+                    workspace_ref: "w1".into(),
+                    status: "failed".into(),
+                    files: vec!["Demo.lean".into()],
+                    passed: Vec::new(),
+                    failed: Some("Demo.lean".into()),
+                    not_checked: Vec::new(),
+                    warnings: Vec::new(),
+                    linters: Vec::new(),
+                    suggestions: Vec::new(),
+                    diagnostics: vec![crate::state::Diagnostic {
+                        kind: "lean".into(),
+                        text: "type mismatch".into(),
+                        context: None,
+                    }],
+                    profile: None,
+                    duration_ms: 10,
+                    created_at: now_unix_ms(),
+                },
+                &[],
+            )
+            .unwrap();
+        let request = Request {
+            build: String::new(),
+            generation: 0,
+            cwd: directory.path().to_string_lossy().into_owned(),
+            command: Command::Check {
+                file: None,
+                profile: false,
+            },
+        };
+        assert_eq!(
+            failure_outcome_class(&state, &request, &Response::error("c1 10ms"), Some("c1")),
+            Some("formalization")
+        );
+        assert_eq!(
+            failure_outcome_class(
+                &state,
+                &request,
+                &Response::error("workspace has no dirty Lean files"),
+                None,
+            ),
+            Some("operational")
         );
     }
 }
