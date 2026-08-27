@@ -700,6 +700,14 @@ fn query_parsing_scoring_and_ranking_regressions() {
         ]
     );
     assert_eq!(
+        meaningful_query_tokens("AtiyahSinger.coreIdentityHom source"),
+        vec!["atiyahsinger.coreidentityhom", "core", "identity", "hom"]
+    );
+    let source = exact_plan("AtiyahSinger.coreIdentityHom source", false).unwrap();
+    assert_eq!(source.anchor, "AtiyahSinger.coreIdentityHom");
+    assert!(source.refinement_tokens.is_empty());
+    assert!(query_requests_proof_body("structure Demo.Config source"));
+    assert_eq!(
         meaningful_query_tokens("elementaryTransvectionLoop_homotopic_one"),
         vec![
             "elementarytransvectionloop_homotopic_one",

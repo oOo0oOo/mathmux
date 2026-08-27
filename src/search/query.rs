@@ -954,7 +954,13 @@ pub(super) fn anchored_api_query(query: &str) -> Option<(&str, Vec<String>, Vec<
     if anchor.chars().count() < 6 || !specific_anchor || !declaration_name_query(anchor) {
         return None;
     }
-    if refinement.trim().eq_ignore_ascii_case("declarations") {
+    let refinement_lower = refinement.trim().to_ascii_lowercase();
+    if refinement_lower == "declarations"
+        || matches!(
+            refinement_lower.as_str(),
+            "body" | "implementation" | "implementation body" | "proof" | "proof body" | "source"
+        )
+    {
         return Some((anchor, Vec::new(), Vec::new()));
     }
     let tokens = meaningful_query_tokens(refinement);

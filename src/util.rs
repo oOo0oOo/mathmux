@@ -152,6 +152,9 @@ pub fn query_requests_proof_body(query: &str) -> bool {
         || normalized.contains(":= by")
         || normalized.contains("proof body")
         || normalized.contains("implementation body")
+        || normalized.split_whitespace().last().is_some_and(|term| {
+            matches!(term, "body" | "implementation" | "proof" | "source")
+        })
 }
 
 pub fn format_duration(milliseconds: u64) -> String {
