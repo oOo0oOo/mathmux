@@ -79,6 +79,25 @@ impl ProbeRequest {
         if focus.is_some() {
             terms.pop();
         }
+        if context.is_none()
+            && !terms.first().is_some_and(|term| term.starts_with("type:"))
+            && terms.len() > 1
+        {
+            let requested = terms.last().copied().unwrap_or_default();
+            let name = terms[..terms.len() - 1].join(" ");
+            match requested {
+                "type" => bail!("declaration types use `probe {name} signature`"),
+                "body" | "proof" => {
+                    bail!("declaration {requested} uses `search '{name} {requested}'`")
+                }
+                "context" => bail!(
+                    "Lean context requires an exact position; use `probe FILE:LINE goal` or `probe FILE:LINE TERM`"
+                ),
+                _ => bail!(
+                    "unknown declaration focus `{requested}`; use signature, source, apply, fields, constructors, ext, simp, instances, coercions, or usages"
+                ),
+            }
+        }
         let subject = (!terms.is_empty()).then(|| terms.join(" "));
         ensure!(context.is_some() || subject.is_some(), "probe requires a subject or context");
         Ok(Self { context, subject, focus, directive: None })
@@ -764,6 +783,24 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             "by requires FILE:LINE, cREF, or positioned qREF context"
+        );
+        assert_eq!(
+            ProbeRequest::parse("Demo.foo type")
+                .unwrap_err()
+                .to_string(),
+            "declaration types use `probe Demo.foo signature`"
+        );
+        assert_eq!(
+            ProbeRequest::parse("Demo.foo proof")
+                .unwrap_err()
+                .to_string(),
+            "declaration proof uses `search 'Demo.foo proof'`"
+        );
+        assert_eq!(
+            ProbeRequest::parse("Demo.foo context")
+                .unwrap_err()
+                .to_string(),
+            "Lean context requires an exact position; use `probe FILE:LINE goal` or `probe FILE:LINE TERM`"
         );
         assert!(is_declaration_header(
             "noncomputable def parameterizedBottThickClutchingCore"
