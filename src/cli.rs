@@ -121,7 +121,7 @@ enum TopCommand {
         profile: bool,
     },
     /// Find Lean declarations, types, concepts, and source.
-    #[command(long_about = SEARCH_HELP)]
+    #[command(before_help = SEARCH_HELP)]
     Search {
         /// Query terms; the query form is inferred as documented above.
         #[arg(required = true, num_args = 1..)]
@@ -134,7 +134,7 @@ enum TopCommand {
         all: bool,
     },
     /// Inspect a known Lean API, exact context, or stored failure.
-    #[command(long_about = PROBE_HELP)]
+    #[command(before_help = PROBE_HELP)]
     Probe {
         /// Probe expression in the grammar documented above.
         #[arg(required = true, num_args = 1.., allow_hyphen_values = true)]
@@ -866,6 +866,20 @@ mod tests {
         assert!(!probe_help.contains("API       NAME"));
         assert!(!probe_help.contains("LEAN      FILE"));
         assert!(!help.contains("diagnostics, and goals"));
+
+        let mut short_command = command_line();
+        let short_search = short_command
+            .find_subcommand_mut("search")
+            .unwrap()
+            .render_help()
+            .to_string();
+        assert!(short_search.contains("name:A|B|C"));
+        let short_probe = short_command
+            .find_subcommand_mut("probe")
+            .unwrap()
+            .render_help()
+            .to_string();
+        assert!(short_probe.contains("FILE:LINE [goal]"));
     }
 
     #[test]
