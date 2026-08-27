@@ -849,7 +849,7 @@ pub(super) fn detailed_source_excerpt(
     )
 }
 
-pub(super) fn fallback_source_hits(
+pub(super) fn fallback_source_candidates(
     workspace: &Path,
     query: &str,
     query_tokens: &[String],
@@ -1045,8 +1045,6 @@ pub(super) fn fallback_source_hits(
             .unwrap_or(Ordering::Equal)
     });
     ranked.truncate(RESULT_LIMIT * 8);
-    promote_query_coverage(&mut ranked, query_tokens);
-    ranked.truncate(RESULT_LIMIT);
     Ok(ranked)
 }
 

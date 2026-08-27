@@ -151,6 +151,24 @@ struct IndexedRow {
     rank: f64,
 }
 
+macro_rules! indexed_rows {
+    ($tail:literal) => {
+        concat!(
+            "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0 \
+             FROM search_fts ",
+            $tail,
+        )
+    };
+    (ranked $tail:literal) => {
+        concat!(
+            "SELECT owner, file, module, line, name, kind, signature, docs, body, \
+             bm25(search_fts, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 7.0, 3.0, 1.0) \
+             FROM search_fts ",
+            $tail,
+        )
+    };
+}
+
 fn indexed_row_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexedRow> {
     Ok(IndexedRow {
         owner: row.get(0)?,
@@ -290,14 +308,16 @@ fn name_contains_candidates(
     }
     let conditions = vec!["name LIKE ? COLLATE NOCASE"; tokens.len()].join(" OR ");
     let sql = format!(
-        "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0
-         FROM search_fts WHERE ({conditions})
-           AND owner IN (SELECT owner FROM active_search_scopes)
-         ORDER BY CASE
-           WHEN owner LIKE 'workspace:%' OR owner LIKE 'artifacts:%' THEN 0
-           ELSE 1
-         END
-         LIMIT 128"
+        indexed_rows!(
+            "WHERE ({conditions})
+             AND owner IN (SELECT owner FROM active_search_scopes)
+             ORDER BY CASE
+               WHEN owner LIKE 'workspace:%' OR owner LIKE 'artifacts:%' THEN 0
+               ELSE 1
+             END
+             LIMIT 128"
+        ),
+        conditions = conditions,
     );
     let patterns = tokens
         .iter()
@@ -337,11 +357,12 @@ fn module_context_candidates(
         .collect::<Vec<_>>()
         .join(", ");
     let sql = format!(
-        "SELECT owner, file, module, line, name, kind, signature, docs, body,
-                bm25(search_fts, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 7.0, 3.0, 1.0)
-         FROM search_fts WHERE search_fts MATCH ?1 AND module IN ({placeholders})
-           AND owner IN (SELECT owner FROM active_search_scopes)
-         LIMIT 512"
+        indexed_rows!(ranked
+            "WHERE search_fts MATCH ?1 AND module IN ({placeholders})
+             AND owner IN (SELECT owner FROM active_search_scopes)
+             LIMIT 512"
+        ),
+        placeholders = placeholders,
     );
     let mut parameters = vec![fts_query(&tokens.join(" "))];
     parameters.extend(modules.into_iter().map(|(_, module)| module));
@@ -1856,7 +1877,7 @@ impl Searcher {
             || !named_argument_terms(query).is_empty()
         {
             fallback_used = true;
-            match fallback_source_hits(&workspace.path, query, &query_tokens) {
+            match fallback_source_candidates(&workspace.path, query, &query_tokens) {
                 Ok(hits) => ranked.extend(hits),
                 Err(error) => append_log(
                     &self.repo,
@@ -2260,19 +2281,20 @@ impl Searcher {
         let fts_query = fts_query(&tokens.join(" "));
         let name_query = declaration_name_query(query);
         let sql = if fts_query.is_empty() && include_all_signatures {
-            "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0
-             FROM search_fts WHERE signature <> ''
-               AND owner IN (SELECT owner FROM active_search_scopes) LIMIT 20000"
+            indexed_rows!(
+                "WHERE signature <> ''
+                 AND owner IN (SELECT owner FROM active_search_scopes) LIMIT 20000"
+            )
         } else if name_query {
-            "SELECT owner, file, module, line, name, kind, signature, docs, body,
-                    bm25(search_fts, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 7.0, 3.0, 1.0)
-             FROM search_fts WHERE search_fts MATCH ?1
-               AND owner IN (SELECT owner FROM active_search_scopes) LIMIT 256"
+            indexed_rows!(ranked
+                "WHERE search_fts MATCH ?1
+                 AND owner IN (SELECT owner FROM active_search_scopes) LIMIT 256"
+            )
         } else {
-            "SELECT owner, file, module, line, name, kind, signature, docs, body,
-                    bm25(search_fts, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 7.0, 3.0, 1.0)
-             FROM search_fts WHERE search_fts MATCH ?1
-               AND owner IN (SELECT owner FROM active_search_scopes) LIMIT 1000"
+            indexed_rows!(ranked
+                "WHERE search_fts MATCH ?1
+                 AND owner IN (SELECT owner FROM active_search_scopes) LIMIT 1000"
+            )
         };
         let mut statement = connection.prepare(sql)?;
         let mut rows = if fts_query.is_empty() && include_all_signatures {
@@ -2289,38 +2311,32 @@ impl Searcher {
                 .map_err(anyhow::Error::from)?
         };
         drop(statement);
-        let mut named = connection.prepare(
-            "SELECT owner, file, module, line, name, kind, signature, docs, body,
-                    bm25(search_fts, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 7.0, 3.0, 1.0)
-             FROM search_fts WHERE search_fts MATCH ?1
-               AND owner IN (SELECT owner FROM active_search_scopes)
+        let mut named = connection.prepare(indexed_rows!(ranked
+            "WHERE search_fts MATCH ?1
+             AND owner IN (SELECT owner FROM active_search_scopes)
              ORDER BY CASE
                WHEN owner LIKE 'workspace:%' OR owner LIKE 'artifacts:%' THEN 0
                ELSE 1
              END, bm25(search_fts, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 7.0, 3.0, 1.0)
-             LIMIT 128",
-        )?;
-        let mut qualified = connection.prepare(
-            "SELECT owner, file, module, line, name, kind, signature, docs, body,
-                    bm25(search_fts, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 7.0, 3.0, 1.0)
-             FROM search_fts WHERE search_fts MATCH ?1
-               AND owner IN (SELECT owner FROM active_search_scopes) LIMIT 256",
-        )?;
-        let mut exact_leaf = connection.prepare(
-            "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0
-             FROM search_fts
-             WHERE search_fts MATCH ?1
-               AND (lower(name) = lower(?2)
-                    OR lower(substr(name, -(length(?2) + 1))) = ('.' || lower(?2)))
-               AND owner IN (SELECT owner FROM active_search_scopes)
+             LIMIT 128"
+        ))?;
+        let mut qualified = connection.prepare(indexed_rows!(ranked
+            "WHERE search_fts MATCH ?1
+             AND owner IN (SELECT owner FROM active_search_scopes) LIMIT 256"
+        ))?;
+        let mut exact_leaf = connection.prepare(indexed_rows!(
+            "WHERE search_fts MATCH ?1
+             AND (lower(name) = lower(?2)
+                  OR lower(substr(name, -(length(?2) + 1))) = ('.' || lower(?2)))
+             AND owner IN (SELECT owner FROM active_search_scopes)
              ORDER BY CASE WHEN kind = 'file' THEN 1 ELSE 0 END,
                       length(name),
                       CASE
                         WHEN owner LIKE 'workspace:%' OR owner LIKE 'artifacts:%' THEN 0
                         ELSE 1
                       END
-             LIMIT 128",
-        )?;
+             LIMIT 128"
+        ))?;
         let mut contains_tokens = Vec::new();
         for token in tokens
             .iter()
@@ -2404,15 +2420,13 @@ impl Searcher {
     ) -> Result<Vec<IndexedRow>> {
         let connection = self.open()?;
         install_active_scopes(&connection, scopes)?;
-        let mut statement = connection.prepare(
-            "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0
-             FROM search_fts
-             WHERE search_fts MATCH ?1
-               AND (lower(name) = lower(?2)
-                    OR lower(substr(name, -(length(?2) + 1))) = ('.' || lower(?2)))
-               AND owner IN (SELECT owner FROM active_search_scopes)
-             LIMIT 128",
-        )?;
+        let mut statement = connection.prepare(indexed_rows!(
+            "WHERE search_fts MATCH ?1
+             AND (lower(name) = lower(?2)
+                  OR lower(substr(name, -(length(?2) + 1))) = ('.' || lower(?2)))
+             AND owner IN (SELECT owner FROM active_search_scopes)
+             LIMIT 128"
+        ))?;
         let exact = format!("name : \"{}\"", query.replace('"', "\"\""));
         statement
             .query_map(params![exact, query], indexed_row_from_row)?
@@ -2475,12 +2489,11 @@ impl Searcher {
 
         let connection = self.open()?;
         install_active_scopes(&connection, scopes)?;
-        let mut statement = connection.prepare(
-            "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0
-             FROM search_fts WHERE search_fts MATCH ?1 AND kind = 'field'
-               AND owner IN (SELECT owner FROM active_search_scopes)
-             ORDER BY line, name LIMIT 256",
-        )?;
+        let mut statement = connection.prepare(indexed_rows!(
+            "WHERE search_fts MATCH ?1 AND kind = 'field'
+             AND owner IN (SELECT owner FROM active_search_scopes)
+             ORDER BY line, name LIMIT 256"
+        ))?;
         let query = format!(
             "name : \"{}\"*",
             indexed_parent_name.replace('"', "\"\"")
@@ -2581,13 +2594,11 @@ impl Searcher {
             leaf.replace('"', "\"\""),
             leaf.replace('"', "\"\"")
         );
-        let mut statement = connection.prepare(
-            "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0
-             FROM search_fts
-             WHERE search_fts MATCH ?1
-               AND owner IN (SELECT owner FROM active_search_scopes)
-             LIMIT 256",
-        )?;
+        let mut statement = connection.prepare(indexed_rows!(
+            "WHERE search_fts MATCH ?1
+             AND owner IN (SELECT owner FROM active_search_scopes)
+             LIMIT 256"
+        ))?;
         let rows = statement
             .query_map([query], indexed_row_from_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2661,10 +2672,9 @@ impl Searcher {
         }
         let leaf = hit.name.rsplit('.').next().unwrap_or(&hit.name);
         let connection = self.open()?;
-        let mut statement = connection.prepare(
-            "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0
-             FROM search_fts WHERE search_fts MATCH ?1 LIMIT 128",
-        )?;
+        let mut statement = connection.prepare(indexed_rows!(
+            "WHERE search_fts MATCH ?1 LIMIT 128"
+        ))?;
         let query = format!("name : \"{}\"", leaf.replace('"', "\"\""));
         let rows = statement
             .query_map([query], indexed_row_from_row)?

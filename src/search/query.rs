@@ -883,7 +883,13 @@ pub(super) fn resolved_exact_candidates(
     )
 }
 
-pub(super) fn merge_exact_candidates(mut candidates: Vec<Candidate>) -> Candidate {
+pub(super) fn merge_exact_candidates(candidates: Vec<Candidate>) -> Candidate {
+    let mut candidates = sort_and_merge_candidates(candidates);
+    debug_assert_eq!(candidates.len(), 1);
+    candidates.remove(0)
+}
+
+fn sort_and_merge_candidates(mut candidates: Vec<Candidate>) -> Vec<Candidate> {
     candidates.sort_by(|left, right| {
         right
             .score
@@ -891,12 +897,23 @@ pub(super) fn merge_exact_candidates(mut candidates: Vec<Candidate>) -> Candidat
             .unwrap_or(Ordering::Equal)
             .then_with(|| left.hit.name.cmp(&right.hit.name))
     });
-    let mut resolved = candidates.remove(0);
+    let mut positions: HashMap<String, usize> = HashMap::new();
+    let mut deduplicated: Vec<Candidate> = Vec::new();
     for mut candidate in candidates {
-        merge_duplicate_hit(&mut resolved.hit, &mut candidate.hit);
-        resolved.origins |= candidate.origins;
+        let identity = if matches!(candidate.hit.kind.as_str(), "file" | "imports") {
+            candidate.hit.name.clone()
+        } else {
+            canonical_declaration_name(&candidate.hit.name).to_owned()
+        };
+        if let Some(index) = positions.get(&identity).copied() {
+            merge_duplicate_hit(&mut deduplicated[index].hit, &mut candidate.hit);
+            deduplicated[index].origins |= candidate.origins;
+        } else {
+            positions.insert(identity, deduplicated.len());
+            deduplicated.push(candidate);
+        }
     }
-    resolved
+    deduplicated
 }
 
 pub(super) fn rank_discovery_candidates(
@@ -912,29 +929,32 @@ pub(super) fn rank_discovery_candidates(
             apply_import_context(candidate, context);
         }
     }
-    candidates.sort_by(|left, right| {
-        right
-            .score
-            .partial_cmp(&left.score)
-            .unwrap_or(Ordering::Equal)
-            .then_with(|| left.hit.name.cmp(&right.hit.name))
-    });
-    let mut positions: HashMap<String, usize> = HashMap::new();
-    let mut deduplicated: Vec<Candidate> = Vec::new();
-    for mut candidate in candidates {
-        if let Some(index) = positions.get(&candidate.hit.name).copied() {
-            merge_duplicate_hit(&mut deduplicated[index].hit, &mut candidate.hit);
-            deduplicated[index].origins |= candidate.origins;
-        } else {
-            positions.insert(candidate.hit.name.clone(), deduplicated.len());
-            deduplicated.push(candidate);
-        }
-    }
+    let mut deduplicated = sort_and_merge_candidates(candidates);
     if explicit_declaration {
         deduplicated.sort_by_key(|candidate| !qualified_name_matches(&candidate.hit.name, query));
     } else {
         promote_query_coverage(&mut deduplicated, query_tokens);
+        let qualified_anchor = deduplicated.first().and_then(|candidate| {
+            query_tokens
+                .iter()
+                .filter(|token| token.contains('.') && !token.ends_with(".lean"))
+                .any(|token| {
+                    qualified_name_matches(&candidate.hit.name, token)
+                        || token.rsplit_once('.').is_some_and(|(owner, _)| {
+                            qualified_name_matches(&candidate.hit.name, owner)
+                        })
+                })
+                .then(|| candidate.hit.name.clone())
+        });
         promote_result_context(&mut deduplicated, query_tokens);
+        if let Some(anchor) = qualified_anchor
+            && let Some(position) = deduplicated
+                .iter()
+                .position(|candidate| candidate.hit.name == anchor)
+        {
+            let anchor = deduplicated.remove(position);
+            deduplicated.insert(0, anchor);
+        }
     }
     (deduplicated, glob_name_miss)
 }

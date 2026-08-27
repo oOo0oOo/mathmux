@@ -1,5 +1,14 @@
 use super::*;
 
+fn fallback_source_hits(
+    workspace: &Path,
+    query: &str,
+    query_tokens: &[String],
+) -> Result<Vec<Candidate>> {
+    let candidates = fallback_source_candidates(workspace, query, query_tokens)?;
+    Ok(rank_discovery_candidates(candidates, query, query_tokens, false, None).0)
+}
+
 #[test]
 fn source_parser_qualifies_names_and_keeps_types() {
     let source = r#"namespace Demo
@@ -535,6 +544,14 @@ fn query_parsing_scoring_and_ranking_regressions() {
     )
     .unwrap();
     assert_eq!(root_aliases.len(), 2);
+    let (root_aliases, _) = rank_discovery_candidates(
+        root_aliases,
+        "Demo.Structure",
+        &meaningful_query_tokens("Demo.Structure"),
+        false,
+        None,
+    );
+    assert_eq!(root_aliases.len(), 1);
     let exact = exact_search_result(
         vec![SearchHit {
             name: "Demo.Structure".into(),
