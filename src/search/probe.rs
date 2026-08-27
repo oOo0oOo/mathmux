@@ -46,7 +46,8 @@ impl ProbeRequest {
         } else {
             query
         };
-        if let Some(directive) = parse_directive(remainder)? {
+        let directive_query = unquote(remainder);
+        if let Some(directive) = parse_directive(directive_query)? {
             ensure!(context.is_some(), "Lean directives require FILE, FILE:LINE, cREF, or qREF context");
             return Ok(Self { context, subject: None, focus: None, directive: Some(directive) });
         }
@@ -82,6 +83,16 @@ impl ProbeRequest {
         ensure!(context.is_some() || subject.is_some(), "probe requires a subject or context");
         Ok(Self { context, subject, focus, directive: None })
     }
+}
+
+fn unquote(value: &str) -> &str {
+    let value = value.trim();
+    for quote in ['\'', '"'] {
+        if let Some(value) = value.strip_prefix(quote).and_then(|value| value.strip_suffix(quote)) {
+            return value.trim();
+        }
+    }
+    value
 }
 
 fn parse_context(value: &str) -> Option<ProbeContext> {
@@ -580,6 +591,15 @@ mod tests {
                 subject: None,
                 focus: None,
                 directive: Some(LeanDirective::Tactic("simp".into())),
+            }
+        );
+        assert_eq!(
+            ProbeRequest::parse("Demo.lean \"#check Nat\"").unwrap(),
+            ProbeRequest {
+                context: Some(ProbeContext::File("Demo.lean".into())),
+                subject: None,
+                focus: None,
+                directive: Some(LeanDirective::Check("Nat".into())),
             }
         );
         assert_eq!(
