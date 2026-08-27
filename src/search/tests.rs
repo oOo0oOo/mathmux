@@ -521,6 +521,9 @@ fn query_parsing_scoring_and_ranking_regressions() {
     assert_eq!(symbolic_source_term("Demo.ordinary_name"), None);
     assert_eq!(symbolic_source_term("A *ᵥ x"), None);
     assert!(declaration_glob_query("FiberBundle.*equiv"));
+    assert!(declaration_glob_query(
+        "CircleClutching.*homotopy|TransitionHomotopy"
+    ));
     assert!(!declaration_glob_query("*ᵥ"));
     assert!(declaration_glob_matches(
         "Demo.FiberBundle.local_equiv",
@@ -563,6 +566,39 @@ fn query_parsing_scoring_and_ranking_regressions() {
     assert!(!apply_declaration_glob(&mut relational, "Matrix.*integral"));
     assert_eq!(relational.len(), 1);
     assert_eq!(relational[0].hit.name, "Demo.Matrix_entry_integral");
+    let mut alternatives = vec![
+        Candidate {
+            hit: SearchHit {
+                name: "Demo.unrelated_homotopy".into(),
+                ..contextual_hit.clone()
+            },
+            score: 20.0,
+            origins: 0,
+        },
+        Candidate {
+            hit: SearchHit {
+                name: "Demo.circleClutchingArcHomotopy".into(),
+                ..contextual_hit.clone()
+            },
+            score: 10.0,
+            origins: 0,
+        },
+        Candidate {
+            hit: SearchHit {
+                name: "Demo.TransitionHomotopy".into(),
+                ..contextual_hit.clone()
+            },
+            score: 5.0,
+            origins: 0,
+        },
+    ];
+    assert!(!apply_declaration_glob(
+        &mut alternatives,
+        "CircleClutching.*homotopy|TransitionHomotopy"
+    ));
+    assert_eq!(alternatives.len(), 2);
+    assert_eq!(alternatives[0].hit.name, "Demo.circleClutchingArcHomotopy");
+    assert_eq!(alternatives[1].hit.name, "Demo.TransitionHomotopy");
     assert!(qualified_name_matches(
         "AtiyahSinger.ComplexVectorSubbundle.transportAmbient",
         "ComplexVectorSubbundle.transportAmbient"

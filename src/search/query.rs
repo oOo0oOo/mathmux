@@ -755,14 +755,17 @@ pub(super) fn explicit_declaration_name(query: &str) -> Option<&str> {
 }
 
 pub(super) fn declaration_glob_query(query: &str) -> bool {
-    query.contains('*')
-        && query
-            .chars()
-            .filter(|character| character.is_alphanumeric())
-            .count()
-            >= 2
-        && query.chars().all(|character| {
-            character.is_alphanumeric() || matches!(character, '_' | '.' | '\'' | '*')
+    let alternatives = query.split('|').map(str::trim).collect::<Vec<_>>();
+    alternatives.iter().any(|alternative| alternative.contains('*'))
+        && alternatives.iter().all(|alternative| {
+            alternative
+                .chars()
+                .filter(|character| character.is_alphanumeric())
+                .count()
+                >= 2
+                && alternative.chars().all(|character| {
+                    character.is_alphanumeric() || matches!(character, '_' | '.' | '\'' | '*')
+                })
         })
 }
 
@@ -772,13 +775,23 @@ pub(super) fn apply_declaration_glob(candidates: &mut Vec<Candidate>, query: &st
     }
     if candidates
         .iter()
-        .any(|candidate| declaration_glob_matches(&candidate.hit.name, query))
+        .any(|candidate| declaration_alternative_matches(&candidate.hit.name, query))
     {
-        candidates.retain(|candidate| declaration_glob_matches(&candidate.hit.name, query));
+        candidates.retain(|candidate| declaration_alternative_matches(&candidate.hit.name, query));
         false
     } else {
         !candidates.is_empty()
     }
+}
+
+fn declaration_alternative_matches(name: &str, query: &str) -> bool {
+    query.split('|').map(str::trim).any(|alternative| {
+        if alternative.contains('*') {
+            declaration_glob_matches(name, alternative)
+        } else {
+            qualified_name_matches(name, alternative)
+        }
+    })
 }
 
 pub(super) fn declaration_glob_matches(name: &str, query: &str) -> bool {
