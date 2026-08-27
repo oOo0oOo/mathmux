@@ -54,15 +54,16 @@ RULES
   Sigil what you know; leave inference for what you do not."#;
 
 const PROBE_HELP: &str = r##"PROBE — inspect something known; returns qREF
-  API       NAME [signature|source|apply|fields|constructors|ext|simp|
-                 instances|coercions|usages]
-  TYPE      type:LEAN_TYPE [types]
-  LOCAL     FILE:LINE [goal] | FILE:LINE TERM [signature]
-  SCOPED    PATH NAME usages
-  FAILURE   cREF [types|defeq|rewrite|profile]
-  STORED    qREF [FOCUS]
-  LEAN      FILE|FILE:LINE|cREF|qREF "#check TERM"|"#synth TYPE"|"#reduce TERM"
-            FILE:LINE|cREF|positioned-qREF "by TACTIC"
+FORMS — type one directly; there are no API, LEAN, or other category keywords
+  NAME [signature|source|apply|fields|constructors|ext|simp|
+        instances|coercions|usages]
+  type:LEAN_TYPE [types]
+  FILE:LINE [goal] | FILE:LINE TERM [signature]
+  PATH NAME usages
+  cREF [types|defeq|rewrite|profile]
+  qREF [FOCUS]
+  FILE|FILE:LINE|cREF|qREF "#check TERM"|"#synth TYPE"|"#reduce TERM"
+  FILE:LINE|cREF|positioned-qREF "by TACTIC"
 
 RESULT
   API focuses return one bounded dossier. goal returns the exact local goal;
@@ -847,14 +848,17 @@ mod tests {
             .render_long_help()
             .to_string();
         for contract in [
-            "API       NAME",
-            "LOCAL     FILE:LINE",
-            "FAILURE   cREF",
+            "there are no API, LEAN, or other category keywords",
+            "NAME [signature|source|apply",
+            "FILE:LINE [goal]",
+            "cREF [types|defeq|rewrite|profile]",
             "Context is mandatory",
             "no nearby-line fallback",
         ] {
             assert!(probe_help.contains(contract), "missing probe contract {contract}");
         }
+        assert!(!probe_help.contains("API       NAME"));
+        assert!(!probe_help.contains("LEAN      FILE"));
         assert!(!help.contains("diagnostics, and goals"));
     }
 
