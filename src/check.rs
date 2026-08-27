@@ -172,8 +172,8 @@ impl Checker {
         report: &mut dyn FnMut(&str),
     ) -> Result<CheckOutcome> {
         let started = Instant::now();
-        let targets = match requested {
-            Some(path) => vec![resolve_target(&workspace.path, path)?],
+        let (targets, dirty_targets) = match requested {
+            Some(path) => (vec![resolve_target(&workspace.path, path)?], None),
             None => {
                 ensure!(
                     !merge_in_progress(&workspace.path),
@@ -181,14 +181,12 @@ impl Checker {
                 );
                 let files = dirty_lean_files(&workspace.path)?;
                 ensure!(!files.is_empty(), "workspace has no dirty Lean files");
-                dependency_order(&workspace.path, &files)?
+                let targets = maximal_check_targets(&workspace.path, &files)?;
+                (targets, Some(files.into_iter().collect::<HashSet<_>>()))
             }
         };
         let planning_ms = started.elapsed().as_millis() as u64;
-        let dirty_targets = requested
-            .is_none()
-            .then(|| targets.iter().cloned().collect::<HashSet<_>>());
-        let mut passed_targets = HashSet::new();
+        let mut covered_targets = HashSet::new();
         let reference = self.state.next_ref('c')?;
         let files = targets
             .iter()
@@ -213,7 +211,7 @@ impl Checker {
                 include_profile,
                 dirty_targets.as_ref().map(|dirty| ImportCoverage {
                     dirty,
-                    passed: &passed_targets,
+                    passed: &covered_targets,
                 }),
                 report,
             ) {
@@ -223,7 +221,14 @@ impl Checker {
                     linters.extend(result.linters);
                     suggestions.extend(result.suggestions);
                     if result.ok {
-                        passed_targets.insert(target.clone());
+                        covered_targets.insert(target.clone());
+                        covered_targets.extend(
+                            result
+                                .certificate
+                                .dependencies
+                                .iter()
+                                .map(PathBuf::from),
+                        );
                         passed.push(target_name);
                         certificates.push(result.certificate);
                     } else {
@@ -2036,6 +2041,39 @@ fn dependency_order(root: &Path, targets: &[PathBuf]) -> Result<Vec<PathBuf>> {
     Ok(ordered)
 }
 
+fn maximal_check_targets(root: &Path, dirty: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    let ordered = dependency_order(root, dirty)?;
+    let import_only = ordered
+        .iter()
+        .filter_map(|path| {
+            fs::read_to_string(root.join(path))
+                .ok()
+                .filter(|source| source_is_import_only(source))
+                .map(|_| path.clone())
+        })
+        .collect::<HashSet<_>>();
+    let mut covered = HashSet::new();
+    for target in ordered.iter().filter(|path| !import_only.contains(*path)) {
+        covered.extend(transitive_dependencies(root, target)?);
+    }
+    Ok(ordered
+        .into_iter()
+        .filter(|target| import_only.contains(target) || !covered.contains(target))
+        .collect())
+}
+
+fn source_is_import_only(source: &str) -> bool {
+    source.lines().all(|line| {
+        let line = line.trim();
+        line.is_empty()
+            || line.starts_with("--")
+            || line == "module"
+            || line == "prelude"
+            || line.starts_with("import ")
+            || line.starts_with("public import ")
+    })
+}
+
 fn import_only_coverage(
     root: &Path,
     target: &Path,
@@ -2044,15 +2082,8 @@ fn import_only_coverage(
     dirty_targets: &HashSet<PathBuf>,
     passed_targets: &HashSet<PathBuf>,
 ) -> Result<bool> {
-    if !source.lines().all(|line| {
-        let line = line.trim();
-        line.is_empty()
-            || line.starts_with("--")
-            || line == "module"
-            || line == "prelude"
-            || line.starts_with("import ")
-            || line.starts_with("public import ")
-    }) || dependencies
+    if !source_is_import_only(source)
+        || dependencies
         .iter()
         .any(|path| dirty_targets.contains(path) && !passed_targets.contains(path))
     {
@@ -2396,6 +2427,7 @@ mod tests {
             "import A.Base\n\ndef x := n\n",
         )
         .unwrap();
+        fs::write(directory.path().join("Root.lean"), "import A.Top\n").unwrap();
         fs::write(
             directory.path().join("lean-toolchain"),
             "leanprover/lean4:v4.24.0\n",
@@ -2404,6 +2436,18 @@ mod tests {
         let dependencies =
             transitive_dependencies(directory.path(), Path::new("A/Top.lean")).unwrap();
         assert_eq!(dependencies, vec![PathBuf::from("A/Base.lean")]);
+        assert_eq!(
+            maximal_check_targets(
+                directory.path(),
+                &[
+                    PathBuf::from("A/Base.lean"),
+                    PathBuf::from("A/Top.lean"),
+                    PathBuf::from("Root.lean"),
+                ],
+            )
+            .unwrap(),
+            [PathBuf::from("A/Top.lean"), PathBuf::from("Root.lean")]
+        );
         let before =
             certificate_fingerprint(directory.path(), Path::new("A/Top.lean"), &dependencies)
                 .unwrap();
