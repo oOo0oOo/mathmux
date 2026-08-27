@@ -117,11 +117,7 @@ pub fn render(repo: &Repo, state: &State) -> Result<String> {
     }
 
     let pending = state.pending_submissions()?;
-    let latest_completed = pending
-        .is_empty()
-        .then(|| state.latest_completed_validation())
-        .transpose()?
-        .flatten();
+    let latest_completed = state.latest_completed_validation()?;
     render_validation_status(&mut output, &pending, latest_completed.as_ref())?;
     Ok(output)
 }
@@ -139,6 +135,18 @@ fn render_validation_status(
                 " {}:{}",
                 submission.reference, submission.validation_status
             )?;
+        }
+        if let Some(submission) =
+            latest_completed.filter(|submission| submission.validation_status == "failed")
+        {
+            write!(
+                output,
+                "\n  latest result {}:failed; show {} --all",
+                submission.reference, submission.reference
+            )?;
+            if let Some(detail) = submission.validation_detail.as_deref() {
+                write!(output, "\n    {}", truncate_line(&single_line(detail), 236))?;
+            }
         }
     } else if let Some(submission) =
         latest_completed.filter(|submission| submission.validation_status == "failed")
@@ -779,7 +787,7 @@ mod tests {
     }
 
     #[test]
-    fn idle_status_keeps_the_latest_validation_failure_visible() {
+    fn status_keeps_the_latest_validation_failure_visible() {
         let failed = submission(
             "s9",
             "failed",
@@ -800,7 +808,10 @@ mod tests {
         let queued = submission("s11", "queued", None);
         let mut output = String::new();
         render_validation_status(&mut output, &[queued], Some(&failed)).unwrap();
-        assert_eq!(output, "\nvalidation s11:queued");
+        assert_eq!(
+            output,
+            "\nvalidation s11:queued\n  latest result s9:failed; show s9 --all\n    axiom audit failed: conflicting declaration"
+        );
     }
 
     #[test]
