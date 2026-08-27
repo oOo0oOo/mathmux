@@ -1011,6 +1011,25 @@ fn stale_workspace_source_queries_recommend_sync() {
         error.to_string(),
         "source file not found or ambiguous: Demo/Topology/Missing.lean"
     );
+
+    fs::create_dir_all(workspace.path().join("Demo/Topology")).unwrap();
+    fs::write(
+        workspace
+            .path()
+            .join("Demo/Topology/PseudolocalFredholmCycleCanonicalParametrix.lean"),
+        "def nearby := true\n",
+    )
+    .unwrap();
+    let message = missing_source_message(
+        workspace.path(),
+        Some(main.path()),
+        "Demo/Topology/PseudolocalFredholmCycleParametrix.lean",
+    )
+    .unwrap();
+    assert!(message.contains("nearby sources:"));
+    assert!(message.contains(
+        "Demo/Topology/PseudolocalFredholmCycleCanonicalParametrix.lean"
+    ));
 }
 
 #[test]

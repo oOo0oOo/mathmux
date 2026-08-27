@@ -820,10 +820,10 @@ pub(super) fn missing_source_message(
     requested: &str,
 ) -> Result<String> {
     let Some(main_root) = main_root else {
-        return Ok(format!("source file not found or ambiguous: {requested}"));
+        return Ok(missing_source_with_nearby(root, requested));
     };
     if fs::canonicalize(root).ok() == fs::canonicalize(main_root).ok() {
-        return Ok(format!("source file not found or ambiguous: {requested}"));
+        return Ok(missing_source_with_nearby(root, requested));
     }
     let requested_name = Path::new(requested).file_name();
     let workspace_has_same_name = requested_name.is_some_and(|requested_name| {
@@ -834,7 +834,64 @@ pub(super) fn missing_source_message(
     if !workspace_has_same_name && resolve_goal_path(main_root, main_root, requested)?.is_some() {
         return Ok("source file is on managed main; run mathmux sync".into());
     }
-    Ok(format!("source file not found or ambiguous: {requested}"))
+    Ok(missing_source_with_nearby(root, requested))
+}
+
+fn missing_source_with_nearby(root: &Path, requested: &str) -> String {
+    let mut message = format!("source file not found or ambiguous: {requested}");
+    let nearby = nearby_source_paths(root, requested);
+    if !nearby.is_empty() {
+        message.push_str("\nnearby sources:");
+        for path in nearby {
+            message.push_str(&format!("\n  {path}"));
+        }
+    }
+    message
+}
+
+fn nearby_source_paths(root: &Path, requested: &str) -> Vec<String> {
+    let Some(requested) = source_request_path(requested) else {
+        return Vec::new();
+    };
+    let requested_stem = requested
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default();
+    let requested_parts = identifier_query_parts(requested_stem);
+    let requested_lower = requested_stem.to_lowercase();
+    let mut candidates = project_lean_files(root)
+        .into_iter()
+        .filter_map(|candidate| {
+            let stem = candidate.file_stem()?.to_str()?;
+            let parts = identifier_query_parts(stem);
+            let shared = requested_parts
+                .iter()
+                .filter(|part| parts.contains(part))
+                .count();
+            let distance = edit_distance(&requested_lower, &stem.to_lowercase());
+            let related_parts = requested_parts.len() >= 2
+                && shared.saturating_add(1) >= requested_parts.len();
+            let close_name = distance <= 2.max(requested_lower.chars().count() / 5);
+            if !related_parts && !close_name {
+                return None;
+            }
+            let same_directory = candidate.parent() == requested.parent();
+            Some((same_directory, shared, distance, candidate))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        right
+            .0
+            .cmp(&left.0)
+            .then_with(|| right.1.cmp(&left.1))
+            .then_with(|| left.2.cmp(&right.2))
+            .then_with(|| left.3.cmp(&right.3))
+    });
+    candidates
+        .into_iter()
+        .take(5)
+        .map(|(_, _, _, path)| path.to_string_lossy().into_owned())
+        .collect()
 }
 
 fn source_request_path(display: &str) -> Option<PathBuf> {
