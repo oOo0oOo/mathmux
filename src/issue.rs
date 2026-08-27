@@ -510,11 +510,23 @@ impl TelemetryStore {
         for event in &events {
             grouped.entry(&event.verb).or_default().push(event);
         }
-        Ok(grouped
+        let mut output = grouped
             .into_iter()
             .map(|(verb, events)| render_aggregate(verb, &events))
             .collect::<Vec<_>>()
-            .join("\n"))
+            .join("\n");
+        let errors = events.iter().filter(|event| !event.ok).take(5);
+        for (index, event) in errors.enumerate() {
+            if index == 0 {
+                output.push_str("\nrecent errors");
+            }
+            output.push('\n');
+            output.push_str(&render_event_line(event));
+            if let Some(class) = &event.error_class {
+                output.push_str(&format!(": {class}"));
+            }
+        }
+        Ok(output)
     }
 
     pub fn show(&self, reference: &str, all: bool) -> Result<String> {
@@ -1134,6 +1146,7 @@ mod tests {
         let summary = store.summary("24h", None, None).unwrap();
         assert!(summary.contains("check 2 avg:606ms p50:12ms p95:1.2s err:1"));
         assert!(summary.contains("search 1 avg:8ms p50:8ms"));
+        assert!(summary.contains("recent errors\ne2 check 1.2s error"));
         let slow = store.summary("all", None, Some(1)).unwrap();
         assert!(slow.starts_with("e2 check 1.2s error"));
         assert!(store.show("e2", true).unwrap().contains("request: {}"));
