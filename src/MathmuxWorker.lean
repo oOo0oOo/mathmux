@@ -105,13 +105,31 @@ def parseCategory (category : Name) (source : String) : CoreM Syntax := do
   | .ok stx => pure stx
   | .error error => throwError error
 
+def throwLoggedErrors : Term.TermElabM Unit := do
+  let messages ← Core.getMessageLog
+  if messages.hasErrors then
+    let mut details := #[]
+    for message in messages.reportedPlusUnreported do
+      if message.severity == .error then
+        details := details.push (← message.toString)
+    throwError ("\n".intercalate details.toList)
+
 def inspectTerm (operation source : String) : Term.TermElabM String := do
   let stx ← parseCategory `term source
   if operation == "synth" then
     let type ← Term.elabType stx
+    Term.synthesizeSyntheticMVarsNoPostponing
+    throwLoggedErrors
+    let type ← instantiateMVars type
     let value ← Meta.synthInstance type
     return s!"{(← Meta.ppExpr value).pretty} : {(← Meta.ppExpr type).pretty}"
   let value ← Term.elabTerm stx none
+  Term.synthesizeSyntheticMVarsNoPostponing (ignoreStuckTC := true)
+  throwLoggedErrors
+  let value ← instantiateMVars value
+  if value.isSyntheticSorry then
+    throwError "term elaboration failed"
+  Meta.check value
   if operation == "reduce" then
     return (← Meta.ppExpr (← Meta.reduce value)).pretty
   return s!"{(← Meta.ppExpr value).pretty} : {(← Meta.ppExpr (← Meta.inferType value)).pretty}"
