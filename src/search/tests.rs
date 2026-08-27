@@ -172,31 +172,6 @@ fn source_parser_labels_private_declarations() {
 }
 
 #[test]
-fn pipe_alternatives_short_circuit_after_one_indexed_hit_covers_a_group() {
-    let hit = SearchHit {
-        name: "MatrixGL.gl_pathConnectedSpace".into(),
-        kind: "theorem".into(),
-        signature: Some("PathConnectedSpace (Matrix.GeneralLinearGroup n C)".into()),
-        module: "Demo.GLPaths".into(),
-        path: "Demo/GLPaths.lean".into(),
-        line: 1,
-        doc: None,
-        source: None,
-        usages: Vec::new(),
-        applicable: false,
-        required_import: None,
-    };
-    assert!(pipe_alternative_covered(
-        "GeneralLinearGroup connected|unrelated missing",
-        [&hit].into_iter()
-    ));
-    assert!(!pipe_alternative_covered(
-        "GeneralLinearGroup compact|unrelated missing",
-        [&hit].into_iter()
-    ));
-}
-
-#[test]
 fn search_rowids_advance_past_fts_and_origin_mappings() {
     let connection = Connection::open_in_memory().unwrap();
     connection
@@ -316,11 +291,6 @@ fn query_parsing_scoring_and_ranking_regressions() {
     assert!(declaration_name_query("transportAmbient"));
     assert!(!declaration_name_query("Finsupp.sum add"));
     assert_eq!(
-        declaration_list_terms("matrixFinBlockClass matrixFinBlockClass_one"),
-        Some(vec!["matrixFinBlockClass", "matrixFinBlockClass_one"])
-    );
-    assert_eq!(declaration_list_terms("continuous support"), None);
-    assert_eq!(
         explicit_declaration_name("theorem Bundle.Trivialization.apply_mk_symm"),
         Some("Bundle.Trivialization.apply_mk_symm")
     );
@@ -404,28 +374,30 @@ fn query_parsing_scoring_and_ranking_regressions() {
         (3, 33, 2, 25)
     );
     let mut ranked = vec![
-        RankedHit {
+        Candidate {
             hit: SearchHit {
                 name: "circleMap_neg_radius".into(),
                 signature: Some("circleMap c r".into()),
                 ..contextual_hit.clone()
             },
             score: 100.0,
+            origins: 0,
         },
-        RankedHit {
+        Candidate {
             hit: SearchHit {
                 name: "Demo.CircleSeparatedOnRadius.continuousOn_resolvent".into(),
                 signature: None,
                 ..contextual_hit.clone()
             },
             score: 10.0,
+            origins: 0,
         },
     ];
     let tokens = meaningful_query_tokens("CircleSeparatedOnRadius circleMap");
     promote_query_coverage(&mut ranked, &tokens);
     assert!(ranked[0].hit.name.contains("CircleSeparatedOnRadius"));
     let mut qualified_leaf = vec![
-        RankedHit {
+        Candidate {
             hit: SearchHit {
                 name: "AtiyahSinger.ComplexVectorBundle.KZero".into(),
                 module: "AtiyahSinger.ComplexVectorBundleKZeroGroup".into(),
@@ -433,8 +405,9 @@ fn query_parsing_scoring_and_ranking_regressions() {
                 ..contextual_hit.clone()
             },
             score: 500.0,
+            origins: 0,
         },
-        RankedHit {
+        Candidate {
             hit: SearchHit {
                 name: "AtiyahSinger.ComplexVectorBundle.ofBundle".into(),
                 module: "AtiyahSinger.ComplexVectorBundleKZeroGroup".into(),
@@ -442,6 +415,7 @@ fn query_parsing_scoring_and_ranking_regressions() {
                 ..contextual_hit.clone()
             },
             score: 100.0,
+            origins: 0,
         },
     ];
     promote_query_coverage(
@@ -456,6 +430,7 @@ fn query_parsing_scoring_and_ranking_regressions() {
     assert_eq!(symbolic_source_term("≤"), Some("≤".to_owned()));
     assert_eq!(symbolic_source_term("*"), None);
     assert_eq!(symbolic_source_term("ordinary"), None);
+    assert_eq!(symbolic_source_term("Demo.ordinary_name"), None);
     assert_eq!(symbolic_source_term("A *ᵥ x"), None);
     assert!(declaration_glob_query("FiberBundle.*equiv"));
     assert!(!declaration_glob_query("*ᵥ"));
@@ -479,21 +454,23 @@ fn query_parsing_scoring_and_ranking_regressions() {
         "Demo.FiberBundle.local_equiv_apply",
         "FiberBundle.*equiv"
     ));
-    let mut relational = vec![RankedHit {
+    let mut relational = vec![Candidate {
         hit: SearchHit {
             name: "ContinuousLinearMap.intervalIntegral_comp_comm".into(),
             ..contextual_hit.clone()
         },
         score: 10.0,
+        origins: 0,
     }];
     assert!(apply_declaration_glob(&mut relational, "Matrix.*integral"));
     assert_eq!(relational.len(), 1);
-    relational.push(RankedHit {
+    relational.push(Candidate {
         hit: SearchHit {
             name: "Demo.Matrix_entry_integral".into(),
             ..contextual_hit.clone()
         },
         score: 5.0,
+        origins: 0,
     });
     assert!(!apply_declaration_glob(&mut relational, "Matrix.*integral"));
     assert_eq!(relational.len(), 1);
@@ -512,19 +489,21 @@ fn query_parsing_scoring_and_ranking_regressions() {
     ));
     let resolved = resolved_exact_candidates(
         vec![
-            RankedHit {
+            Candidate {
                 hit: SearchHit {
                     name: "NumberField.Units".into(),
                     ..contextual_hit.clone()
                 },
                 score: 20.0,
+                origins: 0,
             },
-            RankedHit {
+            Candidate {
                 hit: SearchHit {
                     name: "Units".into(),
                     ..contextual_hit.clone()
                 },
                 score: 10.0,
+                origins: 0,
             },
         ],
         "Units",
@@ -534,20 +513,22 @@ fn query_parsing_scoring_and_ranking_regressions() {
     assert_eq!(resolved[0].hit.name, "Units");
     let root_aliases = resolved_exact_candidates(
         vec![
-            RankedHit {
+            Candidate {
                 hit: SearchHit {
                     name: "Demo.Structure".into(),
                     ..contextual_hit.clone()
                 },
                 score: 20.0,
+                origins: 0,
             },
-            RankedHit {
+            Candidate {
                 hit: SearchHit {
                     name: "_root_.Demo.Structure".into(),
                     kind: "structure".into(),
                     ..contextual_hit.clone()
                 },
                 score: 10.0,
+                origins: 0,
             },
         ],
         "Demo.Structure",
@@ -722,15 +703,6 @@ fn query_parsing_scoring_and_ranking_regressions() {
         meaningful_query_tokens("adapter weights to complex"),
         vec!["adapter", "weights", "complex"]
     );
-    assert_eq!(
-        source_specific_query_tokens("ContinuousMap IsUnit unitsLift"),
-        vec!["unitslift"]
-    );
-    assert_eq!(
-        specific_query_tokens("projectionRangeComplexVectorBundleConstant"),
-        vec!["projectionrangecomplexvectorbundleconstant"]
-    );
-    assert!(specific_query_tokens("Homeomorph").is_empty());
     assert!(words_match("weight", "weights"));
     assert!(hit_name_matches(
         "Matrix.conjTranspose_mul",
@@ -1294,7 +1266,7 @@ fn name_contains_fallback_batches_tokens_and_respects_scopes() {
 
 #[test]
 fn import_context_marks_only_unavailable_results() {
-    let hit = |module: &str| RankedHit {
+    let hit = |module: &str| Candidate {
         hit: SearchHit {
             name: format!("{module}.useful"),
             kind: "theorem".into(),
@@ -1309,6 +1281,7 @@ fn import_context_marks_only_unavailable_results() {
             required_import: None,
         },
         score: 10.0,
+        origins: 0,
     };
     let context = ImportContext {
         accessible: HashSet::from(["Demo.Available".into()]),

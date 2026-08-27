@@ -691,18 +691,6 @@ pub(super) fn declaration_name_query(query: &str) -> bool {
             .all(|character| character.is_alphanumeric() || matches!(character, '_' | '.' | '\''))
 }
 
-pub(super) fn declaration_list_terms(query: &str) -> Option<Vec<&str>> {
-    let terms = query.split_whitespace().collect::<Vec<_>>();
-    (terms.len() >= 2
-        && terms.len() <= 6
-        && terms.iter().all(|term| {
-            declaration_name_query(term)
-                && term.chars().count() >= 6
-                && (term.contains(['.', '_']) || term.chars().skip(1).any(char::is_uppercase))
-        }))
-    .then_some(terms)
-}
-
 pub(super) fn declaration_suffix_base(query: &str) -> Option<&str> {
     let (base, suffix) = query.rsplit_once('_')?;
     (!suffix.is_empty()
@@ -777,7 +765,7 @@ pub(super) fn declaration_glob_query(query: &str) -> bool {
         })
 }
 
-pub(super) fn apply_declaration_glob(candidates: &mut Vec<RankedHit>, query: &str) -> bool {
+pub(super) fn apply_declaration_glob(candidates: &mut Vec<Candidate>, query: &str) -> bool {
     if !declaration_glob_query(query) {
         return false;
     }
@@ -881,9 +869,9 @@ pub(super) fn unique_qualified_hit_name<'a>(
 }
 
 pub(super) fn resolved_exact_candidates(
-    candidates: Vec<RankedHit>,
+    candidates: Vec<Candidate>,
     query: &str,
-) -> Option<Vec<RankedHit>> {
+) -> Option<Vec<Candidate>> {
     let name = unique_qualified_hit_name(candidates.iter().map(|candidate| &candidate.hit), query)?;
     Some(
         candidates
@@ -895,7 +883,7 @@ pub(super) fn resolved_exact_candidates(
     )
 }
 
-pub(super) fn merge_exact_candidates(mut candidates: Vec<RankedHit>) -> RankedHit {
+pub(super) fn merge_exact_candidates(mut candidates: Vec<Candidate>) -> Candidate {
     candidates.sort_by(|left, right| {
         right
             .score
@@ -906,16 +894,24 @@ pub(super) fn merge_exact_candidates(mut candidates: Vec<RankedHit>) -> RankedHi
     let mut resolved = candidates.remove(0);
     for mut candidate in candidates {
         merge_duplicate_hit(&mut resolved.hit, &mut candidate.hit);
+        resolved.origins |= candidate.origins;
     }
     resolved
 }
 
 pub(super) fn rank_discovery_candidates(
-    mut candidates: Vec<RankedHit>,
+    mut candidates: Vec<Candidate>,
     query: &str,
     query_tokens: &[String],
     explicit_declaration: bool,
-) -> Vec<RankedHit> {
+    import_context: Option<&ImportContext>,
+) -> (Vec<Candidate>, bool) {
+    let glob_name_miss = apply_declaration_glob(&mut candidates, query);
+    if let Some(context) = import_context {
+        for candidate in &mut candidates {
+            apply_import_context(candidate, context);
+        }
+    }
     candidates.sort_by(|left, right| {
         right
             .score
@@ -924,10 +920,11 @@ pub(super) fn rank_discovery_candidates(
             .then_with(|| left.hit.name.cmp(&right.hit.name))
     });
     let mut positions: HashMap<String, usize> = HashMap::new();
-    let mut deduplicated: Vec<RankedHit> = Vec::new();
+    let mut deduplicated: Vec<Candidate> = Vec::new();
     for mut candidate in candidates {
         if let Some(index) = positions.get(&candidate.hit.name).copied() {
             merge_duplicate_hit(&mut deduplicated[index].hit, &mut candidate.hit);
+            deduplicated[index].origins |= candidate.origins;
         } else {
             positions.insert(candidate.hit.name.clone(), deduplicated.len());
             deduplicated.push(candidate);
@@ -939,14 +936,14 @@ pub(super) fn rank_discovery_candidates(
         promote_query_coverage(&mut deduplicated, query_tokens);
         promote_result_context(&mut deduplicated, query_tokens);
     }
-    deduplicated
+    (deduplicated, glob_name_miss)
 }
 
 pub(super) fn ranked_exact_candidates(
     rows: Vec<IndexedRow>,
     query: &str,
     workspace: &Workspace,
-) -> Vec<RankedHit> {
+) -> Vec<Candidate> {
     let tokens = meaningful_query_tokens(query);
     rows.into_iter()
         .map(|row| {
@@ -957,24 +954,7 @@ pub(super) fn ranked_exact_candidates(
                     0.0
                 }
                 - row.rank.max(0.0);
-            let (source, matched_line) =
-                detailed_source_excerpt(&row.body, query, &tokens, row.line, &row.kind, &row.name);
-            RankedHit {
-                hit: SearchHit {
-                    name: row.name,
-                    kind: row.kind,
-                    signature: nonempty(row.signature),
-                    module: row.module,
-                    path: row.path,
-                    line: matched_line,
-                    doc: nonempty(row.docs),
-                    source,
-                    usages: Vec::new(),
-                    applicable: false,
-                    required_import: None,
-                },
-                score,
-            }
+            indexed_candidate(row, query, &tokens, score)
         })
         .collect()
 }
@@ -1090,34 +1070,6 @@ pub(super) fn suppress_inferred_missing_note(note: &mut Option<String>) {
         .collect::<Vec<_>>()
         .join("; ");
     *note = (!retained.is_empty()).then_some(retained);
-}
-
-pub(super) fn specific_query_tokens(query: &str) -> Vec<String> {
-    query
-        .split(|character: char| {
-            !character.is_alphanumeric() && character != '_' && character != '.'
-        })
-        .map(|token| token.trim_matches('.'))
-        .filter(|token| token.len() >= 8)
-        .filter(|token| token.contains(['.', '_']) || token.chars().skip(1).any(char::is_uppercase))
-        .map(str::to_lowercase)
-        .collect()
-}
-
-pub(super) fn source_specific_query_tokens(query: &str) -> Vec<String> {
-    query
-        .split(|character: char| {
-            !character.is_alphanumeric() && character != '_' && character != '.'
-        })
-        .map(|token| token.trim_matches('.'))
-        .filter(|token| token.len() >= 8)
-        .filter(|token| {
-            token.contains(['.', '_'])
-                || (token.chars().next().is_some_and(char::is_lowercase)
-                    && token.chars().skip(1).any(char::is_uppercase))
-        })
-        .map(str::to_lowercase)
-        .collect()
 }
 
 pub(super) fn meaningful_query_tokens(query: &str) -> Vec<String> {
@@ -1322,12 +1274,12 @@ pub(super) fn qualified_member_score(query: &str, name: &str) -> f64 {
         + common_suffix.saturating_sub(3).min(10) as f64 * 4.0
 }
 
-pub(super) fn promote_query_coverage(ranked: &mut Vec<RankedHit>, tokens: &[String]) {
+pub(super) fn promote_query_coverage(ranked: &mut Vec<Candidate>, tokens: &[String]) {
     if ranked.len() <= 1 || tokens.len() <= 1 {
         return;
     }
     let mut remaining = std::mem::take(ranked);
-    let mut promoted: Vec<RankedHit> = Vec::new();
+    let mut promoted: Vec<Candidate> = Vec::new();
     let qualified = tokens
         .iter()
         .filter(|token| token.contains('.') && !token.ends_with(".lean"))
@@ -1382,7 +1334,7 @@ pub(super) fn promote_query_coverage(ranked: &mut Vec<RankedHit>, tokens: &[Stri
         {
             continue;
         }
-        let eligible = |candidate: &RankedHit| {
+        let eligible = |candidate: &Candidate| {
             !matches!(candidate.hit.kind.as_str(), "file" | "imports")
                 || matches!(token.as_str(), "import" | "imports")
         };
@@ -1429,13 +1381,13 @@ pub(super) fn promote_query_coverage(ranked: &mut Vec<RankedHit>, tokens: &[Stri
     *ranked = promoted;
 }
 
-pub(super) fn promote_result_context(ranked: &mut Vec<RankedHit>, tokens: &[String]) {
+pub(super) fn promote_result_context(ranked: &mut Vec<Candidate>, tokens: &[String]) {
     let mut seen = HashSet::new();
     let tokens = tokens
         .iter()
         .filter(|token| seen.insert(token.as_str()))
         .collect::<Vec<_>>();
-    let name_coverage = |candidate: &RankedHit| {
+    let name_coverage = |candidate: &Candidate| {
         let leaf = candidate
             .hit
             .name
@@ -1507,22 +1459,6 @@ pub(super) fn hit_matches_token(hit: &SearchHit, token: &str) -> bool {
         .into_iter()
         .flatten()
         .any(|text| text_matches_token(&text.to_lowercase(), token))
-}
-
-pub(super) fn pipe_alternative_covered<'a>(
-    query: &str,
-    hits: impl Iterator<Item = &'a SearchHit> + Clone,
-) -> bool {
-    query.split('|').any(|alternative| {
-        let tokens = query_tokens(alternative)
-            .into_iter()
-            .filter(|token| token.chars().count() >= 3)
-            .collect::<Vec<_>>();
-        !tokens.is_empty()
-            && hits
-                .clone()
-                .any(|hit| tokens.iter().all(|token| hit_matches_token(hit, token)))
-    })
 }
 
 pub(super) fn hit_query_coverage(
@@ -1719,7 +1655,7 @@ pub(super) fn conclusion_query(query: &str) -> bool {
     query.starts_with('⊢') || query.starts_with("|-")
 }
 
-pub(super) fn apply_import_context(candidate: &mut RankedHit, context: &ImportContext) {
+pub(super) fn apply_import_context(candidate: &mut Candidate, context: &ImportContext) {
     if candidate.hit.module.is_empty() {
         return;
     }

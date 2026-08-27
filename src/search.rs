@@ -98,9 +98,10 @@ impl ExpandedQuery {
 }
 
 #[derive(Debug)]
-struct RankedHit {
+struct Candidate {
     hit: SearchHit,
     score: f64,
+    origins: u8,
 }
 
 #[derive(Clone, Copy)]
@@ -109,16 +110,6 @@ enum CandidateOrigin {
     Loogle = 2,
     ProjectSource = 4,
     FallbackSource = 8,
-}
-
-fn record_candidate_origins(
-    origins: &mut HashMap<String, u8>,
-    origin: CandidateOrigin,
-    candidates: &[RankedHit],
-) {
-    for candidate in candidates {
-        *origins.entry(candidate.hit.name.clone()).or_default() |= origin as u8;
-    }
 }
 
 struct ImportContext {
@@ -141,7 +132,7 @@ struct ExactPlan {
 }
 
 struct ExactMatch {
-    candidate: RankedHit,
+    candidate: Candidate,
     matched: String,
     warming: bool,
 }
@@ -175,8 +166,8 @@ fn indexed_row_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexedRow>
     })
 }
 
-fn compact_ranked_hit(row: IndexedRow) -> RankedHit {
-    RankedHit {
+fn compact_ranked_hit(row: IndexedRow) -> Candidate {
+    Candidate {
         hit: SearchHit {
             name: row.name,
             kind: row.kind,
@@ -191,6 +182,40 @@ fn compact_ranked_hit(row: IndexedRow) -> RankedHit {
             required_import: None,
         },
         score: 0.0,
+        origins: CandidateOrigin::Index as u8,
+    }
+}
+
+fn indexed_candidate(
+    row: IndexedRow,
+    query: &str,
+    query_tokens: &[String],
+    score: f64,
+) -> Candidate {
+    let (source, line) = detailed_source_excerpt(
+        &row.body,
+        query,
+        query_tokens,
+        row.line,
+        &row.kind,
+        &row.name,
+    );
+    Candidate {
+        hit: SearchHit {
+            name: row.name,
+            kind: row.kind,
+            signature: nonempty(row.signature),
+            module: row.module,
+            path: row.path,
+            line,
+            doc: nonempty(row.docs),
+            source,
+            usages: Vec::new(),
+            applicable: false,
+            required_import: None,
+        },
+        score,
+        origins: CandidateOrigin::Index as u8,
     }
 }
 
@@ -1728,7 +1753,6 @@ impl Searcher {
         let candidates_ms = candidates_started.elapsed().as_millis() as u64;
         let name_search = !type_search && declaration_name_query(query);
         let mut ranked = Vec::new();
-        let mut origins = HashMap::new();
         let mut warming = false;
         let loogle_started = Instant::now();
         if type_search {
@@ -1749,7 +1773,6 @@ impl Searcher {
                 true,
                 280.0,
             )?;
-            record_candidate_origins(&mut origins, CandidateOrigin::Loogle, &applicable);
             ranked.extend(applicable);
             if !explicit_conclusion && !has_full_applicability_page {
                 let (loogle_hits, is_warming) = self.loogle_hits(workspace, query);
@@ -1761,7 +1784,6 @@ impl Searcher {
                     false,
                     180.0,
                 )?;
-                record_candidate_origins(&mut origins, CandidateOrigin::Loogle, &loogle);
                 ranked.extend(loogle);
             }
         }
@@ -1780,14 +1802,6 @@ impl Searcher {
             if lexical <= 0.0 && type_score <= 0.0 {
                 continue;
             }
-            let (source, matched_line) = detailed_source_excerpt(
-                &row.body,
-                query,
-                &query_tokens,
-                row.line,
-                &row.kind,
-                &row.name,
-            );
             let symbolic_name_score = symbolic_source_term(query)
                 .filter(|term| row.name.to_lowercase().contains(term))
                 .map_or(0.0, |_| 600.0);
@@ -1800,30 +1814,11 @@ impl Searcher {
                     0.0
                 }
                 - row.rank.max(0.0);
-            let candidate = RankedHit {
-                hit: SearchHit {
-                    name: row.name,
-                    kind: row.kind,
-                    signature: nonempty(row.signature),
-                    module: row.module,
-                    path: row.path,
-                    line: matched_line,
-                    doc: nonempty(row.docs),
-                    source,
-                    usages: Vec::new(),
-                    applicable: false,
-                    required_import: None,
-                },
-                score,
-            };
-            *origins.entry(candidate.hit.name.clone()).or_default() |=
-                CandidateOrigin::Index as u8;
-            ranked.push(candidate);
+            ranked.push(indexed_candidate(row, query, &query_tokens, score));
         }
         let ranking_ms = ranking_started.elapsed().as_millis() as u64;
         let project_started = Instant::now();
         let project = self.project_source_hits(workspace, query, &query_tokens);
-        record_candidate_origins(&mut origins, CandidateOrigin::ProjectSource, &project);
         ranked.extend(project);
         let project_ms = project_started.elapsed().as_millis() as u64;
         if name_search
@@ -1854,56 +1849,15 @@ impl Searcher {
                 base_warming,
             );
         }
-        let resolved_declaration_head = declaration_list_terms(query)
-            .and_then(|terms| terms.first().copied())
-            .is_some_and(|term| {
-                ranked.iter().any(|candidate| {
-                    !matches!(candidate.hit.kind.as_str(), "file" | "imports")
-                        && qualified_name_matches(&candidate.hit.name, term)
-                })
-            });
-        let detail_tokens = specific_query_tokens(query);
-        let missing_indexed_detail = detail_tokens.iter().any(|token| {
-            let matches = ranked.iter().filter(|candidate| {
-                !matches!(candidate.hit.kind.as_str(), "file" | "imports")
-                    && hit_matches_token(&candidate.hit, token)
-            });
-            let mut found = false;
-            let mut detailed = false;
-            for candidate in matches {
-                found = true;
-                detailed |= candidate.hit.signature.is_some() || candidate.hit.source.is_some();
-            }
-            !found || !detailed
-        });
-        let warm_name_coverage = name_search
-            && !base_warming
-            && ranked
-                .iter()
-                .filter(|candidate| !matches!(candidate.hit.kind.as_str(), "file" | "imports"))
-                .take(3)
-                .count()
-                == 3;
-        let pipe_alternative_covered = query.contains('|')
-            && pipe_alternative_covered(query, ranked.iter().map(|candidate| &candidate.hit));
         let fallback_started = Instant::now();
         let mut fallback_used = false;
-        if !resolved_declaration_head
-            && !warm_name_coverage
-            && !pipe_alternative_covered
-            && (ranked.len() < 3
-                || missing_indexed_detail
-                || symbolic_source_term(query).is_some()
-                || (!base_warming
-                    && !type_search
-                    && (query.contains('|') || !named_argument_terms(query).is_empty())))
+        if base_warming
+            || symbolic_source_term(query).is_some()
+            || !named_argument_terms(query).is_empty()
         {
             fallback_used = true;
             match fallback_source_hits(&workspace.path, query, &query_tokens) {
-                Ok(hits) => {
-                    record_candidate_origins(&mut origins, CandidateOrigin::FallbackSource, &hits);
-                    ranked.extend(hits);
-                }
+                Ok(hits) => ranked.extend(hits),
                 Err(error) => append_log(
                     &self.repo,
                     &format!("source fallback unavailable: {error:#}"),
@@ -1912,17 +1866,12 @@ impl Searcher {
         }
         let fallback_ms = fallback_started.elapsed().as_millis() as u64;
         let finish_started = Instant::now();
-        let glob_name_miss = apply_declaration_glob(&mut ranked, query);
-        if let Some(context) = &import_context {
-            for candidate in &mut ranked {
-                apply_import_context(candidate, context);
-            }
-        }
-        let mut ranked = rank_discovery_candidates(
+        let (mut ranked, glob_name_miss) = rank_discovery_candidates(
             ranked,
             query,
             &query_tokens,
             explicit_declaration.is_some(),
+            import_context.as_ref(),
         );
         let exact_name_miss = name_search
             && !ranked.iter().any(|candidate| {
@@ -1932,19 +1881,11 @@ impl Searcher {
         ranked.truncate(result_limit(exact_name_miss, show_all));
         let fallback_top = ranked
             .iter()
-            .filter(|candidate| {
-                origins.get(&candidate.hit.name).is_some_and(|origin| {
-                    origin & CandidateOrigin::FallbackSource as u8 != 0
-                })
-            })
+            .filter(|candidate| candidate.origins & CandidateOrigin::FallbackSource as u8 != 0)
             .count();
         let fallback_unique_top = ranked
             .iter()
-            .filter(|candidate| {
-                origins.get(&candidate.hit.name).is_some_and(|origin| {
-                    *origin == CandidateOrigin::FallbackSource as u8
-                })
-            })
+            .filter(|candidate| candidate.origins == CandidateOrigin::FallbackSource as u8)
             .count();
         if exact_name_miss {
             // A near declaration-name match should be useful without a follow-up
@@ -2035,12 +1976,12 @@ impl Searcher {
         workspace: &Workspace,
         applicable: bool,
         base_score: f64,
-    ) -> Result<Vec<RankedHit>> {
+    ) -> Result<Vec<Candidate>> {
         hits.into_iter()
             .enumerate()
             .map(|(position, hit)| {
                 let usages = self.usages(&hit.name, scopes, workspace)?;
-                Ok(RankedHit {
+                Ok(Candidate {
                     hit: SearchHit {
                         path: format!("{}.lean", hit.module.replace('.', "/")),
                         line: 1,
@@ -2055,6 +1996,7 @@ impl Searcher {
                         required_import: None,
                     },
                     score: base_score - position as f64,
+                    origins: CandidateOrigin::Loogle as u8,
                 })
             })
             .collect()
@@ -2170,7 +2112,7 @@ impl Searcher {
                     &row.name,
                 );
                 return Ok(Some(ExactMatch {
-                    candidate: RankedHit {
+                    candidate: Candidate {
                         hit: SearchHit {
                             name: format!("{}.mk", row.name),
                             kind: "constructor".into(),
@@ -2185,6 +2127,7 @@ impl Searcher {
                             required_import: None,
                         },
                         score: 900.0,
+                        origins: CandidateOrigin::Index as u8,
                     },
                     matched: query.to_owned(),
                     warming: false,
@@ -2204,7 +2147,7 @@ impl Searcher {
         };
         let hit = hits.remove(*position);
         Ok(Some(ExactMatch {
-            candidate: RankedHit {
+            candidate: Candidate {
                 hit: SearchHit {
                     path: format!("{}.lean", hit.module.replace('.', "/")),
                     line: 1,
@@ -2219,6 +2162,7 @@ impl Searcher {
                     required_import: None,
                 },
                 score: 900.0,
+                origins: CandidateOrigin::Loogle as u8,
             },
             matched: query.to_owned(),
             warming,
@@ -2883,7 +2827,7 @@ impl Searcher {
         workspace: &Workspace,
         query: &str,
         query_tokens: &[String],
-    ) -> Vec<RankedHit> {
+    ) -> Vec<Candidate> {
         let Ok(paths) = dirty_lean_files(&workspace.path) else {
             return Vec::new();
         };
@@ -2931,7 +2875,7 @@ impl Searcher {
                 let import_query = query_tokens
                     .iter()
                     .any(|token| matches!(token.as_str(), "import" | "imports"));
-                ranked.push(RankedHit {
+                ranked.push(Candidate {
                     hit: SearchHit {
                         name: entry.name.clone(),
                         kind: entry.kind.clone(),
@@ -2956,6 +2900,7 @@ impl Searcher {
                         } else {
                             0.0
                         },
+                    origins: CandidateOrigin::ProjectSource as u8,
                 });
             }
         }

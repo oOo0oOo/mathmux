@@ -853,23 +853,12 @@ pub(super) fn fallback_source_hits(
     workspace: &Path,
     query: &str,
     query_tokens: &[String],
-) -> Result<Vec<RankedHit>> {
+) -> Result<Vec<Candidate>> {
     let started = Instant::now();
     let scan_deadline = started + SOURCE_SCAN_BUDGET;
     let fallback_deadline = started + SOURCE_FALLBACK_BUDGET;
     let workspace = fs::canonicalize(workspace)?;
     let packages = fs::canonicalize(workspace.join(".lake/packages")).ok();
-    let generic = [
-        "class",
-        "constructor",
-        "constructors",
-        "def",
-        "instance",
-        "lemma",
-        "name",
-        "structure",
-        "theorem",
-    ];
     let symbolic_term = symbolic_source_term(query);
     let mut terms = symbolic_term.iter().cloned().collect::<Vec<_>>();
     if symbolic_term.is_none() {
@@ -878,23 +867,34 @@ pub(super) fn fallback_source_hits(
                 .iter()
                 .flat_map(|token| std::iter::once(token.as_str()).chain(token.split(['.', '_'])))
                 .map(str::to_lowercase)
-                .filter(|term| term.len() >= 3 && !generic.contains(&term.as_str())),
+                .filter(|term| {
+                    term.len() >= 3
+                        && !matches!(
+                            term.as_str(),
+                            "class"
+                                | "constructor"
+                                | "constructors"
+                                | "def"
+                                | "instance"
+                                | "lemma"
+                                | "name"
+                                | "structure"
+                                | "theorem"
+                        )
+                }),
         );
     }
     let named_argument_terms = named_argument_terms(query);
     terms.extend(named_argument_terms.iter().cloned());
-    let generated_suffixes = ["_symm_apply", "_apply"];
     for term in terms.clone() {
-        for suffix in generated_suffixes {
+        for suffix in ["_symm_apply", "_apply"] {
             if let Some(stem) = term.strip_suffix(suffix)
                 && stem.len() >= 3
             {
                 terms.push(stem.to_owned());
             }
         }
-    }
-    for term in terms.clone() {
-        let synonym = match term.as_str() {
+        if let Some(alias) = match term.as_str() {
             "addition" => Some("add"),
             "continuity" => Some("continuous"),
             "islinear" => Some("linear"),
@@ -904,9 +904,8 @@ pub(super) fn fallback_source_hits(
             "trivializationat" => Some("trivialization"),
             "weighted" => Some("weight"),
             _ => None,
-        };
-        if let Some(synonym) = synonym {
-            terms.push(synonym.to_owned());
+        } {
+            terms.push(alias.to_owned());
         }
     }
     terms.sort();
@@ -914,66 +913,13 @@ pub(super) fn fallback_source_hits(
     if terms.is_empty() {
         return Ok(Vec::new());
     }
-    let mut strong_terms = query
-        .split('|')
-        .map(str::trim)
-        .filter(|term| term.len() >= 3)
-        .map(str::to_lowercase)
-        .collect::<Vec<_>>();
-    strong_terms.extend(
-        query_tokens
-            .iter()
-            .filter_map(|token| token.rsplit_once('.').map(|(_, base)| base.to_lowercase())),
-    );
-    let mut declaration_terms = Vec::new();
-    if symbolic_term.is_none()
-        && query_tokens.len() <= 2
-        && let Some(token) = query_tokens.last()
-    {
-        for name in token.split('.').filter(|name| name.len() >= 3) {
-            for kind in [
-                "abbrev",
-                "class",
-                "def",
-                "instance",
-                "lemma",
-                "structure",
-                "theorem",
-            ] {
-                declaration_terms.push(format!("{kind} {name}"));
-            }
-        }
-    }
-    let mut rare_terms = terms.clone();
-    rare_terms.sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
-    strong_terms.extend(rare_terms.iter().take(2).cloned());
-    strong_terms.sort();
-    strong_terms.dedup();
-    let declaration_paths = source_scan_paths(
+    let mut scanned = source_scan_path_counts(
         &workspace,
         packages.as_deref(),
-        &declaration_terms,
+        &terms,
         scan_deadline,
     )?;
-    let strong_paths =
-        source_scan_paths(&workspace, packages.as_deref(), &strong_terms, scan_deadline)?;
-    let named_argument_paths = source_scan_paths(
-        &workspace,
-        packages.as_deref(),
-        &named_argument_terms,
-        scan_deadline,
-    )?;
-    let mut balanced_paths = if symbolic_term.is_some() {
-        strong_paths.iter().cloned().map(|path| (path, 1)).collect()
-    } else {
-        source_scan_path_counts(
-            &workspace,
-            packages.as_deref(),
-            &rare_terms.into_iter().take(12).collect::<Vec<_>>(),
-            scan_deadline,
-        )?
-    };
-    balanced_paths.sort_by(|(left_path, left_score), (right_path, right_score)| {
+    scanned.sort_by(|(left_path, left_score), (right_path, right_score)| {
         right_score.cmp(left_score).then_with(|| {
             let left_dependency = packages
                 .as_ref()
@@ -986,62 +932,15 @@ pub(super) fn fallback_source_hits(
                 .then_with(|| left_path.cmp(right_path))
         })
     });
-    let balanced_paths = balanced_paths
-        .into_iter()
-        .map(|(path, _)| path)
-        .collect::<Vec<_>>();
-    let strong_set = strong_paths.iter().collect::<HashSet<_>>();
-    let named_argument_set = named_argument_paths.iter().collect::<HashSet<_>>();
-    let preferred_set = if named_argument_set.is_empty() {
-        &strong_set
-    } else {
-        &named_argument_set
-    };
-    let direct_paths = direct_module_paths(&workspace, packages.as_deref(), query);
-    let direct_path_set = direct_paths.iter().cloned().collect::<HashSet<_>>();
-    let specific_paths = if symbolic_term.is_some() {
-        Vec::new()
-    } else {
-        source_scan_paths(
-            &workspace,
-            packages.as_deref(),
-            &source_specific_query_tokens(query),
-            scan_deadline,
-        )?
-    };
-    let mut paths = direct_paths
-        .into_iter()
-        .chain(specific_paths)
-        .chain(
-            declaration_paths
-                .iter()
-                .filter(|path| preferred_set.contains(path))
-                .cloned(),
-        )
-        .collect::<Vec<_>>();
+    let mut paths = direct_module_paths(&workspace, packages.as_deref(), query);
+    let direct_path_set = paths.iter().cloned().collect::<HashSet<_>>();
     let mut seen_paths = paths.iter().cloned().collect::<HashSet<_>>();
-    let remaining_paths = if terms == strong_terms {
-        strong_paths.clone()
-    } else {
-        source_scan_paths(&workspace, packages.as_deref(), &terms, scan_deadline)?
-    };
-    for candidates in [
-        declaration_paths,
-        balanced_paths,
-        strong_paths,
-        remaining_paths,
-    ] {
-        for path in candidates {
-            if seen_paths.insert(path.clone()) {
-                paths.push(path);
-            }
+    for (path, _) in scanned {
+        if seen_paths.insert(path.clone()) {
+            paths.push(path);
         }
     }
     let mut ranked = Vec::new();
-    let class_query = query
-        .split('|')
-        .map(str::trim)
-        .any(|part| part.to_lowercase().starts_with("class "));
     let imports_query = query_tokens
         .iter()
         .any(|token| matches!(token.as_str(), "import" | "imports"));
@@ -1079,119 +978,63 @@ pub(super) fn fallback_source_hits(
             if score == 0 {
                 continue;
             }
-            let (excerpt, matched_line) = detailed_source_excerpt(
-                &entry.body,
-                query,
-                &terms,
-                entry.line,
-                &entry.kind,
-                &entry.name,
-            );
-            let name_score = terms
-                .iter()
-                .filter(|term| entry.name.to_lowercase().contains(*term))
-                .map(|term| if term.len() >= 12 { 3 } else { 1 })
-                .sum::<usize>();
             let named_argument_score = named_argument_terms
                 .iter()
                 .filter(|term| entry.signature.to_lowercase().contains(*term))
                 .count();
-            let name = entry.name.to_lowercase();
             let symbolic_name_match = symbolic_term
                 .as_ref()
-                .is_some_and(|term| name.contains(term));
-            let base = name.rsplit('.').next().unwrap_or(&name);
-            let name_segments = name.split('.').collect::<HashSet<_>>();
-            let segment_score = terms
-                .iter()
-                .filter(|term| name_segments.contains(term.as_str()))
-                .count();
+                .is_some_and(|term| entry.name.to_lowercase().contains(term));
             let is_file = entry.kind == "file";
             let is_direct_path = direct_path_set.contains(&path);
-            let exact_name = query_tokens.iter().any(|token| {
-                (token.contains('.') && token == &name)
-                    || (!is_file
-                        && token.len() >= 4
-                        && !token.contains('.')
-                        && token.as_str() == base)
-            });
-            let qualified_leaf = query_tokens.iter().any(|token| {
-                token
-                    .rsplit_once('.')
-                    .is_some_and(|(_, leaf)| name_segments.contains(leaf))
-            });
-            let is_class = entry.kind == "class";
-            let is_owner = matches!(entry.kind.as_str(), "structure" | "class");
-            let qualified_member_query = declaration_name_query(query) && query.contains('.');
-            let qualified_owner_score = if qualified_member_query {
-                0
-            } else {
-                query_tokens
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, token)| {
-                        token.rsplit_once('.').map(|(owner, _)| (index, owner))
-                    })
-                    .filter(|(_, owner)| *owner == name || name.ends_with(&format!(".{owner}")))
-                    .map(|(index, _)| if index == 0 { 2 } else { 1 })
-                    .sum::<usize>()
-            };
-            let qualified_member_score = qualified_member_score(query, &entry.name);
-            let member_owner_score = if is_owner && !qualified_member_query {
-                query_tokens
-                    .iter()
-                    .filter(|token| {
-                        token.len() >= 8
-                            && !text_matches_token(&name, token)
-                            && text_matches_token(&searchable, token)
-                    })
-                    .count()
-            } else {
-                0
-            };
             let is_imports = entry.kind == "imports";
-            let signature = if is_file {
-                file_query_coverage_signature(&source_lower, query_tokens)
-            } else {
-                nonempty(entry.signature)
+            let display_path = display_path(&path, &workspace, root, kind);
+            let row = IndexedRow {
+                owner: String::new(),
+                path: display_path.clone(),
+                module: module.clone(),
+                line: entry.line,
+                name: entry.name,
+                kind: entry.kind,
+                signature: entry.signature,
+                docs: entry.docs,
+                body: entry.body,
+                rank: 0.0,
             };
-            ranked.push(RankedHit {
+            let (excerpt, matched_line) = detailed_source_excerpt(
+                &row.body,
+                query,
+                &terms,
+                row.line,
+                &row.kind,
+                &row.name,
+            );
+            let score = lexical_score(query, query_tokens, &row)
+                + named_argument_score as f64 * 200.0
+                + if symbolic_name_match { 600.0 } else { 0.0 }
+                + if is_direct_path { 400.0 } else { 0.0 }
+                + if is_imports && imports_query { 200.0 } else { 0.0 }
+                + file_coverage as f64 * 4.0;
+            ranked.push(Candidate {
                 hit: SearchHit {
-                    name: entry.name,
-                    kind: entry.kind,
-                    signature,
-                    module: module.clone(),
-                    path: display_path(&path, &workspace, root, kind),
+                    name: row.name,
+                    kind: row.kind,
+                    signature: if is_file {
+                        file_query_coverage_signature(&source_lower, query_tokens)
+                    } else {
+                        nonempty(row.signature)
+                    },
+                    module: row.module,
+                    path: display_path,
                     line: matched_line,
-                    doc: nonempty(entry.docs),
+                    doc: nonempty(row.docs),
                     source: excerpt,
                     usages: Vec::new(),
                     applicable: false,
                     required_import: None,
                 },
-                score: 35.0
-                    + score as f64 * 8.0
-                    + name_score as f64 * 20.0
-                    + named_argument_score as f64 * 200.0
-                    + segment_score as f64 * 30.0
-                    + if exact_name { 80.0 } else { 0.0 }
-                    + if symbolic_name_match { 600.0 } else { 0.0 }
-                    + if qualified_leaf { 60.0 } else { 0.0 }
-                    + qualified_owner_score as f64 * 250.0
-                    + qualified_member_score
-                    + member_owner_score as f64 * 160.0
-                    + if is_direct_path { 400.0 } else { 0.0 }
-                    + if is_imports && imports_query {
-                        200.0
-                    } else {
-                        0.0
-                    }
-                    + if is_class && class_query { 40.0 } else { 0.0 }
-                    + if is_file {
-                        -220.0
-                    } else {
-                        20.0 + file_coverage as f64 * 4.0
-                    },
+                score,
+                origins: CandidateOrigin::FallbackSource as u8,
             });
         }
     }
@@ -1234,7 +1077,9 @@ pub(super) fn symbolic_source_term(query: &str) -> Option<String> {
     (!query.is_empty()
         && !query.chars().any(char::is_whitespace)
         && (query.chars().count() > 1 || !query.is_ascii())
-        && query.chars().any(|character| !character.is_alphanumeric()))
+        && query.chars().any(|character| {
+            !character.is_alphanumeric() && !matches!(character, '_' | '.' | '\'')
+        }))
     .then(|| query.to_lowercase())
 }
 
@@ -1298,49 +1143,6 @@ pub(super) fn direct_module_paths(
         }
     }
     paths
-}
-
-pub(super) fn source_scan_paths(
-    workspace: &Path,
-    packages: Option<&Path>,
-    terms: &[String],
-    deadline: Instant,
-) -> Result<Vec<PathBuf>> {
-    let Some(timeout) = source_scan_timeout(deadline) else {
-        return Ok(Vec::new());
-    };
-    if terms.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut command = std::process::Command::new("timeout");
-    command.args([
-        "--signal=KILL",
-        &timeout,
-        "rg",
-        "-l",
-        "-i",
-        "-F",
-        "--glob",
-        "*.lean",
-    ]);
-    for term in terms {
-        command.args(["-e", term]);
-    }
-    command.arg(workspace);
-    if let Some(packages) = packages {
-        command.arg(packages);
-    }
-    let output = command.stdin(Stdio::null()).output()?;
-    if !output.status.success() && !matches!(output.status.code(), Some(1 | 124 | 137)) {
-        bail!(
-            "local source scan failed: {}",
-            clean_line(&String::from_utf8_lossy(&output.stderr))
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(PathBuf::from)
-        .collect())
 }
 
 pub(super) fn source_scan_path_counts(
