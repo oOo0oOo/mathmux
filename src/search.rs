@@ -28,7 +28,10 @@ use crate::util::{
 mod goal;
 mod plan;
 mod query;
+#[cfg(test)]
+mod replay;
 mod source;
+mod tuning;
 #[cfg(test)]
 mod tests;
 
@@ -36,9 +39,10 @@ use goal::*;
 use plan::*;
 use query::*;
 use source::*;
+use tuning::*;
 
-const RESULT_LIMIT: usize = 24;
-const SUMMARY_LIMIT: usize = 5;
+const RESULT_LIMIT: usize = SEARCH_TUNING.presentation.result_limit;
+const SUMMARY_LIMIT: usize = SEARCH_TUNING.presentation.summary_limit;
 const LOCATION_PREVIEW_LINES: usize = 32;
 const LOCATION_MORE_LINES: usize = 96;
 const SOURCE_OCCURRENCE_LIMIT: usize = 64;
@@ -46,12 +50,12 @@ const SOURCE_RANGE_LIMIT: usize = 120;
 const SOURCE_OCCURRENCE_ALL_LIMIT: usize = 200;
 const OUTLINE_PREVIEW_LINES: usize = 64;
 const OUTLINE_LINE_CHARS: usize = 120;
-const RELATED_RESULT_LIMIT: usize = 8;
+const RELATED_RESULT_LIMIT: usize = SEARCH_TUNING.presentation.related_result_limit;
 const GOAL_STATE_BEGIN: &str = "MATHMUX_GOAL_BEGIN";
 const GOAL_STATE_END: &str = "MATHMUX_GOAL_END";
 const SEARCH_INDEX_VERSION: i64 = 7;
 const SOURCE_INDEX_KIND: &str = "source-v12";
-const DECLARATION_DETAIL_LINES: usize = 48;
+const DECLARATION_DETAIL_LINES: usize = SEARCH_TUNING.presentation.declaration_detail_lines;
 const INDEX_COMMIT_BATCH: usize = 64;
 const SEARCH_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 const DIAGNOSTIC_PROBE_MAX_CHECK_MS: u64 = 2_000;
@@ -149,24 +153,6 @@ struct IndexedRow {
     docs: String,
     body: String,
     rank: f64,
-}
-
-macro_rules! indexed_rows {
-    ($tail:literal) => {
-        concat!(
-            "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0 \
-             FROM search_fts ",
-            $tail,
-        )
-    };
-    (ranked $tail:literal) => {
-        concat!(
-            "SELECT owner, file, module, line, name, kind, signature, docs, body, \
-             bm25(search_fts, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 7.0, 3.0, 1.0) \
-             FROM search_fts ",
-            $tail,
-        )
-    };
 }
 
 fn indexed_row_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexedRow> {
@@ -307,18 +293,17 @@ fn name_contains_candidates(
         return Ok(Vec::new());
     }
     let conditions = vec!["name LIKE ? COLLATE NOCASE"; tokens.len()].join(" OR ");
-    let sql = format!(
-        indexed_rows!(
-            "WHERE ({conditions})
-             AND owner IN (SELECT owner FROM active_search_scopes)
-             ORDER BY CASE
-               WHEN owner LIKE 'workspace:%' OR owner LIKE 'artifacts:%' THEN 0
-               ELSE 1
-             END
-             LIMIT 128"
-        ),
+    let sql = indexed_rows_sql(&format!(
+        "WHERE ({conditions})
+         AND owner IN (SELECT owner FROM active_search_scopes)
+         ORDER BY CASE
+           WHEN owner LIKE 'workspace:%' OR owner LIKE 'artifacts:%' THEN 0
+           ELSE 1
+         END
+         LIMIT {limit}",
         conditions = conditions,
-    );
+        limit = SEARCH_TUNING.retrieval.name_contains_rows,
+    ));
     let patterns = tokens
         .iter()
         .map(|token| format!("%{token}%"))
@@ -348,7 +333,7 @@ fn module_context_candidates(
     modules.sort_by(|left, right| right.0.total_cmp(&left.0));
     let mut seen = HashSet::new();
     modules.retain(|(_, module)| seen.insert(module.clone()));
-    modules.truncate(6);
+    modules.truncate(SEARCH_TUNING.retrieval.module_count);
     if modules.is_empty() {
         return Ok(Vec::new());
     }
@@ -356,14 +341,13 @@ fn module_context_candidates(
         .map(|index| format!("?{index}"))
         .collect::<Vec<_>>()
         .join(", ");
-    let sql = format!(
-        indexed_rows!(ranked
-            "WHERE search_fts MATCH ?1 AND module IN ({placeholders})
-             AND owner IN (SELECT owner FROM active_search_scopes)
-             LIMIT 512"
-        ),
+    let sql = ranked_rows_sql(&format!(
+        "WHERE search_fts MATCH ?1 AND module IN ({placeholders})
+         AND owner IN (SELECT owner FROM active_search_scopes)
+         LIMIT {limit}",
         placeholders = placeholders,
-    );
+        limit = SEARCH_TUNING.retrieval.module_rows,
+    ));
     let mut parameters = vec![fts_query(&tokens.join(" "))];
     parameters.extend(modules.into_iter().map(|(_, module)| module));
     connection
@@ -756,9 +740,12 @@ impl Searcher {
             return Ok(None);
         };
         let connection = self.open()?;
-        let mut statement = connection.prepare(
-            "SELECT DISTINCT name FROM search_fts WHERE name LIKE ?1 COLLATE NOCASE LIMIT 2048",
-        )?;
+        let sql = format!(
+            "SELECT DISTINCT name FROM search_fts
+             WHERE name LIKE ?1 COLLATE NOCASE LIMIT {}",
+            SEARCH_TUNING.retrieval.name_suggestions,
+        );
+        let mut statement = connection.prepare(&sql)?;
         let names = statement
             .query_map([format!("{namespace}.%")], |row| row.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1792,7 +1779,7 @@ impl Searcher {
                 scopes,
                 workspace,
                 true,
-                280.0,
+                SEARCH_TUNING.type_score.loogle_applicable,
             )?;
             ranked.extend(applicable);
             if !explicit_conclusion && !has_full_applicability_page {
@@ -1803,7 +1790,7 @@ impl Searcher {
                     scopes,
                     workspace,
                     false,
-                    180.0,
+                    SEARCH_TUNING.type_score.loogle_related,
                 )?;
                 ranked.extend(loogle);
             }
@@ -1825,12 +1812,12 @@ impl Searcher {
             }
             let symbolic_name_score = symbolic_source_term(query)
                 .filter(|term| row.name.to_lowercase().contains(term))
-                .map_or(0.0, |_| 600.0);
+                .map_or(0.0, |_| SEARCH_TUNING.lexical.symbolic_name);
             let score = lexical
                 + type_score
                 + symbolic_name_score
                 + if row.owner == format!("workspace:{}", workspace.reference) {
-                    8.0
+                    SEARCH_TUNING.lexical.workspace
                 } else {
                     0.0
                 }
@@ -1912,7 +1899,10 @@ impl Searcher {
             // A near declaration-name match should be useful without a follow-up
             // source-range read. Keep this bounded: summaries show these three
             // signatures, while ambiguous related source bodies stay hidden.
-            for candidate in ranked.iter_mut().take(3) {
+            for candidate in ranked
+                .iter_mut()
+                .take(SEARCH_TUNING.promotion.exact_source_enrichment)
+            {
                 self.enrich_exact_source(&mut candidate.hit, scopes)?;
             }
         }
@@ -2147,7 +2137,7 @@ impl Searcher {
                             applicable: false,
                             required_import: None,
                         },
-                        score: 900.0,
+                        score: SEARCH_TUNING.lexical.exact_resolution,
                         origins: CandidateOrigin::Index as u8,
                     },
                     matched: query.to_owned(),
@@ -2182,7 +2172,7 @@ impl Searcher {
                     applicable: false,
                     required_import: None,
                 },
-                score: 900.0,
+                score: SEARCH_TUNING.lexical.exact_resolution,
                 origins: CandidateOrigin::Loogle as u8,
             },
             matched: query.to_owned(),
@@ -2281,22 +2271,25 @@ impl Searcher {
         let fts_query = fts_query(&tokens.join(" "));
         let name_query = declaration_name_query(query);
         let sql = if fts_query.is_empty() && include_all_signatures {
-            indexed_rows!(
+            indexed_rows_sql(&format!(
                 "WHERE signature <> ''
-                 AND owner IN (SELECT owner FROM active_search_scopes) LIMIT 20000"
-            )
+                 AND owner IN (SELECT owner FROM active_search_scopes) LIMIT {}",
+                SEARCH_TUNING.retrieval.type_rows
+            ))
         } else if name_query {
-            indexed_rows!(ranked
+            ranked_rows_sql(&format!(
                 "WHERE search_fts MATCH ?1
-                 AND owner IN (SELECT owner FROM active_search_scopes) LIMIT 256"
-            )
+                 AND owner IN (SELECT owner FROM active_search_scopes) LIMIT {}",
+                SEARCH_TUNING.retrieval.name_query_rows
+            ))
         } else {
-            indexed_rows!(ranked
+            ranked_rows_sql(&format!(
                 "WHERE search_fts MATCH ?1
-                 AND owner IN (SELECT owner FROM active_search_scopes) LIMIT 1000"
-            )
+                 AND owner IN (SELECT owner FROM active_search_scopes) LIMIT {}",
+                SEARCH_TUNING.retrieval.discovery_rows
+            ))
         };
-        let mut statement = connection.prepare(sql)?;
+        let mut statement = connection.prepare(&sql)?;
         let mut rows = if fts_query.is_empty() && include_all_signatures {
             statement
                 .query_map([], indexed_row_from_row)?
@@ -2311,20 +2304,25 @@ impl Searcher {
                 .map_err(anyhow::Error::from)?
         };
         drop(statement);
-        let mut named = connection.prepare(indexed_rows!(ranked
+        let named_sql = ranked_rows_sql(&format!(
             "WHERE search_fts MATCH ?1
              AND owner IN (SELECT owner FROM active_search_scopes)
              ORDER BY CASE
                WHEN owner LIKE 'workspace:%' OR owner LIKE 'artifacts:%' THEN 0
                ELSE 1
-             END, bm25(search_fts, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 7.0, 3.0, 1.0)
-             LIMIT 128"
-        ))?;
-        let mut qualified = connection.prepare(indexed_rows!(ranked
+             END, {}
+             LIMIT {}",
+            fts_rank_sql(),
+            SEARCH_TUNING.retrieval.name_rows,
+        ));
+        let mut named = connection.prepare(&named_sql)?;
+        let qualified_sql = ranked_rows_sql(&format!(
             "WHERE search_fts MATCH ?1
-             AND owner IN (SELECT owner FROM active_search_scopes) LIMIT 256"
-        ))?;
-        let mut exact_leaf = connection.prepare(indexed_rows!(
+             AND owner IN (SELECT owner FROM active_search_scopes) LIMIT {}",
+            SEARCH_TUNING.retrieval.qualified_rows,
+        ));
+        let mut qualified = connection.prepare(&qualified_sql)?;
+        let exact_leaf_sql = indexed_rows_sql(&format!(
             "WHERE search_fts MATCH ?1
              AND (lower(name) = lower(?2)
                   OR lower(substr(name, -(length(?2) + 1))) = ('.' || lower(?2)))
@@ -2335,8 +2333,10 @@ impl Searcher {
                         WHEN owner LIKE 'workspace:%' OR owner LIKE 'artifacts:%' THEN 0
                         ELSE 1
                       END
-             LIMIT 128"
-        ))?;
+             LIMIT {}",
+            SEARCH_TUNING.retrieval.exact_rows,
+        ));
+        let mut exact_leaf = connection.prepare(&exact_leaf_sql)?;
         let mut contains_tokens = Vec::new();
         for token in tokens
             .iter()
@@ -2420,13 +2420,15 @@ impl Searcher {
     ) -> Result<Vec<IndexedRow>> {
         let connection = self.open()?;
         install_active_scopes(&connection, scopes)?;
-        let mut statement = connection.prepare(indexed_rows!(
+        let sql = indexed_rows_sql(&format!(
             "WHERE search_fts MATCH ?1
              AND (lower(name) = lower(?2)
                   OR lower(substr(name, -(length(?2) + 1))) = ('.' || lower(?2)))
              AND owner IN (SELECT owner FROM active_search_scopes)
-             LIMIT 128"
-        ))?;
+             LIMIT {}",
+            SEARCH_TUNING.retrieval.exact_rows,
+        ));
+        let mut statement = connection.prepare(&sql)?;
         let exact = format!("name : \"{}\"", query.replace('"', "\"\""));
         statement
             .query_map(params![exact, query], indexed_row_from_row)?
@@ -2489,11 +2491,13 @@ impl Searcher {
 
         let connection = self.open()?;
         install_active_scopes(&connection, scopes)?;
-        let mut statement = connection.prepare(indexed_rows!(
+        let sql = indexed_rows_sql(&format!(
             "WHERE search_fts MATCH ?1 AND kind = 'field'
              AND owner IN (SELECT owner FROM active_search_scopes)
-             ORDER BY line, name LIMIT 256"
-        ))?;
+             ORDER BY line, name LIMIT {}",
+            SEARCH_TUNING.retrieval.field_rows,
+        ));
+        let mut statement = connection.prepare(&sql)?;
         let query = format!(
             "name : \"{}\"*",
             indexed_parent_name.replace('"', "\"\"")
@@ -2557,12 +2561,14 @@ impl Searcher {
     ) -> Result<Vec<String>> {
         let connection = self.open()?;
         install_active_scopes(&connection, scopes)?;
-        let mut statement = connection.prepare(
+        let sql = format!(
             "SELECT name FROM search_fts
              WHERE search_fts MATCH ?1
                AND owner IN (SELECT owner FROM active_search_scopes)
-             LIMIT 128",
-        )?;
+             LIMIT {}",
+            SEARCH_TUNING.retrieval.continuation_rows,
+        );
+        let mut statement = connection.prepare(&sql)?;
         let fts = format!("name : \"{}\"*", query.replace('"', "\"\""));
         let names = statement
             .query_map([fts], |row| row.get::<_, String>(0))?
@@ -2594,11 +2600,13 @@ impl Searcher {
             leaf.replace('"', "\"\""),
             leaf.replace('"', "\"\"")
         );
-        let mut statement = connection.prepare(indexed_rows!(
+        let sql = indexed_rows_sql(&format!(
             "WHERE search_fts MATCH ?1
              AND owner IN (SELECT owner FROM active_search_scopes)
-             LIMIT 256"
-        ))?;
+             LIMIT {}",
+            SEARCH_TUNING.retrieval.context_rows,
+        ));
+        let mut statement = connection.prepare(&sql)?;
         let rows = statement
             .query_map([query], indexed_row_from_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2657,7 +2665,7 @@ impl Searcher {
             .filter_map(|(_, candidate)| {
                 seen.insert(candidate.hit.name.clone()).then_some(candidate.hit)
             })
-            .take(4)
+            .take(SEARCH_TUNING.promotion.context_group_size)
             .collect())
     }
 
@@ -2672,9 +2680,11 @@ impl Searcher {
         }
         let leaf = hit.name.rsplit('.').next().unwrap_or(&hit.name);
         let connection = self.open()?;
-        let mut statement = connection.prepare(indexed_rows!(
-            "WHERE search_fts MATCH ?1 LIMIT 128"
-        ))?;
+        let sql = indexed_rows_sql(&format!(
+            "WHERE search_fts MATCH ?1 LIMIT {}",
+            SEARCH_TUNING.retrieval.exact_rows,
+        ));
+        let mut statement = connection.prepare(&sql)?;
         let query = format!("name : \"{}\"", leaf.replace('"', "\"\""));
         let rows = statement
             .query_map([query], indexed_row_from_row)?
@@ -2844,7 +2854,10 @@ impl Searcher {
         let mut ranked = Vec::new();
         // Dirty source must override the persistent index immediately. Cold clean
         // workspaces use the targeted source fallback while indexing completes.
-        for path in paths.into_iter().take(256) {
+        for path in paths
+            .into_iter()
+            .take(SEARCH_TUNING.retrieval.dirty_files)
+        {
             let absolute = workspace.path.join(&path);
             let module = project_module_name(&workspace.path, &path);
             let Ok(cached) = self.project_source(&absolute, &module) else {
@@ -2863,7 +2876,7 @@ impl Searcher {
                 }
                 let relevance = matched_tokens
                     .iter()
-                    .map(|token| token.len().min(20))
+                    .map(|token| token.len().min(SEARCH_TUNING.source.dirty_relevance_cap))
                     .sum::<usize>();
                 let base = name.rsplit('.').next().unwrap_or(&name);
                 let exact_name = query_tokens
@@ -2899,14 +2912,18 @@ impl Searcher {
                         applicable: false,
                         required_import: None,
                     },
-                    score: 320.0
-                        + relevance as f64 * 4.0
-                        + named as f64 * 45.0
-                        + if exact_name { 140.0 } else { 0.0 }
+                    score: SEARCH_TUNING.source.dirty_base
+                        + relevance as f64 * SEARCH_TUNING.source.dirty_relevance
+                        + named as f64 * SEARCH_TUNING.source.dirty_name
+                        + if exact_name {
+                            SEARCH_TUNING.source.dirty_exact
+                        } else {
+                            0.0
+                        }
                         - if is_file_like && !import_query {
-                            300.0
+                            SEARCH_TUNING.source.dirty_file_penalty
                         } else if is_file_like {
-                            60.0
+                            SEARCH_TUNING.source.dirty_import_file_penalty
                         } else {
                             0.0
                         },

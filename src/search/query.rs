@@ -937,42 +937,72 @@ pub(super) fn rank_discovery_candidates(
     explicit_declaration: bool,
     import_context: Option<&ImportContext>,
 ) -> (Vec<Candidate>, bool) {
+    // Candidate producers perform retrieval and base scoring. The bottleneck below
+    // deliberately keeps the remaining rules in one stable, inspectable order.
     let glob_name_miss = apply_declaration_glob(&mut candidates, query);
+    apply_context_scores(&mut candidates, import_context);
+    let mut ranked = sort_and_merge_candidates(candidates);
+    promote_ranked_candidates(
+        &mut ranked,
+        query,
+        query_tokens,
+        explicit_declaration,
+    );
+    if !explicit_declaration {
+        diversify_ranked_candidates(&mut ranked, query, query_tokens);
+    }
+    (ranked, glob_name_miss)
+}
+
+fn apply_context_scores(candidates: &mut [Candidate], import_context: Option<&ImportContext>) {
     if let Some(context) = import_context {
-        for candidate in &mut candidates {
+        for candidate in candidates {
             apply_import_context(candidate, context);
         }
     }
-    let mut deduplicated = sort_and_merge_candidates(candidates);
+}
+
+fn promote_ranked_candidates(
+    ranked: &mut Vec<Candidate>,
+    query: &str,
+    query_tokens: &[String],
+    explicit_declaration: bool,
+) {
     if explicit_declaration {
-        deduplicated.sort_by_key(|candidate| !qualified_name_matches(&candidate.hit.name, query));
-    } else {
-        promote_query_coverage(&mut deduplicated, query, query_tokens);
-        let qualified_anchor = deduplicated.first().and_then(|candidate| {
-            query_tokens
-                .iter()
-                .filter(|token| token.contains('.') && !token.ends_with(".lean"))
-                .any(|token| {
-                    qualified_name_matches(&candidate.hit.name, token)
-                        || token.rsplit_once('.').is_some_and(|(owner, _)| {
-                            qualified_name_matches(&candidate.hit.name, owner)
-                        })
-                })
-                .then(|| candidate.hit.name.clone())
-        });
-        if !query.contains('|') {
-            promote_result_context(&mut deduplicated, query_tokens);
-        }
-        if let Some(anchor) = qualified_anchor
-            && let Some(position) = deduplicated
-                .iter()
-                .position(|candidate| candidate.hit.name == anchor)
-        {
-            let anchor = deduplicated.remove(position);
-            deduplicated.insert(0, anchor);
-        }
+        ranked.sort_by_key(|candidate| !qualified_name_matches(&candidate.hit.name, query));
+        return;
     }
-    (deduplicated, glob_name_miss)
+    promote_query_coverage(ranked, query, query_tokens);
+}
+
+fn diversify_ranked_candidates(
+    ranked: &mut Vec<Candidate>,
+    query: &str,
+    query_tokens: &[String],
+) {
+    let qualified_anchor = ranked.first().and_then(|candidate| {
+        query_tokens
+            .iter()
+            .filter(|token| token.contains('.') && !token.ends_with(".lean"))
+            .any(|token| {
+                qualified_name_matches(&candidate.hit.name, token)
+                    || token.rsplit_once('.').is_some_and(|(owner, _)| {
+                        qualified_name_matches(&candidate.hit.name, owner)
+                    })
+            })
+            .then(|| candidate.hit.name.clone())
+    });
+    if !query.contains('|') {
+        promote_result_context(ranked, query_tokens);
+    }
+    if let Some(anchor) = qualified_anchor
+        && let Some(position) = ranked
+            .iter()
+            .position(|candidate| candidate.hit.name == anchor)
+    {
+        let anchor = ranked.remove(position);
+        ranked.insert(0, anchor);
+    }
 }
 
 pub(super) fn ranked_exact_candidates(
@@ -985,7 +1015,7 @@ pub(super) fn ranked_exact_candidates(
         .map(|row| {
             let score = lexical_score(query, &tokens, &row)
                 + if row.owner == format!("workspace:{}", workspace.reference) {
-                    8.0
+                    SEARCH_TUNING.lexical.workspace
                 } else {
                     0.0
                 }
@@ -1059,7 +1089,7 @@ pub(super) fn missing_hit_terms(hits: &[SearchHit], terms: &[String]) -> Vec<Str
     terms
         .iter()
         .filter(|term| !searchable.contains(term.as_str()))
-        .take(4)
+        .take(SEARCH_TUNING.promotion.missing_term_limit)
         .cloned()
         .collect()
 }
@@ -1304,10 +1334,17 @@ pub(super) fn qualified_member_score(query: &str, name: &str) -> f64 {
         .zip(name_leaf.chars().rev())
         .take_while(|(left, right)| left == right)
         .count();
-    300.0
-        + shared_parts as f64 * 250.0
-        + common_prefix.saturating_sub(3).min(10) as f64 * 4.0
-        + common_suffix.saturating_sub(3).min(10) as f64 * 4.0
+    let tuning = SEARCH_TUNING.qualified;
+    tuning.member
+        + shared_parts as f64 * tuning.shared_part
+        + common_prefix
+            .saturating_sub(tuning.affix_ignored)
+            .min(tuning.affix_cap) as f64
+            * tuning.affix_character
+        + common_suffix
+            .saturating_sub(tuning.affix_ignored)
+            .min(tuning.affix_cap) as f64
+            * tuning.affix_character
 }
 
 pub(super) fn promote_query_coverage(
@@ -1407,7 +1444,10 @@ pub(super) fn promote_query_coverage(
     if promoted.len() < SUMMARY_LIMIT && !remaining.is_empty() {
         promoted.push(remaining.remove(0));
     }
-    for token in tokens.iter().filter(|token| token.len() >= 3) {
+    for token in tokens
+        .iter()
+        .filter(|token| token.len() >= SEARCH_TUNING.promotion.coverage_token_chars)
+    {
         if promoted
             .iter()
             .any(|candidate| hit_name_matches(&candidate.hit.name, token))
@@ -1443,7 +1483,7 @@ pub(super) fn promote_query_coverage(
                 .map(|(index, _)| index)
         }) {
             promoted.push(remaining.remove(position));
-        } else if token.len() >= 6
+        } else if token.len() >= SEARCH_TUNING.promotion.body_token_chars
             && !promoted
                 .iter()
                 .any(|candidate| hit_matches_token(&candidate.hit, token))
@@ -1483,7 +1523,9 @@ pub(super) fn promote_result_context(ranked: &mut Vec<Candidate>, tokens: &[Stri
         .iter()
         .enumerate()
         .filter(|(_, candidate)| !matches!(candidate.hit.kind.as_str(), "file" | "imports"))
-        .filter(|(_, candidate)| name_coverage(candidate) >= 2)
+        .filter(|(_, candidate)| {
+            name_coverage(candidate) >= SEARCH_TUNING.promotion.context_name_coverage
+        })
         .min_by_key(|(_, candidate)| candidate.hit.name.matches('.').count())
         .map(|(index, _)| index)
     else {
@@ -1494,7 +1536,7 @@ pub(super) fn promote_result_context(ranked: &mut Vec<Candidate>, tokens: &[Stri
     let path = anchor.hit.path.clone();
     let mut context = vec![anchor];
     let mut index = 0;
-    while context.len() < 4 && index < ranked.len() {
+    while context.len() < SEARCH_TUNING.promotion.context_group_size && index < ranked.len() {
         let candidate = &ranked[index];
         let same_source = if module.is_empty() {
             candidate.hit.path == path
@@ -1608,6 +1650,7 @@ pub(super) fn declaration_leaf_matches(name: &str, query: &str) -> bool {
 }
 
 pub(super) fn lexical_score(query: &str, tokens: &[String], row: &IndexedRow) -> f64 {
+    let tuning = SEARCH_TUNING.lexical;
     let exact_case_name = row.name == query;
     let exact_case_leaf = row.name.rsplit('.').next() == Some(query);
     let query = query.to_lowercase();
@@ -1621,15 +1664,15 @@ pub(super) fn lexical_score(query: &str, tokens: &[String], row: &IndexedRow) ->
         row.path.to_lowercase()
     );
     let mut score = if name == query {
-        600.0
+        tuning.exact_name
     } else if base == query {
-        105.0
+        tuning.exact_leaf
     } else if name.ends_with(&format!(".{query}")) {
-        95.0
+        tuning.suffix
     } else if name.starts_with(&query) || base.starts_with(&query) {
-        75.0
+        tuning.prefix
     } else if name.contains(&query) {
-        55.0
+        tuning.substring
     } else {
         0.0
     };
@@ -1638,18 +1681,18 @@ pub(super) fn lexical_score(query: &str, tokens: &[String], row: &IndexedRow) ->
             token == &name || (token.len() >= 12 && !token.contains('.') && token.as_str() == base)
         })
     {
-        score += 100.0;
+        score += tuning.exact_token;
     }
     if exact_case_name {
-        score += 200.0;
+        score += tuning.exact_case_name;
     } else if exact_case_leaf {
-        score += 160.0;
+        score += tuning.exact_case_leaf;
     }
     for token in tokens {
         if name.contains(token) {
-            score += 12.0;
+            score += tuning.token_in_name;
         } else if body.contains(token) {
-            score += 3.0;
+            score += tuning.token_in_body;
         }
     }
     let name_parts = identifier_query_parts(&row.name)
@@ -1668,18 +1711,18 @@ pub(super) fn lexical_score(query: &str, tokens: &[String], row: &IndexedRow) ->
         .collect::<HashSet<_>>();
     for part in query_parts {
         if name_parts.contains(&part) {
-            score += 40.0;
+            score += tuning.identifier_part;
         } else if name_parts
             .iter()
             .any(|name_part| conceptual_words_match(name_part, &part))
         {
-            score += 35.0;
+            score += tuning.conceptual_part;
         }
     }
     if row.kind != "file" {
-        score += 20.0;
+        score += tuning.declaration;
     } else {
-        score -= 40.0;
+        score -= tuning.file_penalty;
     }
     score += qualified_member_score(&query, &row.name);
     score += qualified_leaf_path_score(&query, &row.name, &row.module, &row.path);
@@ -1703,9 +1746,11 @@ pub(super) fn qualified_leaf_path_score(query: &str, name: &str, module: &str, p
         let name_owner = identifier_query_parts(name_owner)
             .into_iter()
             .collect::<HashSet<_>>();
-        return 60.0 + query_owner.intersection(&name_owner).count() as f64 * 100.0;
+        let tuning = SEARCH_TUNING.qualified;
+        return tuning.approximate_leaf
+            + query_owner.intersection(&name_owner).count() as f64 * tuning.shared_owner_part;
     }
-    280.0
+    SEARCH_TUNING.qualified.direct_leaf_path
 }
 
 pub(super) fn qualified_leaf_path_match(query: &str, name: &str, module: &str, path: &str) -> bool {
@@ -1740,10 +1785,10 @@ pub(super) fn apply_import_context(candidate: &mut Candidate, context: &ImportCo
         return;
     }
     if context.accessible.contains(&candidate.hit.module) {
-        candidate.score += 30.0;
+        candidate.score += SEARCH_TUNING.promotion.import_available;
         candidate.hit.required_import = None;
     } else if context.complete {
-        candidate.score -= 10.0;
+        candidate.score -= SEARCH_TUNING.promotion.import_missing;
         candidate.hit.required_import = Some(candidate.hit.module.clone());
     }
 }
@@ -1798,6 +1843,7 @@ pub(super) fn exact_search_result(mut hits: Vec<SearchHit>, base_warming: bool) 
 }
 
 pub(super) fn structural_type_score(pattern: &str, signature: &str) -> f64 {
+    let tuning = SEARCH_TUNING.type_score;
     if signature.is_empty() {
         return 0.0;
     }
@@ -1825,7 +1871,7 @@ pub(super) fn structural_type_score(pattern: &str, signature: &str) -> f64 {
     let conclusion_score = if explicit_conclusion
         && conclusion_head.is_some_and(|head| signature.contains(&format!(": {head}")))
     {
-        80.0
+        tuning.conclusion
     } else {
         0.0
     };
@@ -1833,19 +1879,23 @@ pub(super) fn structural_type_score(pattern: &str, signature: &str) -> f64 {
         .into_iter()
         .filter(|shape| pattern.contains(shape) && signature.contains(shape))
         .count() as f64
-        * 50.0;
+        * tuning.shape;
     let arrows = pattern.matches('→').count() + pattern.matches("->").count();
     let signature_arrows = signature.matches('→').count() + signature.matches("->").count();
     let arrow_score = if arrows == 0 {
         0.0
     } else if arrows == signature_arrows {
-        24.0
+        tuning.exact_arrows
     } else if arrows < signature_arrows {
-        10.0
+        tuning.compatible_arrows
     } else {
         0.0
     };
-    20.0 + arrow_score + conclusion_score + shape_score + pattern_tokens.len() as f64 * 5.0
+    tuning.base
+        + arrow_score
+        + conclusion_score
+        + shape_score
+        + pattern_tokens.len() as f64 * tuning.token
 }
 
 pub(super) fn type_search_enabled() -> bool {

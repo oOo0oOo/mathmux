@@ -944,7 +944,10 @@ pub(super) fn fallback_source_candidates(
     let imports_query = query_tokens
         .iter()
         .any(|token| matches!(token.as_str(), "import" | "imports"));
-    'paths: for path in paths.into_iter().take(96) {
+    'paths: for path in paths
+        .into_iter()
+        .take(SEARCH_TUNING.retrieval.fallback_paths)
+    {
         if Instant::now() >= fallback_deadline {
             break;
         }
@@ -1010,11 +1013,23 @@ pub(super) fn fallback_source_candidates(
                 &row.name,
             );
             let score = lexical_score(query, query_tokens, &row)
-                + named_argument_score as f64 * 200.0
-                + if symbolic_name_match { 600.0 } else { 0.0 }
-                + if is_direct_path { 400.0 } else { 0.0 }
-                + if is_imports && imports_query { 200.0 } else { 0.0 }
-                + file_coverage as f64 * 4.0;
+                + named_argument_score as f64 * SEARCH_TUNING.source.fallback_named_argument
+                + if symbolic_name_match {
+                    SEARCH_TUNING.source.fallback_symbolic_name
+                } else {
+                    0.0
+                }
+                + if is_direct_path {
+                    SEARCH_TUNING.source.fallback_direct_path
+                } else {
+                    0.0
+                }
+                + if is_imports && imports_query {
+                    SEARCH_TUNING.source.fallback_imports
+                } else {
+                    0.0
+                }
+                + file_coverage as f64 * SEARCH_TUNING.source.fallback_file_coverage;
             ranked.push(Candidate {
                 hit: SearchHit {
                     name: row.name,
@@ -1044,7 +1059,7 @@ pub(super) fn fallback_source_candidates(
             .partial_cmp(&left.score)
             .unwrap_or(Ordering::Equal)
     });
-    ranked.truncate(RESULT_LIMIT * 8);
+    ranked.truncate(RESULT_LIMIT * SEARCH_TUNING.presentation.fallback_candidate_multiplier);
     Ok(ranked)
 }
 
