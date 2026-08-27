@@ -967,6 +967,26 @@ pub(super) fn anchored_api_query(query: &str) -> Option<(&str, Vec<String>, Vec<
     (!tokens.is_empty() && tokens.len() <= 24).then_some((anchor, tokens, requested))
 }
 
+pub(super) fn exact_plan(query: &str, type_search: bool) -> Option<ExactPlan> {
+    if type_search {
+        return None;
+    }
+    if let Some((anchor, refinement_tokens, requested_terms)) = anchored_api_query(query) {
+        return Some(ExactPlan {
+            anchor: anchor.to_owned(),
+            refinement_tokens,
+            requested_terms,
+            recover_continuation: false,
+        });
+    }
+    declaration_name_query(query).then(|| ExactPlan {
+        anchor: query.to_owned(),
+        refinement_tokens: Vec::new(),
+        requested_terms: Vec::new(),
+        recover_continuation: true,
+    })
+}
+
 pub(super) fn missing_hit_terms(hits: &[SearchHit], terms: &[String]) -> Vec<String> {
     let searchable = hits
         .iter()
@@ -990,6 +1010,20 @@ pub(super) fn missing_hit_terms(hits: &[SearchHit], terms: &[String]) -> Vec<Str
         .collect()
 }
 
+pub(super) fn context_refinement_score(hit: &SearchHit, tokens: &[String]) -> usize {
+    let searchable = format!(
+        "{} {}",
+        hit.name,
+        hit.signature.as_deref().unwrap_or_default()
+    )
+    .to_lowercase();
+    tokens
+        .iter()
+        .filter(|token| searchable.contains(token.as_str()))
+        .map(|token| token.chars().count())
+        .sum()
+}
+
 pub(super) fn annotate_missing_hit_terms(result: &mut SearchResult, requested: &[String]) {
     let missing = missing_hit_terms(&result.hits, requested);
     if missing.is_empty() {
@@ -999,6 +1033,13 @@ pub(super) fn annotate_missing_hit_terms(result: &mut SearchResult, requested: &
     result.note = Some(match result.note.take() {
         Some(existing) => format!("{note}; {existing}"),
         None => note,
+    });
+}
+
+pub(super) fn prepend_search_note(note: &mut Option<String>, prefix: String) {
+    *note = Some(match note.take() {
+        Some(existing) => format!("{prefix}; {existing}"),
+        None => prefix,
     });
 }
 

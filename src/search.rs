@@ -106,6 +106,19 @@ struct ImportContext {
     complete: bool,
 }
 
+struct ExactPlan {
+    anchor: String,
+    refinement_tokens: Vec<String>,
+    requested_terms: Vec<String>,
+    recover_continuation: bool,
+}
+
+struct ExactMatch {
+    candidate: RankedHit,
+    matched: String,
+    warming: bool,
+}
+
 #[derive(Debug)]
 struct IndexedRow {
     owner: String,
@@ -133,6 +146,25 @@ fn indexed_row_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexedRow>
         body: row.get(8)?,
         rank: row.get(9)?,
     })
+}
+
+fn compact_ranked_hit(row: IndexedRow) -> RankedHit {
+    RankedHit {
+        hit: SearchHit {
+            name: row.name,
+            kind: row.kind,
+            signature: nonempty(row.signature),
+            module: row.module,
+            path: row.path,
+            line: row.line,
+            doc: nonempty(row.docs),
+            source: None,
+            usages: Vec::new(),
+            applicable: false,
+            required_import: None,
+        },
+        score: 0.0,
+    }
 }
 
 fn install_active_scopes(connection: &Connection, scopes: &HashSet<String>) -> Result<()> {
@@ -1641,164 +1673,16 @@ impl Searcher {
         {
             return Ok(result);
         }
-        if !type_search
-            && let Some((anchor, refinement_tokens, requested_terms)) = anchored_api_query(query)
+        if let Some(plan) = exact_plan(query, type_search)
+            && let Some(result) = self.resolve_exact(
+                workspace,
+                scopes,
+                import_context.as_ref(),
+                base_warming,
+                &plan,
+            )?
         {
-            let mut exact_anchor = anchor.to_owned();
-            let mut exact_rows = self.exact_candidates(anchor, scopes)?;
-            if exact_rows.is_empty()
-                && let Some(base) = declaration_predicate_base(anchor)
-            {
-                let base_rows = self.exact_candidates(&base, scopes)?;
-                if !base_rows.is_empty() {
-                    exact_anchor = base;
-                    exact_rows = base_rows;
-                }
-            }
-            if exact_rows.is_empty()
-                && let Some(base) = declaration_suffix_base(anchor)
-            {
-                let base_rows = self.exact_candidates(base, scopes)?;
-                if !base_rows.is_empty() {
-                    exact_anchor = base.to_owned();
-                    exact_rows = base_rows;
-                }
-            }
-            if exact_rows.is_empty()
-                && let Some(mut result) = self.generated_exact_result(
-                    workspace,
-                    anchor,
-                    scopes,
-                    import_context.as_ref(),
-                    base_warming,
-                )?
-                && !result.hits.is_empty()
-            {
-                let exact = result.hits.remove(0);
-                let mut hits = vec![exact];
-                hits.extend(self.api_neighborhood(
-                    &hits[0],
-                    scopes,
-                    workspace,
-                    import_context.as_ref(),
-                    &refinement_tokens,
-                )?);
-                result.hits = hits;
-                annotate_missing_hit_terms(&mut result, &requested_terms);
-                return Ok(result);
-            }
-            let exact = ranked_exact_candidates(exact_rows, &exact_anchor, workspace);
-            if let Some(exact) = resolved_exact_candidates(exact, &exact_anchor) {
-                let mut resolved = merge_exact_candidates(exact);
-                self.enrich_exact_source(&mut resolved.hit, scopes)?;
-                resolved.hit.usages = self.usages(&resolved.hit.name, scopes, workspace)?;
-                if let Some(context) = &import_context {
-                    apply_import_context(&mut resolved, context);
-                }
-                let mut hits = vec![resolved.hit];
-                hits.extend(self.api_neighborhood(
-                    &hits[0],
-                    scopes,
-                    workspace,
-                    import_context.as_ref(),
-                    &refinement_tokens,
-                )?);
-                let mut result = exact_search_result(hits, base_warming);
-                annotate_missing_hit_terms(&mut result, &requested_terms);
-                if exact_anchor != anchor {
-                    let recovery = format!("closest name: {exact_anchor}");
-                    result.note = Some(match result.note.take() {
-                        Some(note) => format!("{recovery}; {note}"),
-                        None => recovery,
-                    });
-                }
-                return Ok(result);
-            }
-        }
-        if !type_search && declaration_name_query(query) {
-            let mut exact_query = query.to_owned();
-            let mut exact_rows = self.exact_candidates(query, scopes)?;
-            if exact_rows.is_empty()
-                && let Some(base) = declaration_predicate_base(query)
-            {
-                let base_rows = self.exact_candidates(&base, scopes)?;
-                if !base_rows.is_empty() {
-                    exact_query = base;
-                    exact_rows = base_rows;
-                }
-            }
-            if exact_rows.is_empty()
-                && let Some(result) = self.generated_exact_result(
-                    workspace,
-                    query,
-                    scopes,
-                    import_context.as_ref(),
-                    base_warming,
-                )?
-            {
-                return Ok(result);
-            }
-            let continuations = if exact_rows.is_empty() {
-                self.direct_continuations(query, scopes)?
-            } else {
-                Vec::new()
-            };
-            if let [continuation] = continuations.as_slice() {
-                exact_query = continuation.clone();
-                exact_rows = self.exact_candidates(continuation, scopes)?;
-            }
-            let has_qualified_match = exact_rows
-                .iter()
-                .any(|row| qualified_name_matches(&row.name, &exact_query));
-            if !has_qualified_match
-                && let Some(base) = declaration_suffix_base(query)
-                && continuations.is_empty()
-            {
-                let base_rows = self.exact_candidates(base, scopes)?;
-                if !base_rows.is_empty() {
-                    exact_query = base.to_owned();
-                    exact_rows = base_rows;
-                } else if let Some(mut result) = self.generated_exact_result(
-                    workspace,
-                    base,
-                    scopes,
-                    import_context.as_ref(),
-                    base_warming,
-                )? {
-                    let recovery = format!("closest name: {base}");
-                    result.note = Some(match result.note {
-                        Some(note) => format!("{recovery}; {note}"),
-                        None => recovery,
-                    });
-                    return Ok(result);
-                }
-            }
-            let exact = ranked_exact_candidates(exact_rows, &exact_query, workspace);
-            if let Some(exact) = resolved_exact_candidates(exact, &exact_query) {
-                let mut resolved = merge_exact_candidates(exact);
-                self.enrich_exact_source(&mut resolved.hit, scopes)?;
-                resolved.hit.usages = self.usages(&resolved.hit.name, scopes, workspace)?;
-                if let Some(context) = &import_context {
-                    apply_import_context(&mut resolved, context);
-                }
-                let mut hits = vec![resolved.hit];
-                hits.extend(self.api_neighborhood(
-                    &hits[0],
-                    scopes,
-                    workspace,
-                    import_context.as_ref(),
-                    &[],
-                )?);
-                let mut result = exact_search_result(hits, base_warming);
-                if exact_query != query {
-                    let recovery = format!("closest name: {exact_query}");
-                    result.note = Some(match result.note {
-                        Some(note) => format!("{recovery}; {note}"),
-                        None => recovery,
-                    });
-                }
-                return Ok(result);
-            }
+            return Ok(result);
         }
         let candidates_started = Instant::now();
         let rows = self.candidates(query, &query_tokens, type_search, scopes)?;
@@ -1911,35 +1795,33 @@ impl Searcher {
         let project_started = Instant::now();
         ranked.extend(self.project_source_hits(workspace, query, &query_tokens));
         let project_ms = project_started.elapsed().as_millis() as u64;
-        if name_search {
-            let exact_name = unique_qualified_hit_name(
+        if name_search
+            && let Some(exact_name) = unique_qualified_hit_name(
                 ranked
                     .iter()
                     .map(|candidate| &candidate.hit)
                     .filter(|hit| !matches!(hit.kind.as_str(), "file" | "imports")),
                 query,
-            );
-            if let Some(exact_name) = exact_name {
-                let exact = ranked
+            )
+        {
+            let candidate = merge_exact_candidates(
+                ranked
                     .into_iter()
                     .filter(|candidate| candidate.hit.name.to_lowercase() == exact_name)
-                    .collect::<Vec<_>>();
-                let mut resolved = merge_exact_candidates(exact);
-                self.enrich_exact_source(&mut resolved.hit, scopes)?;
-                resolved.hit.usages = self.usages(&resolved.hit.name, scopes, workspace)?;
-                if let Some(context) = &import_context {
-                    apply_import_context(&mut resolved, context);
-                }
-                let mut hits = vec![resolved.hit];
-                hits.extend(self.api_neighborhood(
-                    &hits[0],
-                    scopes,
-                    workspace,
-                    import_context.as_ref(),
-                    &[],
-                )?);
-                return Ok(exact_search_result(hits, base_warming || warming));
-            }
+                    .collect(),
+            );
+            return self.finish_exact(
+                ExactMatch {
+                    candidate,
+                    matched: query.to_owned(),
+                    warming,
+                },
+                &exact_plan(query, false).expect("name queries have an exact plan"),
+                workspace,
+                scopes,
+                import_context.as_ref(),
+                base_warming,
+            );
         }
         let resolved_declaration_head = declaration_list_terms(query)
             .and_then(|terms| terms.first().copied())
@@ -1949,57 +1831,23 @@ impl Searcher {
                         && qualified_name_matches(&candidate.hit.name, term)
                 })
             });
-        let missing_specific_term = specific_query_tokens(query).iter().any(|token| {
-            !ranked.iter().any(|candidate| {
+        let mut detail_tokens = specific_query_tokens(query);
+        detail_tokens.extend(source_specific_query_tokens(query));
+        detail_tokens.sort();
+        detail_tokens.dedup();
+        let missing_indexed_detail = detail_tokens.iter().any(|token| {
+            let matches = ranked.iter().filter(|candidate| {
                 !matches!(candidate.hit.kind.as_str(), "file" | "imports")
-                    && (text_matches_token(&candidate.hit.name.to_lowercase(), token)
-                        || candidate.hit.signature.as_deref().is_some_and(|signature| {
-                            text_matches_token(&signature.to_lowercase(), token)
-                        })
-                        || qualified_leaf_path_match(
-                            token,
-                            &candidate.hit.name,
-                            &candidate.hit.module,
-                            &candidate.hit.path,
-                        ))
-            })
+                    && hit_matches_token(&candidate.hit, token)
+            });
+            let mut found = false;
+            let mut detailed = false;
+            for candidate in matches {
+                found = true;
+                detailed |= candidate.hit.signature.is_some() || candidate.hit.source.is_some();
+            }
+            !found || !detailed
         });
-        let missing_source_identifier = source_specific_query_tokens(query).iter().any(|token| {
-            !ranked.iter().any(|candidate| {
-                if matches!(candidate.hit.kind.as_str(), "file" | "imports") {
-                    return false;
-                }
-                let name = candidate.hit.name.to_lowercase();
-                let base = name.rsplit('.').next().unwrap_or(&name);
-                if token.contains('_') {
-                    name.contains(token)
-                } else if token.contains('.') {
-                    name.contains(token)
-                        || qualified_leaf_path_match(
-                            token,
-                            &candidate.hit.name,
-                            &candidate.hit.module,
-                            &candidate.hit.path,
-                        )
-                } else {
-                    base == token
-                }
-            })
-        });
-        let missing_named_detail =
-            query_tokens
-                .iter()
-                .filter(|token| token.len() >= 8)
-                .any(|token| {
-                    let matches = ranked
-                        .iter()
-                        .filter(|candidate| hit_name_matches(&candidate.hit.name, token))
-                        .collect::<Vec<_>>();
-                    !matches.is_empty()
-                        && matches.iter().all(|candidate| {
-                            candidate.hit.signature.is_none() && candidate.hit.source.is_none()
-                        })
-                });
         let warm_name_coverage = name_search
             && !base_warming
             && ranked
@@ -2016,9 +1864,7 @@ impl Searcher {
             && !warm_name_coverage
             && !pipe_alternative_covered
             && (ranked.len() < 3
-                || missing_specific_term
-                || missing_source_identifier
-                || missing_named_detail
+                || missing_indexed_detail
                 || symbolic_source_term(query).is_some()
                 || (!base_warming
                     && !type_search
@@ -2149,14 +1995,99 @@ impl Searcher {
         Ok(result)
     }
 
-    fn generated_exact_result(
+    fn resolve_exact(
+        &self,
+        workspace: &Workspace,
+        scopes: &HashSet<String>,
+        import_context: Option<&ImportContext>,
+        base_warming: bool,
+        plan: &ExactPlan,
+    ) -> Result<Option<SearchResult>> {
+        let mut names = vec![plan.anchor.clone()];
+        if let Some(base) = declaration_predicate_base(&plan.anchor) {
+            names.push(base);
+        }
+        if plan.recover_continuation {
+            let continuations = self.direct_continuations(&plan.anchor, scopes)?;
+            if let [continuation] = continuations.as_slice() {
+                names.push(continuation.clone());
+            }
+        }
+        if let Some(base) = declaration_suffix_base(&plan.anchor) {
+            names.push(base.to_owned());
+        }
+        names.dedup();
+
+        for name in names {
+            let rows = self.exact_candidates(&name, scopes)?;
+            let ranked = ranked_exact_candidates(rows, &name, workspace);
+            let matched = if let Some(candidates) = resolved_exact_candidates(ranked, &name) {
+                Some(ExactMatch {
+                    candidate: merge_exact_candidates(candidates),
+                    matched: name.clone(),
+                    warming: false,
+                })
+            } else {
+                self.generated_exact_match(workspace, &name, scopes)?
+            };
+            if let Some(matched) = matched {
+                return self
+                    .finish_exact(
+                        matched,
+                        plan,
+                        workspace,
+                        scopes,
+                        import_context,
+                        base_warming,
+                    )
+                    .map(Some);
+            }
+        }
+        Ok(None)
+    }
+
+    fn finish_exact(
+        &self,
+        mut matched: ExactMatch,
+        plan: &ExactPlan,
+        workspace: &Workspace,
+        scopes: &HashSet<String>,
+        import_context: Option<&ImportContext>,
+        base_warming: bool,
+    ) -> Result<SearchResult> {
+        self.enrich_exact_source(&mut matched.candidate.hit, scopes)?;
+        if matched.candidate.hit.usages.is_empty() {
+            matched.candidate.hit.usages =
+                self.usages(&matched.candidate.hit.name, scopes, workspace)?;
+        }
+        if let Some(context) = import_context {
+            apply_import_context(&mut matched.candidate, context);
+        }
+        let mut hits = vec![matched.candidate.hit];
+        hits.extend(self.context_pack(
+            &hits[0],
+            scopes,
+            workspace,
+            import_context,
+            &plan.refinement_tokens,
+        )?);
+        let mut result = exact_search_result(hits, base_warming || matched.warming);
+        annotate_missing_hit_terms(&mut result, &plan.requested_terms);
+        if matched.matched != plan.anchor {
+            prepend_search_note(
+                &mut result.note,
+                format!("closest name: {}", matched.matched),
+            );
+        }
+        Ok(result)
+    }
+
+    fn generated_exact_match(
         &self,
         workspace: &Workspace,
         query: &str,
         scopes: &HashSet<String>,
-        import_context: Option<&ImportContext>,
-        base_warming: bool,
-    ) -> Result<Option<SearchResult>> {
+    ) -> Result<Option<ExactMatch>> {
         if let Some(base) = query.strip_suffix(".mk") {
             let structures = self
                 .exact_candidates(base, scopes)?
@@ -2173,34 +2104,26 @@ impl Searcher {
                     &row.kind,
                     &row.name,
                 );
-                let mut resolved = RankedHit {
-                    hit: SearchHit {
-                        name: format!("{}.mk", row.name),
-                        kind: "constructor".into(),
-                        signature: nonempty(row.signature.clone()),
-                        module: row.module.clone(),
-                        path: row.path.clone(),
-                        line: row.line,
-                        doc: nonempty(row.docs.clone()),
-                        source,
-                        usages: Vec::new(),
-                        applicable: false,
-                        required_import: None,
+                return Ok(Some(ExactMatch {
+                    candidate: RankedHit {
+                        hit: SearchHit {
+                            name: format!("{}.mk", row.name),
+                            kind: "constructor".into(),
+                            signature: nonempty(row.signature.clone()),
+                            module: row.module.clone(),
+                            path: row.path.clone(),
+                            line: row.line,
+                            doc: nonempty(row.docs.clone()),
+                            source,
+                            usages: Vec::new(),
+                            applicable: false,
+                            required_import: None,
+                        },
+                        score: 900.0,
                     },
-                    score: 900.0,
-                };
-                if let Some(context) = import_context {
-                    apply_import_context(&mut resolved, context);
-                }
-                let mut hits = vec![resolved.hit];
-                hits.extend(self.api_neighborhood(
-                    &hits[0],
-                    scopes,
-                    workspace,
-                    import_context,
-                    &[],
-                )?);
-                return Ok(Some(exact_search_result(hits, base_warming)));
+                    matched: query.to_owned(),
+                    warming: false,
+                }));
             }
         }
         let name_pattern = format!("\"{}\"", query.replace('"', "\\\""));
@@ -2215,39 +2138,26 @@ impl Searcher {
             return Ok(None);
         };
         let hit = hits.remove(*position);
-        let usages = self.usages(&hit.name, scopes, workspace)?;
-        let mut resolved = RankedHit {
-            hit: SearchHit {
-                path: format!("{}.lean", hit.module.replace('.', "/")),
-                line: 1,
-                kind: "declaration".into(),
-                signature: nonempty(hit.signature),
-                doc: hit.doc,
-                source: None,
-                usages,
-                name: hit.name,
-                module: hit.module,
-                applicable: false,
-                required_import: None,
+        Ok(Some(ExactMatch {
+            candidate: RankedHit {
+                hit: SearchHit {
+                    path: format!("{}.lean", hit.module.replace('.', "/")),
+                    line: 1,
+                    kind: "declaration".into(),
+                    signature: nonempty(hit.signature),
+                    doc: hit.doc,
+                    source: None,
+                    usages: Vec::new(),
+                    name: hit.name,
+                    module: hit.module,
+                    applicable: false,
+                    required_import: None,
+                },
+                score: 900.0,
             },
-            score: 900.0,
-        };
-        self.enrich_exact_source(&mut resolved.hit, scopes)?;
-        if let Some(context) = import_context {
-            apply_import_context(&mut resolved, context);
-        }
-        let mut hits = vec![resolved.hit];
-        hits.extend(self.api_neighborhood(
-            &hits[0],
-            scopes,
-            workspace,
-            import_context,
-            &[],
-        )?);
-        Ok(Some(exact_search_result(
-            hits,
-            base_warming || warming,
-        )))
+            matched: query.to_owned(),
+            warming,
+        }))
     }
 
     fn import_context(
@@ -2639,7 +2549,7 @@ impl Searcher {
         Ok(names)
     }
 
-    fn api_neighborhood(
+    fn context_pack(
         &self,
         exact: &SearchHit,
         scopes: &HashSet<String>,
@@ -2651,92 +2561,79 @@ impl Searcher {
         install_active_scopes(&connection, scopes)?;
         let prefix = format!("{}.", exact.name);
         let leaf = exact.name.rsplit('.').next().unwrap_or(&exact.name);
-        let mut nested = connection.prepare(
+        let query = format!(
+            "name : \"{}\"* OR signature : \"{}\"* OR body : \"{}\"",
+            exact.name.replace('"', "\"\""),
+            leaf.replace('"', "\"\""),
+            leaf.replace('"', "\"\"")
+        );
+        let mut statement = connection.prepare(
             "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0
              FROM search_fts
              WHERE search_fts MATCH ?1
                AND owner IN (SELECT owner FROM active_search_scopes)
-             LIMIT 128",
+             LIMIT 256",
         )?;
-        let mut same_module = connection.prepare(
-            "SELECT owner, file, module, line, name, kind, signature, docs, body, 0.0
-             FROM search_fts
-             WHERE search_fts MATCH ?1 AND module = ?2
-               AND owner IN (SELECT owner FROM active_search_scopes)
-             LIMIT 128",
-        )?;
-        let nested_query = format!("name : \"{}\"*", exact.name.replace('"', "\"\""));
-        let signature_query = format!("signature : \"{}\"*", leaf.replace('"', "\"\""));
-        let mut rows = nested
-            .query_map([nested_query], indexed_row_from_row)?
+        let rows = statement
+            .query_map([query], indexed_row_from_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        rows.extend(
-            same_module
-                .query_map(params![signature_query, exact.module], indexed_row_from_row)?
-                .collect::<rusqlite::Result<Vec<_>>>()?,
-        );
-        let mut seen = HashSet::new();
-        let mut ranked = rows
-            .into_iter()
-            .filter(|row| {
-                row.name != exact.name
-                    && (row.name.starts_with(&prefix)
-                        || (row.module == exact.module && row.signature.contains(leaf)))
-                    && scopes.contains(&row.owner)
-                    && seen.insert(row.name.clone())
-            })
-            .map(|row| {
-                let priority = if row.name == format!("{}.mk", exact.name) {
-                    0
-                } else if row.name.starts_with(&format!("{}.", exact.name)) {
-                    1
-                } else {
-                    2
-                };
-                let searchable = format!("{} {}", row.name, row.signature).to_lowercase();
-                let refinement_score = refinement_tokens
-                    .iter()
-                    .filter(|token| searchable.contains(token.as_str()))
-                    .map(|token| token.chars().count())
-                    .sum::<usize>();
-                (refinement_score, priority, row)
-            })
+        let mut ranked = Vec::new();
+        for row in rows {
+            if row.name == exact.name || matches!(row.kind.as_str(), "file" | "imports") {
+                continue;
+            }
+            let priority = if row.name == format!("{}.mk", exact.name) {
+                0
+            } else if row.name.starts_with(&prefix) {
+                1
+            } else if row.module == exact.module
+                && (row.signature.contains(leaf) || row.body.contains(leaf))
+            {
+                3
+            } else {
+                continue;
+            };
+            ranked.push((priority, compact_ranked_hit(row)));
+        }
+        let mut contexts = exact
+            .usages
+            .iter()
+            .filter_map(|usage| usage.context.as_ref())
+            .filter(|name| *name != &exact.name)
+            .cloned()
             .collect::<Vec<_>>();
-        ranked.sort_by(
-            |(left_score, left_priority, left),
-             (right_score, right_priority, right)| {
-                right_score
-                    .cmp(left_score)
-                    .then_with(|| left_priority.cmp(right_priority))
-                    .then_with(|| left.name.cmp(&right.name))
-            },
-        );
-        ranked
+        contexts.sort();
+        contexts.dedup();
+        for name in contexts {
+            let rows = self.exact_candidates(&name, scopes)?;
+            let candidates = ranked_exact_candidates(rows, &name, workspace);
+            let Some(candidates) = resolved_exact_candidates(candidates, &name) else {
+                continue;
+            };
+            let mut candidate = merge_exact_candidates(candidates);
+            candidate.hit.source = None;
+            candidate.hit.usages.clear();
+            ranked.push((2, candidate));
+        }
+        for (_, candidate) in &mut ranked {
+            if let Some(context) = import_context {
+                apply_import_context(candidate, context);
+            }
+        }
+        ranked.sort_by(|left, right| {
+            context_refinement_score(&right.1.hit, refinement_tokens)
+                .cmp(&context_refinement_score(&left.1.hit, refinement_tokens))
+                .then_with(|| left.0.cmp(&right.0))
+                .then_with(|| left.1.hit.name.cmp(&right.1.hit.name))
+        });
+        let mut seen = HashSet::from([exact.name.clone()]);
+        Ok(ranked
             .into_iter()
-            .take(4)
-            .map(|(_, _, row)| {
-                let mut candidate = RankedHit {
-                    hit: SearchHit {
-                        name: row.name.clone(),
-                        kind: row.kind,
-                        signature: nonempty(row.signature),
-                        module: row.module,
-                        path: row.path,
-                        line: row.line,
-                        doc: nonempty(row.docs),
-                        source: None,
-                        usages: self.usages(&row.name, scopes, workspace)?,
-                        applicable: false,
-                        required_import: None,
-                    },
-                    score: 0.0,
-                };
-                if let Some(context) = import_context {
-                    apply_import_context(&mut candidate, context);
-                }
-                Ok(candidate.hit)
+            .filter_map(|(_, candidate)| {
+                seen.insert(candidate.hit.name.clone()).then_some(candidate.hit)
             })
-            .collect()
+            .take(4)
+            .collect())
     }
 
     fn enrich_exact_source(&self, hit: &mut SearchHit, scopes: &HashSet<String>) -> Result<()> {
@@ -2817,6 +2714,7 @@ impl Searcher {
         scopes: &HashSet<String>,
         workspace: &Workspace,
     ) -> Result<Vec<SearchUsage>> {
+        let target = name.strip_prefix("_root_.").unwrap_or(name);
         let connection = self.open()?;
         install_active_scopes(&connection, scopes)?;
         let mut statement = connection.prepare(
@@ -2830,7 +2728,7 @@ impl Searcher {
         )?;
         let workspace_owner = format!("workspace:{}", workspace.reference);
         let rows = statement.query_map(
-            params![name, workspace_owner, SEARCH_USAGE_LIMIT as i64],
+            params![target, workspace_owner, SEARCH_USAGE_LIMIT as i64],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,

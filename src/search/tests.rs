@@ -622,6 +622,17 @@ fn query_parsing_scoring_and_ranking_regressions() {
         Some(("changeModelIso", Vec::new(), Vec::new()))
     );
     assert!(anchored_api_query("continuous map compact support").is_none());
+    let exact = exact_plan("changeModelIso declarations", false).unwrap();
+    assert_eq!(exact.anchor, "changeModelIso");
+    assert!(!exact.recover_continuation);
+    assert!(exact_plan("ContinuousLinearBundleIso", false)
+        .unwrap()
+        .recover_continuation);
+    assert!(exact_plan("Continuous f", true).is_none());
+    assert!(
+        context_refinement_score(&contextual_hit, &["isomorphic".into()])
+            > context_refinement_score(&contextual_hit, &["unrelated".into()])
+    );
     assert_eq!(
         meaningful_query_tokens("LinearEquiv.ofFinrankEq --all"),
         vec!["linearequiv.offinrankeq", "finrank"]
