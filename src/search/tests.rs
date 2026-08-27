@@ -2116,6 +2116,16 @@ fn source_regex_queries_scan_a_bounded_scope_with_context() {
     .unwrap();
     assert!(dependency.scope.is_absolute());
     assert!(dependency.scope.ends_with("Mathlib/Analysis"));
+    let leading = parse_source_regex_query(
+        directory.path(),
+        directory.path(),
+        None,
+        "/dependency_hit/ Mathlib/Analysis/Api.lean",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(leading.scope, dependency.scope.join("Api.lean"));
+    assert_eq!(leading.pattern, "dependency_hit");
     let dependency = source_regex_result(
         &Workspace {
             reference: "w1".into(),

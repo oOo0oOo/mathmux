@@ -176,7 +176,24 @@ pub(super) fn parse_source_regex_query(
     } else {
         return Ok(None);
     };
-    let Some(end) = query.rfind('/') else {
+    let end = if start == 0 {
+        query[start + 1..]
+            .char_indices()
+            .find(|(offset, character)| {
+                *character == '/'
+                    && query[start + 1..start + 1 + offset]
+                        .chars()
+                        .rev()
+                        .take_while(|character| *character == '\\')
+                        .count()
+                        % 2
+                        == 0
+            })
+            .map(|(offset, _)| start + 1 + offset)
+    } else {
+        query.rfind('/')
+    };
+    let Some(end) = end else {
         return Ok(None);
     };
     if end <= start + 1 {
