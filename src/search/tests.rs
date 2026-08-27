@@ -483,6 +483,37 @@ fn query_parsing_scoring_and_ranking_regressions() {
         alternatives[0].hit.name,
         "AtiyahSinger.matrixToeplitzOperator_add"
     );
+    let approximate_query =
+        "Bundle.Trivial.continuousLinearMapAt|continuousLinearMapAt_trivial";
+    let approximate_tokens = meaningful_query_tokens(approximate_query);
+    let (approximate, _) = rank_discovery_candidates(
+        vec![
+            Candidate {
+                hit: SearchHit {
+                    name: "Bundle.Trivial".into(),
+                    ..contextual_hit.clone()
+                },
+                score: 500.0,
+                origins: 0,
+            },
+            Candidate {
+                hit: SearchHit {
+                    name: "Bundle.Trivial.continuousLinearMapAt_trivialization".into(),
+                    ..contextual_hit.clone()
+                },
+                score: 100.0,
+                origins: 0,
+            },
+        ],
+        approximate_query,
+        &approximate_tokens,
+        false,
+        None,
+    );
+    assert_eq!(
+        approximate[0].hit.name,
+        "Bundle.Trivial.continuousLinearMapAt_trivialization"
+    );
     assert_eq!(symbolic_source_term("*ᵥ"), Some("*ᵥ".to_owned()));
     assert_eq!(symbolic_source_term("≤"), Some("≤".to_owned()));
     assert_eq!(symbolic_source_term("*"), None);

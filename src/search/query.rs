@@ -1329,10 +1329,14 @@ pub(super) fn promote_query_coverage(
             }
         }
     }
-    let qualified = tokens
-        .iter()
-        .filter(|token| token.contains('.') && !token.ends_with(".lean"))
-        .count();
+    let qualified = if alternative_queries.len() > 1 {
+        0
+    } else {
+        tokens
+            .iter()
+            .filter(|token| token.contains('.') && !token.ends_with(".lean"))
+            .count()
+    };
     if qualified >= 1 {
         for token in tokens
             .iter()
