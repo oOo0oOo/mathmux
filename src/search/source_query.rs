@@ -406,6 +406,23 @@ pub(super) fn parse_source_line_range(range: &str) -> Option<(u64, u64)> {
     (first > 0 && first <= last).then_some((first, last))
 }
 
+pub(super) fn reject_colon_attached_source_facet(query: &str) -> Result<()> {
+    for token in query.split_whitespace() {
+        let Some((path, facet)) = token.rsplit_once(':') else {
+            continue;
+        };
+        if Path::new(path).extension().and_then(|extension| extension.to_str()) == Some("lean")
+            && matches!(
+                facet.to_ascii_lowercase().as_str(),
+                "outline" | "declarations" | "imports" | "dependents"
+            )
+        {
+            bail!("source facets use a space: {path} {facet}");
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn source_occurrence_result(
     workspace: &Workspace,
     query: SourceOccurrenceQuery,

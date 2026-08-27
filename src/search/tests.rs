@@ -1440,6 +1440,20 @@ fn references_decode_from_ilean_keys() {
 }
 
 #[test]
+fn colon_attached_source_facets_fail_with_the_documented_form() {
+    for facet in ["outline", "declarations", "imports", "dependents"] {
+        let query = format!("Demo.lean:{facet}");
+        let error = reject_colon_attached_source_facet(&query).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("source facets use a space: Demo.lean {facet}")
+        );
+    }
+    reject_colon_attached_source_facet("Demo.lean:42").unwrap();
+    reject_colon_attached_source_facet("Demo.lean:tail").unwrap();
+}
+
+#[test]
 fn source_query_regressions() {
     assert_eq!(edit_distance("compp", "comp"), 1);
     assert_eq!(

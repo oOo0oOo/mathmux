@@ -437,6 +437,7 @@ impl Searcher {
         limit: Option<usize>,
         all: bool,
     ) -> Result<String> {
+        reject_colon_attached_source_facet(query)?;
         let request = SearchRequest::parse(query, limit, all)?;
         let started = Instant::now();
         let requested_query = request.displayed_query.clone();

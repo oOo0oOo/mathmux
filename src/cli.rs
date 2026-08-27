@@ -50,6 +50,7 @@ RULES
   name: forces exact lookup; its | batch returns all. Bare A|B|C stops after the
   first useful branch. type: is unification search; `_` holes are legal.
   sREF requires TERMS; use show sREF first, then --all only if needed.
+  Source facets follow a space, not a colon.
   FILE:LINE reads source only; use probe FILE:LINE for Lean context.
   Quote queries containing shell characters such as |, *, or #.
   Sigil what you know; leave inference for what you do not."#;
@@ -839,6 +840,7 @@ mod tests {
             "PATH /REGEX/",
             "name:A|B|C",
             "sREF requires TERMS",
+            "Source facets follow a space, not a colon.",
             "--limit",
         ] {
             assert!(help.contains(form), "missing search form {form}");
