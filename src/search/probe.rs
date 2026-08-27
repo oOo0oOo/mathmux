@@ -495,7 +495,7 @@ impl Searcher {
 fn render_static_probe_summary(run: &SearchRun, focus: &str) -> String {
     let mut run = run.clone();
     match focus {
-        "signature" => {
+        "signature" | "ext" => {
             run.inference = "exact".into();
             for hit in &mut run.hits {
                 hit.source = None;
@@ -504,7 +504,7 @@ fn render_static_probe_summary(run: &SearchRun, focus: &str) -> String {
         "source" => run.hits.truncate(1),
         _ => {}
     }
-    if matches!(focus, "signature" | "source")
+    if matches!(focus, "signature" | "source" | "ext")
         && matches!(
             run.note.as_deref(),
             Some("search indexes warming" | "source index warming")
@@ -554,7 +554,7 @@ fn static_probe_query(context: Option<&ProbeContext>, subject: &str, focus: Opti
         "constructors" => format!("{subject}.mk"),
         "coercions" => format!("{subject} coe"),
         "instances" => format!("{subject} instance"),
-        "ext" => format!("{subject} ext"),
+        "ext" => format!("name:{subject}.ext"),
         "simp" => format!("{subject} simp"),
         "apply" => format!("{subject} theorem"),
         "usages" => match scoped {
@@ -589,6 +589,10 @@ mod tests {
         assert_eq!(
             static_probe_query(None, "type:_ → _", None).unwrap(),
             "type:_ → _"
+        );
+        assert_eq!(
+            static_probe_query(None, "ContinuousMap", Some("ext")).unwrap(),
+            "name:ContinuousMap.ext"
         );
         assert!(static_probe_query(
             Some(&ProbeContext::File("Demo.lean".into())),
@@ -649,6 +653,9 @@ mod tests {
         assert!(signature.contains("Demo.first : (n : Nat) : n = n"));
         assert!(!signature.contains(":= by"));
         assert!(!signature.contains("warming"));
+
+        let ext = render_static_probe_summary(&run, "ext");
+        assert!(!ext.contains(":= by"));
 
         let source = render_static_probe_summary(&run, "source");
         assert!(source.contains("theorem first"));
