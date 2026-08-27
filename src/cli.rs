@@ -23,6 +23,7 @@ use crate::repo::Repo;
 
 const WORKFLOW_HELP: &str = r#"AGENT RULES
   Workspace is preassigned; do not run ws or enter main/another workspace.
+  Prefer experimenting in intended files over Scratch files; isolation makes this safe.
   Use mathmux, never git, lean, lake build, or equivalent commands directly.
   Search first; edit -> check -> submit. Use check FILE only to isolate one of
   several dirty Lean files. Use sync to update.
@@ -822,5 +823,11 @@ mod tests {
         ] {
             assert!(help.contains(form), "missing search form {form}");
         }
+    }
+
+    #[test]
+    fn workflow_help_prefers_direct_workspace_experimentation() {
+        let help = command_line().render_help().to_string();
+        assert!(help.contains("experimenting in intended files over Scratch files"));
     }
 }
