@@ -152,6 +152,7 @@ pub(super) struct SourceOccurrenceQuery {
     pub(super) display_path: Option<String>,
     pub(super) first_line: u64,
     pub(super) last_line: u64,
+    pub(super) additional_ranges: Vec<(u64, u64)>,
     pub(super) terms: Vec<String>,
 }
 
@@ -406,15 +407,34 @@ pub(super) fn parse_source_occurrence_query(
             let mut combined = parsed.next().expect("multiple parsed alternatives");
             for alternative in parsed {
                 ensure!(
-                    alternative.path == combined.path
-                        && alternative.first_line == combined.first_line
-                        && alternative.last_line == combined.last_line,
+                    alternative.path == combined.path,
                     "source queries accept one Lean file; search each file separately"
                 );
-                combined.terms.extend(alternative.terms);
+                if (alternative.first_line, alternative.last_line)
+                    == (combined.first_line, combined.last_line)
+                {
+                    combined.terms.extend(alternative.terms);
+                } else {
+                    ensure!(
+                        combined.terms.is_empty() && alternative.terms.is_empty(),
+                        "source alternatives with terms must use one line range"
+                    );
+                    combined
+                        .additional_ranges
+                        .push((alternative.first_line, alternative.last_line));
+                    combined
+                        .additional_ranges
+                        .extend(alternative.additional_ranges);
+                }
             }
             combined.terms.sort();
             combined.terms.dedup();
+            let mut ranges = vec![(combined.first_line, combined.last_line)];
+            ranges.append(&mut combined.additional_ranges);
+            ranges.sort_unstable();
+            ranges.dedup();
+            (combined.first_line, combined.last_line) = ranges.remove(0);
+            combined.additional_ranges = ranges;
             return Ok(Some(combined));
         }
     }
@@ -502,6 +522,7 @@ pub(super) fn parse_source_occurrence_query(
         display_path,
         first_line,
         last_line,
+        additional_ranges: Vec::new(),
         terms,
     }))
 }
@@ -539,11 +560,15 @@ pub(super) fn source_occurrence_result(
         .enumerate()
         .filter_map(|(index, line)| {
             let number = index as u64 + 1;
+            let in_range = (number >= query.first_line && number <= query.last_line)
+                || query
+                    .additional_ranges
+                    .iter()
+                    .any(|(first, last)| number >= *first && number <= *last);
             let trimmed = line.trim_start();
             let is_import = trimmed.starts_with("import ")
                 || trimmed.starts_with("public import ");
-            (number >= query.first_line
-                && number <= query.last_line
+            (in_range
                 && if import_query {
                     is_import
                         && (match_terms.is_empty()

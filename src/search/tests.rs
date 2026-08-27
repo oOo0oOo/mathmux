@@ -1835,6 +1835,33 @@ fn goal_and_source_query_regressions() {
         range.hits[0].source.as_deref(),
         Some("2\t/- open\n3\tinside /-! doc\n4\t-/ close")
     );
+    let ranges = parse_source_occurrence_query(
+        directory.path(),
+        directory.path(),
+        None,
+        "Markers.lean:1-2|Markers.lean:4-5",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!((ranges.first_line, ranges.last_line), (1, 2));
+    assert_eq!(ranges.additional_ranges, [(4, 5)]);
+    let ranges = source_occurrence_result(
+        &Workspace {
+            reference: "w1".into(),
+            name: "demo".into(),
+            path: directory.path().to_path_buf(),
+            branch: "demo".into(),
+            model: None,
+        },
+        ranges,
+        false,
+    )
+    .unwrap();
+    assert_eq!(ranges.hits[0].signature.as_deref(), Some("4 lines"));
+    assert_eq!(
+        ranges.hits[0].source.as_deref(),
+        Some("1\tplain\n2\t/- open\n4\t-/ close\n5\tplain")
+    );
 
     let long_source = (1..=250)
         .map(|line| format!("line {line}"))
