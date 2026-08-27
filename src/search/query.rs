@@ -993,7 +993,7 @@ fn diversify_ranked_candidates(
             .then(|| candidate.hit.name.clone())
     });
     if !query.contains('|') {
-        promote_result_context(ranked, query_tokens);
+        promote_result_context(ranked, query, query_tokens);
     }
     if let Some(anchor) = qualified_anchor
         && let Some(position) = ranked
@@ -1429,6 +1429,7 @@ pub(super) fn promote_query_coverage(
         .map(|query| meaningful_query_tokens(query))
         .filter(|tokens| !tokens.is_empty())
         .collect::<Vec<_>>();
+    let compound_name_parts = compound_name_query_parts(query);
     remaining.sort_by_cached_key(|candidate| {
         let coverage = if alternatives.len() > 1 {
             alternatives
@@ -1439,7 +1440,15 @@ pub(super) fn promote_query_coverage(
         } else {
             hit_query_coverage(&candidate.hit, tokens)
         };
-        std::cmp::Reverse(coverage)
+        let compound_name_coverage = compound_name_parts.as_ref().map_or((0, 0), |parts| {
+            parts
+                .iter()
+                .filter(|part| hit_name_matches(&candidate.hit.name, part))
+                .fold((0, 0), |(count, weight), part| {
+                    (count + 1, weight + part.chars().count())
+                })
+        });
+        std::cmp::Reverse((compound_name_coverage, coverage))
     });
     if promoted.len() < SUMMARY_LIMIT && !remaining.is_empty() {
         promoted.push(remaining.remove(0));
@@ -1501,12 +1510,33 @@ pub(super) fn promote_query_coverage(
     *ranked = promoted;
 }
 
-pub(super) fn promote_result_context(ranked: &mut Vec<Candidate>, tokens: &[String]) {
+fn compound_name_query_parts(query: &str) -> Option<Vec<String>> {
+    (declaration_name_query(query) && !query.contains('.'))
+        .then(|| {
+            identifier_query_parts(query)
+                .into_iter()
+                .filter(|part| part.len() >= SEARCH_TUNING.promotion.coverage_token_chars)
+                .collect::<Vec<_>>()
+        })
+        .filter(|parts| parts.len() >= 2)
+}
+
+pub(super) fn promote_result_context(
+    ranked: &mut Vec<Candidate>,
+    query: &str,
+    tokens: &[String],
+) {
     let mut seen = HashSet::new();
-    let tokens = tokens
-        .iter()
-        .filter(|token| seen.insert(token.as_str()))
-        .collect::<Vec<_>>();
+    let compound_name_parts = compound_name_query_parts(query);
+    let tokens = compound_name_parts.as_ref().map_or_else(
+        || {
+            tokens
+                .iter()
+                .filter(|token| seen.insert(token.as_str()))
+                .collect::<Vec<_>>()
+        },
+        |parts| parts.iter().collect::<Vec<_>>(),
+    );
     let name_coverage = |candidate: &Candidate| {
         let leaf = candidate
             .hit
@@ -1517,16 +1547,24 @@ pub(super) fn promote_result_context(ranked: &mut Vec<Candidate>, tokens: &[Stri
         tokens
             .iter()
             .filter(|token| hit_name_matches(leaf, token))
-            .count()
+            .fold((0, 0), |(count, weight), token| {
+                (count + 1, weight + token.chars().count())
+            })
     };
     let Some(anchor) = ranked
         .iter()
         .enumerate()
         .filter(|(_, candidate)| !matches!(candidate.hit.kind.as_str(), "file" | "imports"))
         .filter(|(_, candidate)| {
-            name_coverage(candidate) >= SEARCH_TUNING.promotion.context_name_coverage
+            name_coverage(candidate).0 >= SEARCH_TUNING.promotion.context_name_coverage
         })
-        .min_by_key(|(_, candidate)| candidate.hit.name.matches('.').count())
+        .min_by_key(|(_, candidate)| {
+            let coverage = compound_name_parts
+                .as_ref()
+                .map(|_| std::cmp::Reverse(name_coverage(candidate)))
+                .unwrap_or_default();
+            (coverage, candidate.hit.name.matches('.').count())
+        })
         .map(|(index, _)| index)
     else {
         return;
@@ -1545,7 +1583,7 @@ pub(super) fn promote_result_context(ranked: &mut Vec<Candidate>, tokens: &[Stri
         };
         if same_source
             && !matches!(candidate.hit.kind.as_str(), "file" | "imports")
-            && name_coverage(candidate) > 0
+            && name_coverage(candidate).0 > 0
         {
             context.push(ranked.remove(index));
         } else {

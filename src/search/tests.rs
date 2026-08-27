@@ -420,6 +420,68 @@ fn query_parsing_scoring_and_ranking_regressions() {
         &tokens,
     );
     assert!(ranked[0].hit.name.contains("CircleSeparatedOnRadius"));
+    let compound_name = vec![
+        Candidate {
+            hit: SearchHit {
+                name: "EuclideanDomain".into(),
+                signature: Some("StabilizationData appears in surrounding context".into()),
+                ..contextual_hit.clone()
+            },
+            score: 500.0,
+            origins: 0,
+        },
+        Candidate {
+            hit: SearchHit {
+                name: "Demo.MatrixToeplitzCanonicalBlockStabilizationData.data".into(),
+                signature: None,
+                ..contextual_hit.clone()
+            },
+            score: 10.0,
+            origins: 0,
+        },
+    ];
+    let compound_query = "EuclideanStabilizationData";
+    let (compound_name, _) = rank_discovery_candidates(
+        compound_name,
+        compound_query,
+        &meaningful_query_tokens(compound_query),
+        false,
+        None,
+    );
+    assert_eq!(
+        compound_name[0].hit.name,
+        "Demo.MatrixToeplitzCanonicalBlockStabilizationData.data"
+    );
+    let compound_query = "kernelPretrivialization_inverse_continuousOn";
+    let (compound_name, _) = rank_discovery_candidates(
+        vec![
+            Candidate {
+                hit: SearchHit {
+                    name: "Demo.kernelBundleProdInverseCoordinateContinuity".into(),
+                    ..contextual_hit.clone()
+                },
+                score: 500.0,
+                origins: 0,
+            },
+            Candidate {
+                hit: SearchHit {
+                    name: "Demo.Matrix.projectionRangePretrivialization_inverse_continuousOn"
+                        .into(),
+                    ..contextual_hit.clone()
+                },
+                score: 10.0,
+                origins: 0,
+            },
+        ],
+        compound_query,
+        &meaningful_query_tokens(compound_query),
+        false,
+        None,
+    );
+    assert!(compound_name[0]
+        .hit
+        .name
+        .contains("projectionRangePretrivialization"));
     let mut qualified_leaf = vec![
         Candidate {
             hit: SearchHit {
