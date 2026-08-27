@@ -22,15 +22,13 @@ use crate::protocol::{Command, Progress, Request, Response};
 use crate::repo::Repo;
 
 const WORKFLOW_HELP: &str = r#"AGENT CONTRACT
-  Workspace is preassigned; do not run ws or enter main/another workspace.
-  Use mathmux, never git, lean, lake build, or equivalent commands directly.
-  Search unknown things; probe known API, exact context, or a stored failure.
-  Work in intended files. Edit -> check -> submit; use sync to update.
-  Use check FILE only to isolate one of several dirty Lean files.
-  Use show REF for stored detail; do not rerun a command only for more output.
-  Use Lean modules with explicit narrow imports and aligned module/namespace/path.
-  sorry is tracked during development; new axioms fail validation.
-  Do not edit .lake or generated artifacts."#;
+  scope     Use the preassigned workspace; never run ws or enter main/another workspace.
+  discover  Search unknown things; probe known API, exact context, or failures.
+            Read search --help and probe --help. Both return qREF; show qREF --all expands it.
+  change    Edit intended files -> check -> submit. Use check FILE only to isolate dirty files.
+  update    Use sync. Use mathmux only—never substitute git, lean, lake, or other tooling.
+  Lean      Use explicit narrow imports and aligned module/namespace/path; keep public imports API-only.
+  safety    sorry is tracked; new axioms fail validation. Never edit .lake/generated artifacts."#;
 
 const SEARCH_HELP: &str = r#"SEARCH — find or read unknown things; returns qREF
   declaration  NAME | NAME* | KIND NAME [source|body|proof]
@@ -863,7 +861,8 @@ mod tests {
     #[test]
     fn workflow_help_prefers_direct_workspace_experimentation() {
         let help = command_line().render_help().to_string();
-        assert!(help.contains("Work in intended files"));
+        assert!(help.contains("Edit intended files -> check -> submit"));
+        assert!(help.contains("Read search --help and probe --help"));
         assert!(help.contains("Search unknown things; probe known API, exact context"));
     }
 }
