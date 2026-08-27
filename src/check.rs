@@ -6,7 +6,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock, TryLockError, Weak};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
@@ -126,6 +126,11 @@ enum WorkerRun {
     Profile,
 }
 
+struct ImportCoverage<'a> {
+    dirty: &'a HashSet<PathBuf>,
+    passed: &'a HashSet<PathBuf>,
+}
+
 pub struct Checker {
     repo: Repo,
     state: State,
@@ -180,6 +185,10 @@ impl Checker {
             }
         };
         let planning_ms = started.elapsed().as_millis() as u64;
+        let dirty_targets = requested
+            .is_none()
+            .then(|| targets.iter().cloned().collect::<HashSet<_>>());
+        let mut passed_targets = HashSet::new();
         let reference = self.state.next_ref('c')?;
         let files = targets
             .iter()
@@ -197,13 +206,24 @@ impl Checker {
         for target in &targets {
             let target_name = target.to_string_lossy().into_owned();
             report(&format!("checking {target_name}"));
-            match self.check_one(workspace, target, &reference, include_profile, report) {
+            match self.check_one(
+                workspace,
+                target,
+                &reference,
+                include_profile,
+                dirty_targets.as_ref().map(|dirty| ImportCoverage {
+                    dirty,
+                    passed: &passed_targets,
+                }),
+                report,
+            ) {
                 Ok(result) => {
                     file_profiles.push(result.profile.clone());
                     warnings.extend(result.warnings);
                     linters.extend(result.linters);
                     suggestions.extend(result.suggestions);
                     if result.ok {
+                        passed_targets.insert(target.clone());
                         passed.push(target_name);
                         certificates.push(result.certificate);
                     } else {
@@ -336,6 +356,7 @@ impl Checker {
         target: &Path,
         reference: &str,
         include_profile: bool,
+        import_coverage: Option<ImportCoverage<'_>>,
         report: &mut dyn FnMut(&str),
     ) -> Result<FileCheck> {
         let file_started = Instant::now();
@@ -438,14 +459,56 @@ impl Checker {
             return Ok(cached);
         }
         let cache_ms = phase.elapsed().as_millis() as u64;
+        let source = fs::read_to_string(&target_absolute)
+            .with_context(|| format!("cannot read {}", target.display()))?;
+        if let Some(coverage) = import_coverage
+            && import_only_coverage(
+                &workspace.path,
+                target,
+                &source,
+                &dependencies,
+                coverage.dirty,
+                coverage.passed,
+            )?
+        {
+            report(&format!("certifying imports for {}", target.display()));
+            return Ok(FileCheck {
+                certificate: CheckRecord {
+                    reference: reference.to_owned(),
+                    workspace_ref: workspace.reference.clone(),
+                    target: target_name.clone(),
+                    fingerprint: self.full_fingerprint(workspace, target, &dependencies)?,
+                    dependencies: dependencies
+                        .iter()
+                        .map(|path| path.to_string_lossy().into_owned())
+                        .collect(),
+                    source_version: 1,
+                    created_at: now_unix_ms(),
+                },
+                warnings: Vec::new(),
+                linters: Vec::new(),
+                suggestions: Vec::new(),
+                diagnostics: Vec::new(),
+                ok: true,
+                profile: FileCheckProfile {
+                    target: target_name,
+                    mode: "imports".into(),
+                    reused_prefix_lines: None,
+                    queue_ms,
+                    dependencies_ms,
+                    cache_ms,
+                    setup_ms: 0,
+                    elaborate_ms: 0,
+                    total_ms: file_started.elapsed().as_millis() as u64,
+                    entries: Vec::new(),
+                },
+            });
+        }
         let phase = Instant::now();
         report(&format!("preparing imports for {}", target.display()));
         let (setup_path, environment) = self.worker_setup(workspace, target, &dependencies)?;
         let setup_ms = phase.elapsed().as_millis() as u64;
         let fingerprint = self.full_fingerprint(workspace, target, &dependencies)?;
-        let source = fs::read_to_string(&target_absolute)
-            .with_context(|| format!("cannot read {}", target.display()))?;
-
         let phase = Instant::now();
         report(&format!("elaborating {}", target.display()));
         let (mut response, mode, reused_prefix_lines) =
@@ -1973,6 +2036,59 @@ fn dependency_order(root: &Path, targets: &[PathBuf]) -> Result<Vec<PathBuf>> {
     Ok(ordered)
 }
 
+fn import_only_coverage(
+    root: &Path,
+    target: &Path,
+    source: &str,
+    dependencies: &[PathBuf],
+    dirty_targets: &HashSet<PathBuf>,
+    passed_targets: &HashSet<PathBuf>,
+) -> Result<bool> {
+    if !source.lines().all(|line| {
+        let line = line.trim();
+        line.is_empty()
+            || line.starts_with("--")
+            || line == "module"
+            || line == "prelude"
+            || line.starts_with("import ")
+            || line.starts_with("public import ")
+    }) || dependencies
+        .iter()
+        .any(|path| dirty_targets.contains(path) && !passed_targets.contains(path))
+    {
+        return Ok(false);
+    }
+
+    let imports = parse_imports(source);
+    if imports.is_empty() {
+        return Ok(false);
+    }
+    let spec = format!("HEAD:{}", target.to_string_lossy());
+    let output = Command::new("git")
+        .args(["show", &spec])
+        .current_dir(root)
+        .stdin(Stdio::null())
+        .output()
+        .context("cannot inspect the checked import list")?;
+    let base_imports = if output.status.success() {
+        parse_imports(&String::from_utf8_lossy(&output.stdout))
+    } else {
+        Vec::new()
+    }
+    .into_iter()
+    .collect::<HashSet<_>>();
+    let project_modules = project_lean_files(root)
+        .into_iter()
+        .map(|path| (project_module_name(root, &path), path))
+        .collect::<HashMap<_, _>>();
+    Ok(imports.into_iter().all(|module| {
+        base_imports.contains(&module)
+            || project_modules.get(&module).is_some_and(|path| {
+                !dirty_targets.contains(path) || passed_targets.contains(path)
+            })
+    }))
+}
+
 pub(crate) fn parse_imports(source: &str) -> Vec<String> {
     let mut imports = Vec::new();
     for line in source.lines() {
@@ -2205,6 +2321,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::util::run_checked;
 
     #[test]
     fn duplicate_imports_are_ignored() {
@@ -2212,6 +2329,61 @@ mod tests {
             parse_imports("import A B\npublic import A\n\ndef value := 1\n"),
             ["A", "B"]
         );
+    }
+
+    #[test]
+    fn import_only_coverage_requires_checked_local_new_imports() {
+        let directory = tempdir().unwrap();
+        fs::write(directory.path().join("Base.lean"), "def base := 1\n").unwrap();
+        fs::write(directory.path().join("Root.lean"), "import Mathlib\n").unwrap();
+        run_checked("git", ["init", "-b", "main"], directory.path()).unwrap();
+        run_checked("git", ["add", "."], directory.path()).unwrap();
+        run_checked(
+            "git",
+            [
+                "-c",
+                "user.name=mathmux",
+                "-c",
+                "user.email=mathmux@example.invalid",
+                "commit",
+                "-m",
+                "base",
+            ],
+            directory.path(),
+        )
+        .unwrap();
+
+        let target = PathBuf::from("Root.lean");
+        let dependency = PathBuf::from("Base.lean");
+        let dirty = HashSet::from([target.clone(), dependency.clone()]);
+        let source = "import Mathlib\nimport Base\n";
+        assert!(!import_only_coverage(
+            directory.path(),
+            &target,
+            source,
+            std::slice::from_ref(&dependency),
+            &dirty,
+            &HashSet::new(),
+        )
+        .unwrap());
+        assert!(import_only_coverage(
+            directory.path(),
+            &target,
+            source,
+            std::slice::from_ref(&dependency),
+            &dirty,
+            &HashSet::from([dependency.clone()]),
+        )
+        .unwrap());
+        assert!(!import_only_coverage(
+            directory.path(),
+            &target,
+            "import Mathlib\nimport Missing\n",
+            &[],
+            &HashSet::from([target.clone()]),
+            &HashSet::new(),
+        )
+        .unwrap());
     }
 
     #[test]

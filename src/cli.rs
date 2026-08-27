@@ -129,11 +129,14 @@ enum TopCommand {
     ///
     /// Requires current check coverage for all dirty Lean files. Integrates into
     /// managed main, queues build and axiom validation, and returns sREF immediately.
+    /// Takes no file arguments; current dirty coverage defines the submission.
     /// New root Scratch*.lean files are check-only and cannot be submitted.
     Submit {
         /// Integration commit message.
         #[arg(short = 'm')]
         message: Option<String>,
+        #[arg(value_name = "FILE", hide = true)]
+        files: Vec<PathBuf>,
     },
     /// Show stored detail for a short reference.
     ///
@@ -332,7 +335,13 @@ pub fn run() -> Result<u8> {
             all,
         },
         TopCommand::Sync { push } => Command::Sync { push },
-        TopCommand::Submit { message } => Command::Submit { message },
+        TopCommand::Submit { message, files } => {
+            ensure!(
+                files.is_empty(),
+                "submit takes no files; it uses all currently checked dirty Lean files"
+            );
+            Command::Submit { message }
+        }
         TopCommand::Show { reference, all } => Command::Show { reference, all },
         #[cfg(feature = "development")]
         TopCommand::Issue { .. } | TopCommand::Dev { .. } => unreachable!(),
