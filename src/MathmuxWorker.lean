@@ -37,12 +37,6 @@ structure Response where
   version : Nat
 deriving ToJson
 
-partial def collectInfoTrees (tree : Language.SnapshotTree) : BaseIO (Array InfoTree) := do
-  let mut trees := tree.element.infoTree?.toArray
-  for child in tree.children do
-    trees := trees ++ (← collectInfoTrees child.get)
-  return trees
-
 def goalContext (goal : GoalsAtResult) : ContextInfo :=
   { goal.ctxInfo with
     mctx := if goal.useAfter then goal.tacticInfo.mctxAfter else goal.tacticInfo.mctxBefore }
@@ -50,24 +44,35 @@ def goalContext (goal : GoalsAtResult) : ContextInfo :=
 def goalMVars (goal : GoalsAtResult) : List MVarId :=
   if goal.useAfter then goal.tacticInfo.goalsAfter else goal.tacticInfo.goalsBefore
 
-def goalsAtOffset (trees : Array InfoTree) (fileMap : FileMap) (offset : Nat) :
+def goalsBetweenOffsets (trees : Array InfoTree) (fileMap : FileMap)
+    (start stop : Nat) :
     Option GoalsAtResult := Id.run do
-  let hover : String.Pos.Raw := ⟨offset⟩
   for tree in trees do
-    if let some goal := (tree.goalsAt? fileMap hover).find? fun goal => !(goalMVars goal).isEmpty then
+    for offset in [start:stop + 1] do
+      let hover : String.Pos.Raw := ⟨offset⟩
+      if let some goal :=
+          (tree.goalsAt? fileMap hover).find? fun goal => !(goalMVars goal).isEmpty then
+        return some goal
+  return none
+
+partial def goalInSnapshotTree (tree : Language.SnapshotTree) (fileMap : FileMap)
+    (start stop : Nat) : BaseIO (Option GoalsAtResult) := do
+  if let some goal := goalsBetweenOffsets tree.element.infoTree?.toArray fileMap start stop then
+    return some goal
+  for child in tree.children do
+    if let some goal ← goalInSnapshotTree child.get fileMap start stop then
       return some goal
   return none
 
-def goalAtPosition (trees : Array InfoTree) (fileMap : FileMap) (line column : Nat) :
-    Option GoalsAtResult := Id.run do
+def goalAtPosition (tree : Language.SnapshotTree) (fileMap : FileMap)
+    (line column : Nat) : BaseIO (Option GoalsAtResult) := do
   if line == 0 then return none
   let zeroLine := line - 1
   let start := fileMap.ofPosition {line := zeroLine, column := column - 1}
-  if column > 0 then return goalsAtOffset trees fileMap start.byteIdx
+  if column > 0 then
+    return ← goalInSnapshotTree tree fileMap start.byteIdx start.byteIdx
   let stop := fileMap.ofPosition {line := zeroLine + 1, column := 0}
-  for offset in [start.byteIdx:stop.byteIdx + 1] do
-    if let some goal := goalsAtOffset trees fileMap offset then return some goal
-  return none
+  goalInSnapshotTree tree fileMap start.byteIdx stop.byteIdx
 
 def parseCategory (category : Name) (source : String) : CoreM Syntax := do
   match Parser.runParserCategory (← getEnv) category source with
@@ -96,8 +101,8 @@ def probeFailure (detail : String) (version : Nat) : Response :=
     version }
 
 def runLocalProbe (snapshot : Language.Lean.InitialSnapshot) (request : Request) : IO Response := do
-  let trees ← collectInfoTrees (Language.toSnapshotTree snapshot)
-  let some goal := goalAtPosition trees snapshot.ictx.fileMap request.line request.column
+  let some goal ← goalAtPosition (Language.toSnapshotTree snapshot)
+      snapshot.ictx.fileMap request.line request.column
     | return probeFailure s!"no tactic context at line {request.line}" request.version
   let mvars := goalMVars goal
   let ctx := goalContext goal

@@ -1700,7 +1700,7 @@ impl LeanWorker {
         if ready == 0 {
             let pid = self.child.id() as i32;
             unsafe {
-                libc::kill(-pid, libc::SIGTERM);
+                libc::kill(-pid, libc::SIGKILL);
             }
             let _ = self.child.wait();
             return Err(CheckTimeout(timeout).into());
