@@ -74,6 +74,32 @@ def goalAtPosition (tree : Language.SnapshotTree) (fileMap : FileMap)
   let stop := fileMap.ofPosition {line := zeroLine + 1, column := 0}
   goalInSnapshotTree tree fileMap start.byteIdx stop.byteIdx
 
+def contextBetweenOffsets (trees : Array InfoTree) (start stop : Nat) : Option ContextInfo := Id.run do
+  for tree in trees do
+    for offset in [start:stop + 1] do
+      if let some info := tree.termGoalAt? ⟨offset⟩ then
+        return some info.ctx
+  return none
+
+partial def contextInSnapshotTree (tree : Language.SnapshotTree) (fileMap : FileMap)
+    (start stop : Nat) : BaseIO (Option ContextInfo) := do
+  if let some ctx := contextBetweenOffsets tree.element.infoTree?.toArray start stop then
+    return some ctx
+  for child in tree.children do
+    if let some ctx ← contextInSnapshotTree child.get fileMap start stop then
+      return some ctx
+  return none
+
+def contextAtPosition (tree : Language.SnapshotTree) (fileMap : FileMap)
+    (line column : Nat) : BaseIO (Option ContextInfo) := do
+  if line == 0 then return none
+  let zeroLine := line - 1
+  let start := fileMap.ofPosition {line := zeroLine, column := column - 1}
+  if column > 0 then
+    return ← contextInSnapshotTree tree fileMap start.byteIdx start.byteIdx
+  let stop := fileMap.ofPosition {line := zeroLine + 1, column := 0}
+  contextInSnapshotTree tree fileMap start.byteIdx stop.byteIdx
+
 def parseCategory (category : Name) (source : String) : CoreM Syntax := do
   match Parser.runParserCategory (← getEnv) category source with
   | .ok stx => pure stx
@@ -101,15 +127,21 @@ def probeFailure (detail : String) (version : Nat) : Response :=
     version }
 
 def runLocalProbe (snapshot : Language.Lean.InitialSnapshot) (request : Request) : IO Response := do
-  let some goal ← goalAtPosition (Language.toSnapshotTree snapshot)
-      snapshot.ictx.fileMap request.line request.column
-    | return probeFailure s!"no tactic context at line {request.line}" request.version
-  let mvars := goalMVars goal
-  let ctx := goalContext goal
+  let tree := Language.toSnapshotTree snapshot
+  let fileMap := snapshot.ictx.fileMap
+  let goal? ← goalAtPosition tree fileMap request.line request.column
   try
     let detail ← if request.operation == "goal" then
+      let some goal := goal?
+        | throw <| IO.userError s!"no tactic context at line {request.line}"
+      let mvars := goalMVars goal
+      let ctx := goalContext goal
       pure (← ctx.ppGoals mvars).pretty
     else if request.operation == "tactic" then
+      let some goal := goal?
+        | throw <| IO.userError s!"no tactic context at line {request.line}"
+      let mvars := goalMVars goal
+      let ctx := goalContext goal
       ctx.runMetaM {} do
         let action : Tactic.TacticM String := do
           evalTacticText request.input
@@ -119,10 +151,17 @@ def runLocalProbe (snapshot : Language.Lean.InitialSnapshot) (request : Request)
           return (Std.Format.prefixJoin "\n" formats).pretty
         (((action {elaborator := .anonymous}).run' {goals := mvars}) {}).run' {}
     else
-      let some mvar := mvars.head?
-        | throw <| IO.userError "probe position has no active goal"
-      ctx.runMetaM {} do
-        mvar.withContext do
+      match goal? with
+      | some goal =>
+        let some mvar := (goalMVars goal).head?
+          | throw <| IO.userError "probe position has no active goal"
+        (goalContext goal).runMetaM {} do
+          mvar.withContext do
+            (inspectTerm request.operation request.input {}).run' {}
+      | none =>
+        let some ctx ← contextAtPosition tree fileMap request.line request.column
+          | throw <| IO.userError s!"no elaboration context at line {request.line}"
+        ctx.runMetaM {} do
           (inspectTerm request.operation request.input {}).run' {}
     return {ok := true, diagnostics := #[], detail, version := request.version}
   catch error =>
