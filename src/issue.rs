@@ -536,17 +536,20 @@ impl TelemetryStore {
             .map(|(verb, events)| render_aggregate(verb, &events))
             .collect::<Vec<_>>()
             .join("\n");
-        let errors = events.iter().filter(|event| !event.ok).take(5);
-        for (index, event) in errors.enumerate() {
-            if index == 0 {
-                output.push_str("\nrecent failures");
-            }
-            output.push('\n');
-            output.push_str(&render_event_line(event));
-            if let Some(class) = &event.error_class {
-                output.push_str(&format!(": {class}"));
-            }
-        }
+        append_recent_events(
+            &mut output,
+            "recent errors",
+            events.iter().filter(|event| {
+                !event.ok && event.outcome_class.as_deref() != Some("formalization")
+            }),
+        );
+        append_recent_events(
+            &mut output,
+            "recent formalization failures",
+            events
+                .iter()
+                .filter(|event| event.outcome_class.as_deref() == Some("formalization")),
+        );
         Ok(output)
     }
 
@@ -809,6 +812,23 @@ fn render_event_line(event: &TelemetryEvent) -> String {
         status,
         reference
     )
+}
+
+fn append_recent_events<'a>(
+    output: &mut String,
+    heading: &str,
+    events: impl Iterator<Item = &'a TelemetryEvent>,
+) {
+    for (index, event) in events.take(5).enumerate() {
+        if index == 0 {
+            output.push_str(&format!("\n{heading}"));
+        }
+        output.push('\n');
+        output.push_str(&render_event_line(event));
+        if let Some(class) = &event.error_class {
+            output.push_str(&format!(": {class}"));
+        }
+    }
 }
 
 fn render_event(event: &TelemetryEvent, all: bool) -> String {
@@ -1223,7 +1243,8 @@ mod tests {
         let summary = store.summary("24h", None, None).unwrap();
         assert!(summary.contains("check 2 avg:606ms p50:12ms p95:1.2s fail:1 err:0"));
         assert!(summary.contains("search 1 avg:8ms p50:8ms p95:8ms err:1"));
-        assert!(summary.contains("recent failures\ne3 search 8ms error\ne2 check 1.2s failed c1"));
+        assert!(summary.contains("recent errors\ne3 search 8ms error"));
+        assert!(summary.contains("recent formalization failures\ne2 check 1.2s failed c1"));
         let slow = store.summary("all", None, Some(1)).unwrap();
         assert!(slow.starts_with("e2 check 1.2s failed c1"));
         assert!(store.show("e2", true).unwrap().contains("request: {}"));
