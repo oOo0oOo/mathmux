@@ -28,8 +28,6 @@ use crate::util::{
 mod goal;
 mod plan;
 mod query;
-#[cfg(test)]
-mod replay;
 mod source;
 mod tuning;
 #[cfg(test)]

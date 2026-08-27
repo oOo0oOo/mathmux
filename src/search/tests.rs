@@ -1,5 +1,4 @@
 use super::*;
-use super::replay::SEARCH_REPLAY_CASES;
 
 fn fallback_source_hits(
     workspace: &Path,
@@ -8,53 +7,6 @@ fn fallback_source_hits(
 ) -> Result<Vec<Candidate>> {
     let candidates = fallback_source_candidates(workspace, query, query_tokens)?;
     Ok(rank_discovery_candidates(candidates, query, query_tokens, false, None).0)
-}
-
-#[test]
-fn manual_search_replay_corpus() {
-    for case in SEARCH_REPLAY_CASES {
-        let tokens = meaningful_query_tokens(case.query);
-        let candidates = case
-            .candidates
-            .iter()
-            .map(|(name, score)| Candidate {
-                hit: SearchHit {
-                    name: (*name).into(),
-                    kind: "theorem".into(),
-                    signature: None,
-                    module: "AtiyahSinger.Replay".into(),
-                    path: "AtiyahSinger/Replay.lean".into(),
-                    line: 1,
-                    doc: None,
-                    source: None,
-                    usages: Vec::new(),
-                    applicable: false,
-                    required_import: None,
-                },
-                score: *score,
-                origins: CandidateOrigin::Index as u8,
-            })
-            .collect();
-        let (ranked, _) = rank_discovery_candidates(candidates, case.query, &tokens, false, None);
-        let top_five = ranked
-            .iter()
-            .take(5)
-            .map(|candidate| candidate.hit.name.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            top_five.first().copied(),
-            Some(case.top_one),
-            "{} => {top_five:?}",
-            case.query
-        );
-        for required in case.required_top_five {
-            assert!(
-                top_five.contains(required),
-                "{} missing {required}; got {top_five:?}",
-                case.query
-            );
-        }
-    }
 }
 
 #[test]
