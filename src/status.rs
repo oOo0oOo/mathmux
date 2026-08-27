@@ -9,8 +9,8 @@ use anyhow::{Result, ensure};
 use crate::git::{dirty_paths, head};
 use crate::issue::{ContextEvent, TelemetryStore, development_enabled};
 use crate::repo::Repo;
-use crate::state::{ActivityMetrics, State, SubmissionInterval, Workspace};
-use crate::util::{now_unix_ms, run_checked, run_output, short_hash};
+use crate::state::{ActivityMetrics, State, Submission, SubmissionInterval, Workspace};
+use crate::util::{now_unix_ms, run_checked, run_output, short_hash, single_line, truncate_line};
 
 const HOUR_SECS: i64 = 60 * 60;
 const DAY_SECS: i64 = 24 * HOUR_SECS;
@@ -117,9 +117,21 @@ pub fn render(repo: &Repo, state: &State) -> Result<String> {
     }
 
     let pending = state.pending_submissions()?;
-    if pending.is_empty() {
-        output.push_str("\nvalidation idle");
-    } else {
+    let latest_completed = pending
+        .is_empty()
+        .then(|| state.latest_completed_validation())
+        .transpose()?
+        .flatten();
+    render_validation_status(&mut output, &pending, latest_completed.as_ref())?;
+    Ok(output)
+}
+
+fn render_validation_status(
+    output: &mut String,
+    pending: &[Submission],
+    latest_completed: Option<&Submission>,
+) -> std::fmt::Result {
+    if !pending.is_empty() {
         output.push_str("\nvalidation");
         for submission in pending {
             write!(
@@ -128,8 +140,21 @@ pub fn render(repo: &Repo, state: &State) -> Result<String> {
                 submission.reference, submission.validation_status
             )?;
         }
+    } else if let Some(submission) =
+        latest_completed.filter(|submission| submission.validation_status == "failed")
+    {
+        write!(
+            output,
+            "\nvalidation {}:failed; show {} --all",
+            submission.reference, submission.reference
+        )?;
+        if let Some(detail) = submission.validation_detail.as_deref() {
+            write!(output, "\n  {}", truncate_line(&single_line(detail), 240))?;
+        }
+    } else {
+        output.push_str("\nvalidation idle");
     }
-    Ok(output)
+    Ok(())
 }
 
 pub fn render_formalization_yaml(repo: &Repo, state: &State) -> Result<String> {
@@ -733,6 +758,50 @@ fn format_average(milliseconds: Option<f64>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn submission(reference: &str, status: &str, detail: Option<&str>) -> Submission {
+        Submission {
+            reference: reference.into(),
+            workspace_ref: "w1".into(),
+            workspace_commit: "workspace".into(),
+            main_commit: "main".into(),
+            base_commit: "base".into(),
+            checks: Vec::new(),
+            validation_status: status.into(),
+            validation_detail: detail.map(str::to_owned),
+            build_output: None,
+            axioms: Vec::new(),
+            sorries: Vec::new(),
+            validation_duration_ms: None,
+            validated_by: None,
+            created_at: 0,
+        }
+    }
+
+    #[test]
+    fn idle_status_keeps_the_latest_validation_failure_visible() {
+        let failed = submission(
+            "s9",
+            "failed",
+            Some("axiom audit failed:\nconflicting declaration"),
+        );
+        let mut output = String::new();
+        render_validation_status(&mut output, &[], Some(&failed)).unwrap();
+        assert_eq!(
+            output,
+            "\nvalidation s9:failed; show s9 --all\n  axiom audit failed: conflicting declaration"
+        );
+
+        let passed = submission("s10", "passed", Some("build passed"));
+        let mut output = String::new();
+        render_validation_status(&mut output, &[], Some(&passed)).unwrap();
+        assert_eq!(output, "\nvalidation idle");
+
+        let queued = submission("s11", "queued", None);
+        let mut output = String::new();
+        render_validation_status(&mut output, &[queued], Some(&failed)).unwrap();
+        assert_eq!(output, "\nvalidation s11:queued");
+    }
 
     #[test]
     fn counts_physical_lines_with_or_without_a_final_newline() {

@@ -728,6 +728,22 @@ impl State {
             .map_err(Into::into)
     }
 
+    pub fn latest_completed_validation(&self) -> Result<Option<Submission>> {
+        self.open()?
+            .query_row(
+                "SELECT ref, workspace_ref, workspace_commit, main_commit, base_commit, checks_json,
+                        validation_status, validation_detail, build_output, axioms_json,
+                        sorries_json, validation_duration_ms, validated_by, created_at
+                 FROM submissions WHERE validation_status IN ('passed', 'failed')
+                 ORDER BY created_at DESC, CAST(substr(ref, 2) AS INTEGER) DESC
+                 LIMIT 1",
+                [],
+                submission_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
     pub fn next_validation(&self) -> Result<Option<Submission>> {
         let connection = self.open()?;
         let running: bool = connection.query_row(
@@ -1326,6 +1342,14 @@ mod tests {
                 },
             )
             .unwrap();
+        assert_eq!(
+            state
+                .latest_completed_validation()
+                .unwrap()
+                .unwrap()
+                .reference,
+            "s2"
+        );
         let compact = state.show("s2", false).unwrap();
         assert!(compact.contains("Unsafe.assume"));
         assert!(compact.contains("sorries: 1"));
