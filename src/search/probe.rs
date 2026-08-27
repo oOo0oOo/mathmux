@@ -51,6 +51,14 @@ impl ProbeRequest {
             return Ok(Self { context, subject: None, focus: None, directive: Some(directive) });
         }
         if context.is_none() {
+            if remainder
+                .split_whitespace()
+                .skip(1)
+                .map(|term| term.trim_matches(['\'', '"']))
+                .any(|term| term == "by")
+            {
+                bail!("by requires FILE:LINE, cREF, or positioned qREF context");
+            }
             if let Some(directive) = remainder
                 .split_whitespace()
                 .skip(1)
@@ -559,6 +567,12 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             "#check requires FILE, FILE:LINE, cREF, or qREF context; use NAME signature for a declaration"
+        );
+        assert_eq!(
+            ProbeRequest::parse("Demo.foo by simp")
+                .unwrap_err()
+                .to_string(),
+            "by requires FILE:LINE, cREF, or positioned qREF context"
         );
         assert!(is_declaration_header(
             "noncomputable def parameterizedBottThickClutchingCore"
