@@ -41,7 +41,10 @@ def setupImports (setup : ModuleSetup) (profile : Bool) (stx : HeaderSyntax) :
     let opts := trace.profiler.output.set opts "mathmux"
     Elab.async.set opts false
   else
-    Elab.async.setIfNotSet setup.options.toOptions true
+    -- A check must report the first error in the current source. With asynchronous
+    -- command elaboration, later declarations can expose synthetic unsolved goals
+    -- before an earlier tactic failure has reached its snapshot.
+    Elab.async.set setup.options.toOptions false
   return .ok {
     mainModuleName := setup.name
     isModule := setup.isModule || header.isModule
