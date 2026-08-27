@@ -989,8 +989,13 @@ impl Checker {
         let target = resolve_target(&workspace.path, requested)?;
         let source = fs::read_to_string(&target)
             .with_context(|| format!("cannot read probe context {}", target.display()))?;
-        let dependencies = transitive_dependencies(&workspace.path, &target)?;
-        let (setup_path, environment) = self.worker_setup(workspace, &target, &dependencies)?;
+        let (setup_path, environment) = match self.active_worker_setup(workspace, &target) {
+            Some(current) => current,
+            None => {
+                let dependencies = transitive_dependencies(&workspace.path, &target)?;
+                self.worker_setup(workspace, &target, &dependencies)?
+            }
+        };
         let (response, _, _) = self.run_worker(
             workspace,
             &target,
@@ -1077,6 +1082,16 @@ impl Checker {
         target: &Path,
         environment: &str,
     ) -> Option<PathBuf> {
+        let (setup_path, current_environment) =
+            self.active_worker_setup(workspace, target)?;
+        (current_environment == environment).then_some(setup_path)
+    }
+
+    fn active_worker_setup(
+        &self,
+        workspace: &Workspace,
+        target: &Path,
+    ) -> Option<(PathBuf, String)> {
         let worker = self
             .workers
             .lock()
@@ -1084,7 +1099,9 @@ impl Checker {
             .get(&(workspace.reference.clone(), target.to_path_buf(), false))
             .cloned()?;
         let mut worker = worker.lock().expect("Lean worker poisoned");
-        (worker.environment == environment && worker.alive()).then(|| worker.setup_path.clone())
+        worker
+            .alive()
+            .then(|| (worker.setup_path.clone(), worker.environment.clone()))
     }
 
     fn full_fingerprint(
