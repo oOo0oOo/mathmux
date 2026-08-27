@@ -100,6 +100,7 @@ struct WorkerDiagnostic {
     text: String,
 }
 
+#[derive(Clone)]
 struct FileCheck {
     certificate: CheckRecord,
     warnings: Vec<Diagnostic>,
@@ -136,6 +137,7 @@ pub struct Checker {
     state: State,
     workers: Mutex<HashMap<WorkerKey, Arc<Mutex<LeanWorker>>>>,
     check_locks: CheckLocks,
+    failed_checks: Mutex<HashMap<CheckKey, FileCheck>>,
     setup_locks: Mutex<HashMap<String, Weak<Mutex<()>>>>,
 }
 
@@ -160,6 +162,7 @@ impl Checker {
             state,
             workers: Mutex::new(HashMap::new()),
             check_locks: Mutex::new(HashMap::new()),
+            failed_checks: Mutex::new(HashMap::new()),
             setup_locks: Mutex::new(HashMap::new()),
         })
     }
@@ -377,7 +380,7 @@ impl Checker {
         };
         let _check_guard = check_lock.try_lock().unwrap_or_else(|error| match error {
             TryLockError::WouldBlock => {
-                report(&format!("queued for shared check of {}", target.display()));
+                report(&format!("waiting for shared check of {}", target.display()));
                 check_lock.lock().expect("target check lock poisoned")
             }
             TryLockError::Poisoned(_) => panic!("target check lock poisoned"),
@@ -396,7 +399,7 @@ impl Checker {
             )))?;
         if let Err(error) = process_lock.try_lock_exclusive() {
             if error.kind() == std::io::ErrorKind::WouldBlock {
-                report(&format!("queued for shared check of {}", target.display()));
+                report(&format!("waiting for shared check of {}", target.display()));
                 process_lock.lock_exclusive().with_context(|| {
                     format!("cannot lock check target {}", target.display())
                 })?;
@@ -443,9 +446,37 @@ impl Checker {
         let phase = Instant::now();
         let dependencies = transitive_dependencies(&workspace.path, target)?;
         let dependencies_ms = phase.elapsed().as_millis() as u64;
+        let fingerprint = self.full_fingerprint(workspace, target, &dependencies)?;
+        let check_key = (workspace.reference.clone(), target.to_path_buf());
+        if !include_profile
+            && let Some(cached) = matching_failed_check(
+                &self.failed_checks,
+                &check_key,
+                &fingerprint,
+            )
+        {
+            let mut cached = cached;
+            cached.certificate.reference = reference.to_owned();
+            cached.certificate.created_at = now_unix_ms();
+            cached.profile.mode = "shared-cache".into();
+            cached.profile.reused_prefix_lines = None;
+            cached.profile.queue_ms = queue_ms;
+            cached.profile.dependencies_ms = dependencies_ms;
+            cached.profile.cache_ms = 0;
+            cached.profile.setup_ms = 0;
+            cached.profile.elaborate_ms = 0;
+            cached.profile.total_ms = file_started.elapsed().as_millis() as u64;
+            return Ok(cached);
+        }
         let phase = Instant::now();
         if let Some(cached) =
-            self.cached_check(workspace, target, &dependencies, reference, include_profile)?
+            self.cached_check(
+                workspace,
+                target,
+                &fingerprint,
+                reference,
+                include_profile,
+            )?
         {
             let mut cached = cached;
             cached.profile.target = target_name;
@@ -513,7 +544,6 @@ impl Checker {
         report(&format!("preparing imports for {}", target.display()));
         let (setup_path, environment) = self.worker_setup(workspace, target, &dependencies)?;
         let setup_ms = phase.elapsed().as_millis() as u64;
-        let fingerprint = self.full_fingerprint(workspace, target, &dependencies)?;
         let phase = Instant::now();
         report(&format!("elaborating {}", target.display()));
         let (mut response, mode, reused_prefix_lines) =
@@ -560,7 +590,7 @@ impl Checker {
             partition_diagnostics(&response.diagnostics);
         attach_source_context(&mut suggestions, target, &source);
         attach_source_context(&mut diagnostics, target, &source);
-        Ok(FileCheck {
+        let result = FileCheck {
             certificate: CheckRecord {
                 reference: reference.to_owned(),
                 workspace_ref: workspace.reference.clone(),
@@ -590,18 +620,27 @@ impl Checker {
                 total_ms: file_started.elapsed().as_millis() as u64,
                 entries: response.profile,
             },
-        })
+        };
+        let mut failed_checks = self
+            .failed_checks
+            .lock()
+            .expect("failed check cache poisoned");
+        if result.ok {
+            failed_checks.remove(&check_key);
+        } else {
+            failed_checks.insert(check_key, result.clone());
+        }
+        Ok(result)
     }
 
     fn cached_check(
         &self,
         workspace: &Workspace,
         target: &Path,
-        dependencies: &[PathBuf],
+        fingerprint: &str,
         reference: &str,
         require_profile: bool,
     ) -> Result<Option<FileCheck>> {
-        let fingerprint = self.full_fingerprint(workspace, target, dependencies)?;
         let target_name = target.to_string_lossy();
         let certificate = self
             .state
@@ -1765,8 +1804,21 @@ fn cache_only_run(run: &CheckRun) -> bool {
             && profile
                 .files
                 .iter()
-                .all(|file| file.mode == "worker-cache")
+                .all(|file| matches!(file.mode.as_str(), "worker-cache" | "shared-cache"))
     })
+}
+
+fn matching_failed_check(
+    failed_checks: &Mutex<HashMap<CheckKey, FileCheck>>,
+    key: &CheckKey,
+    fingerprint: &str,
+) -> Option<FileCheck> {
+    failed_checks
+        .lock()
+        .expect("failed check cache poisoned")
+        .get(key)
+        .filter(|cached| cached.certificate.fingerprint == fingerprint)
+        .cloned()
 }
 
 fn repetition_fingerprint(diagnostic: &Diagnostic) -> String {
@@ -2353,6 +2405,49 @@ mod tests {
 
     use super::*;
     use crate::util::run_checked;
+
+    fn failed_file_check(fingerprint: &str) -> FileCheck {
+        FileCheck {
+            certificate: CheckRecord {
+                reference: "c1".into(),
+                workspace_ref: "w1".into(),
+                target: "Proof.lean".into(),
+                fingerprint: fingerprint.into(),
+                dependencies: Vec::new(),
+                source_version: 1,
+                created_at: 1,
+            },
+            warnings: Vec::new(),
+            linters: Vec::new(),
+            suggestions: Vec::new(),
+            diagnostics: vec![Diagnostic {
+                kind: "lean".into(),
+                text: "declaration has errors".into(),
+                context: None,
+            }],
+            ok: false,
+            profile: FileCheckProfile {
+                target: "Proof.lean".into(),
+                mode: "incremental".into(),
+                reused_prefix_lines: None,
+                queue_ms: 0,
+                dependencies_ms: 0,
+                cache_ms: 0,
+                setup_ms: 0,
+                elaborate_ms: 1,
+                total_ms: 1,
+                entries: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn shared_failure_cache_requires_the_same_input() {
+        let key = ("w1".into(), PathBuf::from("Proof.lean"));
+        let cache = Mutex::new(HashMap::from([(key.clone(), failed_file_check("one"))]));
+        assert!(matching_failed_check(&cache, &key, "one").is_some());
+        assert!(matching_failed_check(&cache, &key, "two").is_none());
+    }
 
     #[test]
     fn duplicate_imports_are_ignored() {
