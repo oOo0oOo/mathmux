@@ -143,7 +143,7 @@ pub(super) const SEARCH_TUNING: SearchTuning = SearchTuning {
         qualified_rows: 256,
         exact_rows: 128,
         field_rows: 256,
-        context_rows: 256,
+        context_rows: 2_048,
         module_rows: 512,
         module_count: 6,
         name_contains_rows: 128,
