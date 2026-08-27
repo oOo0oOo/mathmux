@@ -24,7 +24,7 @@ use crate::repo::Repo;
 const WORKFLOW_HELP: &str = r#"AGENT CONTRACT
   scope     Use the preassigned workspace; never run ws or enter main/another workspace.
   discover  Search unknown things; probe known API, exact context, or failures.
-            Read search --help and probe --help. Both return qREF; show qREF --all expands it.
+            Read their --help. Start compact; expand only a selected qREF with show qREF --all.
   change    Edit intended files -> check -> submit. Use check FILE only to isolate dirty files.
   update    Use sync. Use mathmux only—never substitute git, lean, lake, or other tooling.
   Lean      Use explicit narrow imports and aligned module/namespace/path; keep public imports API-only.
@@ -43,8 +43,8 @@ const SEARCH_HELP: &str = r#"SEARCH — find or read unknown things; returns qRE
 KIND = abbrev|class|def|inductive|instance|lemma|structure|theorem
 
 RESULT
-  Default: compact ranked bundle. --limit N caps hits. --all expands this first
-  response; later use show qREF --all. Exact names include full signatures.
+  Start compact and inspect the result. Expand only a selected qREF with
+  show qREF --all. --limit N caps hits. Exact names include full signatures.
 
 RULES
   name: forces exact lookup; its | batch returns all. Bare A|B|C stops after the
@@ -872,7 +872,7 @@ mod tests {
     fn workflow_help_prefers_direct_workspace_experimentation() {
         let help = command_line().render_help().to_string();
         assert!(help.contains("Edit intended files -> check -> submit"));
-        assert!(help.contains("Read search --help and probe --help"));
+        assert!(help.contains("Start compact; expand only a selected qREF"));
         assert!(help.contains("Search unknown things; probe known API, exact context"));
     }
 }
