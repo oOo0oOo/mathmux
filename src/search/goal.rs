@@ -7,134 +7,7 @@ impl Searcher {
         location: GoalLocation,
     ) -> Result<SearchResult> {
         let source = fs::read_to_string(&location.path)?;
-        if location.tail || location.more {
-            return Ok(source_location_result(
-                workspace, &location, &source, None, false,
-            ));
-        }
-        if !location.probe {
-            return Ok(source_location_result(
-                workspace,
-                &location,
-                &source,
-                Some("source only"),
-                true,
-            ));
-        }
-        let Some((start, end, in_tactic, indent)) = goal_probe(&source, location.line) else {
-            return Ok(source_location_result(
-                workspace,
-                &location,
-                &source,
-                Some("source only"),
-                true,
-            ));
-        };
-        let mut probe = source.clone();
-        probe.replace_range(
-            start..end,
-            &goal_probe_replacement(
-                in_tactic,
-                &indent,
-                "first | exact? | aesop? | simp? | apply? | rw?",
-            ),
-        );
-        let (_, rendered) = match self.checker.probe_source(workspace, &location.path, &probe) {
-            Ok(result) => result,
-            Err(error) => {
-                return Ok(source_location_result(
-                    workspace,
-                    &location,
-                    &source,
-                    Some(&format!("goal unavailable: {error:#}")),
-                    true,
-                ));
-            }
-        };
-        let goal_state = traced_goal_state(&rendered);
-        let mut suggestions = Vec::new();
-        if let Some(state) = &goal_state {
-            for candidate in local_method_candidates(state) {
-                probe = source.clone();
-                probe.replace_range(
-                    start..end,
-                    &goal_probe_replacement(in_tactic, &indent, &candidate),
-                );
-                if self
-                    .checker
-                    .probe_source(workspace, &location.path, &probe)
-                    .is_ok_and(|(ok, _)| ok)
-                {
-                    suggestions.push(candidate);
-                    break;
-                }
-            }
-        }
-        for suggestion in try_this_suggestions(&rendered) {
-            push_suggestion(&mut suggestions, &suggestion);
-        }
-        if suggestions.is_empty() && goal_state.is_none() {
-            let detail = rendered
-                .lines()
-                .rev()
-                .find(|line| !line.trim().is_empty())
-                .map(|line| {
-                    format!(
-                        "goal search returned no tactic suggestion: {}",
-                        clean_line(line)
-                    )
-                })
-                .unwrap_or_else(|| "goal search returned no tactic suggestion".into());
-            return Ok(source_location_result(
-                workspace,
-                &location,
-                &source,
-                Some(&detail),
-                true,
-            ));
-        }
-        let relative = location
-            .path
-            .strip_prefix(&workspace.path)
-            .unwrap_or(&location.path)
-            .to_string_lossy()
-            .into_owned();
-        let mut hits = Vec::new();
-        if let Some(goal_state) = goal_state {
-            hits.push(SearchHit {
-                name: "goal".into(),
-                kind: "goal-state".into(),
-                signature: None,
-                module: String::new(),
-                path: relative.clone(),
-                line: location.line,
-                doc: None,
-                source: Some(goal_state),
-                usages: Vec::new(),
-                applicable: false,
-                required_import: None,
-            });
-        }
-        hits.extend(suggestions.into_iter().map(|suggestion| SearchHit {
-            name: clean_line(&suggestion),
-            kind: "goal".into(),
-            signature: None,
-            module: String::new(),
-            path: relative.clone(),
-            line: location.line,
-            doc: None,
-            source: Some(suggestion),
-            usages: Vec::new(),
-            applicable: true,
-            required_import: None,
-        }));
-        let has_suggestion = hits.iter().any(|hit| hit.applicable);
-        Ok(SearchResult {
-            hits,
-            inference: "goal".into(),
-            note: (!has_suggestion).then(|| "no tactic suggestion".into()),
-            ok: true,
-        })
+        Ok(source_location_result(workspace, &location, &source, None, false))
     }
 }
 pub(super) struct GoalLocation {
@@ -143,7 +16,6 @@ pub(super) struct GoalLocation {
     pub(super) line: u64,
     pub(super) tail: bool,
     pub(super) more: bool,
-    pub(super) probe: bool,
 }
 
 pub(super) struct SourceOccurrenceQuery {
@@ -768,10 +640,7 @@ pub(super) fn parse_goal_location(
     main_root: Option<&Path>,
     query: &str,
 ) -> Result<Option<GoalLocation>> {
-    let (query, more) = query
-        .rsplit_once(char::is_whitespace)
-        .filter(|(_, modifier)| modifier.eq_ignore_ascii_case("more"))
-        .map_or((query, false), |(query, _)| (query.trim_end(), true));
+    let more = false;
     let mut location_tokens = query
         .split_whitespace()
         .filter(|token| is_goal_location_token(token));
@@ -782,7 +651,7 @@ pub(super) fn parse_goal_location(
     if let Some((path, suffix)) = query.rsplit_once(':')
         && suffix.eq_ignore_ascii_case("tail")
     {
-        let Some((path, display_path, probe)) = resolve_goal_path(root, cwd, path)? else {
+        let Some((path, display_path, _)) = resolve_goal_path(root, cwd, path)? else {
             bail!(missing_source_message(root, main_root, path)?);
         };
         let line = fs::read_to_string(&path)?.lines().count().max(1) as u64;
@@ -792,7 +661,6 @@ pub(super) fn parse_goal_location(
             line,
             tail: true,
             more,
-            probe,
         }));
     }
     let mut parts = query.rsplitn(3, ':');
@@ -813,7 +681,7 @@ pub(super) fn parse_goal_location(
     } else {
         (second, last_number)
     };
-    let Some((path, display_path, probe)) = resolve_goal_path(root, cwd, path)? else {
+    let Some((path, display_path, _)) = resolve_goal_path(root, cwd, path)? else {
         bail!(missing_source_message(root, main_root, path)?);
     };
     ensure!(line > 0, "goal line starts at 1");
@@ -823,7 +691,6 @@ pub(super) fn parse_goal_location(
         line,
         tail: false,
         more,
-        probe,
     }))
 }
 
@@ -1222,242 +1089,4 @@ pub(super) fn location_source_excerpt(
         .map(|(offset, line)| format!("{:>5}  {line}", start + offset + 1))
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-pub(super) fn goal_probe(
-    source: &str,
-    requested_line: u64,
-) -> Option<(usize, usize, bool, String)> {
-    let lines = line_starts(source);
-    let requested = requested_line.saturating_sub(1) as usize;
-    for distance in 0..=2 {
-        for line in [requested.saturating_sub(distance), requested + distance] {
-            let start = *lines.get(line)?;
-            let end = lines.get(line + 1).copied().unwrap_or(source.len());
-            let text = &source[start..end];
-            for placeholder in ["sorry", "admit"] {
-                if let Some(local) = text.find(placeholder) {
-                    let absolute = start + local;
-                    let indent = text[..local]
-                        .chars()
-                        .take_while(|character| character.is_whitespace())
-                        .collect();
-                    let preceding = &source[..absolute];
-                    let in_tactic = preceding
-                        .lines()
-                        .rev()
-                        .find(|line| !line.trim().is_empty())
-                        .is_some_and(|line| line.trim_end().ends_with("by"));
-                    return Some((absolute, absolute + placeholder.len(), in_tactic, indent));
-                }
-            }
-        }
-    }
-    None
-}
-
-pub(super) fn append_goal_tactic(
-    source: &str,
-    requested_line: u64,
-    tactic: &str,
-) -> Option<String> {
-    let starts = line_starts(source);
-    let requested = requested_line.saturating_sub(1) as usize;
-    let line_text = |line: usize| {
-        let start = *starts.get(line)?;
-        let end = starts.get(line + 1).copied().unwrap_or(source.len());
-        Some(&source[start..end])
-    };
-    let is_tactic_start = |line: usize| {
-        let text = line_text(line).unwrap_or_default().trim_end();
-        text == "by" || text.ends_with(":= by") || text.ends_with(" where")
-    };
-    let forward_end = (requested + 20).min(starts.len().saturating_sub(1));
-    let tactic_line = (requested..=forward_end)
-        .find(|line| is_tactic_start(*line))
-        .or_else(|| {
-            (requested.saturating_sub(80)..requested)
-                .rev()
-                .find(|line| is_tactic_start(*line))
-        })?;
-    let command = line_text(tactic_line)?;
-    let command_indent = command
-        .chars()
-        .take_while(|character| character.is_whitespace())
-        .count();
-    let mut insertion = source.len();
-    for (line, start) in starts.iter().enumerate().skip(tactic_line + 1) {
-        let text = line_text(line)?;
-        if text.trim().is_empty() {
-            continue;
-        }
-        let indent = text
-            .chars()
-            .take_while(|character| character.is_whitespace())
-            .count();
-        if indent <= command_indent {
-            insertion = *start;
-            break;
-        }
-    }
-    let indentation = command
-        .chars()
-        .take_while(|character| character.is_whitespace())
-        .collect::<String>();
-    let indent = format!("{indentation}  ");
-    let mut probe = source.to_owned();
-    let separator = if insertion > 0 && !source[..insertion].ends_with('\n') {
-        "\n"
-    } else {
-        ""
-    };
-    probe.insert_str(insertion, &format!("{separator}{indent}{tactic}\n"));
-    Some(probe)
-}
-
-pub(super) fn goal_probe_replacement(in_tactic: bool, indent: &str, tactic: &str) -> String {
-    if in_tactic {
-        format!(
-            "run_tac\n{indent}  let goal ← Lean.Elab.Tactic.getMainGoal\n{indent}  let state ← Lean.Meta.ppGoal goal\n{indent}  Lean.logInfo m!\"{GOAL_STATE_BEGIN}\\n{{state}}\\n{GOAL_STATE_END}\"\n{indent}{tactic}"
-        )
-    } else {
-        format!(
-            "by\n{indent}  run_tac\n{indent}    let goal ← Lean.Elab.Tactic.getMainGoal\n{indent}    let state ← Lean.Meta.ppGoal goal\n{indent}    Lean.logInfo m!\"{GOAL_STATE_BEGIN}\\n{{state}}\\n{GOAL_STATE_END}\"\n{indent}  {tactic}"
-        )
-    }
-}
-
-pub(super) fn try_this_suggestions(output: &str) -> Vec<String> {
-    let mut suggestions = Vec::new();
-    let mut lines = output.lines().peekable();
-    while let Some(line) = lines.next() {
-        if let Some((_, suggestion)) = line.split_once("Try this:") {
-            let suggestion = suggestion.trim();
-            if !suggestion.is_empty() {
-                push_suggestion(&mut suggestions, suggestion);
-                continue;
-            }
-            while lines.peek().is_some_and(|line| line.trim().is_empty()) {
-                lines.next();
-            }
-            let Some(first) = lines.peek() else {
-                break;
-            };
-            let indent = first.len() - first.trim_start().len();
-            if indent == 0 {
-                continue;
-            }
-            let mut block = Vec::new();
-            let mut length = 0;
-            while let Some(next) = lines.peek() {
-                if next.trim().is_empty() {
-                    lines.next();
-                    break;
-                }
-                let next_indent = next.len() - next.trim_start().len();
-                if next_indent < indent || block.len() >= 8 || length >= 1_200 {
-                    break;
-                }
-                let normalized = next[indent..].trim_end();
-                if normalized.starts_with("-- Remaining subgoals:") {
-                    break;
-                }
-                length += normalized.len();
-                block.push(normalized);
-                lines.next();
-            }
-            if !block.is_empty() {
-                push_suggestion(&mut suggestions, &block.join("\n"));
-            }
-        }
-    }
-    suggestions
-}
-
-pub(super) fn traced_goal_state(output: &str) -> Option<String> {
-    let lines = output.lines().collect::<Vec<_>>();
-    let start = lines
-        .iter()
-        .position(|line| line.contains(GOAL_STATE_BEGIN))?
-        + 1;
-    let end = lines[start..]
-        .iter()
-        .position(|line| line.contains(GOAL_STATE_END))?
-        + start;
-    let state = lines[start..end]
-        .iter()
-        .map(|line| line.trim_end())
-        .filter(|line| !line.trim().is_empty())
-        .collect::<Vec<_>>();
-    if state.is_empty() {
-        return None;
-    }
-    let omitted = state.len().saturating_sub(SOURCE_PREVIEW_LINES);
-    let mut rendered = state[state.len().saturating_sub(SOURCE_PREVIEW_LINES)..].join("\n");
-    if omitted > 0 {
-        rendered = format!("+{omitted} context lines omitted\n{rendered}");
-    }
-    Some(rendered)
-}
-
-pub(super) fn local_method_candidates(goal_state: &str) -> Vec<String> {
-    let Some(goal) = goal_state
-        .lines()
-        .find_map(|line| line.trim().strip_prefix('⊢'))
-        .map(str::trim)
-    else {
-        return Vec::new();
-    };
-    let Some(goal_head) = goal
-        .split(|character: char| character.is_whitespace() || character == '(')
-        .find(|part| !part.is_empty())
-    else {
-        return Vec::new();
-    };
-    let hypotheses = goal_state
-        .lines()
-        .filter_map(|line| line.trim().split_once(':'))
-        .filter_map(|(name, ty)| {
-            let head = ty
-                .trim()
-                .split(|character: char| character.is_whitespace() || character == '(')
-                .find(|part| !part.is_empty())?;
-            (head == goal_head)
-                .then(|| name.split_whitespace().last().map(str::to_owned))
-                .flatten()
-        })
-        .take(6)
-        .collect::<Vec<_>>();
-    let mut candidates = Vec::new();
-    if (goal.contains('=') || goal.contains('≤') || goal.contains('<'))
-        && (goal.contains('+') || goal.contains('-') || goal.contains('*'))
-    {
-        candidates.push("omega".into());
-    }
-    for left in &hypotheses {
-        for right in &hypotheses {
-            if left == right {
-                continue;
-            }
-            candidates.push(format!("exact {left}.comp {right}"));
-            candidates.push(format!("exact {left}.trans {right}"));
-            if candidates.len() >= 8 {
-                return candidates;
-            }
-        }
-    }
-    candidates
-}
-
-pub(super) fn push_suggestion(suggestions: &mut Vec<String>, suggestion: &str) {
-    let suggestion = suggestion
-        .strip_prefix("[apply] ")
-        .or_else(|| suggestion.strip_prefix("[exact] "))
-        .unwrap_or(suggestion);
-    let has_placeholder = suggestion
-        .split(|character: char| !(character.is_alphanumeric() || character == '_'))
-        .any(|word| matches!(word, "sorry" | "admit"));
-    if !has_placeholder && !suggestions.iter().any(|seen| seen == suggestion) {
-        suggestions.push(suggestion.to_owned());
-    }
 }

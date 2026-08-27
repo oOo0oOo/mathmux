@@ -307,10 +307,15 @@ impl Service {
                     bail!(summary)
                 }
             }
-            Command::Search { query, all } => {
+            Command::Search { query, limit, all } => {
                 let workspace = self.state.workspace_for_path(&cwd)?;
                 git::prepare_workspace(&self.repo, &workspace.path)?;
-                self.searcher.search(&workspace, &cwd, &query, all)
+                self.searcher.search(&workspace, &cwd, &query, limit, all)
+            }
+            Command::Probe { query } => {
+                let workspace = self.state.workspace_for_path(&cwd)?;
+                git::prepare_workspace(&self.repo, &workspace.path)?;
+                self.searcher.probe(&workspace, &cwd, &query)
             }
             Command::Sync { push: true } => {
                 let _guard = self.mutations.lock().expect("mutation lock poisoned");

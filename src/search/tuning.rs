@@ -38,7 +38,6 @@ pub(super) struct RetrievalTuning {
     pub(super) module_count: usize,
     pub(super) name_contains_rows: usize,
     pub(super) continuation_rows: usize,
-    pub(super) name_suggestions: usize,
     pub(super) dirty_files: usize,
     pub(super) fallback_paths: usize,
 }
@@ -148,7 +147,6 @@ pub(super) const SEARCH_TUNING: SearchTuning = SearchTuning {
         module_count: 6,
         name_contains_rows: 128,
         continuation_rows: 128,
-        name_suggestions: 2_048,
         dirty_files: 256,
         fallback_paths: 96,
     },

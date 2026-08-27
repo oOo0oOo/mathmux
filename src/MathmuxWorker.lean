@@ -1,12 +1,18 @@
 import Lean.Language.Lean
 import Lean.Setup
+import Lean.Server.InfoUtils
+import Lean.Elab.Tactic
 
 open Lean Lean.Elab
 
 structure Request where
+  operation : String
   source : String
   file_name : String
   version : Nat
+  line : Nat := 0
+  column : Nat := 0
+  input : String := ""
 deriving FromJson
 
 structure Diagnostic where
@@ -27,8 +33,95 @@ structure Response where
   ok : Bool
   diagnostics : Array Diagnostic
   profile : Array ProfileEntry := #[]
+  detail : String := ""
   version : Nat
 deriving ToJson
+
+partial def collectInfoTrees (tree : Language.SnapshotTree) : BaseIO (Array InfoTree) := do
+  let mut trees := tree.element.infoTree?.toArray
+  for child in tree.children do
+    trees := trees ++ (← collectInfoTrees child.get)
+  return trees
+
+def goalContext (goal : GoalsAtResult) : ContextInfo :=
+  { goal.ctxInfo with
+    mctx := if goal.useAfter then goal.tacticInfo.mctxAfter else goal.tacticInfo.mctxBefore }
+
+def goalMVars (goal : GoalsAtResult) : List MVarId :=
+  if goal.useAfter then goal.tacticInfo.goalsAfter else goal.tacticInfo.goalsBefore
+
+def goalsAtOffset (trees : Array InfoTree) (fileMap : FileMap) (offset : Nat) :
+    Option GoalsAtResult := Id.run do
+  let hover : String.Pos.Raw := ⟨offset⟩
+  for tree in trees do
+    if let some goal := (tree.goalsAt? fileMap hover).find? fun goal => !(goalMVars goal).isEmpty then
+      return some goal
+  return none
+
+def goalAtPosition (trees : Array InfoTree) (fileMap : FileMap) (line column : Nat) :
+    Option GoalsAtResult := Id.run do
+  if line == 0 then return none
+  let zeroLine := line - 1
+  let start := fileMap.ofPosition {line := zeroLine, column := column - 1}
+  if column > 0 then return goalsAtOffset trees fileMap start.byteIdx
+  let stop := fileMap.ofPosition {line := zeroLine + 1, column := 0}
+  for offset in [start.byteIdx:stop.byteIdx + 1] do
+    if let some goal := goalsAtOffset trees fileMap offset then return some goal
+  return none
+
+def parseCategory (category : Name) (source : String) : CoreM Syntax := do
+  match Parser.runParserCategory (← getEnv) category source with
+  | .ok stx => pure stx
+  | .error error => throwError error
+
+def inspectTerm (operation source : String) : Term.TermElabM String := do
+  let stx ← parseCategory `term source
+  if operation == "synth" then
+    let type ← Term.elabType stx
+    let value ← Meta.synthInstance type
+    return s!"{(← Meta.ppExpr value).pretty} : {(← Meta.ppExpr type).pretty}"
+  let value ← Term.elabTerm stx none
+  if operation == "reduce" then
+    return (← Meta.ppExpr (← Meta.reduce value)).pretty
+  return s!"{(← Meta.ppExpr value).pretty} : {(← Meta.ppExpr (← Meta.inferType value)).pretty}"
+
+def evalTacticText (source : String) : Tactic.TacticM Unit := do
+  let stx ← parseCategory `tactic source
+  Tactic.evalTactic stx
+
+def probeFailure (detail : String) (version : Nat) : Response :=
+  { ok := false,
+    diagnostics := #[{ severity := "error", kind := "mathmux", text := detail }],
+    detail,
+    version }
+
+def runLocalProbe (snapshot : Language.Lean.InitialSnapshot) (request : Request) : IO Response := do
+  let trees ← collectInfoTrees (Language.toSnapshotTree snapshot)
+  let some goal := goalAtPosition trees snapshot.ictx.fileMap request.line request.column
+    | return probeFailure s!"no tactic context at line {request.line}" request.version
+  let mvars := goalMVars goal
+  let ctx := goalContext goal
+  try
+    let detail ← if request.operation == "goal" then
+      pure (← ctx.ppGoals mvars).pretty
+    else if request.operation == "tactic" then
+      ctx.runMetaM {} do
+        let action : Tactic.TacticM String := do
+          evalTacticText request.input
+          let remaining ← Tactic.getUnsolvedGoals
+          if remaining.isEmpty then return "solved"
+          let formats ← liftM (m := MetaM) (remaining.mapM Meta.ppGoal)
+          return (Std.Format.prefixJoin "\n" formats).pretty
+        (((action {elaborator := .anonymous}).run' {goals := mvars}) {}).run' {}
+    else
+      let some mvar := mvars.head?
+        | throw <| IO.userError "probe position has no active goal"
+      ctx.runMetaM {} do
+        mvar.withContext do
+          (inspectTerm request.operation request.input {}).run' {}
+    return {ok := true, diagnostics := #[], detail, version := request.version}
+  catch error =>
+    return probeFailure (toString error) request.version
 
 def setupImports (setup : ModuleSetup) (profile : Bool) (stx : HeaderSyntax) :
     Language.ProcessingT IO
@@ -210,7 +303,22 @@ unsafe def runServer (setup : ModuleSetup) (profile : Bool) : IO Unit := do
         fresh input
       else
         processor input
-      let response ← processSnapshot snapshot request.version profile
+      let response ← if request.operation == "check" then
+        processSnapshot snapshot request.version profile
+      else if request.line > 0 then
+        runLocalProbe snapshot request
+      else if request.operation ∈ ["term", "synth", "reduce"] then
+        let directive := match request.operation with
+          | "synth" => s!"#synth {request.input}"
+          | "reduce" => s!"#reduce {request.input}"
+          | _ => s!"#check {request.input}"
+        let source := request.source ++ "\n" ++ directive ++ "\n"
+        let probeSnapshot ← processor (Parser.mkInputContext source fileName)
+        let response ← processSnapshot probeSnapshot request.version false
+        let detail := "\n".intercalate (response.diagnostics.toList.map (·.text))
+        pure {response with detail}
+      else
+        pure (probeFailure "this probe requires FILE:LINE context" request.version)
       if profile then Lean.displayCumulativeProfilingTimes
       writeResponse response
       loop

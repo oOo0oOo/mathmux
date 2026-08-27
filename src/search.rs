@@ -25,8 +25,10 @@ use crate::util::{
     single_line, truncate_line, truncate_middle,
 };
 
+mod api;
 mod goal;
 mod plan;
+mod probe;
 mod query;
 mod source;
 mod tuning;
@@ -34,6 +36,7 @@ mod tuning;
 mod tests;
 
 use goal::*;
+use api::*;
 use plan::*;
 use query::*;
 use source::*;
@@ -50,15 +53,11 @@ const SOURCE_OCCURRENCE_ALL_LIMIT: usize = 200;
 const OUTLINE_PREVIEW_LINES: usize = 64;
 const OUTLINE_LINE_CHARS: usize = 120;
 const RELATED_RESULT_LIMIT: usize = SEARCH_TUNING.presentation.related_result_limit;
-const GOAL_STATE_BEGIN: &str = "MATHMUX_GOAL_BEGIN";
-const GOAL_STATE_END: &str = "MATHMUX_GOAL_END";
 const SEARCH_INDEX_VERSION: i64 = 7;
 const SOURCE_INDEX_KIND: &str = "source-v12";
 const DECLARATION_DETAIL_LINES: usize = SEARCH_TUNING.presentation.declaration_detail_lines;
 const INDEX_COMMIT_BATCH: usize = 64;
 const SEARCH_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
-const DIAGNOSTIC_PROBE_MAX_CHECK_MS: u64 = 2_000;
-const DIAGNOSTIC_PROBE_BUDGET: Duration = Duration::from_millis(750);
 const SOURCE_SCAN_BUDGET: Duration = Duration::from_millis(300);
 const SOURCE_FALLBACK_BUDGET: Duration = Duration::from_millis(750);
 
@@ -435,16 +434,18 @@ impl Searcher {
         workspace: &Workspace,
         cwd: &Path,
         query: &str,
+        limit: Option<usize>,
         all: bool,
     ) -> Result<String> {
-        let query = query.trim();
-        if let Some(reference) = more_search_reference(query) {
-            return self.state.show(reference, true);
-        }
+        let request = SearchRequest::parse(query, limit, all)?;
         let started = Instant::now();
-        let query = normalize_lean_inspection_query(query);
-        let requested_query = query.clone();
-        let expanded = self.expand_reference_query(workspace, &query)?;
+        let requested_query = request.displayed_query.clone();
+        let (query, forced_plan, exact_names) = match &request.expression {
+            SearchExpression::ExactNames(names) => (names[0].clone(), Some(TextSearchPlan::ExactFirst), Some(names)),
+            SearchExpression::Type(pattern) => (pattern.clone(), Some(TextSearchPlan::ForcedType), None),
+            SearchExpression::Regex(query) | SearchExpression::Query(query) => (query.clone(), None, None),
+        };
+        let expanded = self.expand_reference_query(&query)?;
         let planned = plan_search(
             workspace,
             cwd,
@@ -452,39 +453,50 @@ impl Searcher {
             &expanded.query,
             !expanded.context.is_empty(),
         )?;
-        let more = planned.more;
-        let source_show_all = all || more;
+        let source_show_all = request.all;
         let query = planned.query.as_str();
         let reference = self.state.next_ref('q')?;
-        let result = match planned.plan {
+        let result = if let Some(names) = exact_names {
+            self.exact_name_batch(workspace, names, request.all)?
+        } else { match planned.plan {
             SearchPlan::ContextOnly => SearchResult {
                 hits: Vec::new(),
                 inference: "diagnostic".into(),
                 note: Some("diagnostic context only; declaration search skipped".into()),
                 ok: true,
             },
-            SearchPlan::Goal(location) => self.goal_search(workspace, location)?,
+            SearchPlan::Location(mut location) => {
+                location.more = request.all;
+                self.goal_search(workspace, location)?
+            }
             SearchPlan::SourceRegex(source) => {
                 source_regex_result(workspace, source, source_show_all)?
             }
             SearchPlan::Source(source) => {
-                source_occurrence_result(workspace, source, source_show_all)?
+                if source.terms.len() == 1 && source.terms[0].eq_ignore_ascii_case("dependents") {
+                    self.source_dependents(workspace, &source)?
+                } else {
+                    source_occurrence_result(workspace, source, source_show_all)?
+                }
             }
             SearchPlan::Text(text_plan) => self.planned_text_search(
                 workspace,
                 query,
-                text_plan,
+                forced_plan.unwrap_or(text_plan),
                 expanded.import_target.as_deref(),
                 expanded.auxiliary_query.as_deref(),
-                all,
+                request.all,
             )?,
-        };
+        }};
         let mut result = result;
         if !expanded.context.is_empty() && requested_query.split_whitespace().count() == 1 {
             suppress_inferred_missing_note(&mut result.note);
         }
         if !expanded.context.is_empty() {
             result.hits.splice(0..0, expanded.context);
+        }
+        if let Some(limit) = request.limit {
+            result.hits.truncate(limit);
         }
         let run = SearchRun {
             reference: reference.clone(),
@@ -503,8 +515,7 @@ impl Searcher {
         let ok = result.ok;
         self.state.add_search(&run)?;
         self.state.touch_workspace(&workspace.reference)?;
-        let render_all = all || (more && run.inference == "source");
-        let rendered = if render_all {
+        let rendered = if request.all {
             self.state.show(&run.reference, true)
         } else {
             Ok(render_summary(&run))
@@ -512,7 +523,91 @@ impl Searcher {
         if ok { Ok(rendered) } else { bail!(rendered) }
     }
 
-    fn expand_reference_query(&self, workspace: &Workspace, query: &str) -> Result<ExpandedQuery> {
+    fn exact_name_batch(
+        &self,
+        workspace: &Workspace,
+        names: &[String],
+        all: bool,
+    ) -> Result<SearchResult> {
+        let mut hits = Vec::new();
+        let mut missing = Vec::new();
+        let mut warming = false;
+        for name in names {
+            let result = self.planned_text_search(
+                workspace,
+                name,
+                TextSearchPlan::ExactFirst,
+                None,
+                None,
+                all,
+            )?;
+            warming |= result.note.as_deref().is_some_and(|note| note.contains("warming"));
+            if let Some(hit) = result.hits.into_iter().find(|hit| qualified_name_matches(&hit.name, name)) {
+                hits.push(hit);
+            } else {
+                missing.push(name.clone());
+            }
+        }
+        Ok(SearchResult {
+            hits,
+            inference: "exact-batch".into(),
+            note: (!missing.is_empty()).then(|| format!("not found: {}", missing.join(", ")))
+                .or_else(|| warming.then(|| "search indexes warming".into())),
+            ok: missing.is_empty(),
+        })
+    }
+
+    fn source_dependents(
+        &self,
+        workspace: &Workspace,
+        query: &SourceOccurrenceQuery,
+    ) -> Result<SearchResult> {
+        let module = project_module_name(&workspace.path, &query.path);
+        let (scopes, warming) = self.base_scopes(workspace);
+        let connection = self.open()?;
+        install_active_scopes(&connection, &scopes)?;
+        let mut statement = connection.prepare(
+            "SELECT DISTINCT search_imports.origin, search_imports.module
+             FROM search_imports
+             JOIN active_search_scopes ON active_search_scopes.owner = search_imports.owner
+             WHERE search_imports.imported = ?1
+             ORDER BY search_imports.module, search_imports.origin",
+        )?;
+        let rows = statement.query_map([&module], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut hits = Vec::new();
+        for row in rows {
+            let (path, dependent) = row?;
+            hits.push(SearchHit {
+                name: dependent.clone(),
+                kind: "dependent".into(),
+                signature: Some(format!("imports {module}")),
+                module: dependent,
+                path,
+                line: 1,
+                doc: None,
+                source: None,
+                usages: Vec::new(),
+                applicable: false,
+                required_import: None,
+            });
+        }
+        Ok(SearchResult {
+            note: if warming {
+                Some("source index warming".into())
+            } else if hits.is_empty() {
+                Some("no indexed dependents".into())
+            } else {
+                None
+            },
+            hits,
+            inference: "dependents".into(),
+            ok: true,
+        })
+    }
+
+    fn expand_reference_query(&self, query: &str) -> Result<ExpandedQuery> {
         let mut parts = query.splitn(2, char::is_whitespace);
         let reference = parts.next().unwrap_or_default();
         let refinement = parts.next().unwrap_or_default().trim();
@@ -544,119 +639,17 @@ impl Searcher {
                 .state
                 .search_run(reference)?
                 .with_context(|| format!("unknown search reference {reference}"))?;
-            if prior.inference == "goal"
-                && !refinement.is_empty()
-                && let Some(goal) = prior
-                    .hits
-                    .iter()
-                    .find(|hit| hit.kind == "goal-state")
-                    .and_then(|hit| hit.source.as_deref())
-            {
-                return Ok(ExpandedQuery::plain(goal_refinement_query(
-                    goal, refinement,
-                )));
-            }
             let base = if search_refinement_facet(refinement) {
                 prior
                     .hits
                     .iter()
-                    .find(|hit| !matches!(hit.kind.as_str(), "goal-state" | "diagnostic-context"))
+                    .find(|hit| hit.kind != "diagnostic-context")
                     .map(|hit| hit.name.as_str())
                     .unwrap_or(&prior.query)
             } else {
                 &prior.query
             };
             return Ok(ExpandedQuery::plain(refined_search_query(base, refinement)));
-        }
-        if reference
-            .strip_prefix('c')
-            .is_some_and(|digits| !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()))
-        {
-            let repair_requested = refinement
-                .split_whitespace()
-                .any(|term| term.eq_ignore_ascii_case("repair"));
-            let automatic_repair = refinement.is_empty();
-            let refinement = refinement
-                .split_whitespace()
-                .filter(|term| !term.eq_ignore_ascii_case("repair"))
-                .collect::<Vec<_>>()
-                .join(" ");
-            let run = self
-                .state
-                .check_run(reference)?
-                .with_context(|| format!("unknown check reference {reference}"))?;
-            let diagnostic = run
-                .diagnostics
-                .first()
-                .or_else(|| run.warnings.first())
-                .or_else(|| run.suggestions.first());
-            let diagnostic_text = diagnostic.map(|value| value.text.as_str()).unwrap_or_default();
-            let mut diagnostic_query = diagnostic_search_query(
-                diagnostic_text,
-                diagnostic.and_then(|value| value.context.as_deref()),
-            );
-            if diagnostic_text.contains("Invalid field") {
-                if let Some(nearest) = self.nearest_field_declaration(&diagnostic_query)? {
-                    diagnostic_query = nearest;
-                } else if let Some(leaf) = invalid_field_leaf(&diagnostic_query) {
-                    diagnostic_query = leaf.to_owned();
-                }
-            }
-            ensure!(
-                !diagnostic_query.is_empty() || !refinement.is_empty() || diagnostic.is_some(),
-                "{reference} has no diagnostic to search"
-            );
-            let target = run
-                .failed
-                .as_deref()
-                .or_else(|| run.files.first().map(String::as_str))
-                .map(PathBuf::from);
-            let mut context = diagnostic.into_iter().map(|diagnostic| {
-                let fallback = target.as_deref().and_then(Path::to_str);
-                let (path, line) = diagnostic_position(&diagnostic.text, fallback);
-                SearchHit {
-                    name: "diagnostic context".into(),
-                    kind: "diagnostic-context".into(),
-                    signature: None,
-                    module: String::new(),
-                    path: path.unwrap_or_else(|| {
-                        target
-                            .as_ref()
-                            .map(|path| path.to_string_lossy().into_owned())
-                            .unwrap_or_default()
-                    }),
-                    line,
-                    doc: None,
-                    source: Some(diagnostic_context(
-                        &diagnostic.text,
-                        diagnostic.context.as_deref(),
-                    )),
-                    usages: Vec::new(),
-                    applicable: false,
-                    required_import: None,
-                }
-            }).collect::<Vec<_>>();
-            if (repair_requested || automatic_repair)
-                && diagnostic_text.contains("unsolved goals")
-                && run.duration_ms <= DIAGNOSTIC_PROBE_MAX_CHECK_MS
-                && let Some(target) = target.as_deref()
-            {
-                context.extend(self.diagnostic_probe_hits(
-                    workspace,
-                    target,
-                    diagnostic_text,
-                ));
-            }
-            return Ok(ExpandedQuery {
-                query: [diagnostic_query.as_str(), refinement.as_str()]
-                    .into_iter()
-                    .filter(|part| !part.is_empty())
-                    .collect::<Vec<_>>()
-                    .join(" "),
-                context,
-                import_target: target.filter(|path| workspace.path.join(path).is_file()),
-                auxiliary_query: diagnostic_instance_query(diagnostic_text),
-            });
         }
         Ok(ExpandedQuery::plain(query))
     }
@@ -734,104 +727,6 @@ impl Searcher {
         Ok((subject, context))
     }
 
-    fn nearest_field_declaration(&self, missing: &str) -> Result<Option<String>> {
-        let Some((namespace, leaf)) = missing.rsplit_once('.') else {
-            return Ok(None);
-        };
-        let connection = self.open()?;
-        let sql = format!(
-            "SELECT DISTINCT name FROM search_fts
-             WHERE name LIKE ?1 COLLATE NOCASE LIMIT {}",
-            SEARCH_TUNING.retrieval.name_suggestions,
-        );
-        let mut statement = connection.prepare(&sql)?;
-        let names = statement
-            .query_map([format!("{namespace}.%")], |row| row.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let closest = names
-            .into_iter()
-            .filter_map(|name| {
-                let candidate = name.rsplit('.').next()?;
-                Some((edit_distance(leaf, candidate), candidate.len(), name))
-            })
-            .min();
-        Ok(closest
-            .filter(|(distance, _, _)| *distance <= 2.max(leaf.chars().count() / 3))
-            .map(|(_, _, name)| name))
-    }
-
-    fn diagnostic_probe_hits(
-        &self,
-        workspace: &Workspace,
-        target: &Path,
-        diagnostic: &str,
-    ) -> Vec<SearchHit> {
-        let (_, line) = diagnostic_position(diagnostic, target.to_str());
-        let absolute = workspace.path.join(target);
-        let Ok(source) = fs::read_to_string(&absolute) else {
-            return Vec::new();
-        };
-        let started = Instant::now();
-        let mut suggestions = Vec::new();
-        if let Some(probe) = append_goal_tactic(
-            &source,
-            line,
-            "first | exact? | simp? | apply? | rw?",
-        ) && let Ok(Some((_, rendered))) = self.checker.probe_source_if_ready(
-            workspace,
-            &absolute,
-            &probe,
-            DIAGNOSTIC_PROBE_BUDGET,
-        )
-        {
-            suggestions.extend(try_this_suggestions(&rendered));
-        }
-        if suggestions.is_empty() {
-            for candidate in local_method_candidates(diagnostic).into_iter().take(3) {
-                let Some(remaining) = DIAGNOSTIC_PROBE_BUDGET.checked_sub(started.elapsed()) else {
-                    break;
-                };
-                if remaining.is_zero() {
-                    break;
-                }
-                let Some(probe) = append_goal_tactic(&source, line, &candidate) else {
-                    break;
-                };
-                if self
-                    .checker
-                    .probe_source_if_ready(workspace, &absolute, &probe, remaining)
-                    .is_ok_and(|result| result.is_some_and(|(ok, _)| ok))
-                {
-                    suggestions.push(candidate);
-                    break;
-                }
-            }
-        }
-        suggestions
-            .into_iter()
-            .filter(|suggestion| {
-                suggestion.len() <= 500
-                    && !suggestion
-                        .split_whitespace()
-                        .any(|term| term == "sorry")
-            })
-            .take(3)
-            .map(|suggestion| SearchHit {
-                name: clean_line(&suggestion),
-                kind: "diagnostic-repair".into(),
-                signature: None,
-                module: String::new(),
-                path: target.to_string_lossy().into_owned(),
-                line,
-                doc: Some("verified in the checked file context".into()),
-                source: Some(suggestion),
-                usages: Vec::new(),
-                applicable: true,
-                required_import: None,
-            })
-            .collect()
-    }
-
     pub fn evict_idle_worker(&self, idle_for: std::time::Duration) -> bool {
         let base_running = self.poll_base_workers();
         let mut state = self
@@ -849,15 +744,20 @@ impl Searcher {
         retain || base_running
     }
 
-    fn loogle_hits(&self, workspace: &Workspace, query: &str) -> (Vec<LoogleHit>, bool) {
-        self.loogle_hits_with_suggestions(workspace, query, true)
+    fn loogle_hits(
+        &self,
+        workspace: &Workspace,
+        query: &str,
+        accept_suggestions: bool,
+    ) -> (Vec<LoogleHit>, bool, Option<String>) {
+        self.loogle_hits_with_suggestions(workspace, query, accept_suggestions)
     }
 
     fn loogle_exact_name_hits(
         &self,
         workspace: &Workspace,
         query: &str,
-    ) -> (Vec<LoogleHit>, bool) {
+    ) -> (Vec<LoogleHit>, bool, Option<String>) {
         self.loogle_hits_with_suggestions(workspace, query, false)
     }
 
@@ -866,14 +766,14 @@ impl Searcher {
         workspace: &Workspace,
         query: &str,
         accept_suggestions: bool,
-    ) -> (Vec<LoogleHit>, bool) {
+    ) -> (Vec<LoogleHit>, bool, Option<String>) {
         if !type_search_enabled() || !workspace.path.join(".lake/packages/mathlib").is_dir() {
-            return (Vec::new(), false);
+            return (Vec::new(), false, None);
         }
         let mut state = match self.loogle.try_lock() {
             Ok(state) => state,
             Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
-            Err(std::sync::TryLockError::WouldBlock) => return (Vec::new(), true),
+            Err(std::sync::TryLockError::WouldBlock) => return (Vec::new(), true, None),
         };
         let stopped = match &mut *state {
             LoogleState::Running(worker) => !worker.alive(),
@@ -914,7 +814,7 @@ impl Searcher {
                 let _ = sender.send(result);
             });
             *state = LoogleState::Starting(receiver);
-            return (Vec::new(), true);
+            return (Vec::new(), true, None);
         }
         if let LoogleState::Starting(receiver) = &*state {
             match receiver.try_recv() {
@@ -926,18 +826,18 @@ impl Searcher {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     *state = LoogleState::Unavailable;
                 }
-                Err(std::sync::mpsc::TryRecvError::Empty) => return (Vec::new(), true),
+                Err(std::sync::mpsc::TryRecvError::Empty) => return (Vec::new(), true, None),
             }
         }
         let LoogleState::Running(worker) = &mut *state else {
-            return (Vec::new(), false);
+            return (Vec::new(), false, None);
         };
         match worker.query(query, accept_suggestions) {
-            Ok(hits) => (hits, false),
+            Ok((hits, error)) => (hits, false, error),
             Err(error) => {
                 append_log(&self.repo, &format!("Loogle query failed: {error:#}"));
                 *state = LoogleState::Unavailable;
-                (Vec::new(), false)
+                (Vec::new(), false, None)
             }
         }
     }
@@ -1727,7 +1627,8 @@ impl Searcher {
         let field_inventory = field_inventory_query(query);
         let explicit_declaration = explicit_declaration_name(query);
         let query = explicit_declaration.unwrap_or(query);
-        let type_search = matches!(plan, TextSearchPlan::Type);
+        let type_search = matches!(plan, TextSearchPlan::Type | TextSearchPlan::ForcedType);
+        let strict_type = matches!(plan, TextSearchPlan::ForcedType);
         let query_tokens = meaningful_query_tokens(query);
         let import_context = self.import_context(workspace, scopes, base_warming, import_target);
         let import_ms = search_started.elapsed().as_millis() as u64;
@@ -1769,8 +1670,11 @@ impl Searcher {
             } else {
                 format!("⊢ {query}")
             };
-            let (applicable_hits, applicable_warming) =
-                self.loogle_hits(workspace, &applicability_query);
+            let (applicable_hits, applicable_warming, applicable_error) =
+                self.loogle_hits(workspace, &applicability_query, !strict_type);
+            if strict_type && let Some(error) = applicable_error {
+                bail!("invalid type pattern: {}", clean_line(&error));
+            }
             warming |= applicable_warming;
             let has_full_applicability_page = applicable_hits.len() >= RESULT_LIMIT;
             let applicable = self.ranked_loogle_hits(
@@ -1782,7 +1686,11 @@ impl Searcher {
             )?;
             ranked.extend(applicable);
             if !explicit_conclusion && !has_full_applicability_page {
-                let (loogle_hits, is_warming) = self.loogle_hits(workspace, query);
+                let (loogle_hits, is_warming, related_error) =
+                    self.loogle_hits(workspace, query, !strict_type);
+                if strict_type && let Some(error) = related_error {
+                    bail!("invalid type pattern: {}", clean_line(&error));
+                }
                 warming |= is_warming;
                 let loogle = self.ranked_loogle_hits(
                     loogle_hits,
@@ -2145,7 +2053,7 @@ impl Searcher {
             }
         }
         let name_pattern = format!("\"{}\"", query.replace('"', "\\\""));
-        let (mut hits, warming) = self.loogle_exact_name_hits(workspace, &name_pattern);
+        let (mut hits, warming, _) = self.loogle_exact_name_hits(workspace, &name_pattern);
         let positions = hits
             .iter()
             .enumerate()
@@ -2786,12 +2694,6 @@ impl Searcher {
     }
 }
 
-fn invalid_field_leaf(query: &str) -> Option<&str> {
-    declaration_name_query(query)
-        .then(|| query.rsplit_once('.').map(|(_, leaf)| leaf))
-        .flatten()
-}
-
 fn search_index_writer_lock(repo: &Repo) -> Result<fs::File> {
     let path = repo.state_dir.join("search-index.lock");
     let file = fs::OpenOptions::new()
@@ -3019,7 +2921,11 @@ impl LoogleWorker {
         })
     }
 
-    fn query(&mut self, query: &str, accept_suggestions: bool) -> Result<Vec<LoogleHit>> {
+    fn query(
+        &mut self,
+        query: &str,
+        accept_suggestions: bool,
+    ) -> Result<(Vec<LoogleHit>, Option<String>)> {
         self.last_used = Instant::now();
         let query = query.lines().collect::<Vec<_>>().join(" ");
         let mut value = self.query_value(&query)?;
@@ -3034,10 +2940,10 @@ impl LoogleWorker {
         {
             value = self.query_value(suggestion)?;
         }
-        if value.get("error").is_some() {
-            return Ok(Vec::new());
+        if let Some(error) = value.get("error").and_then(Value::as_str) {
+            return Ok((Vec::new(), Some(error.to_owned())));
         }
-        Ok(value
+        let hits = value
             .get("hits")
             .and_then(Value::as_array)
             .into_iter()
@@ -3058,7 +2964,8 @@ impl LoogleWorker {
                     doc: hit.get("doc").and_then(Value::as_str).map(str::to_owned),
                 })
             })
-            .collect())
+            .collect();
+        Ok((hits, None))
     }
 
     fn query_value(&mut self, query: &str) -> Result<Value> {
@@ -3277,11 +3184,17 @@ fn render_summary(run: &SearchRun) -> String {
     if run.hits.is_empty() {
         output.push_str(" no results");
     }
-    for (index, hit) in run.hits.iter().take(SUMMARY_LIMIT).enumerate() {
+    let summary_limit = if run.inference == "exact-batch" {
+        run.hits.len()
+    } else {
+        SUMMARY_LIMIT
+    };
+    for (index, hit) in run.hits.iter().take(summary_limit).enumerate() {
         output.push('\n');
         output.push_str(&hit.name);
         let displayed_source = hit.source.as_deref().filter(|_| {
-            !related_results
+            run.inference == "probe"
+                || (!related_results
                 && ((index == 0 && proof_body_requested)
                     || (!proof_body_requested
                         && (declaration_leaf_matches(&hit.name, &run.query)
@@ -3301,24 +3214,46 @@ fn render_summary(run: &SearchRun) -> String {
                                     | "outline"
                                     | "source-occurrences"
                                     | "source-range"
-                            ))))
+                            )))))
         });
         if let Some(signature) = &hit.signature
             && !displayed_source
                 .is_some_and(|source| source_has_complete_declaration_header(hit, source))
         {
             output.push_str(" : ");
-            output.push_str(&truncate_line(&single_line(signature), 240));
+            if matches!(run.inference.as_str(), "exact" | "exact-batch") {
+                output.push_str(&single_line(signature));
+            } else {
+                output.push_str(&truncate_line(&single_line(signature), 240));
+            }
         }
-        output.push_str(&format!("  {}:{}", hit.path, hit.line));
+        if !hit.path.is_empty() {
+            output.push_str(&format!("  {}", hit.path));
+            if hit.line > 0 {
+                output.push_str(&format!(":{}", hit.line));
+            }
+        }
         if hit.applicable {
             output.push_str("  applicable");
         }
         if let Some(module) = &hit.required_import {
             output.push_str(&format!("\n  import {module}"));
         }
+        for usage in hit.usages.iter().take(3) {
+            output.push_str(&format!("\n  used: {}:{}", usage.path, usage.line));
+            if let Some(context) = &usage.context {
+                output.push_str(&format!(" in {context}"));
+            }
+        }
+        if hit.usages.len() > 3 {
+            output.push_str(&format!(
+                "\n  +{} usages; show {} --all",
+                hit.usages.len() - 3,
+                run.reference
+            ));
+        }
         if let Some(source) = displayed_source {
-            if !matches!(
+            if run.inference != "probe" && !matches!(
                 hit.kind.as_str(),
                 "file"
                     | "fields"
@@ -3371,10 +3306,10 @@ fn render_summary(run: &SearchRun) -> String {
             }
         }
     }
-    if run.hits.len() > SUMMARY_LIMIT {
+    if run.hits.len() > summary_limit {
         output.push_str(&format!(
-            "\n+{} results; show {}",
-            run.hits.len() - SUMMARY_LIMIT,
+            "\n+{} results; show {} --all",
+            run.hits.len() - summary_limit,
             run.reference
         ));
     }

@@ -49,10 +49,24 @@ The binary is written to `target/release/mathmux`.
 - manage isolated git worktrees, commits, merges, and project progress
 - check Lean files, build targets, and audit axioms
 
-### mathmux might eventually do
+### Search and probe
 
-- local search, like lean-lsp-mcp
-- informal mathematics (getting inspired by [TheoremGraph](https://arxiv.org/abs/2606.25363))
+`search` is the discovery and source-reading interface; `probe` inspects a known
+declaration, exact Lean context, or stored failure. Both return a `qREF`, whose
+full bounded result is available through `show qREF --all`.
+
+```sh
+mathmux search name:Nat.succ
+mathmux search 'type:_ → _' --limit 12
+mathmux search Mathlib/Data/Nat/Basic.lean dependents
+mathmux probe Mathlib/Data/Nat/Basic.lean '#check Nat.succ'
+mathmux probe Proof.lean:42 goal
+mathmux probe Proof.lean:42 'by simp'
+```
+
+Run `mathmux search --help` and `mathmux probe --help` for the complete compact
+grammar. Probe never guesses an elaboration context, and `check` remains the
+certification step after source edits.
 
 ### mathmux won't
 

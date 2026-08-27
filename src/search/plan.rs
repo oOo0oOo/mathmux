@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) enum SearchPlan {
     ContextOnly,
-    Goal(GoalLocation),
+    Location(GoalLocation),
     SourceRegex(SourceRegexQuery),
     Source(SourceOccurrenceQuery),
     Text(TextSearchPlan),
@@ -12,12 +12,12 @@ pub(super) enum SearchPlan {
 pub(super) enum TextSearchPlan {
     ExactFirst,
     Type,
+    ForcedType,
     Discovery,
 }
 
 pub(super) struct PlannedSearch {
     pub(super) query: String,
-    pub(super) more: bool,
     pub(super) plan: SearchPlan,
 }
 
@@ -29,13 +29,12 @@ pub(super) fn plan_search(
     has_context: bool,
 ) -> Result<PlannedSearch> {
     let location = parse_goal_location(&workspace.path, cwd, Some(main_root), query)?;
-    let more = location.is_none() && search_more_requested(query);
     let query = strip_search_modifiers(query);
     ensure!(!query.is_empty() || has_context, "search query is empty");
     let plan = if query.is_empty() {
         SearchPlan::ContextOnly
     } else if let Some(location) = location {
-        SearchPlan::Goal(location)
+        SearchPlan::Location(location)
     } else if let Some(source) =
         parse_source_regex_query(&workspace.path, cwd, Some(main_root), &query)?
     {
@@ -47,7 +46,7 @@ pub(super) fn plan_search(
     } else {
         SearchPlan::Text(text_search_plan(&query))
     };
-    Ok(PlannedSearch { query, more, plan })
+    Ok(PlannedSearch { query, plan })
 }
 
 pub(super) fn text_search_plan(query: &str) -> TextSearchPlan {

@@ -25,7 +25,7 @@ const WORKFLOW_HELP: &str = r#"AGENT RULES
   Workspace is preassigned; do not run ws or enter main/another workspace.
   Prefer experimenting in intended files over Scratch files; isolation makes this safe.
   Use mathmux, never git, lean, lake build, or equivalent commands directly.
-  Search first; use search --help for its query forms. Edit -> check -> submit.
+  Search to find/read; probe known API/context/failures. Edit -> check -> submit.
   Use check FILE only to isolate one of several dirty Lean files. Use sync to update.
   Use show REF for stored detail; do not rerun a command only for more output.
   Use Lean modules with explicit narrow imports and aligned module/namespace/path.
@@ -33,37 +33,35 @@ const WORKFLOW_HELP: &str = r#"AGENT RULES
   sorry is tracked during development; new axioms fail validation.
   Do not edit .lake or generated artifacts."#;
 
-const SEARCH_HELP: &str = r#"QUERY FORMS (inferred)
-  cREF [TERMS]                  diagnostic plus related API
-  cREF repair                   test bounded repairs for eligible unsolved goals
-  qREF TERMS                    refine a stored search
-  qREF FACET                    FACET: fields|constructors|coercions|lemmas|usages
-  qREF more                     print complete stored results
-  sREF [TERMS]                  declarations added by a submission
+const SEARCH_HELP: &str = r#"QUERY
+  NAME | NAME* | TYPE_OR_CONCEPT_TERMS | A|B|C
+  KIND NAME [source|body|proof]
+  name:NAME | name:A|B|C | type:LEAN_TYPE
+  FILE:LINE | FILE:START-END | FILE:tail
+  FILE[:RANGE] TERMS
+  FILE outline|declarations|imports|dependents
+  /REGEX/ | PATH /REGEX/ | re:/REGEX/ | PATH re:/REGEX/
+  qREF TERMS | sREF TERMS
 
-  FILE:LINE[:COLUMN]            goal and tested suggestions, or labelled source only
-  MODULE.NAME:LINE              same lookup using Lean module notation
-  FILE:LINE more                larger bounded source context
-  FILE:tail                     bounded end-of-file context
-  FILE:START-END                bounded source range
-  FILE[:START-END] TERM[|TERM]  literal source occurrences
-  /REGEX/ | PATH /REGEX/ | FILE:/REGEX/ bounded matches; ranges and dependencies work
-  FILE imports [TERMS]          imports, optionally filtered
-  FILE outline|declarations     declarations with lines and signatures
+KIND = abbrev|class|def|inductive|instance|lemma|structure|theorem
 
-  NAME                          exact declaration plus nearby API
-  KIND NAME [body|proof|source] declaration lookup
-  KIND = abbrev|class|def|inductive|instance|lemma|structure|theorem
-  NAME*                         declaration-name glob
-  STRUCTURE fields              complete field inventory
-  quotient topology             type, name, concept, and source search
-  A|B                           alternatives; stop after the first useful branch
+Exact names include full signatures. name:A|B|C returns every named declaration;
+bare A|B|C stops after the first useful branch. type: is unification search and
+accepts `_` holes. Sigil what you know; leave inference for what you do not."#;
 
-Also accepts #check, #print, #synth, @NAME, and _root_.NAME. Ranking respects
-imports when a target file is known. Every result is stored under qREF. Default
-output is compact; --all prints the complete current result. --all is the only
-search option; express scopes, source/body, and facets inside QUERY. Quote QUERY
-when it contains shell characters such as #, |, or *."#;
+const PROBE_HELP: &str = r##"PROBE
+  mathmux probe SUBJECT [FOCUS]
+  mathmux probe CONTEXT [SUBJECT] [FOCUS]
+  mathmux probe CONTEXT LEAN_DIRECTIVE
+
+SUBJECT = NAME | type:LEAN_TYPE | qREF
+CONTEXT = FILE | FILE:LINE | PATH | cREF | qREF
+FOCUS = signature|apply|fields|constructors|ext|simp|instances|coercions|
+        usages|source|goal|types|defeq|rewrite|profile
+LEAN_DIRECTIVE = "#check TERM"|"#synth TYPE"|"#reduce TERM"|"by TACTIC"
+
+Context is explicit and never inferred from command history. Probe inspects known
+API, source context, or a stored failure; check remains the certification step."##;
 
 #[derive(Parser)]
 #[command(
@@ -114,9 +112,19 @@ enum TopCommand {
         /// Query terms; the query form is inferred as documented above.
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
+        /// Return at most N ranked results.
+        #[arg(long, conflicts_with = "all")]
+        limit: Option<usize>,
         /// Print the complete result instead of its compact preview.
         #[arg(long)]
         all: bool,
+    },
+    /// Inspect a known Lean API, source context, or stored failure.
+    #[command(long_about = PROBE_HELP)]
+    Probe {
+        /// Probe expression in the grammar documented above.
+        #[arg(required = true, num_args = 1.., allow_hyphen_values = true)]
+        query: Vec<String>,
     },
     /// Update the workspace from managed main, or push managed main.
     ///
@@ -332,9 +340,13 @@ pub fn run() -> Result<u8> {
             }),
             profile,
         },
-        TopCommand::Search { query, all } => Command::Search {
+        TopCommand::Search { query, limit, all } => Command::Search {
             query: query.join(" "),
+            limit,
             all,
+        },
+        TopCommand::Probe { query } => Command::Probe {
+            query: query.join(" "),
         },
         TopCommand::Sync { push } => Command::Sync { push },
         TopCommand::Submit { message, files } => {
@@ -791,15 +803,16 @@ mod tests {
             .try_get_matches_from(["mathmux", "search", "LinearEquiv.ofFinrankEq", "--all"])
             .unwrap();
         let args = Args::from_arg_matches(&matches).unwrap();
-        let TopCommand::Search { query, all } = args.command else {
+        let TopCommand::Search { query, all, limit } = args.command else {
             panic!("expected search command");
         };
         assert_eq!(query, ["LinearEquiv.ofFinrankEq"]);
         assert!(all);
+        assert!(limit.is_none());
     }
 
     #[test]
-    fn search_help_lists_inferred_query_forms() {
+    fn search_and_probe_help_expose_only_the_new_api() {
         let mut command = command_line();
         let help = command
             .find_subcommand_mut("search")
@@ -807,28 +820,30 @@ mod tests {
             .render_long_help()
             .to_string();
         for form in [
-            "cREF [TERMS]",
-            "FILE:LINE[:COLUMN]",
-            "FILE imports [TERMS]",
-            "FILE outline|declarations",
+            "name:NAME",
+            "type:LEAN_TYPE",
+            "FILE:LINE",
+            "outline|declarations|imports|dependents",
             "PATH /REGEX/",
-            "FILE:/REGEX/",
-            "STRUCTURE fields",
-            "quotient topology",
-            "A|B",
-            "--all is the only",
-            "facets inside QUERY",
-            "such as #, |, or *",
-            "Quote QUERY",
+            "name:A|B|C",
+            "--limit",
         ] {
             assert!(help.contains(form), "missing search form {form}");
         }
+        assert!(!help.contains("cREF repair"));
+        let probe_help = command
+            .find_subcommand_mut("probe")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(probe_help.contains("LEAN_DIRECTIVE"));
+        assert!(probe_help.contains("Context is explicit"));
     }
 
     #[test]
     fn workflow_help_prefers_direct_workspace_experimentation() {
         let help = command_line().render_help().to_string();
         assert!(help.contains("experimenting in intended files over Scratch files"));
-        assert!(help.contains("use search --help for its query forms"));
+        assert!(help.contains("Search to find/read; probe known API/context/failures"));
     }
 }

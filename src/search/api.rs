@@ -1,0 +1,168 @@
+use anyhow::{Result, bail, ensure};
+
+const KINDS: &[&str] = &[
+    "abbrev", "class", "def", "inductive", "instance", "lemma", "structure", "theorem",
+];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum SearchExpression {
+    ExactNames(Vec<String>),
+    Type(String),
+    Regex(String),
+    Query(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SearchRequest {
+    pub(super) expression: SearchExpression,
+    pub(super) displayed_query: String,
+    pub(super) limit: Option<usize>,
+    pub(super) all: bool,
+}
+
+impl SearchRequest {
+    pub(super) fn parse(query: &str, limit: Option<usize>, all: bool) -> Result<Self> {
+        let query = query.trim();
+        ensure!(!query.is_empty(), "search query is empty");
+        if let Some(limit) = limit {
+            ensure!((1..=200).contains(&limit), "--limit must be between 1 and 200");
+        }
+        ensure!(
+            !query.split_whitespace().any(|term| term.eq_ignore_ascii_case("more")),
+            "search has no `more` modifier; use `show qREF --all`"
+        );
+        ensure!(
+            !query.starts_with('c') || !reference(query.split_whitespace().next().unwrap_or(""), 'c'),
+            "inspect a stored check with `mathmux probe cREF`"
+        );
+        ensure!(
+            !matches!(query.split_whitespace().next(), Some("#check" | "#synth" | "#reduce" | "#print")),
+            "Lean directives belong to `mathmux probe CONTEXT \"#check TERM\"`"
+        );
+
+        let terms = query.split_whitespace().collect::<Vec<_>>();
+        if terms.len() > 1 && KINDS.contains(&terms[0]) && terms[1].starts_with("name:") {
+            bail!("KIND and name: are separate search forms and cannot be combined");
+        }
+
+        let expression = if let Some(names) = query.strip_prefix("name:") {
+            ensure!(!names.chars().any(char::is_whitespace), "name: accepts one name or a `|` batch");
+            let names = names.split('|').map(str::trim).collect::<Vec<_>>();
+            ensure!(
+                !names.is_empty() && names.iter().all(|name| declaration_name(name)),
+                "invalid exact-name batch"
+            );
+            SearchExpression::ExactNames(names.into_iter().map(str::to_owned).collect())
+        } else if let Some(pattern) = query.strip_prefix("type:") {
+            let pattern = pattern.trim();
+            ensure!(!pattern.is_empty(), "type: requires a Lean type pattern");
+            validate_type_pattern(pattern)?;
+            SearchExpression::Type(pattern.to_owned())
+        } else if let Some(regex) = query.strip_prefix("re:") {
+            SearchExpression::Regex(canonical_regex(None, regex)?)
+        } else if terms.len() >= 2 && terms[1].starts_with("re:") {
+            let path = terms[0];
+            let regex = query[path.len()..].trim().strip_prefix("re:").unwrap();
+            SearchExpression::Regex(canonical_regex(Some(path), regex)?)
+        } else {
+            SearchExpression::Query(query.to_owned())
+        };
+        Ok(Self {
+            expression,
+            displayed_query: query.to_owned(),
+            limit,
+            all,
+        })
+    }
+}
+
+fn validate_type_pattern(pattern: &str) -> Result<()> {
+    let mut stack = Vec::new();
+    let mut quoted = false;
+    let mut escaped = false;
+    for ch in pattern.chars() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                quoted = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => quoted = true,
+            '(' | '[' | '{' => stack.push(ch),
+            ')' | ']' | '}' => {
+                let expected = match ch {
+                    ')' => '(',
+                    ']' => '[',
+                    '}' => '{',
+                    _ => unreachable!(),
+                };
+                ensure!(stack.pop() == Some(expected), "invalid type: unmatched `{ch}`");
+            }
+            _ => {}
+        }
+    }
+    ensure!(!quoted, "invalid type: unterminated string literal");
+    ensure!(stack.is_empty(), "invalid type: unmatched delimiter");
+    Ok(())
+}
+
+fn canonical_regex(path: Option<&str>, regex: &str) -> Result<String> {
+    let regex = regex.trim();
+    ensure!(regex.starts_with('/') && regex.ends_with('/') && regex.len() > 2, "re: expects /REGEX/");
+    Ok(match path {
+        Some(path) => format!("{path} {regex}"),
+        None => regex.to_owned(),
+    })
+}
+
+fn declaration_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('.')
+        && !name.ends_with('.')
+        && name.split('.').all(|part| {
+            !part.is_empty()
+                && part
+                    .chars()
+                    .all(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '\''))
+        })
+}
+
+fn reference(term: &str, kind: char) -> bool {
+    term.strip_prefix(kind)
+        .is_some_and(|digits| !digits.is_empty() && digits.chars().all(|ch| ch.is_ascii_digit()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_forced_query_classes_without_fallback() {
+        assert_eq!(
+            SearchRequest::parse("name:A.B|C.D", None, false).unwrap().expression,
+            SearchExpression::ExactNames(vec!["A.B".into(), "C.D".into()])
+        );
+        assert_eq!(
+            SearchRequest::parse("type:_ ≃L[ℂ] F", None, false).unwrap().expression,
+            SearchExpression::Type("_ ≃L[ℂ] F".into())
+        );
+        assert_eq!(
+            SearchRequest::parse("Mathlib re:/foo|bar/", None, false).unwrap().expression,
+            SearchExpression::Regex("Mathlib /foo|bar/".into())
+        );
+        assert!(SearchRequest::parse("type:(Nat → Nat", None, false).is_err());
+    }
+
+    #[test]
+    fn rejects_removed_legacy_forms() {
+        assert!(SearchRequest::parse("q12 more", None, false).is_err());
+        assert!(SearchRequest::parse("c12 repair", None, false).is_err());
+        assert!(SearchRequest::parse("#check Nat", None, false).is_err());
+        assert!(SearchRequest::parse("theorem name:foo", None, false).is_err());
+    }
+}

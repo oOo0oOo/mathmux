@@ -99,9 +99,13 @@ pub struct CheckRepetition {
 
 #[derive(Debug, Serialize)]
 struct WorkerRequest<'a> {
+    operation: &'a str,
     source: &'a str,
     file_name: &'a str,
     version: u64,
+    line: u64,
+    column: u64,
+    input: &'a str,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -110,7 +114,26 @@ struct WorkerResponse {
     diagnostics: Vec<WorkerDiagnostic>,
     #[serde(default)]
     profile: Vec<CheckProfileEntry>,
+    #[serde(default)]
+    detail: String,
     version: u64,
+}
+
+#[derive(Clone, Copy)]
+struct WorkerAction<'a> {
+    operation: &'a str,
+    line: u64,
+    column: u64,
+    input: &'a str,
+}
+
+impl WorkerAction<'_> {
+    const CHECK: Self = Self {
+        operation: "check",
+        line: 0,
+        column: 0,
+        input: "",
+    };
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash)]
@@ -141,9 +164,12 @@ type CheckKey = (String, PathBuf);
 type CheckLocks = Mutex<HashMap<CheckKey, Weak<Mutex<()>>>>;
 
 #[derive(Clone, Copy)]
-enum WorkerRun {
+enum WorkerRun<'a> {
     Check,
-    Probe(Duration),
+    Probe {
+        timeout: Duration,
+        action: WorkerAction<'a>,
+    },
     Profile,
 }
 
@@ -782,12 +808,12 @@ impl Checker {
         setup_path: &Path,
         environment: &str,
         source: &str,
-        run: WorkerRun,
+        run: WorkerRun<'_>,
     ) -> Result<(WorkerResponse, &'static str, Option<u64>)> {
-        let (allow_fallback, retry_worker, timeout) = match run {
-            WorkerRun::Check => (true, true, CHECK_TIMEOUT),
-            WorkerRun::Probe(timeout) => (false, false, timeout),
-            WorkerRun::Profile => (false, true, CHECK_TIMEOUT),
+        let (allow_fallback, retry_worker, timeout, action) = match run {
+            WorkerRun::Check => (true, true, CHECK_TIMEOUT, WorkerAction::CHECK),
+            WorkerRun::Probe { timeout, action } => (false, false, timeout, action),
+            WorkerRun::Profile => (false, true, CHECK_TIMEOUT, WorkerAction::CHECK),
         };
         let profile = matches!(run, WorkerRun::Profile);
         let key = (workspace.reference.clone(), target.to_path_buf(), profile);
@@ -869,7 +895,7 @@ impl Checker {
                 }
             }
         }
-        match worker_guard.check(source, &target.to_string_lossy(), timeout, !profile) {
+        match worker_guard.request(source, &target.to_string_lossy(), timeout, !profile, action) {
             Ok((response, reuse)) => Ok((
                 response,
                 if profile {
@@ -885,7 +911,7 @@ impl Checker {
             )),
             Err(error) => {
                 let timed_out = error.downcast_ref::<CheckTimeout>().is_some();
-                if !(timed_out && matches!(run, WorkerRun::Probe(_))) {
+                if !(timed_out && matches!(run, WorkerRun::Probe { .. })) {
                     self.record_worker_failure(&format!("request: {error:#}"));
                 }
                 drop(worker_guard);
@@ -901,7 +927,13 @@ impl Checker {
                         profile,
                     )
                     .with_context(|| format!("Lean worker restart failed after: {error:#}"))?;
-                    match replacement.check(source, &target.to_string_lossy(), timeout, true) {
+                    match replacement.request(
+                        source,
+                        &target.to_string_lossy(),
+                        timeout,
+                        true,
+                        action,
+                    ) {
                         Ok((response, _)) => {
                             self.workers
                                 .lock()
@@ -933,74 +965,47 @@ impl Checker {
         }
     }
 
-    pub fn probe_source(
+    pub fn probe_context(
         &self,
         workspace: &Workspace,
         requested: &Path,
-        source: &str,
-    ) -> Result<(bool, String)> {
-        self.probe_source_with_timeout(workspace, requested, source, CHECK_TIMEOUT)
-    }
-
-    fn probe_source_with_timeout(
-        &self,
-        workspace: &Workspace,
-        requested: &Path,
-        source: &str,
-        timeout: Duration,
+        line: u64,
+        column: u64,
+        operation: &str,
+        input: &str,
     ) -> Result<(bool, String)> {
         let target = resolve_target(&workspace.path, requested)?;
+        let source = fs::read_to_string(&target)
+            .with_context(|| format!("cannot read probe context {}", target.display()))?;
         let dependencies = transitive_dependencies(&workspace.path, &target)?;
         let (setup_path, environment) = self.worker_setup(workspace, &target, &dependencies)?;
-        let (response, _, _) =
-            self.run_worker(
-                workspace,
-                &target,
-                &setup_path,
-                &environment,
-                source,
-                WorkerRun::Probe(timeout),
-            )?;
-        let ok = response.ok;
-        Ok((
-            ok,
+        let (response, _, _) = self.run_worker(
+            workspace,
+            &target,
+            &setup_path,
+            &environment,
+            &source,
+            WorkerRun::Probe {
+                timeout: Duration::from_secs(2),
+                action: WorkerAction {
+                    operation,
+                    line,
+                    column,
+                    input,
+                },
+            },
+        )?;
+        let detail = if response.detail.trim().is_empty() {
             response
                 .diagnostics
-                .into_iter()
-                .map(|diagnostic| diagnostic.text)
+                .iter()
+                .map(|diagnostic| diagnostic.text.as_str())
                 .collect::<Vec<_>>()
-                .join("\n"),
-        ))
-    }
-
-    pub fn probe_source_if_ready(
-        &self,
-        workspace: &Workspace,
-        requested: &Path,
-        source: &str,
-        timeout: Duration,
-    ) -> Result<Option<(bool, String)>> {
-        let target = resolve_target(&workspace.path, requested)?;
-        let worker = match self.workers.try_lock() {
-            Ok(workers) => workers
-                .get(&(workspace.reference.clone(), target, false))
-                .cloned(),
-            Err(std::sync::TryLockError::Poisoned(error)) => error
-                .into_inner()
-                .get(&(workspace.reference.clone(), target, false))
-                .cloned(),
-            Err(std::sync::TryLockError::WouldBlock) => None,
+                .join("\n")
+        } else {
+            response.detail
         };
-        let ready = worker.is_some_and(|worker| {
-            worker
-                .try_lock()
-                .is_ok_and(|mut worker| worker.alive())
-        });
-        if !ready {
-            return Ok(None);
-        }
-        self.probe_source_with_timeout(workspace, requested, source, timeout)
-            .map(Some)
+        Ok((response.ok, detail))
     }
 
     fn worker_setup(
@@ -1637,15 +1642,17 @@ impl LeanWorker {
         })
     }
 
-    fn check(
+    fn request(
         &mut self,
         source: &str,
         file_name: &str,
         timeout: Duration,
         reuse_response: bool,
+        action: WorkerAction<'_>,
     ) -> Result<(WorkerResponse, WorkerReuse)> {
         self.last_used = Instant::now();
         if reuse_response
+            && action.operation == "check"
             && self.last_source.as_deref() == Some(source)
             && let Some(response) = &self.last_response
         {
@@ -1667,9 +1674,13 @@ impl LeanWorker {
         serde_json::to_writer(
             &mut self.stdin,
             &WorkerRequest {
+                operation: action.operation,
                 source,
                 file_name,
                 version: self.version,
+                line: action.line,
+                column: action.column,
+                input: action.input,
             },
         )?;
         self.stdin.write_all(b"\n")?;
@@ -1735,7 +1746,7 @@ impl LeanWorker {
         }
         let response = deduplicate_diagnostics(response);
         self.last_source = Some(source.to_owned());
-        self.last_response = Some(response.clone());
+        self.last_response = (action.operation == "check").then(|| response.clone());
         Ok((
             response,
             WorkerReuse {
@@ -1842,6 +1853,7 @@ fn fallback_check(repo: &Repo, root: &Path, target: &Path) -> Result<WorkerRespo
         ok: output.status.success(),
         diagnostics,
         profile: Vec::new(),
+        detail: String::new(),
         version: 1,
     })
 }

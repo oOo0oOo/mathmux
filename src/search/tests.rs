@@ -237,58 +237,6 @@ fn legacy_reference_storage_migrates_to_file_ids() {
 }
 
 #[test]
-fn lean_inspection_syntax_normalizes_to_search_terms() {
-    assert_eq!(
-        normalize_lean_inspection_query("@Demo.useful"),
-        "Demo.useful"
-    );
-    assert_eq!(
-        normalize_lean_inspection_query("@Demo.useful x y MORE"),
-        "Demo.useful MORE"
-    );
-    assert_eq!(
-        normalize_lean_inspection_query("#check Demo.useful"),
-        "Demo.useful"
-    );
-    assert_eq!(
-        normalize_lean_inspection_query("#print @Demo.useful x"),
-        "Demo.useful"
-    );
-    assert_eq!(
-        normalize_lean_inspection_query("_root_.Demo.useful"),
-        "Demo.useful"
-    );
-    assert_eq!(
-        normalize_lean_inspection_query("#check @_root_.Demo.useful x"),
-        "Demo.useful"
-    );
-    assert_eq!(
-        normalize_lean_inspection_query("#synth TopologicalSpace X"),
-        "TopologicalSpace X"
-    );
-    assert_eq!(
-        normalize_lean_inspection_query("⊢ Continuous f"),
-        "⊢ Continuous f"
-    );
-    assert_eq!(
-        normalize_lean_inspection_query(r"Finset.min\x27_mem|Finset.isLeast_min\'"),
-        "Finset.min'_mem|Finset.isLeast_min'"
-    );
-    assert_eq!(
-        normalize_lean_inspection_query(r"Demo.first\|Demo.second"),
-        "Demo.first|Demo.second"
-    );
-    assert_eq!(
-        normalize_lean_inspection_query("LinearMap.mkContinuous2 FILE"),
-        "LinearMap.mkContinuous2"
-    );
-    assert_eq!(
-        normalize_lean_inspection_query("FILE Demo.lean outline"),
-        "Demo.lean outline"
-    );
-}
-
-#[test]
 fn query_parsing_scoring_and_ranking_regressions() {
     assert!(type_shaped("_ → Injective _"));
     assert!(!type_shaped("injective function"));
@@ -343,32 +291,14 @@ fn query_parsing_scoring_and_ranking_regressions() {
         Some("Demo.ready".into())
     );
     assert_eq!(declaration_predicate_base("Demo.iso"), None);
-    assert_eq!(more_search_reference("q4246 MORE"), Some("q4246"));
     assert_eq!(
-        more_search_reference("projectionRangeInclusionHom q4246 MORE"),
-        Some("q4246")
-    );
-    assert_eq!(more_search_reference("q4246 comp"), None);
-    assert!(search_more_requested("declaration MORE"));
-    assert!(search_more_requested("File.lean:1-120 more"));
-    assert!(!search_more_requested("moreover"));
-    assert_eq!(
-        strip_search_modifiers("declaration terms MORE"),
-        "declaration terms"
-    );
-    assert_eq!(
-        strip_search_modifiers("declaration MORE terms more"),
-        "declaration terms"
-    );
-    assert_eq!(
-        strip_search_modifiers("VectorBundle FILE:LINE MORE"),
+        strip_search_modifiers("VectorBundle FILE:LINE"),
         "VectorBundle"
     );
     assert_eq!(
         strip_search_modifiers("declaration terms"),
         "declaration terms"
     );
-    assert_eq!(strip_search_modifiers("MORE"), "");
     let contextual_hit = SearchHit {
         name: "Demo.projectionRange_nearby_isomorphic".into(),
         kind: "theorem".into(),
@@ -1509,70 +1439,7 @@ fn references_decode_from_ilean_keys() {
 
 #[test]
 fn goal_and_source_query_regressions() {
-    assert_eq!(
-        try_this_suggestions("Try this:\n  [apply] exact useful h\n"),
-        vec!["exact useful h"]
-    );
-    assert_eq!(
-        try_this_suggestions(
-            "Try this:\n  [apply] obtain ⟨value, property⟩ := b\n  simp_all only [Prod.mk.injEq,\n    true_and]\n\nwarning: later\n"
-        ),
-        vec!["obtain ⟨value, property⟩ := b\nsimp_all only [Prod.mk.injEq,\n  true_and]"]
-    );
-    assert_eq!(
-        try_this_suggestions(
-            "Try this:\n  [apply] refine useful ?_\n  -- Remaining subgoals:\n  -- ⊢ True\n"
-        ),
-        vec!["refine useful ?_"]
-    );
-    assert!(try_this_suggestions("Try this: simp_all; sorry\n").is_empty());
-    assert!(try_this_suggestions("Try this:\n  exact h\n  admit\n").is_empty());
-    assert_eq!(
-        traced_goal_state(
-            "MATHMUX_GOAL_BEGIN\nX : Type\nh : True\n⊢ True\nMATHMUX_GOAL_END\nTry this: exact h"
-        )
-        .as_deref(),
-        Some("X : Type\nh : True\n⊢ True")
-    );
-    assert_eq!(
-        local_method_candidates(
-            "f g : X → X\nhf : Continuous f\nhg : Continuous g\n⊢ Continuous (f ∘ g)"
-        )
-        .first()
-        .map(String::as_str),
-        Some("exact hf.comp hg")
-    );
-    assert_eq!(
-        goal_refinement_query("hf : Continuous f\n⊢ Continuous (f ∘ g)", "comp"),
-        "Continuous.comp"
-    );
     assert_eq!(edit_distance("compp", "comp"), 1);
-    assert_eq!(
-        invalid_field_leaf("And.add_isCompact_both"),
-        Some("add_isCompact_both")
-    );
-    assert_eq!(invalid_field_leaf("field with context"), None);
-    assert_eq!(
-        diagnostic_goal_query(
-            "⊢ Continuous fun a => Matrix.fromBlocks (A a) 0 0 (D a) (finSumFinEquiv.symm i)",
-            &HashSet::from(["a", "A", "D", "i"])
-        ),
-        "Matrix.fromBlocks finSumFinEquiv.symm Continuous"
-    );
-    assert_eq!(
-        diagnostic_goal_query(
-            "⊢ Matrix.toLinearMap (BundleCoordinate.coordinateMap φ b₀ b) = rhs",
-            &HashSet::from(["φ", "b₀", "b", "rhs"])
-        ),
-        "BundleCoordinate.coordinateMap Matrix.toLinearMap"
-    );
-    assert_eq!(
-        diagnostic_goal_query(
-            "⊢ pullbackIsoOfEq generated._proof_14 = projectionRangeGlobal",
-            &HashSet::new()
-        ),
-        "pullbackIsoOfEq projectionRangeGlobal"
-    );
     assert_eq!(
         refined_search_query("Homeomorph", "constructors"),
         "Homeomorph.mk"
@@ -1623,106 +1490,8 @@ fn goal_and_source_query_regressions() {
             .as_deref(),
             Some("instance goal\nTopologicalSpace (Fiber x)")
         );
-    assert_eq!(
-        diagnostic_instance_query(
-            "error(lean.synthInstanceFailed): failed to synthesize instance of type class\n  Norm C(X, E)"
-        )
-        .as_deref(),
-        Some("instNorm")
-    );
-    assert_eq!(
-        diagnostic_instance_query(
-            "error(lean.synthInstanceFailed): failed to synthesize instance of type class\n  LE Type"
-        ),
-        None
-    );
-    assert_eq!(
-        append_goal_tactic(
-            "example (h : True) : True := by\n  skip\n\nexample : True := by\n  trivial\n",
-            1,
-            "exact h"
-        )
-        .unwrap(),
-        "example (h : True) : True := by\n  skip\n\n  exact h\nexample : True := by\n  trivial\n"
-    );
-    assert_eq!(
-        diagnostic_search_query(
-            "error: unsolved goals\nX : Type\nf g : X → X\nhf : Continuous f\n⊢ Continuous (f ∘ g)\n   3 | example",
-            None,
-        ),
-        "⊢ Continuous (_ ∘ _)"
-    );
-    assert_eq!(
-        diagnostic_search_query(
-            "Demo:12:4: error: Tactic `rfl` failed: The left-hand side\n  (projectionRangePullbackMapAt P x) ((Trivialization.symmL ℂ e x) v)\nis not definitionally equal to the right-hand side\n  (Trivialization.symmL ℂ e' x) v\n\ncase refl\nP : C X Y",
-            None,
-        ),
-        "projectionRangePullbackMapAt Trivialization.symmL"
-    );
-    assert_eq!(
-        diagnostic_search_query(
-            "Demo:12:4: error: Type mismatch: term\n  Eq.symm (local_repair_lemma x)\nhas type\n  Left x\nbut is expected to have type\n  Right x",
-            None,
-        ),
-        "local_repair_lemma Eq.symm"
-    );
-    assert_eq!(
-        diagnostic_search_query(
-            "Demo:12:4: error: Type mismatch: After simplification, term\n  LinearEquiv.apply_symm_apply e x\n has type\n  e (e.symm x) = x\n but is expected to have type\n  e.toContinuousLinearEquiv (e.symm.toContinuousLinearEquiv x) = x",
-            None,
-        ),
-        "ContinuousLinearEquiv.apply_symm_apply LinearEquiv.apply_symm_apply e.symm e.toContinuousLinearEquiv e.symm.toContinuousLinearEquiv"
-    );
-    assert_eq!(
-        diagnostic_search_query(
-            "Demo:1:1: error(lean.synthInstanceFailed): failed to synthesize instance of type class\n  TopologicalSpace (TotalSpace (X.changeModel eF).F X.E)\n\nHint: inspect it",
-            None,
-        ),
-        "changeModel TotalSpace TopologicalSpace"
-    );
-    assert_eq!(
-        diagnostic_search_query(
-            "Demo:28:36: error(lean.synthInstanceFailed): failed to synthesize instance of type class\n  LE Type\n\nHint: inspect it",
-            Some("    27 | intro (x : l2Space ι)\n>   28 | change lp (fun _ : ι => ℂ) (2 : ℝ≥0∞) at x\n    29 | exact h"),
-        ),
-        "lp"
-    );
-    assert!(diagnostic_search_query(
-        "Demo:106:17: error(lean.synthInstanceFailed): failed to synthesize instance of type class\n  LE Type\n\nHint: inspect it",
-        Some(">  106 | have hp : (2 : ℝ≥0∞) ≠ 0 := by norm_num"),
-    )
-    .is_empty());
     let coherence = "Demo/Proof.lean:8:1: error: synthesized type class instance is not definitionally equal to expression inferred by typing rules, synthesized\n  inst✝\ninferred\n  Classical.propDecidable";
-    assert!(diagnostic_search_query(coherence, None).is_empty());
     assert!(diagnostic_context(coherence, None).contains("same local instance"));
-    assert!(diagnostic_search_query(
-        "Demo:9:2: error: (deterministic) timeout at `whnf`, maximum number of heartbeats has been reached",
-        None,
-    )
-    .is_empty());
-    assert_eq!(
-        diagnostic_search_query(
-            "Demo:12:2: error: `simp` made no progress",
-            Some(">  12 | simp_rw [← fourier_neg, ← fourier_add]"),
-        ),
-        "fourier_neg"
-    );
-    assert_eq!(
-        diagnostic_search_query(
-            "Demo:13:2: error: Tactic `rewrite` failed: pattern not found",
-            Some(">  13 | rw [map_zpow]"),
-        ),
-        "map_zpow"
-    );
-    assert!(diagnostic_search_query(
-        "Demo:14:2: error: No goals to be solved",
-        Some(">  14 | rw [irrelevant]"),
-    )
-    .is_empty());
-    assert_eq!(
-        local_method_candidates("n : ℕ\nh : 0 < n\n⊢ 1 + (n - 1) = n"),
-        ["omega"]
-    );
     let mut inferred_note = Some(
         "no nearby match for internal.instance; source index warming".to_owned(),
     );
@@ -1804,23 +1573,11 @@ fn goal_and_source_query_regressions() {
     assert_eq!(location.line, 30);
     assert!(location.tail);
     assert!(!location.more);
-    assert!(location.probe);
     assert!(location.display_path.is_none());
     let tail = location_source_excerpt(&source, location.line, SOURCE_PREVIEW_LINES);
     assert_eq!(tail.lines().count(), 16);
     assert!(tail.contains("   30  line 30"));
 
-    let more = parse_goal_location(
-        directory.path(),
-        directory.path(),
-        None,
-        "Demo.lean:15 MORE",
-    )
-    .unwrap()
-    .unwrap();
-    assert_eq!(more.line, 15);
-    assert!(!more.tail);
-    assert!(more.more);
     let path_last = parse_goal_location(
         directory.path(),
         directory.path(),
@@ -1830,7 +1587,7 @@ fn goal_and_source_query_regressions() {
     .unwrap()
     .unwrap();
     assert_eq!(path_last.line, 15);
-    assert_eq!(path_last.path, more.path);
+    assert_eq!(path_last.path, location.path);
 
     fs::write(
         directory.path().join("Markers.lean"),
@@ -2148,13 +1905,12 @@ fn goal_and_source_query_regressions() {
         directory.path(),
         directory.path(),
         None,
-        "Mathlib/Topology/Basic.lean:15 MORE",
+        "Mathlib/Topology/Basic.lean:15",
     )
     .unwrap()
     .unwrap();
     assert_eq!(dependency.line, 15);
-    assert!(dependency.more);
-    assert!(!dependency.probe);
+    assert!(!dependency.more);
     assert_eq!(
         dependency.display_path.as_deref(),
         Some("Mathlib/Topology/Basic.lean")
@@ -2211,7 +1967,6 @@ fn source_only_location_results_are_successful() {
         line: 2,
         tail: false,
         more: false,
-        probe: true,
     };
     let result = source_location_result(
         &workspace,

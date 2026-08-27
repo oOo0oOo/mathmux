@@ -151,16 +151,23 @@ pub(super) fn render_search_run(run: &SearchRun, all: bool) -> String {
         output.push_str("\nno results");
         return output;
     }
-    let hit_limit = if all { 8 } else { 5 };
+    let hit_limit = if all { run.hits.len() } else { 5 };
     for (index, hit) in run.hits.iter().take(hit_limit).enumerate() {
         output.push_str(&format!("\n{}. {}", index + 1, hit.name));
         if let Some(signature) = &hit.signature {
-            output.push_str(&format!(
-                " : {}",
-                truncate_line(&single_line(signature), 300)
-            ));
+            let signature = single_line(signature);
+            if all || matches!(run.inference.as_str(), "exact" | "exact-batch") {
+                output.push_str(&format!(" : {signature}"));
+            } else {
+                output.push_str(&format!(" : {}", truncate_line(&signature, 300)));
+            }
         }
-        output.push_str(&format!("\n   {}:{}", hit.path, hit.line));
+        if !hit.path.is_empty() {
+            output.push_str(&format!("\n   {}", hit.path));
+            if hit.line > 0 {
+                output.push_str(&format!(":{}", hit.line));
+            }
+        }
         if hit.applicable {
             output.push_str("  applicable");
         }

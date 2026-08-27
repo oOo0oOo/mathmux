@@ -29,8 +29,12 @@ pub enum Command {
     },
     Search {
         query: String,
+        limit: Option<usize>,
         #[serde(default)]
         all: bool,
+    },
+    Probe {
+        query: String,
     },
     Status {
         #[serde(default)]
@@ -57,6 +61,7 @@ impl Command {
             Self::WsDelete { .. } => "ws_delete",
             Self::Check { .. } => "check",
             Self::Search { .. } => "search",
+            Self::Probe { .. } => "probe",
             Self::Status { .. } => "status",
             Self::Sync { .. } => "sync",
             Self::Submit { .. } => "submit",
@@ -71,6 +76,7 @@ impl Command {
                 | Self::Status { .. }
                 | Self::Check { .. }
                 | Self::Search { .. }
+                | Self::Probe { .. }
                 | Self::Sync { .. }
                 | Self::Show { .. }
         )
@@ -129,7 +135,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_protocol_defaults_are_backward_compatible() {
+    fn protocol_round_trips_public_queries() {
         let response: Response =
             serde_json::from_str(r#"{"build":"old","ok":true,"summary":"ok"}"#).unwrap();
         assert!(!response.retry);
@@ -151,14 +157,23 @@ mod tests {
         };
         assert!(!formalization_yaml);
 
-        let request: Request = serde_json::from_str(
-            r#"{"cwd":"/project","command":{"verb":"search","query":"demo"}}"#,
-        )
-        .unwrap();
-        let Command::Search { all, .. } = request.command else {
+        let request = Request {
+            build: "test".into(),
+            generation: 1,
+            cwd: "/project".into(),
+            command: Command::Search {
+                query: "name:demo".into(),
+                limit: Some(12),
+                all: false,
+            },
+        };
+        let encoded = serde_json::to_string(&request).unwrap();
+        let decoded: Request = serde_json::from_str(&encoded).unwrap();
+        let Command::Search { all, limit, .. } = decoded.command else {
             panic!("expected search command");
         };
         assert!(!all);
+        assert_eq!(limit, Some(12));
 
         let request: Request = serde_json::from_str(
             r#"{"cwd":"/project","command":{"verb":"sync"}}"#,
@@ -186,6 +201,7 @@ mod tests {
             }
             .transport_retry_safe()
         );
+        assert!(Command::Probe { query: "Demo".into() }.transport_retry_safe());
         assert!(!Command::Submit { message: None }.transport_retry_safe());
         assert!(
             !Command::WsCreate {
