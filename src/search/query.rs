@@ -1029,11 +1029,10 @@ pub(super) fn annotate_missing_hit_terms(result: &mut SearchResult, requested: &
     if missing.is_empty() {
         return;
     }
-    let note = format!("no nearby match for {}", missing.join(", "));
-    result.note = Some(match result.note.take() {
-        Some(existing) => format!("{note}; {existing}"),
-        None => note,
-    });
+    prepend_search_note(
+        &mut result.note,
+        format!("no nearby match for {}", missing.join(", ")),
+    );
 }
 
 pub(super) fn prepend_search_note(note: &mut Option<String>, prefix: String) {
@@ -1349,16 +1348,16 @@ pub(super) fn promote_query_coverage(ranked: &mut Vec<RankedHit>, tokens: &[Stri
             !matches!(candidate.hit.kind.as_str(), "file" | "imports")
                 || matches!(token.as_str(), "import" | "imports")
         };
-        let exact_leaves = remaining
+        let exact = remaining
             .iter()
             .enumerate()
             .filter(|(_, candidate)| {
                 eligible(candidate) && qualified_name_matches(&candidate.hit.name, token)
             })
-            .map(|(position, _)| position)
+            .map(|(index, _)| index)
             .collect::<Vec<_>>();
-        let exact_leaf = (exact_leaves.len() == 1).then(|| exact_leaves[0]);
-        if let Some(position) = exact_leaf.or_else(|| {
+        let exact = (exact.len() == 1).then(|| exact[0]);
+        if let Some(position) = exact.or_else(|| {
             remaining
                 .iter()
                 .enumerate()
@@ -1366,24 +1365,13 @@ pub(super) fn promote_query_coverage(ranked: &mut Vec<RankedHit>, tokens: &[Stri
                     eligible(candidate) && hit_name_matches(&candidate.hit.name, token)
                 })
                 .max_by_key(|(_, candidate)| {
-                    let facets = tokens
+                    tokens
                         .iter()
                         .filter(|facet| hit_name_matches(&candidate.hit.name, facet))
-                        .count();
-                    let bridges = tokens
-                        .iter()
-                        .filter(|facet| {
-                            hit_name_matches(&candidate.hit.name, facet)
-                                && promoted.iter().any(|prior| {
-                                    hit_name_matches(&prior.hit.name, facet)
-                                })
-                        })
-                        .count();
-                    (facets, bridges)
+                        .count()
                 })
-                .map(|(position, _)| position)
-        })
-        {
+                .map(|(index, _)| index)
+        }) {
             promoted.push(remaining.remove(position));
         } else if token.len() >= 6
             && !promoted
@@ -1403,16 +1391,13 @@ pub(super) fn promote_query_coverage(ranked: &mut Vec<RankedHit>, tokens: &[Stri
     *ranked = promoted;
 }
 
-pub(super) fn promote_concept_cluster(ranked: &mut Vec<RankedHit>, tokens: &[String]) {
+pub(super) fn promote_result_context(ranked: &mut Vec<RankedHit>, tokens: &[String]) {
     let mut seen = HashSet::new();
     let tokens = tokens
         .iter()
         .filter(|token| seen.insert(token.as_str()))
         .collect::<Vec<_>>();
-    if tokens.len() < 2 {
-        return;
-    }
-    let coverage = |candidate: &RankedHit| {
+    let name_coverage = |candidate: &RankedHit| {
         let leaf = candidate
             .hit
             .name
@@ -1428,56 +1413,35 @@ pub(super) fn promote_concept_cluster(ranked: &mut Vec<RankedHit>, tokens: &[Str
         .iter()
         .enumerate()
         .filter(|(_, candidate)| !matches!(candidate.hit.kind.as_str(), "file" | "imports"))
-        .filter(|(_, candidate)| coverage(candidate) >= 2)
+        .filter(|(_, candidate)| name_coverage(candidate) >= 2)
         .min_by_key(|(_, candidate)| candidate.hit.name.matches('.').count())
         .map(|(index, _)| index)
     else {
         return;
     };
     let anchor = ranked.remove(anchor);
-    let path = anchor.hit.path.clone();
     let module = anchor.hit.module.clone();
-    let primary = tokens[0];
-    let mut cluster = vec![anchor];
-    while cluster.len() < 4 {
-        let sibling = ranked
-            .iter()
-            .enumerate()
-            .filter(|(_, candidate)| {
-                (if module.is_empty() {
-                    candidate.hit.path == path
-                } else {
-                    candidate.hit.module == module
-                })
-                    && !matches!(candidate.hit.kind.as_str(), "file" | "imports")
-                    && coverage(candidate) > 0
-            })
-            .max_by(|(_, left), (_, right)| {
-                let key = |candidate: &RankedHit| {
-                    (
-                        coverage(candidate),
-                        usize::MAX - candidate.hit.name.matches('.').count(),
-                        candidate.hit.signature.as_deref().map_or(0, |signature| {
-                            signature.to_lowercase().match_indices(primary).count()
-                        }),
-                    )
-                };
-                key(left).cmp(&key(right)).then_with(|| {
-                    right
-                        .hit
-                        .name
-                        .to_lowercase()
-                        .cmp(&left.hit.name.to_lowercase())
-                })
-            })
-            .map(|(index, _)| index);
-        let Some(sibling) = sibling else {
-            break;
+    let path = anchor.hit.path.clone();
+    let mut context = vec![anchor];
+    let mut index = 0;
+    while context.len() < 4 && index < ranked.len() {
+        let candidate = &ranked[index];
+        let same_source = if module.is_empty() {
+            candidate.hit.path == path
+        } else {
+            candidate.hit.module == module
         };
-        cluster.push(ranked.remove(sibling));
+        if same_source
+            && !matches!(candidate.hit.kind.as_str(), "file" | "imports")
+            && name_coverage(candidate) > 0
+        {
+            context.push(ranked.remove(index));
+        } else {
+            index += 1;
+        }
     }
-    cluster.append(ranked);
-    *ranked = cluster;
+    context.append(ranked);
+    *ranked = context;
 }
 
 pub(super) fn hit_name_matches(name: &str, token: &str) -> bool {

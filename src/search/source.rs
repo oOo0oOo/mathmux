@@ -25,12 +25,75 @@ pub(super) fn submission_entry_score(entry: &SourceEntry, tokens: &[String]) -> 
         .sum()
 }
 
+fn mask_comments(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut masked = bytes.to_vec();
+    let mut block_depth = 0;
+    let mut line_comment = false;
+    let mut string = false;
+    let mut escaped = false;
+    let mut index = 0;
+    while index < bytes.len() {
+        if line_comment {
+            if bytes[index] == b'\n' {
+                line_comment = false;
+            } else {
+                masked[index] = b' ';
+            }
+            index += 1;
+            continue;
+        }
+        if block_depth > 0 {
+            if bytes[index..].starts_with(b"/-") {
+                masked[index..index + 2].fill(b' ');
+                block_depth += 1;
+                index += 2;
+            } else if bytes[index..].starts_with(b"-/") {
+                masked[index..index + 2].fill(b' ');
+                block_depth -= 1;
+                index += 2;
+            } else {
+                if bytes[index] != b'\n' {
+                    masked[index] = b' ';
+                }
+                index += 1;
+            }
+            continue;
+        }
+        if string {
+            if escaped {
+                escaped = false;
+            } else if bytes[index] == b'\\' {
+                escaped = true;
+            } else if bytes[index] == b'"' {
+                string = false;
+            }
+            index += 1;
+            continue;
+        }
+        if bytes[index..].starts_with(b"--") {
+            masked[index..index + 2].fill(b' ');
+            line_comment = true;
+            index += 2;
+        } else if bytes[index..].starts_with(b"/-") {
+            masked[index..index + 2].fill(b' ');
+            block_depth = 1;
+            index += 2;
+        } else {
+            string = bytes[index] == b'"';
+            index += 1;
+        }
+    }
+    String::from_utf8(masked).expect("masking preserves UTF-8")
+}
+
 pub(super) fn parse_source(source: &str, module: &str) -> Vec<SourceEntry> {
+    let code = mask_comments(source);
     let declaration = declaration_regex();
-    let matches = declaration.captures_iter(source).collect::<Vec<_>>();
+    let matches = declaration.captures_iter(&code).collect::<Vec<_>>();
     let lines = line_starts(source);
-    let namespaces = namespaces_by_line(source);
-    let contexts = ambient_contexts_by_line(source);
+    let namespaces = namespaces_by_line(&code);
+    let contexts = ambient_contexts_by_line(&code);
     let mut entries = Vec::new();
     for (index, capture) in matches.iter().enumerate() {
         let complete = capture.get(0).expect("declaration match");
@@ -116,14 +179,16 @@ pub(super) fn parse_source(source: &str, module: &str) -> Vec<SourceEntry> {
             ));
         }
     }
-    entries.extend(parse_notations(source, &lines, &namespaces));
-    let imports = source
+    entries.extend(parse_notations(source, &code, &lines, &namespaces));
+    let imports = code
         .lines()
+        .zip(source.lines())
         .enumerate()
-        .filter(|(_, line)| {
+        .filter(|(_, (line, _))| {
             let line = line.trim_start();
             line.starts_with("import ") || line.starts_with("public import ")
         })
+        .map(|(line, (_, original))| (line, original))
         .collect::<Vec<_>>();
     if let Some((first, _)) = imports.first() {
         entries.push(SourceEntry {
@@ -259,6 +324,7 @@ pub(super) fn structure_field_header(line: &str) -> Option<(usize, usize, &str)>
 
 pub(super) fn parse_notations(
     source: &str,
+    code: &str,
     lines: &[usize],
     namespaces: &[Vec<String>],
 ) -> Vec<SourceEntry> {
@@ -273,7 +339,7 @@ pub(super) fn parse_notations(
     let literal = LITERAL
         .get_or_init(|| Regex::new(r#"\"([^\"]+)\""#).expect("valid notation literal regex"));
     command
-        .captures_iter(source)
+        .captures_iter(code)
         .filter_map(|capture| {
             let complete = capture.get(0)?;
             let notation = literal
@@ -287,6 +353,7 @@ pub(super) fn parse_notations(
                 return None;
             }
             let line = offset_line(lines, complete.start());
+            let original = &source[complete.start()..complete.end()];
             let namespace = namespaces
                 .get(line.saturating_sub(1))
                 .cloned()
@@ -300,9 +367,9 @@ pub(super) fn parse_notations(
                     format!("{}.{}", namespace.join("."), label)
                 },
                 kind: capture.name("kind")?.as_str().to_owned(),
-                signature: single_line(complete.as_str().trim()),
+                signature: single_line(original.trim()),
                 docs: preceding_doc(source, complete.start()).unwrap_or_default(),
-                body: complete.as_str().trim().to_owned(),
+                body: original.trim().to_owned(),
             })
         })
         .collect()

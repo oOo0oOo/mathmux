@@ -48,7 +48,7 @@ const RELATED_RESULT_LIMIT: usize = 8;
 const GOAL_STATE_BEGIN: &str = "MATHMUX_GOAL_BEGIN";
 const GOAL_STATE_END: &str = "MATHMUX_GOAL_END";
 const SEARCH_INDEX_VERSION: i64 = 7;
-const SOURCE_INDEX_KIND: &str = "source-v10";
+const SOURCE_INDEX_KIND: &str = "source-v12";
 const DECLARATION_DETAIL_LINES: usize = 48;
 const INDEX_COMMIT_BATCH: usize = 64;
 const SEARCH_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
@@ -258,7 +258,7 @@ fn name_contains_candidates(
         .map_err(Into::into)
 }
 
-fn related_module_candidates(
+fn module_context_candidates(
     connection: &Connection,
     query: &str,
     tokens: &[String],
@@ -273,35 +273,31 @@ fn related_module_candidates(
         .map(|row| (lexical_score(query, tokens, row), row.module.clone()))
         .filter(|(score, module)| *score > 0.0 && !module.is_empty())
         .collect::<Vec<_>>();
-    modules.sort_by(|left, right| {
-        right
-            .0
-            .partial_cmp(&left.0)
-            .unwrap_or(Ordering::Equal)
-    });
+    modules.sort_by(|left, right| right.0.total_cmp(&left.0));
     let mut seen = HashSet::new();
     modules.retain(|(_, module)| seen.insert(module.clone()));
     modules.truncate(6);
     if modules.is_empty() {
         return Ok(Vec::new());
     }
-    let mut statement = connection.prepare(
+    let placeholders = (2..=modules.len() + 1)
+        .map(|index| format!("?{index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
         "SELECT owner, file, module, line, name, kind, signature, docs, body,
                 bm25(search_fts, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 7.0, 3.0, 1.0)
-         FROM search_fts WHERE search_fts MATCH ?1 AND module = ?2
+         FROM search_fts WHERE search_fts MATCH ?1 AND module IN ({placeholders})
            AND owner IN (SELECT owner FROM active_search_scopes)
-         LIMIT 96",
-    )?;
-    let fts = fts_query(&tokens.join(" "));
-    let mut related = Vec::new();
-    for (_, module) in modules {
-        related.extend(
-            statement
-                .query_map(params![fts, module], indexed_row_from_row)?
-                .collect::<rusqlite::Result<Vec<_>>>()?,
-        );
-    }
-    Ok(related)
+         LIMIT 512"
+    );
+    let mut parameters = vec![fts_query(&tokens.join(" "))];
+    parameters.extend(modules.into_iter().map(|(_, module)| module));
+    connection
+        .prepare(&sql)?
+        .query_map(params_from_iter(&parameters), indexed_row_from_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 #[derive(Clone, Copy)]
@@ -1692,54 +1688,32 @@ impl Searcher {
         let mut warming = false;
         if type_search {
             let explicit_conclusion = conclusion_query(query);
-            let applicability_query = (!explicit_conclusion).then(|| format!("⊢ {query}"));
-            let (applicable_hits, applicable_warming) = match applicability_query.as_deref() {
-                Some(query) => self.loogle_hits(workspace, query),
-                None => self.loogle_hits(workspace, query),
+            let applicability_query = if explicit_conclusion {
+                query.to_owned()
+            } else {
+                format!("⊢ {query}")
             };
+            let (applicable_hits, applicable_warming) =
+                self.loogle_hits(workspace, &applicability_query);
             warming |= applicable_warming;
             let has_full_applicability_page = applicable_hits.len() >= RESULT_LIMIT;
-            for (position, hit) in applicable_hits.into_iter().enumerate() {
-                let usages = self.usages(&hit.name, scopes, workspace)?;
-                ranked.push(RankedHit {
-                    hit: SearchHit {
-                        path: format!("{}.lean", hit.module.replace('.', "/")),
-                        line: 1,
-                        kind: "declaration".into(),
-                        signature: nonempty(hit.signature),
-                        doc: hit.doc,
-                        source: None,
-                        usages,
-                        name: hit.name,
-                        module: hit.module,
-                        applicable: true,
-                        required_import: None,
-                    },
-                    score: 280.0 - position as f64,
-                });
-            }
+            ranked.extend(self.ranked_loogle_hits(
+                applicable_hits,
+                scopes,
+                workspace,
+                true,
+                280.0,
+            )?);
             if !explicit_conclusion && !has_full_applicability_page {
                 let (loogle_hits, is_warming) = self.loogle_hits(workspace, query);
                 warming |= is_warming;
-                for (position, hit) in loogle_hits.into_iter().enumerate() {
-                    let usages = self.usages(&hit.name, scopes, workspace)?;
-                    ranked.push(RankedHit {
-                        hit: SearchHit {
-                            path: format!("{}.lean", hit.module.replace('.', "/")),
-                            line: 1,
-                            kind: "declaration".into(),
-                            signature: nonempty(hit.signature),
-                            doc: hit.doc,
-                            source: None,
-                            usages,
-                            name: hit.name,
-                            module: hit.module,
-                            applicable: false,
-                            required_import: None,
-                        },
-                        score: 180.0 - position as f64,
-                    });
-                }
+                ranked.extend(self.ranked_loogle_hits(
+                    loogle_hits,
+                    scopes,
+                    workspace,
+                    false,
+                    180.0,
+                )?);
             }
         }
         for row in rows.into_iter().filter(|row| scopes.contains(&row.owner)) {
@@ -1831,10 +1805,7 @@ impl Searcher {
                         && qualified_name_matches(&candidate.hit.name, term)
                 })
             });
-        let mut detail_tokens = specific_query_tokens(query);
-        detail_tokens.extend(source_specific_query_tokens(query));
-        detail_tokens.sort();
-        detail_tokens.dedup();
+        let detail_tokens = specific_query_tokens(query);
         let missing_indexed_detail = detail_tokens.iter().any(|token| {
             let matches = ranked.iter().filter(|candidate| {
                 !matches!(candidate.hit.kind.as_str(), "file" | "imports")
@@ -1909,7 +1880,7 @@ impl Searcher {
             ranked.sort_by_key(|candidate| !qualified_name_matches(&candidate.hit.name, query));
         } else {
             promote_query_coverage(&mut ranked, &query_tokens);
-            promote_concept_cluster(&mut ranked, &query_tokens);
+            promote_result_context(&mut ranked, &query_tokens);
         }
         let exact_name_miss = name_search
             && !ranked.iter().any(|candidate| {
@@ -1944,18 +1915,10 @@ impl Searcher {
             (false, false, false) => None,
         };
         if glob_name_miss {
-            let detail = "related results (no name match)";
-            note = Some(match note {
-                Some(existing) => format!("{detail}; {existing}"),
-                None => detail.into(),
-            });
+            prepend_search_note(&mut note, "related results (no name match)".into());
         }
         if exact_name_miss {
-            let detail = "related results (no exact match)";
-            note = Some(match note {
-                Some(existing) => format!("{detail}; {existing}"),
-                None => detail.into(),
-            });
+            prepend_search_note(&mut note, "related results (no exact match)".into());
         }
         let result = SearchResult {
             hits: ranked.into_iter().map(|candidate| candidate.hit).collect(),
@@ -1993,6 +1956,38 @@ impl Searcher {
             );
         }
         Ok(result)
+    }
+
+    fn ranked_loogle_hits(
+        &self,
+        hits: Vec<LoogleHit>,
+        scopes: &HashSet<String>,
+        workspace: &Workspace,
+        applicable: bool,
+        base_score: f64,
+    ) -> Result<Vec<RankedHit>> {
+        hits.into_iter()
+            .enumerate()
+            .map(|(position, hit)| {
+                let usages = self.usages(&hit.name, scopes, workspace)?;
+                Ok(RankedHit {
+                    hit: SearchHit {
+                        path: format!("{}.lean", hit.module.replace('.', "/")),
+                        line: 1,
+                        kind: "declaration".into(),
+                        signature: nonempty(hit.signature),
+                        doc: hit.doc,
+                        source: None,
+                        usages,
+                        name: hit.name,
+                        module: hit.module,
+                        applicable,
+                        required_import: None,
+                    },
+                    score: base_score - position as f64,
+                })
+            })
+            .collect()
     }
 
     fn resolve_exact(
@@ -2340,8 +2335,12 @@ impl Searcher {
         }
         rows.extend(name_contains_candidates(&connection, &contains_tokens)?);
         if !name_query && !include_all_signatures {
-            let related = related_module_candidates(&connection, query, tokens, &rows)?;
-            rows.extend(related);
+            rows.extend(module_context_candidates(
+                &connection,
+                query,
+                tokens,
+                &rows,
+            )?);
         }
         if name_query && let Some((owner, leaf)) = query.rsplit_once('.')
         {
@@ -2353,19 +2352,23 @@ impl Searcher {
                     .collect::<rusqlite::Result<Vec<_>>>()?,
             );
             let mut seen = HashSet::new();
-            for part in identifier_query_parts(leaf)
+            let parts = identifier_query_parts(leaf)
                 .into_iter()
                 .filter(|part| part.len() >= 2 && seen.insert(part.clone()))
-            {
-                let query = format!(
-                    "name : \"{}\" AND name : \"{}\"*",
-                    owner.replace('"', "\"\""),
-                    part.replace('"', "\"\"")
-                );
+                .map(|part| {
+                    format!(
+                        "(name : \"{}\" AND name : \"{}\"*)",
+                        owner.replace('"', "\"\""),
+                        part.replace('"', "\"\"")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            if !parts.is_empty() {
                 rows.extend(
                     qualified
-                        .query_map([query], indexed_row_from_row)?
-                    .collect::<rusqlite::Result<Vec<_>>>()?,
+                        .query_map([parts], indexed_row_from_row)?
+                        .collect::<rusqlite::Result<Vec<_>>>()?,
                 );
             }
             if leaf.chars().count() >= 3 {
@@ -2418,10 +2421,7 @@ impl Searcher {
     ) -> Result<Option<SearchResult>> {
         let miss = |detail: String| {
             let mut result = exact_search_result(Vec::new(), base_warming);
-            result.note = Some(match result.note {
-                Some(note) => format!("{detail}; {note}"),
-                None => detail,
-            });
+            prepend_search_note(&mut result.note, detail);
             result
         };
         let exact = ranked_exact_candidates(

@@ -150,6 +150,15 @@ end Demo
         .unwrap();
     assert_eq!(notation.kind, "notation");
     assert_eq!(notation.line, 2);
+
+    let commented = parse_source(
+        "namespace Demo\n/- def hidden := 1\nnotation \"hiddenSyntax\" => 1\n/- theorem nested : True := trivial -/\n-/\ndef visible := \"/- text -/\"\nend Demo\n",
+        "Demo",
+    );
+    assert!(!commented.iter().any(|entry| entry.name.ends_with("hidden")));
+    assert!(!commented.iter().any(|entry| entry.name.ends_with("nested")));
+    assert!(!commented.iter().any(|entry| entry.name.contains("hiddenSyntax")));
+    assert!(commented.iter().any(|entry| entry.name == "Demo.visible"));
 }
 
 #[test]
