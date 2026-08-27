@@ -9,7 +9,7 @@ impl Searcher {
         let source = fs::read_to_string(&location.path)?;
         if location.tail || location.more {
             return Ok(source_location_result(
-                workspace, &location, &source, None, true,
+                workspace, &location, &source, None, false,
             ));
         }
         if !location.probe {
@@ -27,7 +27,7 @@ impl Searcher {
                 &location,
                 &source,
                 Some("source only"),
-                false,
+                true,
             ));
         };
         let mut probe = source.clone();
@@ -47,7 +47,7 @@ impl Searcher {
                     &location,
                     &source,
                     Some(&format!("goal unavailable: {error:#}")),
-                    false,
+                    true,
                 ));
             }
         };
@@ -90,7 +90,7 @@ impl Searcher {
                 &location,
                 &source,
                 Some(&detail),
-                false,
+                true,
             ));
         }
         let relative = location
@@ -1128,7 +1128,7 @@ pub(super) fn source_location_result(
     location: &GoalLocation,
     source: &str,
     note: Option<&str>,
-    ok: bool,
+    source_only: bool,
 ) -> SearchResult {
     let relative = location.display_path.clone().unwrap_or_else(|| {
         location
@@ -1167,9 +1167,9 @@ pub(super) fn source_location_result(
             applicable: false,
             required_import: None,
         }],
-        inference: if ok { "source" } else { "source-only" }.into(),
+        inference: if source_only { "source-only" } else { "source" }.into(),
         note: note.map(Into::into),
-        ok,
+        ok: true,
     }
 }
 

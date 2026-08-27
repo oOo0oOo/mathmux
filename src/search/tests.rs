@@ -1969,6 +1969,36 @@ fn goal_and_source_query_regressions() {
 }
 
 #[test]
+fn source_only_location_results_are_successful() {
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = Workspace {
+        reference: "w1".into(),
+        name: "demo".into(),
+        path: directory.path().to_path_buf(),
+        branch: "demo".into(),
+        model: None,
+    };
+    let location = GoalLocation {
+        path: directory.path().join("Demo.lean"),
+        display_path: None,
+        line: 2,
+        tail: false,
+        more: false,
+        probe: true,
+    };
+    let result = source_location_result(
+        &workspace,
+        &location,
+        "def before := true\ndef target := true\n",
+        Some("source only"),
+        true,
+    );
+    assert!(result.ok);
+    assert_eq!(result.inference, "source-only");
+    assert_eq!(result.note.as_deref(), Some("source only"));
+}
+
+#[test]
 fn missing_dependency_sources_are_detected_from_the_manifest() {
     let directory = tempfile::tempdir().unwrap();
     fs::write(directory.path().join("lake-manifest.json"), "{}").unwrap();
