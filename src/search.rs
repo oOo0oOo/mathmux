@@ -563,8 +563,9 @@ impl Searcher {
         workspace: &Workspace,
         query: &SourceOccurrenceQuery,
     ) -> Result<SearchResult> {
-        let module = project_module_name(&workspace.path, &query.path);
-        let (scopes, warming) = self.base_scopes(workspace);
+        let relative = query.path.strip_prefix(&workspace.path).unwrap_or(&query.path);
+        let module = project_module_name(&workspace.path, relative);
+        let (scopes, warming) = self.search_scopes(workspace)?;
         let connection = self.open()?;
         install_active_scopes(&connection, &scopes)?;
         let mut statement = connection.prepare(
@@ -1549,6 +1550,17 @@ impl Searcher {
             .collect()
     }
 
+    fn search_scopes(&self, workspace: &Workspace) -> Result<(HashSet<String>, bool)> {
+        match self.index_lock.try_lock() {
+            Ok(_guard) => self.refresh(workspace),
+            Err(std::sync::TryLockError::Poisoned(error)) => {
+                let _guard = error.into_inner();
+                self.refresh(workspace)
+            }
+            Err(std::sync::TryLockError::WouldBlock) => Ok(self.current_scopes(workspace)),
+        }
+    }
+
     fn planned_text_search(
         &self,
         workspace: &Workspace,
@@ -1558,14 +1570,7 @@ impl Searcher {
         auxiliary_query: Option<&str>,
         show_all: bool,
     ) -> Result<SearchResult> {
-        let (scopes, base_warming) = match self.index_lock.try_lock() {
-            Ok(_guard) => self.refresh(workspace)?,
-            Err(std::sync::TryLockError::Poisoned(error)) => {
-                let _guard = error.into_inner();
-                self.refresh(workspace)?
-            }
-            Err(std::sync::TryLockError::WouldBlock) => self.current_scopes(workspace),
-        };
+        let (scopes, base_warming) = self.search_scopes(workspace)?;
         let mut result = self.execute_text_search(
             workspace,
             query,

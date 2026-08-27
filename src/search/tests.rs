@@ -2021,6 +2021,58 @@ fn source_only_location_results_are_successful() {
 }
 
 #[test]
+fn source_dependents_include_the_active_workspace_index() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("root");
+    let state_dir = directory.path().join("state");
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(&state_dir).unwrap();
+    fs::write(root.join("Target.lean"), "def target := true\n").unwrap();
+    fs::write(
+        root.join("Consumer.lean"),
+        "import Target\n\ndef consumer := target\n",
+    )
+    .unwrap();
+    let repo = Repo {
+        root: root.clone(),
+        common_git_dir: directory.path().join("git"),
+        state_dir: state_dir.clone(),
+        socket_path: state_dir.join("daemon.sock"),
+        db_path: state_dir.join("state.sqlite3"),
+        search_db_path: state_dir.join("search.sqlite3"),
+        log_path: state_dir.join("daemon.log"),
+        cache_dir: state_dir.join("cache"),
+        integration_lock: state_dir.join("integration.lock"),
+        validation_lock: state_dir.join("validation.lock"),
+        startup_lock: state_dir.join("startup.lock"),
+    };
+    let state = State::new(repo.db_path.clone()).unwrap();
+    let checker = Arc::new(Checker::new(repo.clone(), state.clone()).unwrap());
+    let searcher = Searcher::new(repo, state, checker).unwrap();
+    let workspace = Workspace {
+        reference: "w1".into(),
+        name: "demo".into(),
+        path: root.clone(),
+        branch: "demo".into(),
+        model: None,
+    };
+    let query = parse_source_occurrence_query(
+        &root,
+        &root,
+        None,
+        "Target.lean dependents",
+    )
+    .unwrap()
+    .unwrap();
+
+    let result = searcher.source_dependents(&workspace, &query).unwrap();
+
+    assert_eq!(result.hits.len(), 1);
+    assert_eq!(result.hits[0].name, "Consumer");
+    assert_eq!(result.hits[0].signature.as_deref(), Some("imports Target"));
+}
+
+#[test]
 fn missing_dependency_sources_are_detected_from_the_manifest() {
     let directory = tempfile::tempdir().unwrap();
     fs::write(directory.path().join("lake-manifest.json"), "{}").unwrap();
