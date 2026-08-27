@@ -274,7 +274,12 @@ pub(super) fn render_check_run(run: &CheckRun, all: bool) -> String {
     output
 }
 
-pub(super) fn render_submission(submission: &Submission, files: &[String], all: bool) -> String {
+pub(super) fn render_submission(
+    submission: &Submission,
+    files: &[String],
+    later_passing_validation: Option<&str>,
+    all: bool,
+) -> String {
     if submission.validation_status == "skipped" {
         return format!(
             "{} covered-by:{}",
@@ -283,6 +288,11 @@ pub(super) fn render_submission(submission: &Submission, files: &[String], all: 
         );
     }
     let mut output = format!("{} {}", submission.reference, submission.validation_status);
+    if submission.validation_status == "failed"
+        && let Some(reference) = later_passing_validation
+    {
+        output.push_str(&format!("\nhistorical: later validation {reference} passed"));
+    }
     if !submission.checks.is_empty() {
         output.push_str(&format!("\ncheck: {}", submission.checks.join(" ")));
     }

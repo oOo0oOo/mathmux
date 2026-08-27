@@ -744,6 +744,23 @@ impl State {
             .map_err(Into::into)
     }
 
+    fn later_passing_validation(&self, submission: &Submission) -> Result<Option<String>> {
+        self.open()?
+            .query_row(
+                "SELECT ref FROM submissions
+                 WHERE validation_status = 'passed'
+                   AND (created_at > ?1 OR
+                        (created_at = ?1 AND CAST(substr(ref, 2) AS INTEGER) >
+                                             CAST(substr(?2, 2) AS INTEGER)))
+                 ORDER BY created_at, CAST(substr(ref, 2) AS INTEGER)
+                 LIMIT 1",
+                params![submission.created_at, submission.reference],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
     pub fn next_validation(&self) -> Result<Option<Submission>> {
         let connection = self.open()?;
         let running: bool = connection.query_row(
@@ -923,7 +940,17 @@ impl State {
                 }
                 files.sort();
                 files.dedup();
-                Ok(render_submission(&submission, &files, all))
+                let later_passing_validation = if submission.validation_status == "failed" {
+                    self.later_passing_validation(&submission)?
+                } else {
+                    None
+                };
+                Ok(render_submission(
+                    &submission,
+                    &files,
+                    later_passing_validation.as_deref(),
+                    all,
+                ))
             }
             'w' => self.show_workspace(reference, all),
             'u' => self.show_sync(reference, all),
@@ -1296,11 +1323,11 @@ mod tests {
             created_at: 0,
         };
         let files = vec!["Demo/Changed.lean".into()];
-        let compact = render_submission(&submission, &files, false);
+        let compact = render_submission(&submission, &files, None, false);
         assert!(compact.contains("files:\n  Demo/Changed.lean"));
         assert!(compact.contains("build warnings: 2; show s1 --all"));
         assert!(!compact.contains("first warning"));
-        assert!(render_submission(&submission, &files, true).contains("first warning"));
+        assert!(render_submission(&submission, &files, None, true).contains("first warning"));
     }
 
     #[test]
@@ -1361,6 +1388,34 @@ mod tests {
                 .show("s1", false)
                 .unwrap()
                 .contains("files:\n  Demo/Changed.lean")
+        );
+        for (reference, status, created_at) in
+            [("s2", "failed", 2), ("s3", "passed", 3)]
+        {
+            state
+                .add_submission(&Submission {
+                    reference: reference.into(),
+                    workspace_ref: "w1".into(),
+                    workspace_commit: format!("workspace-{reference}"),
+                    main_commit: format!("main-{reference}"),
+                    base_commit: "base".into(),
+                    checks: vec!["c1".into()],
+                    validation_status: status.into(),
+                    validation_detail: None,
+                    build_output: None,
+                    axioms: Vec::new(),
+                    sorries: Vec::new(),
+                    validation_duration_ms: Some(1),
+                    validated_by: None,
+                    created_at,
+                })
+                .unwrap();
+        }
+        assert!(
+            state
+                .show("s2", false)
+                .unwrap()
+                .contains("historical: later validation s3 passed")
         );
     }
 
