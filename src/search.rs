@@ -2217,6 +2217,19 @@ impl Searcher {
                 .map_err(anyhow::Error::from)?
         };
         drop(statement);
+        if let Some(glob_query) = declaration_glob_fts_query(query) {
+            let sql = ranked_rows_sql(&format!(
+                "WHERE search_fts MATCH ?1
+                 AND owner IN (SELECT owner FROM active_search_scopes) LIMIT {}",
+                SEARCH_TUNING.retrieval.discovery_rows
+            ));
+            rows.extend(
+                connection
+                    .prepare(&sql)?
+                    .query_map([glob_query], indexed_row_from_row)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?,
+            );
+        }
         let named_sql = ranked_rows_sql(&format!(
             "WHERE search_fts MATCH ?1
              AND owner IN (SELECT owner FROM active_search_scopes)

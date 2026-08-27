@@ -284,6 +284,10 @@ fn query_parsing_scoring_and_ranking_regressions() {
         explicit_declaration_name("inductive List constructors"),
         Some("List")
     );
+    assert_eq!(
+        explicit_declaration_name("declaration parameterizedMatrixLaurent*"),
+        Some("parameterizedMatrixLaurent*")
+    );
     assert_eq!(explicit_declaration_name("theorem search terms"), None);
     assert_eq!(
         declaration_suffix_base("Demo.longDeclaration_E"),
@@ -525,6 +529,12 @@ fn query_parsing_scoring_and_ranking_regressions() {
     assert!(declaration_glob_query(
         "CircleClutching.*homotopy|TransitionHomotopy"
     ));
+    assert_eq!(
+        declaration_glob_fts_query("CircleClutching.*homotopy|TransitionHomotopy").as_deref(),
+        Some(
+            "(name : \"circleclutching\"* AND name : \"homotopy\"*) OR (name : \"transitionhomotopy\"*)"
+        )
+    );
     assert!(!declaration_glob_query("*ᵥ"));
     assert!(declaration_glob_matches(
         "Demo.FiberBundle.local_equiv",
@@ -545,6 +555,14 @@ fn query_parsing_scoring_and_ranking_regressions() {
     assert!(!declaration_glob_matches(
         "Demo.FiberBundle.local_equiv_apply",
         "FiberBundle.*equiv"
+    ));
+    assert!(declaration_glob_leaf_matches(
+        "Demo.parameterizedMatrixLaurentEntry",
+        "parameterizedMatrixLaurent*"
+    ));
+    assert!(!declaration_glob_leaf_matches(
+        "Demo.ParameterizedMatrixLaurentFamily.loop",
+        "parameterizedMatrixLaurent*"
     ));
     let mut relational = vec![Candidate {
         hit: SearchHit {

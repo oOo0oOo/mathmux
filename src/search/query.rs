@@ -373,6 +373,7 @@ pub(super) fn explicit_declaration_name(query: &str) -> Option<&str> {
         kind.to_ascii_lowercase().as_str(),
         "abbrev"
             | "class"
+            | "declaration"
             | "def"
             | "definition"
             | "inductive"
@@ -384,7 +385,7 @@ pub(super) fn explicit_declaration_name(query: &str) -> Option<&str> {
         return None;
     }
     let name = terms.next()?;
-    if !declaration_name_query(name)
+    if !(declaration_name_query(name) || declaration_glob_query(name))
         || !terms.all(|term| {
             matches!(
                 term.to_ascii_lowercase().as_str(),
@@ -410,6 +411,22 @@ pub(super) fn declaration_glob_query(query: &str) -> bool {
                     character.is_alphanumeric() || matches!(character, '_' | '.' | '\'' | '*')
                 })
         })
+}
+
+pub(super) fn declaration_glob_fts_query(query: &str) -> Option<String> {
+    declaration_glob_query(query).then(|| {
+        query
+            .split('|')
+            .filter_map(|alternative| {
+                let terms = query_tokens(alternative)
+                    .into_iter()
+                    .map(|term| format!("name : \"{}\"*", term.replace('"', "\"\"")))
+                    .collect::<Vec<_>>();
+                (!terms.is_empty()).then(|| format!("({})", terms.join(" AND ")))
+            })
+            .collect::<Vec<_>>()
+            .join(" OR ")
+    })
 }
 
 pub(super) fn apply_declaration_glob(candidates: &mut Vec<Candidate>, query: &str) -> bool {
@@ -461,6 +478,20 @@ pub(super) fn declaration_glob_matches(name: &str, query: &str) -> bool {
         r"(?:^|\.)"
     };
     Regex::new(&format!(r"(?i){prefix}{pattern}$")).is_ok_and(|pattern| pattern.is_match(name))
+}
+
+pub(super) fn declaration_glob_leaf_matches(name: &str, query: &str) -> bool {
+    let leaf = canonical_declaration_name(name)
+        .rsplit('.')
+        .next()
+        .unwrap_or(name);
+    query.split('|').map(str::trim).any(|alternative| {
+        declaration_glob_matches(name, alternative)
+            && declaration_glob_matches(
+                leaf,
+                alternative.rsplit('.').next().unwrap_or(alternative),
+            )
+    })
 }
 
 pub(super) fn qualified_name_matches(name: &str, query: &str) -> bool {
@@ -612,7 +643,13 @@ fn promote_ranked_candidates(
     explicit_declaration: bool,
 ) {
     if explicit_declaration {
-        ranked.sort_by_key(|candidate| !qualified_name_matches(&candidate.hit.name, query));
+        if declaration_glob_query(query) {
+            ranked.sort_by_key(|candidate| {
+                !declaration_glob_leaf_matches(&candidate.hit.name, query)
+            });
+        } else {
+            ranked.sort_by_key(|candidate| !qualified_name_matches(&candidate.hit.name, query));
+        }
         return;
     }
     promote_query_coverage(ranked, query, query_tokens);
