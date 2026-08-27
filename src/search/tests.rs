@@ -440,7 +440,7 @@ fn query_parsing_scoring_and_ranking_regressions() {
         qualified_leaf[0].hit.name,
         "AtiyahSinger.ComplexVectorBundle.ofBundle"
     );
-    let mut alternatives = vec![
+    let alternatives = vec![
         Candidate {
             hit: SearchHit {
                 name: "smul_add_smul_le_smul_add_smul".into(),
@@ -459,10 +459,13 @@ fn query_parsing_scoring_and_ranking_regressions() {
         },
     ];
     let alternatives_query = "matrixToeplitzOperator_add|matrixToeplitzOperator_smul";
-    promote_query_coverage(
-        &mut alternatives,
+    let alternative_tokens = meaningful_query_tokens(alternatives_query);
+    let (alternatives, _) = rank_discovery_candidates(
+        alternatives,
         alternatives_query,
-        &meaningful_query_tokens(alternatives_query),
+        &alternative_tokens,
+        false,
+        None,
     );
     assert_eq!(
         alternatives[0].hit.name,

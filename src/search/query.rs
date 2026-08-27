@@ -946,7 +946,9 @@ pub(super) fn rank_discovery_candidates(
                 })
                 .then(|| candidate.hit.name.clone())
         });
-        promote_result_context(&mut deduplicated, query_tokens);
+        if !query.contains('|') {
+            promote_result_context(&mut deduplicated, query_tokens);
+        }
         if let Some(anchor) = qualified_anchor
             && let Some(position) = deduplicated
                 .iter()
