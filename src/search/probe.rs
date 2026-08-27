@@ -101,6 +101,14 @@ fn usage_path_matches_scope(path: &str, scope: &str) -> bool {
     path == scope || path.strip_prefix(scope).is_some_and(|rest| rest.starts_with('/'))
 }
 
+fn indexed_check_hit<'a>(run: &'a SearchRun, subject: &str) -> Option<&'a SearchHit> {
+    declaration_name_query(subject).then_some(())?;
+    run.hits.iter().find(|hit| {
+        qualified_name_matches(&hit.name, subject)
+            && hit.signature.as_deref().is_some_and(|value| !value.trim().is_empty())
+    })
+}
+
 fn parse_context(value: &str) -> Option<ProbeContext> {
     if reference(value, 'c') {
         return Some(ProbeContext::Check(value.into()));
@@ -145,7 +153,13 @@ impl Searcher {
     pub fn probe(&self, workspace: &Workspace, cwd: &Path, query: &str) -> Result<String> {
         let request = ProbeRequest::parse(query)?;
         if let Some(directive) = request.directive {
-            return self.run_lean_probe(workspace, cwd, request.context.unwrap(), directive);
+            let context = request.context.unwrap();
+            if let LeanDirective::Check(subject) = &directive
+                && let Some(rendered) = self.probe_indexed_check(workspace, &context, subject)?
+            {
+                return Ok(rendered);
+            }
+            return self.run_lean_probe(workspace, cwd, context, directive);
         }
         match (&request.context, request.subject.as_deref(), request.focus.as_deref()) {
             (Some(ProbeContext::Check(reference)), None, focus) => {
@@ -253,6 +267,33 @@ impl Searcher {
         self.state.touch_workspace(&workspace.reference)?;
         let rendered = render_summary(&run);
         if ok { Ok(rendered) } else { bail!(rendered) }
+    }
+
+    fn probe_indexed_check(
+        &self,
+        workspace: &Workspace,
+        context: &ProbeContext,
+        subject: &str,
+    ) -> Result<Option<String>> {
+        let ProbeContext::Query(reference) = context else {
+            return Ok(None);
+        };
+        let Some(run) = self.state.search_run(reference)? else {
+            return Ok(None);
+        };
+        let Some(hit) = indexed_check_hit(&run, subject) else {
+            return Ok(None);
+        };
+        let signature = hit.signature.as_deref().expect("indexed check requires a signature");
+        self.store_probe_result(
+            workspace,
+            &format!("{reference} #check {subject}"),
+            "check",
+            format!("{} : {signature}", hit.name),
+            (!hit.path.is_empty()).then_some(hit.path.as_str()),
+            hit.line,
+        )
+        .map(Some)
     }
 
     fn probe_check_reference(
@@ -759,6 +800,12 @@ mod tests {
             duration_ms: 1,
             created_at: 0,
         };
+
+        assert_eq!(
+            indexed_check_hit(&run, "Demo.first").map(|hit| hit.name.as_str()),
+            Some("Demo.first")
+        );
+        assert!(indexed_check_hit(&run, "Demo.first 1").is_none());
 
         let signature = render_static_probe_summary(&run, "signature");
         assert!(signature.contains("Demo.first : (n : Nat) : n = n"));
