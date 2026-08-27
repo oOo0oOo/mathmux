@@ -2426,6 +2426,22 @@ fn fallback_connects_conceptual_inner_product_api_terms() {
 }
 
 #[test]
+fn text_search_plan_classifies_once() {
+    assert!(matches!(
+        text_search_plan("ContinuousLinearMap.comp_apply"),
+        TextSearchPlan::ExactFirst
+    ));
+    assert!(matches!(
+        text_search_plan("_ → Injective _"),
+        TextSearchPlan::Type
+    ));
+    assert!(matches!(
+        text_search_plan("quotient topology"),
+        TextSearchPlan::Discovery
+    ));
+}
+
+#[test]
 fn fallback_respects_qualified_member_owner_order() {
     let directory = tempfile::tempdir().unwrap();
     fs::write(

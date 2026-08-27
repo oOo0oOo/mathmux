@@ -26,12 +26,14 @@ use crate::util::{
 };
 
 mod goal;
+mod plan;
 mod query;
 mod source;
 #[cfg(test)]
 mod tests;
 
 use goal::*;
+use plan::*;
 use query::*;
 use source::*;
 
@@ -101,9 +103,34 @@ struct RankedHit {
     score: f64,
 }
 
+#[derive(Clone, Copy)]
+enum CandidateOrigin {
+    Index = 1,
+    Loogle = 2,
+    ProjectSource = 4,
+    FallbackSource = 8,
+}
+
+fn record_candidate_origins(
+    origins: &mut HashMap<String, u8>,
+    origin: CandidateOrigin,
+    candidates: &[RankedHit],
+) {
+    for candidate in candidates {
+        *origins.entry(candidate.hit.name.clone()).or_default() |= origin as u8;
+    }
+}
+
 struct ImportContext {
     accessible: HashSet<String>,
     complete: bool,
+}
+
+struct TextSearchContext<'a> {
+    scopes: &'a HashSet<String>,
+    base_warming: bool,
+    import_target: Option<&'a Path>,
+    show_all: bool,
 }
 
 struct ExactPlan {
@@ -389,91 +416,39 @@ impl Searcher {
         let query = normalize_lean_inspection_query(query);
         let requested_query = query.clone();
         let expanded = self.expand_reference_query(workspace, &query)?;
-        let location = parse_goal_location(
-            &workspace.path,
+        let planned = plan_search(
+            workspace,
             cwd,
-            Some(&self.repo.root),
+            &self.repo.root,
             &expanded.query,
+            !expanded.context.is_empty(),
         )?;
-        let more = location.is_none() && search_more_requested(&expanded.query);
+        let more = planned.more;
         let source_show_all = all || more;
-        let query = strip_search_modifiers(&expanded.query);
-        let query = query.as_str();
-        ensure!(
-            !query.is_empty() || !expanded.context.is_empty(),
-            "search query is empty"
-        );
+        let query = planned.query.as_str();
         let reference = self.state.next_ref('q')?;
-        let result = if query.is_empty() {
-            SearchResult {
+        let result = match planned.plan {
+            SearchPlan::ContextOnly => SearchResult {
                 hits: Vec::new(),
                 inference: "diagnostic".into(),
                 note: Some("diagnostic context only; declaration search skipped".into()),
                 ok: true,
+            },
+            SearchPlan::Goal(location) => self.goal_search(workspace, location)?,
+            SearchPlan::SourceRegex(source) => {
+                source_regex_result(workspace, source, source_show_all)?
             }
-        } else if let Some(location) = location {
-            self.goal_search(workspace, location)?
-        } else if let Some(query) =
-            parse_source_regex_query(&workspace.path, cwd, Some(&self.repo.root), query)?
-        {
-            source_regex_result(workspace, query, source_show_all)?
-        } else if let Some(location) =
-            parse_source_occurrence_query(
-                &workspace.path,
-                cwd,
-                Some(&self.repo.root),
-                query,
-            )?
-        {
-            source_occurrence_result(workspace, location, source_show_all)?
-        } else {
-            let (scopes, base_warming) = match self.index_lock.try_lock() {
-                Ok(_guard) => self.refresh(workspace)?,
-                Err(std::sync::TryLockError::Poisoned(error)) => {
-                    let _guard = error.into_inner();
-                    self.refresh(workspace)?
-                }
-                Err(std::sync::TryLockError::WouldBlock) => {
-                    self.current_scopes(workspace)
-                }
-            };
-            let mut result = self.combined_search(
+            SearchPlan::Source(source) => {
+                source_occurrence_result(workspace, source, source_show_all)?
+            }
+            SearchPlan::Text(text_plan) => self.planned_text_search(
                 workspace,
                 query,
-                &scopes,
-                base_warming,
+                text_plan,
                 expanded.import_target.as_deref(),
+                expanded.auxiliary_query.as_deref(),
                 all,
-            )?;
-            if let Some(auxiliary_query) = expanded.auxiliary_query.as_deref() {
-                let existing = result
-                    .hits
-                    .iter()
-                    .map(|hit| hit.name.clone())
-                    .collect::<HashSet<_>>();
-                let hints = self
-                    .combined_search(
-                        workspace,
-                        auxiliary_query,
-                        &scopes,
-                        base_warming,
-                        expanded.import_target.as_deref(),
-                        false,
-                    )?
-                    .hits
-                    .into_iter()
-                    .filter(|hit| {
-                        hit.name
-                            .rsplit('.')
-                            .next()
-                            .is_some_and(|leaf| leaf.eq_ignore_ascii_case(auxiliary_query))
-                            && !existing.contains(&hit.name)
-                    })
-                    .take(3)
-                    .collect::<Vec<_>>();
-                result.hits.splice(0..0, hints);
-            }
-            result
+            )?,
         };
         let mut result = result;
         if !expanded.context.is_empty() && requested_query.split_whitespace().count() == 1 {
@@ -1641,24 +1616,91 @@ impl Searcher {
             .collect()
     }
 
-    fn combined_search(
+    fn planned_text_search(
         &self,
         workspace: &Workspace,
         query: &str,
-        scopes: &HashSet<String>,
-        base_warming: bool,
+        plan: TextSearchPlan,
         import_target: Option<&Path>,
+        auxiliary_query: Option<&str>,
         show_all: bool,
     ) -> Result<SearchResult> {
+        let (scopes, base_warming) = match self.index_lock.try_lock() {
+            Ok(_guard) => self.refresh(workspace)?,
+            Err(std::sync::TryLockError::Poisoned(error)) => {
+                let _guard = error.into_inner();
+                self.refresh(workspace)?
+            }
+            Err(std::sync::TryLockError::WouldBlock) => self.current_scopes(workspace),
+        };
+        let mut result = self.execute_text_search(
+            workspace,
+            query,
+            plan,
+            TextSearchContext {
+                scopes: &scopes,
+                base_warming,
+                import_target,
+                show_all,
+            },
+        )?;
+        if let Some(auxiliary_query) = auxiliary_query {
+            let existing = result
+                .hits
+                .iter()
+                .map(|hit| hit.name.clone())
+                .collect::<HashSet<_>>();
+            let hints = self
+                .execute_text_search(
+                    workspace,
+                    auxiliary_query,
+                    text_search_plan(auxiliary_query),
+                    TextSearchContext {
+                        scopes: &scopes,
+                        base_warming,
+                        import_target,
+                        show_all: false,
+                    },
+                )?
+                .hits
+                .into_iter()
+                .filter(|hit| {
+                    hit.name
+                        .rsplit('.')
+                        .next()
+                        .is_some_and(|leaf| leaf.eq_ignore_ascii_case(auxiliary_query))
+                        && !existing.contains(&hit.name)
+                })
+                .take(3)
+                .collect::<Vec<_>>();
+            result.hits.splice(0..0, hints);
+        }
+        Ok(result)
+    }
+
+    fn execute_text_search(
+        &self,
+        workspace: &Workspace,
+        query: &str,
+        plan: TextSearchPlan,
+        context: TextSearchContext<'_>,
+    ) -> Result<SearchResult> {
+        let TextSearchContext {
+            scopes,
+            base_warming,
+            import_target,
+            show_all,
+        } = context;
         let search_started = Instant::now();
         let field_inventory = field_inventory_query(query);
         let explicit_declaration = explicit_declaration_name(query);
         let query = explicit_declaration.unwrap_or(query);
-        let type_search = type_search_enabled() && type_shaped(query);
+        let type_search = matches!(plan, TextSearchPlan::Type);
         let query_tokens = meaningful_query_tokens(query);
         let import_context = self.import_context(workspace, scopes, base_warming, import_target);
         let import_ms = search_started.elapsed().as_millis() as u64;
-        if let Some(structure) = field_inventory
+        if matches!(plan, TextSearchPlan::ExactFirst)
+            && let Some(structure) = field_inventory
             && let Some(result) = self.field_inventory_result(
                 structure,
                 scopes,
@@ -1669,7 +1711,8 @@ impl Searcher {
         {
             return Ok(result);
         }
-        if let Some(plan) = exact_plan(query, type_search)
+        if !matches!(plan, TextSearchPlan::Discovery)
+            && let Some(plan) = exact_plan(query, type_search)
             && let Some(result) = self.resolve_exact(
                 workspace,
                 scopes,
@@ -1685,6 +1728,7 @@ impl Searcher {
         let candidates_ms = candidates_started.elapsed().as_millis() as u64;
         let name_search = !type_search && declaration_name_query(query);
         let mut ranked = Vec::new();
+        let mut origins = HashMap::new();
         let mut warming = false;
         if type_search {
             let explicit_conclusion = conclusion_query(query);
@@ -1697,23 +1741,27 @@ impl Searcher {
                 self.loogle_hits(workspace, &applicability_query);
             warming |= applicable_warming;
             let has_full_applicability_page = applicable_hits.len() >= RESULT_LIMIT;
-            ranked.extend(self.ranked_loogle_hits(
+            let applicable = self.ranked_loogle_hits(
                 applicable_hits,
                 scopes,
                 workspace,
                 true,
                 280.0,
-            )?);
+            )?;
+            record_candidate_origins(&mut origins, CandidateOrigin::Loogle, &applicable);
+            ranked.extend(applicable);
             if !explicit_conclusion && !has_full_applicability_page {
                 let (loogle_hits, is_warming) = self.loogle_hits(workspace, query);
                 warming |= is_warming;
-                ranked.extend(self.ranked_loogle_hits(
+                let loogle = self.ranked_loogle_hits(
                     loogle_hits,
                     scopes,
                     workspace,
                     false,
                     180.0,
-                )?);
+                )?;
+                record_candidate_origins(&mut origins, CandidateOrigin::Loogle, &loogle);
+                ranked.extend(loogle);
             }
         }
         for row in rows.into_iter().filter(|row| scopes.contains(&row.owner)) {
@@ -1749,7 +1797,7 @@ impl Searcher {
                     0.0
                 }
                 - row.rank.max(0.0);
-            ranked.push(RankedHit {
+            let candidate = RankedHit {
                 hit: SearchHit {
                     name: row.name,
                     kind: row.kind,
@@ -1764,10 +1812,15 @@ impl Searcher {
                     required_import: None,
                 },
                 score,
-            });
+            };
+            *origins.entry(candidate.hit.name.clone()).or_default() |=
+                CandidateOrigin::Index as u8;
+            ranked.push(candidate);
         }
         let project_started = Instant::now();
-        ranked.extend(self.project_source_hits(workspace, query, &query_tokens));
+        let project = self.project_source_hits(workspace, query, &query_tokens);
+        record_candidate_origins(&mut origins, CandidateOrigin::ProjectSource, &project);
+        ranked.extend(project);
         let project_ms = project_started.elapsed().as_millis() as u64;
         if name_search
             && let Some(exact_name) = unique_qualified_hit_name(
@@ -1843,7 +1896,10 @@ impl Searcher {
         {
             fallback_used = true;
             match fallback_source_hits(&workspace.path, query, &query_tokens) {
-                Ok(hits) => ranked.extend(hits),
+                Ok(hits) => {
+                    record_candidate_origins(&mut origins, CandidateOrigin::FallbackSource, &hits);
+                    ranked.extend(hits);
+                }
                 Err(error) => append_log(
                     &self.repo,
                     &format!("source fallback unavailable: {error:#}"),
@@ -1858,36 +1914,34 @@ impl Searcher {
                 apply_import_context(candidate, context);
             }
         }
-        ranked.sort_by(|left, right| {
-            right
-                .score
-                .partial_cmp(&left.score)
-                .unwrap_or(Ordering::Equal)
-                .then_with(|| left.hit.name.cmp(&right.hit.name))
-        });
-        let mut positions: HashMap<String, usize> = HashMap::new();
-        let mut deduplicated: Vec<RankedHit> = Vec::new();
-        for mut candidate in ranked {
-            if let Some(index) = positions.get(&candidate.hit.name).copied() {
-                merge_duplicate_hit(&mut deduplicated[index].hit, &mut candidate.hit);
-            } else {
-                positions.insert(candidate.hit.name.clone(), deduplicated.len());
-                deduplicated.push(candidate);
-            }
-        }
-        let mut ranked = deduplicated;
-        if explicit_declaration.is_some() {
-            ranked.sort_by_key(|candidate| !qualified_name_matches(&candidate.hit.name, query));
-        } else {
-            promote_query_coverage(&mut ranked, &query_tokens);
-            promote_result_context(&mut ranked, &query_tokens);
-        }
+        let mut ranked = rank_discovery_candidates(
+            ranked,
+            query,
+            &query_tokens,
+            explicit_declaration.is_some(),
+        );
         let exact_name_miss = name_search
             && !ranked.iter().any(|candidate| {
                 !matches!(candidate.hit.kind.as_str(), "file" | "imports")
                     && qualified_name_matches(&candidate.hit.name, query)
             });
         ranked.truncate(result_limit(exact_name_miss, show_all));
+        let fallback_top = ranked
+            .iter()
+            .filter(|candidate| {
+                origins.get(&candidate.hit.name).is_some_and(|origin| {
+                    origin & CandidateOrigin::FallbackSource as u8 != 0
+                })
+            })
+            .count();
+        let fallback_unique_top = ranked
+            .iter()
+            .filter(|candidate| {
+                origins.get(&candidate.hit.name).is_some_and(|origin| {
+                    *origin == CandidateOrigin::FallbackSource as u8
+                })
+            })
+            .count();
         if exact_name_miss {
             // A near declaration-name match should be useful without a follow-up
             // source-range read. Keep this bounded: summaries show these three
@@ -1933,12 +1987,16 @@ impl Searcher {
             ok: true,
         };
         let total_ms = search_started.elapsed().as_millis() as u64;
-        if total_ms >= 2_000
+        let sampled_fallback = fallback_used
+            && query.bytes().fold(0_u8, |hash, byte| {
+                hash.wrapping_mul(31).wrapping_add(byte)
+            }) % 8 == 0;
+        if (total_ms >= 2_000 || sampled_fallback)
             && development_enabled()
             && let Ok(store) = TelemetryStore::global()
         {
             let detail = format!(
-                "import={import_ms}ms candidates={candidates_ms}ms project={project_ms}ms fallback={fallback_ms}ms used={fallback_used} finish={}ms hits={}",
+                "import={import_ms}ms candidates={candidates_ms}ms project={project_ms}ms fallback={fallback_ms}ms used={fallback_used} top={fallback_top} unique_top={fallback_unique_top} finish={}ms hits={}",
                 finish_started.elapsed().as_millis(),
                 result.hits.len(),
             );

@@ -910,6 +910,38 @@ pub(super) fn merge_exact_candidates(mut candidates: Vec<RankedHit>) -> RankedHi
     resolved
 }
 
+pub(super) fn rank_discovery_candidates(
+    mut candidates: Vec<RankedHit>,
+    query: &str,
+    query_tokens: &[String],
+    explicit_declaration: bool,
+) -> Vec<RankedHit> {
+    candidates.sort_by(|left, right| {
+        right
+            .score
+            .partial_cmp(&left.score)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| left.hit.name.cmp(&right.hit.name))
+    });
+    let mut positions: HashMap<String, usize> = HashMap::new();
+    let mut deduplicated: Vec<RankedHit> = Vec::new();
+    for mut candidate in candidates {
+        if let Some(index) = positions.get(&candidate.hit.name).copied() {
+            merge_duplicate_hit(&mut deduplicated[index].hit, &mut candidate.hit);
+        } else {
+            positions.insert(candidate.hit.name.clone(), deduplicated.len());
+            deduplicated.push(candidate);
+        }
+    }
+    if explicit_declaration {
+        deduplicated.sort_by_key(|candidate| !qualified_name_matches(&candidate.hit.name, query));
+    } else {
+        promote_query_coverage(&mut deduplicated, query_tokens);
+        promote_result_context(&mut deduplicated, query_tokens);
+    }
+    deduplicated
+}
+
 pub(super) fn ranked_exact_candidates(
     rows: Vec<IndexedRow>,
     query: &str,
