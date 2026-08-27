@@ -37,12 +37,15 @@ structure Response where
   version : Nat
 deriving ToJson
 
+def useGoalsAfter (goal : GoalsAtResult) : Bool :=
+  goal.useAfter && !goal.tacticInfo.goalsAfter.isEmpty
+
 def goalContext (goal : GoalsAtResult) : ContextInfo :=
   { goal.ctxInfo with
-    mctx := if goal.useAfter then goal.tacticInfo.mctxAfter else goal.tacticInfo.mctxBefore }
+    mctx := if useGoalsAfter goal then goal.tacticInfo.mctxAfter else goal.tacticInfo.mctxBefore }
 
 def goalMVars (goal : GoalsAtResult) : List MVarId :=
-  if goal.useAfter then goal.tacticInfo.goalsAfter else goal.tacticInfo.goalsBefore
+  if useGoalsAfter goal then goal.tacticInfo.goalsAfter else goal.tacticInfo.goalsBefore
 
 def goalsBetweenOffsets (trees : Array InfoTree) (fileMap : FileMap)
     (start stop : Nat) :

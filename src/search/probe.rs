@@ -472,13 +472,13 @@ impl Searcher {
         };
         if operation == "goal" {
             let source = fs::read_to_string(&location.path)?;
-            if source
+            let requested_line = source
                 .lines()
                 .nth(location.line.saturating_sub(1) as usize)
-                .is_some_and(is_declaration_header)
-            {
+                .unwrap_or_default();
+            if requested_line.trim().is_empty() || is_declaration_header(requested_line) {
                 bail!(
-                    "goal needs an exact proof line, not a declaration header; use search {}:{} to read source",
+                    "goal needs an exact proof line, not a declaration header or blank line; use search {}:{} to read source",
                     stored_path,
                     location.line
                 );
