@@ -1,21 +1,21 @@
 use super::*;
 
 impl Searcher {
-    pub(super) fn goal_search(
+    pub(super) fn source_location_search(
         &self,
         workspace: &Workspace,
-        location: GoalLocation,
+        location: SourceLocation,
     ) -> Result<SearchResult> {
         let source = fs::read_to_string(&location.path)?;
         Ok(source_location_result(workspace, &location, &source, None, false))
     }
 }
-pub(super) struct GoalLocation {
+pub(super) struct SourceLocation {
     pub(super) path: PathBuf,
     pub(super) display_path: Option<String>,
     pub(super) line: u64,
     pub(super) tail: bool,
-    pub(super) more: bool,
+    pub(super) expanded: bool,
 }
 
 pub(super) struct SourceOccurrenceQuery {
@@ -101,7 +101,7 @@ pub(super) fn parse_source_regex_query(
     } else if range.is_some()
         || Path::new(scope).extension().is_some_and(|extension| extension == "lean")
     {
-        match resolve_goal_path(root, cwd, scope)? {
+        match resolve_source_path(root, cwd, scope)? {
             Some((path, _, _)) => path,
             None => bail!(missing_source_message(root, main_root, scope)?),
         }
@@ -372,7 +372,7 @@ pub(super) fn parse_source_occurrence_query(
     {
         return Ok(None);
     }
-    let Some((path, display_path, _)) = resolve_goal_path(root, cwd, &resolved_path)? else {
+    let Some((path, display_path, _)) = resolve_source_path(root, cwd, &resolved_path)? else {
         if inferred_outline_path {
             return Ok(None);
         }
@@ -383,7 +383,7 @@ pub(super) fn parse_source_occurrence_query(
         && !Path::new(requested_path).is_absolute()
     {
         let main_root = main_root.expect("checked above");
-        resolve_goal_path(main_root, main_root, &resolved_path)?.map(|(path, _, _)| path)
+        resolve_source_path(main_root, main_root, &resolved_path)?.map(|(path, _, _)| path)
     } else {
         None
     };
@@ -634,67 +634,67 @@ fn source_outline_result(
     }
 }
 
-pub(super) fn parse_goal_location(
+pub(super) fn parse_source_location(
     root: &Path,
     cwd: &Path,
     main_root: Option<&Path>,
     query: &str,
-) -> Result<Option<GoalLocation>> {
-    let more = false;
+) -> Result<Option<SourceLocation>> {
+    let expanded = false;
     let mut location_tokens = query
         .split_whitespace()
-        .filter(|token| is_goal_location_token(token));
+        .filter(|token| is_source_location_token(token));
     let query = match (location_tokens.next(), location_tokens.next()) {
         (Some(token), None) => token,
         _ => query,
     };
+    if query
+        .rsplit_once(':')
+        .and_then(|(prefix, column)| {
+            column
+                .parse::<u64>()
+                .ok()
+                .and_then(|_| prefix.rsplit_once(':'))
+        })
+        .is_some_and(|(_, line)| line.parse::<u64>().is_ok())
+    {
+        bail!("positions use FILE:LINE; columns are not supported");
+    }
     if let Some((path, suffix)) = query.rsplit_once(':')
         && suffix.eq_ignore_ascii_case("tail")
     {
-        let Some((path, display_path, _)) = resolve_goal_path(root, cwd, path)? else {
+        let Some((path, display_path, _)) = resolve_source_path(root, cwd, path)? else {
             bail!(missing_source_message(root, main_root, path)?);
         };
         let line = fs::read_to_string(&path)?.lines().count().max(1) as u64;
-        return Ok(Some(GoalLocation {
+        return Ok(Some(SourceLocation {
             path,
             display_path,
             line,
             tail: true,
-            more,
+            expanded,
         }));
     }
-    let mut parts = query.rsplitn(3, ':');
-    let Some(last) = parts.next() else {
+    let Some((path, line)) = query.rsplit_once(':') else {
         return Ok(None);
     };
-    let Ok(last_number) = last.parse::<u64>() else {
+    let Ok(line) = line.parse::<u64>() else {
         return Ok(None);
     };
-    let Some(second) = parts.next() else {
-        return Ok(None);
-    };
-    let (path, line) = if let Ok(line) = second.parse::<u64>() {
-        let Some(path) = parts.next() else {
-            return Ok(None);
-        };
-        (path, line)
-    } else {
-        (second, last_number)
-    };
-    let Some((path, display_path, _)) = resolve_goal_path(root, cwd, path)? else {
+    let Some((path, display_path, _)) = resolve_source_path(root, cwd, path)? else {
         bail!(missing_source_message(root, main_root, path)?);
     };
-    ensure!(line > 0, "goal line starts at 1");
-    Ok(Some(GoalLocation {
+    ensure!(line > 0, "source line starts at 1");
+    Ok(Some(SourceLocation {
         path,
         display_path,
         line,
         tail: false,
-        more,
+        expanded,
     }))
 }
 
-fn is_goal_location_token(token: &str) -> bool {
+fn is_source_location_token(token: &str) -> bool {
     let Some((prefix, suffix)) = token.rsplit_once(':') else {
         return false;
     };
@@ -725,7 +725,7 @@ pub(super) fn missing_source_message(
             .iter()
             .any(|path| path.file_name() == Some(requested_name))
     });
-    if !workspace_has_same_name && resolve_goal_path(main_root, main_root, requested)?.is_some() {
+    if !workspace_has_same_name && resolve_source_path(main_root, main_root, requested)?.is_some() {
         return Ok("source file is on managed main; run mathmux sync".into());
     }
     Ok(missing_source_with_nearby(root, requested))
@@ -804,7 +804,7 @@ fn source_request_path(display: &str) -> Option<PathBuf> {
     }
 }
 
-pub(super) fn resolve_goal_path(
+pub(super) fn resolve_source_path(
     root: &Path,
     cwd: &Path,
     path: &str,
@@ -1019,7 +1019,7 @@ fn ordered_subset(needles: &[String], haystack: &[String]) -> bool {
 
 pub(super) fn source_location_result(
     workspace: &Workspace,
-    location: &GoalLocation,
+    location: &SourceLocation,
     source: &str,
     note: Option<&str>,
     source_only: bool,
@@ -1035,8 +1035,8 @@ pub(super) fn source_location_result(
     SearchResult {
         hits: vec![SearchHit {
             name: "source".into(),
-            kind: if location.more {
-                "location-more"
+            kind: if location.expanded {
+                "location-expanded"
             } else {
                 "location"
             }
@@ -1049,8 +1049,8 @@ pub(super) fn source_location_result(
             source: nonempty(location_source_excerpt(
                 source,
                 location.line,
-                if location.more {
-                    LOCATION_MORE_LINES
+                if location.expanded {
+                    LOCATION_EXPANDED_LINES
                 } else if location.tail {
                     SOURCE_PREVIEW_LINES
                 } else {

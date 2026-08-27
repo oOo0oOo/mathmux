@@ -206,7 +206,7 @@ fn search_rowids_advance_past_fts_and_origin_mappings() {
 }
 
 #[test]
-fn legacy_reference_storage_migrates_to_file_ids() {
+fn incompatible_reference_storage_is_rebuilt() {
     let connection = Connection::open_in_memory().unwrap();
     connection
         .execute_batch(
@@ -219,7 +219,7 @@ fn legacy_reference_storage_migrates_to_file_ids() {
              INSERT INTO search_references VALUES ('old', '/long/path', 'Demo.use', 'Demo', 1, NULL);",
         )
         .unwrap();
-    assert!(migrate_reference_schema(&connection).unwrap());
+    assert!(ensure_reference_schema(&connection).unwrap());
     let columns = connection
         .prepare("PRAGMA table_info(search_references)")
         .unwrap()
@@ -291,14 +291,6 @@ fn query_parsing_scoring_and_ranking_regressions() {
         Some("Demo.ready".into())
     );
     assert_eq!(declaration_predicate_base("Demo.iso"), None);
-    assert_eq!(
-        strip_search_modifiers("VectorBundle FILE:LINE"),
-        "VectorBundle"
-    );
-    assert_eq!(
-        strip_search_modifiers("declaration terms"),
-        "declaration terms"
-    );
     let contextual_hit = SearchHit {
         name: "Demo.projectionRange_nearby_isomorphic".into(),
         kind: "theorem".into(),
@@ -1101,7 +1093,7 @@ fn stale_workspace_source_queries_recommend_sync() {
         Some("workspace source is stale; run mathmux sync")
     );
 
-    let error = match parse_goal_location(
+    let error = match parse_source_location(
         workspace.path(),
         workspace.path(),
         Some(main.path()),
@@ -1438,7 +1430,7 @@ fn references_decode_from_ilean_keys() {
 }
 
 #[test]
-fn goal_and_source_query_regressions() {
+fn source_query_regressions() {
     assert_eq!(edit_distance("compp", "comp"), 1);
     assert_eq!(
         refined_search_query("Homeomorph", "constructors"),
@@ -1492,6 +1484,20 @@ fn goal_and_source_query_regressions() {
         );
     let coherence = "Demo/Proof.lean:8:1: error: synthesized type class instance is not definitionally equal to expression inferred by typing rules, synthesized\n  inst✝\ninferred\n  Classical.propDecidable";
     assert!(diagnostic_context(coherence, None).contains("same local instance"));
+    assert_eq!(
+        diagnostic_defeq_detail(
+            "error: Tactic `rfl` failed: The left-hand side\n  f x\nis not definitionally equal to the right-hand side\n  g x\n\ncase h"
+        )
+        .as_deref(),
+        Some("left\nf x\nright\ng x")
+    );
+    assert!(
+        diagnostic_rewrite_detail(
+            "Demo:13:2: error: Tactic `rewrite` failed: pattern not found",
+            Some(">  13 | rw [map_zpow]")
+        )
+        .is_some_and(|detail| detail.contains("rw [map_zpow]"))
+    );
     let mut inferred_note = Some(
         "no nearby match for internal.instance; source index warming".to_owned(),
     );
@@ -1507,7 +1513,17 @@ fn goal_and_source_query_regressions() {
 
     let directory = tempfile::tempdir().unwrap();
     fs::write(directory.path().join("Demo.lean"), &source).unwrap();
-    let duplicated_root = resolve_goal_path(directory.path(), directory.path(), "Demo/Demo.lean")
+    let column_error = match parse_source_location(
+        directory.path(),
+        directory.path(),
+        None,
+        "Demo.lean:15:2",
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("column position should be rejected"),
+    };
+    assert!(column_error.to_string().contains("columns are not supported"));
+    let duplicated_root = resolve_source_path(directory.path(), directory.path(), "Demo/Demo.lean")
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -1520,7 +1536,7 @@ fn goal_and_source_query_regressions() {
         "def unique := true\n",
     )
     .unwrap();
-    let recovered_suffix = resolve_goal_path(
+    let recovered_suffix = resolve_source_path(
         directory.path(),
         directory.path(),
         "Wrong/Topology/Unique.lean",
@@ -1532,7 +1548,7 @@ fn goal_and_source_query_regressions() {
         fs::canonicalize(directory.path().join("Actual/Topology/Unique.lean")).unwrap()
     );
     let module_location =
-        resolve_goal_path(directory.path(), directory.path(), "Actual.Topology.Unique")
+        resolve_source_path(directory.path(), directory.path(), "Actual.Topology.Unique")
             .unwrap()
             .unwrap();
     assert_eq!(module_location.0, recovered_suffix.0);
@@ -1543,7 +1559,7 @@ fn goal_and_source_query_regressions() {
     )
     .unwrap();
     assert!(
-        resolve_goal_path(
+        resolve_source_path(
             directory.path(),
             directory.path(),
             "Wrong/Topology/Unique.lean",
@@ -1556,7 +1572,7 @@ fn goal_and_source_query_regressions() {
         "def casing := true\n",
     )
     .unwrap();
-    let recovered_case = resolve_goal_path(
+    let recovered_case = resolve_source_path(
         directory.path(),
         directory.path(),
         "caseSensitive.lean",
@@ -1567,18 +1583,18 @@ fn goal_and_source_query_regressions() {
         recovered_case.0,
         fs::canonicalize(directory.path().join("Actual/Topology/CaseSensitive.lean")).unwrap()
     );
-    let location = parse_goal_location(directory.path(), directory.path(), None, "Demo.lean:tail")
+    let location = parse_source_location(directory.path(), directory.path(), None, "Demo.lean:tail")
         .unwrap()
         .unwrap();
     assert_eq!(location.line, 30);
     assert!(location.tail);
-    assert!(!location.more);
+    assert!(!location.expanded);
     assert!(location.display_path.is_none());
     let tail = location_source_excerpt(&source, location.line, SOURCE_PREVIEW_LINES);
     assert_eq!(tail.lines().count(), 16);
     assert!(tail.contains("   30  line 30"));
 
-    let path_last = parse_goal_location(
+    let path_last = parse_source_location(
         directory.path(),
         directory.path(),
         None,
@@ -1901,7 +1917,7 @@ fn goal_and_source_query_regressions() {
         .join(".lake/packages/mathlib/Mathlib/Topology");
     fs::create_dir_all(&dependency).unwrap();
     fs::write(dependency.join("Basic.lean"), &source).unwrap();
-    let dependency = parse_goal_location(
+    let dependency = parse_source_location(
         directory.path(),
         directory.path(),
         None,
@@ -1910,12 +1926,12 @@ fn goal_and_source_query_regressions() {
     .unwrap()
     .unwrap();
     assert_eq!(dependency.line, 15);
-    assert!(!dependency.more);
+    assert!(!dependency.expanded);
     assert_eq!(
         dependency.display_path.as_deref(),
         Some("Mathlib/Topology/Basic.lean")
     );
-    let dependency_without_library = parse_goal_location(
+    let dependency_without_library = parse_source_location(
         directory.path(),
         directory.path(),
         None,
@@ -1933,7 +1949,7 @@ fn goal_and_source_query_regressions() {
         .join(".lake/packages/mathlib/Mathlib/MeasureTheory/Function/LpSpace");
     fs::create_dir_all(&nested_dependency).unwrap();
     fs::write(nested_dependency.join("Basic.lean"), &source).unwrap();
-    let dependency_suffix = parse_goal_location(
+    let dependency_suffix = parse_source_location(
         directory.path(),
         directory.path(),
         None,
@@ -1961,12 +1977,12 @@ fn source_only_location_results_are_successful() {
         branch: "demo".into(),
         model: None,
     };
-    let location = GoalLocation {
+    let location = SourceLocation {
         path: directory.path().join("Demo.lean"),
         display_path: None,
         line: 2,
         tail: false,
-        more: false,
+        expanded: false,
     };
     let result = source_location_result(
         &workspace,

@@ -1,18 +1,5 @@
 use super::*;
 
-pub(super) fn strip_search_modifiers(query: &str) -> String {
-    query
-        .split_whitespace()
-        .filter(|term| {
-            !matches!(
-                    term.to_ascii_uppercase().as_str(),
-                    "FILE:LINE" | "FILE:LINE:COLUMN"
-                )
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 pub(super) fn refined_search_query(base: &str, refinement: &str) -> String {
     let refinement = refinement.trim();
     let facet = refinement.to_ascii_lowercase();
@@ -242,6 +229,56 @@ pub(super) fn diagnostic_type_detail(diagnostic: &str) -> Option<String> {
             truncate_middle(&expected_difference, 360)
         }
     ))
+}
+
+pub(super) fn diagnostic_defeq_detail(diagnostic: &str) -> Option<String> {
+    let (_, comparison) = diagnostic.split_once("left-hand side")?;
+    let (left, right) = comparison.split_once("is not definitionally equal to the right-hand side")?;
+    let left = diagnostic_expression(left);
+    let right = diagnostic_expression(right);
+    (!left.is_empty() && !right.is_empty())
+        .then(|| format!("left\n{left}\nright\n{right}"))
+}
+
+pub(super) fn diagnostic_rewrite_detail(
+    diagnostic: &str,
+    source_context: Option<&str>,
+) -> Option<String> {
+    let rewrite_failure = diagnostic.contains("rewrite")
+        || diagnostic.contains("Tactic `rw`")
+        || diagnostic.contains("pattern not found");
+    if !rewrite_failure {
+        return None;
+    }
+    let source = source_context
+        .and_then(|context| context.lines().find(|line| line.trim_start().starts_with('>')))
+        .and_then(|line| line.split_once('|'))
+        .map(|(_, code)| code.trim())
+        .filter(|code| !code.is_empty());
+    let message = diagnostic
+        .lines()
+        .find(|line| line.contains("rewrite") || line.contains("pattern not found"))
+        .map(str::trim)
+        .unwrap_or("rewrite failed");
+    Some(match source {
+        Some(source) => format!("rewrite\n{source}\n{message}"),
+        None => format!("rewrite\n{message}"),
+    })
+}
+
+fn diagnostic_expression(section: &str) -> String {
+    section
+        .lines()
+        .map(str::trim)
+        .skip_while(|line| line.is_empty())
+        .take_while(|line| {
+            !line.is_empty()
+                && !line.starts_with("case ")
+                && !line.starts_with("⊢ ")
+                && !line.contains("Try this:")
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub(super) fn edit_distance(left: &str, right: &str) -> usize {

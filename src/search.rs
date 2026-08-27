@@ -26,7 +26,7 @@ use crate::util::{
 };
 
 mod api;
-mod goal;
+mod source_query;
 mod plan;
 mod probe;
 mod query;
@@ -35,7 +35,7 @@ mod tuning;
 #[cfg(test)]
 mod tests;
 
-use goal::*;
+use source_query::*;
 use api::*;
 use plan::*;
 use query::*;
@@ -45,7 +45,7 @@ use tuning::*;
 const RESULT_LIMIT: usize = SEARCH_TUNING.presentation.result_limit;
 const SUMMARY_LIMIT: usize = SEARCH_TUNING.presentation.summary_limit;
 const LOCATION_PREVIEW_LINES: usize = 32;
-const LOCATION_MORE_LINES: usize = 96;
+const LOCATION_EXPANDED_LINES: usize = 96;
 const SOURCE_OCCURRENCE_LIMIT: usize = 64;
 const SOURCE_RANGE_LIMIT: usize = 120;
 const SOURCE_RANGE_ALL_LIMIT: usize = SEARCH_TUNING.presentation.source_range_all_lines;
@@ -247,7 +247,7 @@ fn delete_search_references(connection: &Connection, owner: &str, file: &str) ->
     Ok(())
 }
 
-fn migrate_reference_schema(connection: &Connection) -> Result<bool> {
+fn ensure_reference_schema(connection: &Connection) -> Result<bool> {
     let normalized = connection
         .prepare("PRAGMA table_info(search_references)")?
         .query_map([], |row| row.get::<_, String>(1))?
@@ -459,15 +459,15 @@ impl Searcher {
         let result = if let Some(names) = exact_names {
             self.exact_name_batch(workspace, names, request.all)?
         } else { match planned.plan {
-            SearchPlan::ContextOnly => SearchResult {
+            SearchPlan::StoredContext => SearchResult {
                 hits: Vec::new(),
-                inference: "diagnostic".into(),
-                note: Some("diagnostic context only; declaration search skipped".into()),
+                inference: "stored-context".into(),
+                note: Some("stored context only; declaration search skipped".into()),
                 ok: true,
             },
             SearchPlan::Location(mut location) => {
-                location.more = request.all;
-                self.goal_search(workspace, location)?
+                location.expanded = request.all;
+                self.source_location_search(workspace, location)?
             }
             SearchPlan::SourceRegex(source) => {
                 source_regex_result(workspace, source, source_show_all)?
@@ -642,8 +642,7 @@ impl Searcher {
             let base = if search_refinement_facet(refinement) {
                 prior
                     .hits
-                    .iter()
-                    .find(|hit| hit.kind != "diagnostic-context")
+                    .first()
                     .map(|hit| hit.name.as_str())
                     .unwrap_or(&prior.query)
             } else {
@@ -891,7 +890,7 @@ impl Searcher {
                 value INTEGER NOT NULL
              );",
         )?;
-        if migrate_reference_schema(&connection)? {
+        if ensure_reference_schema(&connection)? {
             connection.execute("DELETE FROM search_files WHERE kind = 'ilean'", [])?;
         }
         let version = connection
@@ -3205,12 +3204,11 @@ fn render_summary(run: &SearchRun) -> String {
                                 ))
                             || matches!(
                                 hit.kind.as_str(),
-                                "diagnostic-context"
-                                    | "fields"
+                                "fields"
                                     | "file"
                                     | "imports"
                                     | "location"
-                                    | "location-more"
+                                    | "location-expanded"
                                     | "outline"
                                     | "source-occurrences"
                                     | "source-range"
@@ -3259,7 +3257,7 @@ fn render_summary(run: &SearchRun) -> String {
                     | "fields"
                     | "imports"
                     | "location"
-                    | "location-more"
+                    | "location-expanded"
                     | "outline"
                     | "source-occurrences"
                     | "source-range"
@@ -3275,8 +3273,7 @@ fn render_summary(run: &SearchRun) -> String {
                     "imports" => 64,
                     "outline" => OUTLINE_PREVIEW_LINES,
                     "location" => LOCATION_PREVIEW_LINES,
-                    "location-more" => LOCATION_MORE_LINES,
-                    "diagnostic-context" => source.lines().count(),
+                    "location-expanded" => LOCATION_EXPANDED_LINES,
                     "source-range" => SOURCE_RANGE_ALL_LIMIT,
                     "source-occurrences" => SOURCE_OCCURRENCE_LIMIT,
                     _ => SOURCE_PREVIEW_LINES,
@@ -3284,11 +3281,7 @@ fn render_summary(run: &SearchRun) -> String {
             };
             for line in source.lines().take(source_lines) {
                 output.push('\n');
-                if hit.kind == "diagnostic-context" {
-                    output.push_str(line.trim_end());
-                } else {
-                    output.push_str(&truncate_line(line.trim_end(), 200));
-                }
+                output.push_str(&truncate_line(line.trim_end(), 200));
             }
             let omitted = source.lines().count().saturating_sub(source_lines);
             if omitted > 0 {

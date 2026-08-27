@@ -111,14 +111,20 @@ impl Searcher {
             return self.run_lean_probe(workspace, cwd, request.context.unwrap(), directive);
         }
         match (&request.context, request.subject.as_deref(), request.focus.as_deref()) {
-            (Some(ProbeContext::Check(reference)), _, focus) => {
+            (Some(ProbeContext::Check(reference)), None, focus) => {
                 self.probe_check_reference(workspace, reference, focus)
+            }
+            (Some(ProbeContext::Check(_)), Some(_), _) => {
+                bail!("cREF accepts only types, defeq, rewrite, or profile focus")
             }
             (Some(ProbeContext::Position(location)), None, None | Some("goal")) => {
                 self.run_position_probe(workspace, cwd, location, None)
             }
-            (Some(ProbeContext::Position(location)), subject, focus) => {
-                self.run_position_probe(workspace, cwd, location, subject.or(focus))
+            (Some(ProbeContext::Position(location)), Some(subject), None | Some("signature")) => {
+                self.run_position_probe(workspace, cwd, location, Some(subject))
+            }
+            (Some(ProbeContext::Position(_)), _, Some(focus)) => {
+                bail!("focus `{focus}` is not valid at FILE:LINE; use goal, TERM, or a Lean directive")
             }
             (Some(ProbeContext::Query(reference)), subject, focus) => {
                 self.probe_query_reference(workspace, cwd, reference, subject, focus)
@@ -156,11 +162,23 @@ impl Searcher {
         let text = diagnostic.map(|diagnostic| diagnostic.text.as_str()).unwrap_or("check has no diagnostic");
         let (path, line) = diagnostic_position(text, run.failed.as_deref());
         let detail = match focus {
-            Some("types") | Some("defeq") | Some("rewrite") => {
-                diagnostic_type_detail(text).unwrap_or_else(|| diagnostic_context(text, None))
+            Some("types") => diagnostic_type_detail(text)
+                .with_context(|| format!("{reference} has no type or instance failure"))?,
+            Some("defeq") => diagnostic_defeq_detail(text)
+                .with_context(|| format!("{reference} has no definitional-equality failure"))?,
+            Some("rewrite") => diagnostic_rewrite_detail(
+                text,
+                diagnostic.and_then(|diagnostic| diagnostic.context.as_deref()),
+            )
+            .with_context(|| format!("{reference} has no rewrite failure"))?,
+            Some("profile") => {
+                ensure!(run.profile.is_some(), "{reference} has no stored profile");
+                self.state.show(reference, true)?
             }
-            Some("profile") => self.state.show(reference, true)?,
-            None => diagnostic_context(text, diagnostic.and_then(|diagnostic| diagnostic.context.as_deref())),
+            None => {
+                let diagnostic = diagnostic.with_context(|| format!("{reference} has no failure to probe"))?;
+                diagnostic_context(text, diagnostic.context.as_deref())
+            }
             Some(other) => bail!("focus `{other}` is not meaningful for a stored check"),
         };
         self.store_probe_result(
@@ -203,7 +221,7 @@ impl Searcher {
         let positioned = run.inference == "probe"
             || matches!(
                 hit.kind.as_str(),
-                "location" | "location-more" | "goal-state" | "diagnostic-context"
+                "location" | "location-expanded"
             );
         if positioned
             && hit.line > 0
@@ -266,7 +284,7 @@ impl Searcher {
         location: &str,
         subject: Option<&str>,
     ) -> Result<String> {
-        let location = parse_goal_location(
+        let location = parse_source_location(
             &workspace.path,
             cwd,
             Some(&self.repo.root),
@@ -357,7 +375,7 @@ impl Searcher {
     ) -> Result<(PathBuf, u64)> {
         match context {
             ProbeContext::Position(location) => {
-                let location = parse_goal_location(
+                let location = parse_source_location(
                     &workspace.path,
                     cwd,
                     Some(&self.repo.root),
@@ -367,7 +385,7 @@ impl Searcher {
                 Ok((location.path, location.line))
             }
             ProbeContext::File(file) => {
-                let location = parse_goal_location(
+                let location = parse_source_location(
                     &workspace.path,
                     cwd,
                     Some(&self.repo.root),
@@ -393,7 +411,7 @@ impl Searcher {
                 } else {
                     workspace.path.join(path).to_string_lossy().into_owned()
                 };
-                let location = parse_goal_location(
+                let location = parse_source_location(
                     &workspace.path,
                     cwd,
                     Some(&self.repo.root),
@@ -411,13 +429,18 @@ impl Searcher {
                 ensure!(!hit.path.is_empty(), "{reference} has no source path");
                 let positioned = run.inference == "probe" && hit.line > 0 || matches!(
                     hit.kind.as_str(),
-                    "location" | "location-more" | "goal-state" | "diagnostic-context"
+                    "location" | "location-expanded"
                 );
-                let location = parse_goal_location(
+                let source_context = if positioned {
+                    format!("{}:{}", hit.path, hit.line)
+                } else {
+                    format!("{}:tail", hit.path)
+                };
+                let location = parse_source_location(
                     &workspace.path,
                     cwd,
                     Some(&self.repo.root),
-                    &format!("{}:{}", hit.path, hit.line),
+                    &source_context,
                 )?
                 .with_context(|| format!("stored context for {reference} is unavailable"))?;
                 Ok((location.path, if positioned { location.line } else { 0 }))
@@ -429,7 +452,10 @@ impl Searcher {
 fn static_probe_query(context: Option<&ProbeContext>, subject: &str, focus: Option<&str>) -> Result<String> {
     let scoped = match context {
         Some(ProbeContext::Scope(path)) if focus == Some("usages") => Some(path.as_str()),
-        Some(ProbeContext::File(_)) | None => None,
+        None => None,
+        Some(ProbeContext::File(_)) => {
+            bail!("FILE with a declaration supports signature only; use probe NAME for API dossiers")
+        }
         Some(_) => bail!("this probe requires a declaration or type subject"),
     };
     let default_focus = if subject.starts_with("type:") { "types" } else { "signature" };
@@ -445,7 +471,7 @@ fn static_probe_query(context: Option<&ProbeContext>, subject: &str, focus: Opti
         "apply" => format!("{subject} theorem"),
         "usages" => match scoped {
             Some(path) => format!("{path} {subject}"),
-            None => format!("{subject} usages"),
+            None => format!("name:{subject}"),
         },
         "types" if subject.starts_with("type:") => subject.to_owned(),
         other => bail!("focus `{other}` requires source or failure context"),
@@ -476,6 +502,12 @@ mod tests {
             static_probe_query(None, "type:_ → _", None).unwrap(),
             "type:_ → _"
         );
+        assert!(static_probe_query(
+            Some(&ProbeContext::File("Demo.lean".into())),
+            "Demo.foo",
+            Some("fields")
+        )
+        .is_err());
         assert!(ProbeRequest::parse("#check Nat").is_err());
     }
 }

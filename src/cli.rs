@@ -21,47 +21,59 @@ use crate::issue::{IssueStore, TelemetryStore};
 use crate::protocol::{Command, Progress, Request, Response};
 use crate::repo::Repo;
 
-const WORKFLOW_HELP: &str = r#"AGENT RULES
+const WORKFLOW_HELP: &str = r#"AGENT CONTRACT
   Workspace is preassigned; do not run ws or enter main/another workspace.
-  Prefer experimenting in intended files over Scratch files; isolation makes this safe.
   Use mathmux, never git, lean, lake build, or equivalent commands directly.
-  Search to find/read; probe known API/context/failures. Edit -> check -> submit.
-  Use check FILE only to isolate one of several dirty Lean files. Use sync to update.
+  Search unknown things; probe known API, exact context, or a stored failure.
+  Work in intended files. Edit -> check -> submit; use sync to update.
+  Use check FILE only to isolate one of several dirty Lean files.
   Use show REF for stored detail; do not rerun a command only for more output.
   Use Lean modules with explicit narrow imports and aligned module/namespace/path.
-  Keep public imports to module API; split unrelated files with costly elaboration.
   sorry is tracked during development; new axioms fail validation.
   Do not edit .lake or generated artifacts."#;
 
-const SEARCH_HELP: &str = r#"QUERY
-  NAME | NAME* | TYPE_OR_CONCEPT_TERMS | A|B|C
-  KIND NAME [source|body|proof]
-  name:NAME | name:A|B|C | type:LEAN_TYPE
-  FILE:LINE | FILE:START-END | FILE:tail
-  FILE[:RANGE] TERMS
-  FILE outline|declarations|imports|dependents
-  /REGEX/ | PATH /REGEX/ | re:/REGEX/ | PATH re:/REGEX/
-  qREF TERMS | sREF TERMS
+const SEARCH_HELP: &str = r#"SEARCH — find or read unknown things; returns qREF
+  declaration  NAME | NAME* | KIND NAME [source|body|proof]
+               name:NAME | name:A|B|C
+  type/concept TYPE_OR_CONCEPT_TERMS | type:LEAN_TYPE
+  source       FILE:LINE | FILE:START-END | FILE:tail
+               FILE[:RANGE] TERMS
+               FILE outline|declarations|imports|dependents
+               /REGEX/ | PATH /REGEX/ | re:/REGEX/ | PATH re:/REGEX/
+  compose      A|B|C | qREF TERMS | sREF TERMS
 
 KIND = abbrev|class|def|inductive|instance|lemma|structure|theorem
 
-Exact names include full signatures. name:A|B|C returns every named declaration;
-bare A|B|C stops after the first useful branch. type: is unification search and
-accepts `_` holes. Sigil what you know; leave inference for what you do not."#;
+RESULT
+  Default: compact ranked bundle. --limit N caps hits. --all expands this first
+  response; later use show qREF --all. Exact names include full signatures.
 
-const PROBE_HELP: &str = r##"PROBE
-  mathmux probe SUBJECT [FOCUS]
-  mathmux probe CONTEXT [SUBJECT] [FOCUS]
-  mathmux probe CONTEXT LEAN_DIRECTIVE
+RULES
+  name: forces exact lookup; its | batch returns all. Bare A|B|C stops after the
+  first useful branch. type: is unification search; `_` holes are legal.
+  FILE:LINE reads source only; use probe FILE:LINE for Lean context.
+  Quote queries containing shell characters such as |, *, or #.
+  Sigil what you know; leave inference for what you do not."#;
 
-SUBJECT = NAME | type:LEAN_TYPE | qREF
-CONTEXT = FILE | FILE:LINE | PATH | cREF | qREF
-FOCUS = signature|apply|fields|constructors|ext|simp|instances|coercions|
-        usages|source|goal|types|defeq|rewrite|profile
-LEAN_DIRECTIVE = "#check TERM"|"#synth TYPE"|"#reduce TERM"|"by TACTIC"
+const PROBE_HELP: &str = r##"PROBE — inspect something known; returns qREF
+  API       NAME [signature|source|apply|fields|constructors|ext|simp|
+                 instances|coercions|usages]
+  TYPE      type:LEAN_TYPE [types]
+  LOCAL     FILE:LINE [goal] | FILE:LINE TERM [signature]
+  SCOPED    PATH NAME usages
+  FAILURE   cREF [types|defeq|rewrite|profile]
+  STORED    qREF [FOCUS]
+  LEAN      FILE|FILE:LINE|cREF|qREF "#check TERM"|"#synth TYPE"|"#reduce TERM"
+            FILE:LINE|cREF|positioned-qREF "by TACTIC"
 
-Context is explicit and never inferred from command history. Probe inspects known
-API, source context, or a stored failure; check remains the certification step."##;
+RESULT
+  API focuses return one bounded dossier. goal returns the exact local goal;
+  TERM/directives return Lean's elaborated answer; by returns solved or subgoals.
+
+RULES
+  Context is mandatory for directives and never guessed. FILE uses its imports;
+  FILE:LINE uses that exact line—there is no nearby-line fallback. Probe never
+  edits or certifies source; use check after editing. Quote directives."##;
 
 #[derive(Parser)]
 #[command(
@@ -106,7 +118,7 @@ enum TopCommand {
         #[arg(long)]
         profile: bool,
     },
-    /// Search Lean declarations, types, source, diagnostics, and goals.
+    /// Find Lean declarations, types, concepts, and source.
     #[command(long_about = SEARCH_HELP)]
     Search {
         /// Query terms; the query form is inferred as documented above.
@@ -119,7 +131,7 @@ enum TopCommand {
         #[arg(long)]
         all: bool,
     },
-    /// Inspect a known Lean API, source context, or stored failure.
+    /// Inspect a known Lean API, exact context, or stored failure.
     #[command(long_about = PROBE_HELP)]
     Probe {
         /// Probe expression in the grammar documented above.
@@ -836,14 +848,22 @@ mod tests {
             .unwrap()
             .render_long_help()
             .to_string();
-        assert!(probe_help.contains("LEAN_DIRECTIVE"));
-        assert!(probe_help.contains("Context is explicit"));
+        for contract in [
+            "API       NAME",
+            "LOCAL     FILE:LINE",
+            "FAILURE   cREF",
+            "Context is mandatory",
+            "no nearby-line fallback",
+        ] {
+            assert!(probe_help.contains(contract), "missing probe contract {contract}");
+        }
+        assert!(!help.contains("diagnostics, and goals"));
     }
 
     #[test]
     fn workflow_help_prefers_direct_workspace_experimentation() {
         let help = command_line().render_help().to_string();
-        assert!(help.contains("experimenting in intended files over Scratch files"));
-        assert!(help.contains("Search to find/read; probe known API/context/failures"));
+        assert!(help.contains("Work in intended files"));
+        assert!(help.contains("Search unknown things; probe known API, exact context"));
     }
 }

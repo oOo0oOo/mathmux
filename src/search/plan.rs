@@ -1,8 +1,8 @@
 use super::*;
 
 pub(super) enum SearchPlan {
-    ContextOnly,
-    Location(GoalLocation),
+    StoredContext,
+    Location(SourceLocation),
     SourceRegex(SourceRegexQuery),
     Source(SourceOccurrenceQuery),
     Text(TextSearchPlan),
@@ -28,11 +28,11 @@ pub(super) fn plan_search(
     query: &str,
     has_context: bool,
 ) -> Result<PlannedSearch> {
-    let location = parse_goal_location(&workspace.path, cwd, Some(main_root), query)?;
-    let query = strip_search_modifiers(query);
+    let location = parse_source_location(&workspace.path, cwd, Some(main_root), query)?;
+    let query = query.trim().to_owned();
     ensure!(!query.is_empty() || has_context, "search query is empty");
     let plan = if query.is_empty() {
-        SearchPlan::ContextOnly
+        SearchPlan::StoredContext
     } else if let Some(location) = location {
         SearchPlan::Location(location)
     } else if let Some(source) =
