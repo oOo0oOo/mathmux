@@ -55,7 +55,7 @@ const SEARCH_HELP: &str = r#"QUERY FORMS (inferred)
   KIND = abbrev|class|def|inductive|instance|lemma|structure|theorem
   NAME*                         declaration-name glob
   STRUCTURE fields              complete field inventory
-  TYPE or WORDS                 type, name, concept, and source search
+  quotient topology             type, name, concept, and source search
   A|B                           alternatives; stop after the first useful branch
 
 Also accepts #check, #print, #synth, @NAME, and _root_.NAME. Ranking respects
@@ -812,6 +812,7 @@ mod tests {
             "FILE outline|declarations",
             "path/to/dir /REGEX/",
             "STRUCTURE fields",
+            "quotient topology",
             "A|B",
             "--all is the only",
             "facets inside QUERY",
