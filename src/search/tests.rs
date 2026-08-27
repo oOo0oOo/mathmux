@@ -403,7 +403,11 @@ fn query_parsing_scoring_and_ranking_regressions() {
         },
     ];
     let tokens = meaningful_query_tokens("CircleSeparatedOnRadius circleMap");
-    promote_query_coverage(&mut ranked, &tokens);
+    promote_query_coverage(
+        &mut ranked,
+        "CircleSeparatedOnRadius circleMap",
+        &tokens,
+    );
     assert!(ranked[0].hit.name.contains("CircleSeparatedOnRadius"));
     let mut qualified_leaf = vec![
         Candidate {
@@ -429,11 +433,40 @@ fn query_parsing_scoring_and_ranking_regressions() {
     ];
     promote_query_coverage(
         &mut qualified_leaf,
+        "KZero.ofBundle",
         &meaningful_query_tokens("KZero.ofBundle"),
     );
     assert_eq!(
         qualified_leaf[0].hit.name,
         "AtiyahSinger.ComplexVectorBundle.ofBundle"
+    );
+    let mut alternatives = vec![
+        Candidate {
+            hit: SearchHit {
+                name: "smul_add_smul_le_smul_add_smul".into(),
+                ..contextual_hit.clone()
+            },
+            score: 500.0,
+            origins: 0,
+        },
+        Candidate {
+            hit: SearchHit {
+                name: "AtiyahSinger.matrixToeplitzOperator_isFredholm".into(),
+                ..contextual_hit.clone()
+            },
+            score: 100.0,
+            origins: 0,
+        },
+    ];
+    let alternatives_query = "matrixToeplitzOperator_add|matrixToeplitzOperator_smul";
+    promote_query_coverage(
+        &mut alternatives,
+        alternatives_query,
+        &meaningful_query_tokens(alternatives_query),
+    );
+    assert_eq!(
+        alternatives[0].hit.name,
+        "AtiyahSinger.matrixToeplitzOperator_isFredholm"
     );
     assert_eq!(symbolic_source_term("*ᵥ"), Some("*ᵥ".to_owned()));
     assert_eq!(symbolic_source_term("≤"), Some("≤".to_owned()));

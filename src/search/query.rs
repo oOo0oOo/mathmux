@@ -933,7 +933,7 @@ pub(super) fn rank_discovery_candidates(
     if explicit_declaration {
         deduplicated.sort_by_key(|candidate| !qualified_name_matches(&candidate.hit.name, query));
     } else {
-        promote_query_coverage(&mut deduplicated, query_tokens);
+        promote_query_coverage(&mut deduplicated, query, query_tokens);
         let qualified_anchor = deduplicated.first().and_then(|candidate| {
             query_tokens
                 .iter()
@@ -1294,7 +1294,11 @@ pub(super) fn qualified_member_score(query: &str, name: &str) -> f64 {
         + common_suffix.saturating_sub(3).min(10) as f64 * 4.0
 }
 
-pub(super) fn promote_query_coverage(ranked: &mut Vec<Candidate>, tokens: &[String]) {
+pub(super) fn promote_query_coverage(
+    ranked: &mut Vec<Candidate>,
+    query: &str,
+    tokens: &[String],
+) {
     if ranked.len() <= 1 || tokens.len() <= 1 {
         return;
     }
@@ -1341,8 +1345,22 @@ pub(super) fn promote_query_coverage(ranked: &mut Vec<Candidate>, tokens: &[Stri
             }
         }
     }
+    let alternatives = query
+        .split('|')
+        .map(meaningful_query_tokens)
+        .filter(|tokens| !tokens.is_empty())
+        .collect::<Vec<_>>();
     remaining.sort_by_cached_key(|candidate| {
-        std::cmp::Reverse(hit_query_coverage(&candidate.hit, tokens))
+        let coverage = if alternatives.len() > 1 {
+            alternatives
+                .iter()
+                .map(|tokens| hit_query_coverage(&candidate.hit, tokens))
+                .max()
+                .unwrap_or_default()
+        } else {
+            hit_query_coverage(&candidate.hit, tokens)
+        };
+        std::cmp::Reverse(coverage)
     });
     if promoted.len() < SUMMARY_LIMIT && !remaining.is_empty() {
         promoted.push(remaining.remove(0));
