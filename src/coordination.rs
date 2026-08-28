@@ -65,8 +65,7 @@ fn lock_file_until(file: &File, timeout: Duration, mode: FileLockMode) -> Result
         match result {
             Ok(()) => return Ok(()),
             Err(error)
-                if error.kind() == std::io::ErrorKind::WouldBlock
-                    && Instant::now() < deadline =>
+                if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline =>
             {
                 pause(timeout);
             }

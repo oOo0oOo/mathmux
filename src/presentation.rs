@@ -55,6 +55,9 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let bounded = bounded_head_tail(&value, 6, 2, "lines");
-        assert_eq!(bounded.lines().collect::<Vec<_>>(), ["1", "2", "3", "4", "... 4 lines omitted ...", "9", "10"]);
+        assert_eq!(
+            bounded.lines().collect::<Vec<_>>(),
+            ["1", "2", "3", "4", "... 4 lines omitted ...", "9", "10"]
+        );
     }
 }

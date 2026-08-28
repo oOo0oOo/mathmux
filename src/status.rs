@@ -69,7 +69,11 @@ pub fn render(repo: &Repo, state: &State, telemetry: Option<&TelemetryStore>) ->
 
     let mut output = format!("{project} {}", short_hash(&revision));
     render_agents(&mut output, &agents, now)?;
-    write!(output, "\ncode {:>7} Lean lines in {} files  sorry declarations ", code.lines, code.files)?;
+    write!(
+        output,
+        "\ncode {:>7} Lean lines in {} files  sorry declarations ",
+        code.lines, code.files
+    )?;
     match sorries {
         Some(count) => write!(output, "{count}")?,
         None => output.push_str("unknown"),
@@ -79,12 +83,7 @@ pub fn render(repo: &Repo, state: &State, telemetry: Option<&TelemetryStore>) ->
     for (label, seconds) in [("1h", HOUR_SECS), ("24h", DAY_SECS)] {
         let lines = net_lean_lines(&repo.root, now - seconds)?;
         let wall_hours = seconds as f64 / HOUR_SECS as f64;
-        let agent_hours = agent_hours(
-            &agents,
-            activity_events.as_deref(),
-            now - seconds,
-            now,
-        );
+        let agent_hours = agent_hours(&agents, activity_events.as_deref(), now - seconds, now);
         write!(
             output,
             "\n{label:>3} {lines:+} lines  {:+.1}/h",
@@ -134,9 +133,8 @@ fn render_validation_status(
                 submission.reference, submission.validation_status
             )?;
         }
-        if let Some(submission) =
-            latest_completed
-                .filter(|submission| submission.validation_status == ValidationStatus::Failed)
+        if let Some(submission) = latest_completed
+            .filter(|submission| submission.validation_status == ValidationStatus::Failed)
         {
             write!(
                 output,
@@ -147,9 +145,8 @@ fn render_validation_status(
                 write!(output, "\n    {}", truncate_line(&single_line(detail), 236))?;
             }
         }
-    } else if let Some(submission) =
-        latest_completed
-            .filter(|submission| submission.validation_status == ValidationStatus::Failed)
+    } else if let Some(submission) = latest_completed
+        .filter(|submission| submission.validation_status == ValidationStatus::Failed)
     {
         write!(
             output,
@@ -212,8 +209,11 @@ version: \"v0.4\"\n",
     );
     writeln!(output, "project:").unwrap();
     writeln!(output, "  name: {}", yaml_string(project)).unwrap();
-    writeln!(output, "  description: \"TODO\" # mathematical content and principal results")
-        .unwrap();
+    writeln!(
+        output,
+        "  description: \"TODO\" # mathematical content and principal results"
+    )
+    .unwrap();
     writeln!(output, "  authors: [\"TODO\"] # formalization authors").unwrap();
     writeln!(output, "  responsible_maintainers: [] # TODO").unwrap();
     match license {
@@ -221,7 +221,11 @@ version: \"v0.4\"\n",
         None => writeln!(output, "  license: \"TODO\" # SPDX identifier").unwrap(),
     }
     writeln!(output, "sources:").unwrap();
-    writeln!(output, "  - title: \"TODO\" # source or original-proof description").unwrap();
+    writeln!(
+        output,
+        "  - title: \"TODO\" # source or original-proof description"
+    )
+    .unwrap();
     writeln!(output, "related_formalizations: []").unwrap();
     writeln!(output, "classification:").unwrap();
     writeln!(output, "  arxiv: [] # TODO if applicable").unwrap();
@@ -229,8 +233,11 @@ version: \"v0.4\"\n",
     writeln!(output, "status:").unwrap();
     writeln!(output, "  scope: \"TODO\"").unwrap();
     if let Some(sorries) = sorries {
-        writeln!(output, "  sorry_count: {sorries} # latest compiler-audited declaration count")
-            .unwrap();
+        writeln!(
+            output,
+            "  sorry_count: {sorries} # latest compiler-audited declaration count"
+        )
+        .unwrap();
         if sorries == 0 {
             writeln!(output, "  sorry_in_definitions: 0").unwrap();
         }
@@ -239,7 +246,11 @@ version: \"v0.4\"\n",
     writeln!(output, "automation:").unwrap();
     writeln!(output, "  methods:").unwrap();
     if models.is_empty() && agent_hours.is_none() {
-        writeln!(output, "    - method: other # TODO: choose the accurate method").unwrap();
+        writeln!(
+            output,
+            "    - method: other # TODO: choose the accurate method"
+        )
+        .unwrap();
     } else {
         writeln!(output, "    - method: agent").unwrap();
         if !models.is_empty() {
@@ -302,10 +313,20 @@ fn detected_license(root: &Path) -> Option<&'static str> {
         .ok()?
         .filter_map(Result::ok)
         .filter(|entry| {
-            entry
-                .file_name()
-                .to_str()
-                .is_some_and(|name| matches!(name.to_ascii_lowercase().as_str(), "license" | "license.md" | "license.txt" | "licence" | "licence.md" | "licence.txt" | "copying" | "copying.md" | "copying.txt"))
+            entry.file_name().to_str().is_some_and(|name| {
+                matches!(
+                    name.to_ascii_lowercase().as_str(),
+                    "license"
+                        | "license.md"
+                        | "license.txt"
+                        | "licence"
+                        | "licence.md"
+                        | "licence.txt"
+                        | "copying"
+                        | "copying.md"
+                        | "copying.txt"
+                )
+            })
         })
         .collect::<Vec<_>>();
     let [entry] = entries.as_slice() else {
@@ -696,15 +717,16 @@ fn agent_hours(
             (start < end).then_some((start, end))
         });
         let (seconds, _) =
-            intervals.fold((0_i64, None), |(seconds, end), (start, next_end)| {
-                match end {
+            intervals.fold(
+                (0_i64, None),
+                |(seconds, end), (start, next_end)| match end {
                     Some(end) if start <= end => (
                         seconds + next_end.saturating_sub(end),
                         Some(next_end.max(end)),
                     ),
                     _ => (seconds + next_end.saturating_sub(start), Some(next_end)),
-                }
-            });
+                },
+            );
         total + seconds
     });
     active_seconds as f64 / HOUR_SECS as f64
@@ -720,20 +742,23 @@ fn recorded_agent_hours(events: &[ContextEvent]) -> f64 {
             .or_default()
             .push((completed.saturating_sub(duration), completed + ACTIVE_SECS));
     }
-    let seconds = by_workspace.into_values().fold(0_i64, |total, mut intervals| {
-        intervals.sort_unstable();
-        let (seconds, _) = intervals.into_iter().fold(
-            (0_i64, None),
-            |(seconds, end), (start, next_end)| match end {
-                Some(end) if start <= end => (
-                    seconds + next_end.saturating_sub(end),
-                    Some(next_end.max(end)),
-                ),
-                _ => (seconds + next_end.saturating_sub(start), Some(next_end)),
-            },
-        );
-        total + seconds
-    });
+    let seconds =
+        by_workspace
+            .into_values()
+            .fold(0_i64, |total, mut intervals| {
+                intervals.sort_unstable();
+                let (seconds, _) = intervals.into_iter().fold(
+                    (0_i64, None),
+                    |(seconds, end), (start, next_end)| match end {
+                        Some(end) if start <= end => (
+                            seconds + next_end.saturating_sub(end),
+                            Some(next_end.max(end)),
+                        ),
+                        _ => (seconds + next_end.saturating_sub(start), Some(next_end)),
+                    },
+                );
+                total + seconds
+            });
     seconds as f64 / HOUR_SECS as f64
 }
 

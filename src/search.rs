@@ -19,8 +19,8 @@ use crate::coordination::{lock_exclusive, open_lock};
 use crate::git::{dirty_lean_files, lake_command, project_lean_files};
 use crate::issue::{TelemetryOperation, TelemetryStore};
 use crate::presentation::{SEARCH_PRESENTATION, SOURCE_PREVIEW_LINES};
-use crate::repo::Repo;
 use crate::reference::{Reference, ReferenceKind};
+use crate::repo::Repo;
 use crate::state::{SEARCH_USAGE_LIMIT, SearchHit, SearchRun, SearchUsage, State, Workspace};
 use crate::util::{
     clean_line, hash_bytes, now_unix_ms, query_requests_proof_body, single_line, truncate_line,
@@ -29,24 +29,24 @@ use crate::util::{
 
 mod api;
 mod display;
-mod type_worker;
-mod source_query;
 mod plan;
 mod probe;
 mod query;
 mod source;
-mod tuning;
+mod source_query;
 #[cfg(test)]
 mod tests;
+mod tuning;
+mod type_worker;
 
-use source_query::*;
 use api::*;
 use display::{render_summary, source_has_complete_declaration_header};
-use type_worker::{TypeSearchHit, TypeSearchResult, TypeSearchState, TypeSearchWorker};
 use plan::*;
 use query::*;
 use source::*;
+use source_query::*;
 use tuning::*;
+use type_worker::{TypeSearchHit, TypeSearchResult, TypeSearchState, TypeSearchWorker};
 
 const RESULT_LIMIT: usize = SEARCH_PRESENTATION.result_limit;
 const SUMMARY_LIMIT: usize = SEARCH_PRESENTATION.summary_limit;
@@ -71,14 +71,19 @@ pub struct Searcher {
     repo: Repo,
     state: State,
     checker: Arc<Checker>,
-    index_lock: Mutex<()>,
-    last_refresh: Mutex<HashMap<String, Instant>>,
+    index: SearchIndex,
     dirty_cache: Mutex<HashMap<String, (Instant, Vec<PathBuf>)>>,
+    type_search: Mutex<TypeSearchState>,
+    telemetry: Option<Arc<TelemetryStore>>,
+}
+
+#[derive(Default)]
+struct SearchIndex {
+    refresh_lock: Mutex<()>,
+    last_refresh: Mutex<HashMap<String, Instant>>,
     source_cache: Mutex<HashMap<PathBuf, CachedSource>>,
     base_lock: Arc<Mutex<()>>,
-    type_search: Mutex<TypeSearchState>,
     base: Mutex<HashMap<String, BaseState>>,
-    telemetry: Option<Arc<TelemetryStore>>,
 }
 
 struct SearchResult {
@@ -131,6 +136,56 @@ struct TextSearchContext<'a> {
     base_warming: bool,
     import_target: Option<&'a Path>,
     show_all: bool,
+}
+
+#[derive(Default)]
+struct SearchStageTimings {
+    import_ms: u64,
+    candidates_ms: u64,
+    type_search_ms: u64,
+    ranking_ms: u64,
+    project_ms: u64,
+    fallback_ms: u64,
+    finish_ms: u64,
+}
+
+struct SearchPipeline {
+    started: Instant,
+    timings: SearchStageTimings,
+    type_matches: usize,
+    type_suggestions: usize,
+    type_stages: Vec<String>,
+    fallback_used: bool,
+}
+
+impl SearchPipeline {
+    fn start() -> Self {
+        Self {
+            started: Instant::now(),
+            timings: SearchStageTimings::default(),
+            type_matches: 0,
+            type_suggestions: 0,
+            type_stages: Vec::new(),
+            fallback_used: false,
+        }
+    }
+
+    fn total_ms(&self) -> u64 {
+        self.started.elapsed().as_millis() as u64
+    }
+
+    fn unaccounted_ms(&self, total_ms: u64) -> u64 {
+        let timings = &self.timings;
+        total_ms.saturating_sub(
+            timings.import_ms
+                + timings.candidates_ms
+                + timings.type_search_ms
+                + timings.ranking_ms
+                + timings.project_ms
+                + timings.fallback_ms
+                + timings.finish_ms,
+        )
+    }
 }
 
 struct ExactPlan {
@@ -290,10 +345,7 @@ fn ensure_reference_schema(connection: &Connection) -> Result<bool> {
     Ok(!normalized)
 }
 
-fn name_contains_candidates(
-    connection: &Connection,
-    tokens: &[String],
-) -> Result<Vec<IndexedRow>> {
+fn name_contains_candidates(connection: &Connection, tokens: &[String]) -> Result<Vec<IndexedRow>> {
     if tokens.is_empty() {
         return Ok(Vec::new());
     }
@@ -414,13 +466,9 @@ impl Searcher {
             repo,
             state,
             checker,
-            index_lock: Mutex::new(()),
-            last_refresh: Mutex::new(HashMap::new()),
+            index: SearchIndex::default(),
             dirty_cache: Mutex::new(HashMap::new()),
-            source_cache: Mutex::new(HashMap::new()),
-            base_lock: Arc::new(Mutex::new(())),
             type_search: Mutex::new(TypeSearchState::Empty),
-            base: Mutex::new(HashMap::new()),
             telemetry,
         }
     }
@@ -438,9 +486,17 @@ impl Searcher {
         let started = Instant::now();
         let requested_query = request.displayed_query.clone();
         let (query, forced_plan, exact_names) = match &request.expression {
-            SearchExpression::ExactNames(names) => (names[0].clone(), Some(TextSearchPlan::ExactFirst), Some(names)),
-            SearchExpression::Type(pattern) => (pattern.clone(), Some(TextSearchPlan::ForcedType), None),
-            SearchExpression::Regex(query) | SearchExpression::Query(query) => (query.clone(), None, None),
+            SearchExpression::ExactNames(names) => (
+                names[0].clone(),
+                Some(TextSearchPlan::ExactFirst),
+                Some(names),
+            ),
+            SearchExpression::Type(pattern) => {
+                (pattern.clone(), Some(TextSearchPlan::ForcedType), None)
+            }
+            SearchExpression::Regex(query) | SearchExpression::Query(query) => {
+                (query.clone(), None, None)
+            }
         };
         let expanded = self.expand_reference_query(&query)?;
         let planned = plan_search(
@@ -455,36 +511,39 @@ impl Searcher {
         let reference = self.state.next_reference(ReferenceKind::Query)?;
         let result = if let Some(names) = exact_names {
             self.exact_name_batch(workspace, names, request.all)?
-        } else { match planned.plan {
-            SearchPlan::StoredContext => SearchResult {
-                hits: Vec::new(),
-                inference: "stored-context".into(),
-                note: Some("stored context only; declaration search skipped".into()),
-                ok: true,
-            },
-            SearchPlan::Location(mut location) => {
-                location.expanded = request.all;
-                self.source_location_search(workspace, location)?
-            }
-            SearchPlan::SourceRegex(source) => {
-                source_regex_result(workspace, source, source_show_all)?
-            }
-            SearchPlan::Source(source) => {
-                if source.terms.len() == 1 && source.terms[0].eq_ignore_ascii_case("dependents") {
-                    self.source_dependents(workspace, &source)?
-                } else {
-                    source_occurrence_result(workspace, source, source_show_all)?
+        } else {
+            match planned.plan {
+                SearchPlan::StoredContext => SearchResult {
+                    hits: Vec::new(),
+                    inference: "stored-context".into(),
+                    note: Some("stored context only; declaration search skipped".into()),
+                    ok: true,
+                },
+                SearchPlan::Location(mut location) => {
+                    location.expanded = request.all;
+                    self.source_location_search(workspace, location)?
                 }
+                SearchPlan::SourceRegex(source) => {
+                    source_regex_result(workspace, source, source_show_all)?
+                }
+                SearchPlan::Source(source) => {
+                    if source.terms.len() == 1 && source.terms[0].eq_ignore_ascii_case("dependents")
+                    {
+                        self.source_dependents(workspace, &source)?
+                    } else {
+                        source_occurrence_result(workspace, source, source_show_all)?
+                    }
+                }
+                SearchPlan::Text(text_plan) => self.planned_text_search(
+                    workspace,
+                    query,
+                    forced_plan.unwrap_or(text_plan),
+                    expanded.import_target.as_deref(),
+                    expanded.auxiliary_query.as_deref(),
+                    request.all,
+                )?,
             }
-            SearchPlan::Text(text_plan) => self.planned_text_search(
-                workspace,
-                query,
-                forced_plan.unwrap_or(text_plan),
-                expanded.import_target.as_deref(),
-                expanded.auxiliary_query.as_deref(),
-                request.all,
-            )?,
-        }};
+        };
         let mut result = result;
         if !expanded.context.is_empty() && requested_query.split_whitespace().count() == 1 {
             suppress_inferred_missing_note(&mut result.note);
@@ -538,8 +597,15 @@ impl Searcher {
                 None,
                 all,
             )?;
-            warming |= result.note.as_deref().is_some_and(|note| note.contains("warming"));
-            if let Some(hit) = result.hits.into_iter().find(|hit| qualified_name_matches(&hit.name, name)) {
+            warming |= result
+                .note
+                .as_deref()
+                .is_some_and(|note| note.contains("warming"));
+            if let Some(hit) = result
+                .hits
+                .into_iter()
+                .find(|hit| qualified_name_matches(&hit.name, name))
+            {
                 hits.push(hit);
             } else {
                 missing.push(name.clone());
@@ -566,7 +632,10 @@ impl Searcher {
         workspace: &Workspace,
         query: &SourceOccurrenceQuery,
     ) -> Result<SearchResult> {
-        let relative = query.path.strip_prefix(&workspace.path).unwrap_or(&query.path);
+        let relative = query
+            .path
+            .strip_prefix(&workspace.path)
+            .unwrap_or(&query.path);
         let module = project_module_name(&workspace.path, relative);
         let (scopes, warming) = self.search_scopes(workspace)?;
         let connection = self.open()?;
@@ -734,7 +803,9 @@ impl Searcher {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let retain = match &mut *state {
             TypeSearchState::Starting(_) => true,
-            TypeSearchState::Running(worker) => worker.last_used.elapsed() < idle_for && worker.alive(),
+            TypeSearchState::Running(worker) => {
+                worker.last_used.elapsed() < idle_for && worker.alive()
+            }
             _ => false,
         };
         if !retain && matches!(&*state, TypeSearchState::Running(_)) {
@@ -789,8 +860,8 @@ impl Searcher {
             let telemetry = self.telemetry.clone();
             std::thread::spawn(move || {
                 let started = Instant::now();
-                let result =
-                    TypeSearchWorker::start(&repo, &workspace).map_err(|error| format!("{error:#}"));
+                let result = TypeSearchWorker::start(&repo, &workspace)
+                    .map_err(|error| format!("{error:#}"));
                 if let Some(store) = &telemetry {
                     let detail = result
                         .as_ref()
@@ -836,7 +907,10 @@ impl Searcher {
         let mut prepared = match worker.prepare(query) {
             Ok(response) => response,
             Err(error) => {
-                append_log(&self.repo, &format!("type search preparation failed: {error:#}"));
+                append_log(
+                    &self.repo,
+                    &format!("type search preparation failed: {error:#}"),
+                );
                 *state = TypeSearchState::Unavailable;
                 return (TypeSearchResult::default(), false);
             }
@@ -872,7 +946,10 @@ impl Searcher {
         ) {
             Ok(candidates) => candidates,
             Err(error) => {
-                append_log(&self.repo, &format!("type candidate selection failed: {error:#}"));
+                append_log(
+                    &self.repo,
+                    &format!("type candidate selection failed: {error:#}"),
+                );
                 return (TypeSearchResult::default(), false);
             }
         };
@@ -1152,7 +1229,10 @@ impl Searcher {
                  )",
                 [&owner],
             )?;
-            connection.execute("DELETE FROM search_reference_files WHERE owner = ?1", [&owner])?;
+            connection.execute(
+                "DELETE FROM search_reference_files WHERE owner = ?1",
+                [&owner],
+            )?;
             connection.execute("DELETE FROM search_fts WHERE owner = ?1", [&owner])?;
             connection.execute("DELETE FROM search_origins WHERE owner = ?1", [&owner])?;
             connection.execute("DELETE FROM search_imports WHERE owner = ?1", [&owner])?;
@@ -1177,12 +1257,13 @@ impl Searcher {
 
         let project_artifacts = workspace.path.join(".lake/build/lib/lean");
         let refresh_due = self
+            .index
             .last_refresh
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&workspace.reference)
             .is_none_or(|last| last.elapsed() >= SEARCH_REFRESH_INTERVAL);
-        if refresh_due && let Ok(_base_guard) = self.base_lock.try_lock() {
+        if refresh_due && let Ok(_base_guard) = self.index.base_lock.try_lock() {
             match search_index_writer_lock(&self.repo) {
                 Ok(_process_guard) => {
                     for root in &roots {
@@ -1202,7 +1283,8 @@ impl Searcher {
                             );
                         }
                     }
-                    self.last_refresh
+                    self.index
+                        .last_refresh
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .insert(workspace.reference.clone(), Instant::now());
@@ -1231,6 +1313,7 @@ impl Searcher {
     fn base_scopes(&self, workspace: &Workspace) -> (HashSet<String>, bool) {
         let key = base_input_id(&workspace.path);
         let mut states = self
+            .index
             .base
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1274,7 +1357,7 @@ impl Searcher {
                 let state = self.state.clone();
                 let checker = self.checker.clone();
                 let workspace = workspace.clone();
-                let base_lock = self.base_lock.clone();
+                let base_lock = self.index.base_lock.clone();
                 let telemetry = self.telemetry.clone();
                 let partial = package_scopes(&workspace.path);
                 std::thread::spawn(move || {
@@ -1356,6 +1439,7 @@ impl Searcher {
 
     fn poll_base_workers(&self) -> bool {
         let mut states = self
+            .index
             .base
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1686,7 +1770,7 @@ impl Searcher {
     }
 
     fn search_scopes(&self, workspace: &Workspace) -> Result<(HashSet<String>, bool)> {
-        match self.index_lock.try_lock() {
+        match self.index.refresh_lock.try_lock() {
             Ok(_guard) => self.refresh(workspace),
             Err(std::sync::TryLockError::Poisoned(error)) => {
                 let _guard = error.into_inner();
@@ -1764,7 +1848,7 @@ impl Searcher {
             import_target,
             show_all,
         } = context;
-        let search_started = Instant::now();
+        let mut pipeline = SearchPipeline::start();
         let field_inventory = field_inventory_query(query);
         let explicit_declaration = explicit_declaration_name(query);
         let query = explicit_declaration.unwrap_or(query);
@@ -1772,7 +1856,7 @@ impl Searcher {
         let strict_type = matches!(plan, TextSearchPlan::ForcedType);
         let query_tokens = meaningful_query_tokens(query);
         let import_context = self.import_context(workspace, scopes, base_warming, import_target);
-        let import_ms = search_started.elapsed().as_millis() as u64;
+        pipeline.timings.import_ms = pipeline.started.elapsed().as_millis() as u64;
         if matches!(plan, TextSearchPlan::ExactFirst)
             && let Some(structure) = field_inventory
             && let Some(result) = self.field_inventory_result(
@@ -1799,14 +1883,11 @@ impl Searcher {
         }
         let candidates_started = Instant::now();
         let mut rows = self.candidates(query, &query_tokens, type_search, scopes)?;
-        let candidates_ms = candidates_started.elapsed().as_millis() as u64;
+        pipeline.timings.candidates_ms = candidates_started.elapsed().as_millis() as u64;
         let name_search = !type_search && declaration_name_query(query);
         let mut ranked = Vec::new();
         let mut warming = false;
         let mut structural_type_fallback = None;
-        let mut type_search_matches = 0;
-        let mut type_search_suggestions = 0;
-        let mut type_search_stages = Vec::new();
         let type_fallback_candidates = rows
             .iter()
             .filter(|row| !matches!(row.kind.as_str(), "file" | "imports"))
@@ -1820,17 +1901,14 @@ impl Searcher {
             } else {
                 format!("⊢ {query}")
             };
-            let (applicable_result, applicable_warming) =
-                self.type_search_hits(
-                    workspace,
-                    &applicability_query,
-                    !strict_type,
-                    scopes,
-                    &type_fallback_candidates,
-                );
-            if strict_type
-                && let Some(error) = &applicable_result.error
-            {
+            let (applicable_result, applicable_warming) = self.type_search_hits(
+                workspace,
+                &applicability_query,
+                !strict_type,
+                scopes,
+                &type_fallback_candidates,
+            );
+            if strict_type && let Some(error) = &applicable_result.error {
                 let anchor_rows = if let Some(identifier) = unknown_type_identifier(error) {
                     self.candidates(
                         identifier,
@@ -1855,10 +1933,12 @@ impl Searcher {
                 }
             }
             warming |= applicable_warming;
-            type_search_matches += applicable_result.count;
-            type_search_suggestions += applicable_result.suggestions.len();
+            pipeline.type_matches += applicable_result.count;
+            pipeline.type_suggestions += applicable_result.suggestions.len();
             if !applicable_result.detail.is_empty() {
-                type_search_stages.push(clean_line(&applicable_result.detail));
+                pipeline
+                    .type_stages
+                    .push(clean_line(&applicable_result.detail));
             }
             let has_full_applicability_page = applicable_result.count >= RESULT_LIMIT;
             let applicable = self.ranked_type_search_hits(
@@ -1870,19 +1950,20 @@ impl Searcher {
             )?;
             ranked.extend(applicable);
             if !strict_type && !explicit_conclusion && !has_full_applicability_page {
-                let (type_search_result, is_warming) =
-                    self.type_search_hits(
-                        workspace,
-                        query,
-                        !strict_type,
-                        scopes,
-                        &type_fallback_candidates,
-                    );
+                let (type_search_result, is_warming) = self.type_search_hits(
+                    workspace,
+                    query,
+                    !strict_type,
+                    scopes,
+                    &type_fallback_candidates,
+                );
                 warming |= is_warming;
-                type_search_matches += type_search_result.count;
-                type_search_suggestions += type_search_result.suggestions.len();
+                pipeline.type_matches += type_search_result.count;
+                pipeline.type_suggestions += type_search_result.suggestions.len();
                 if !type_search_result.detail.is_empty() {
-                    type_search_stages.push(clean_line(&type_search_result.detail));
+                    pipeline
+                        .type_stages
+                        .push(clean_line(&type_search_result.detail));
                 }
                 let type_search = self.ranked_type_search_hits(
                     type_search_result.hits,
@@ -1894,7 +1975,7 @@ impl Searcher {
                 ranked.extend(type_search);
             }
         }
-        let type_search_ms = type_search_started.elapsed().as_millis() as u64;
+        pipeline.timings.type_search_ms = type_search_started.elapsed().as_millis() as u64;
         let ranking_started = Instant::now();
         for row in rows.into_iter().filter(|row| scopes.contains(&row.owner)) {
             let type_score = if type_search {
@@ -1930,11 +2011,11 @@ impl Searcher {
                 - row.rank.max(0.0);
             ranked.push(indexed_candidate(row, query, &query_tokens, score));
         }
-        let ranking_ms = ranking_started.elapsed().as_millis() as u64;
+        pipeline.timings.ranking_ms = ranking_started.elapsed().as_millis() as u64;
         let project_started = Instant::now();
         let project = self.project_source_hits(workspace, query, &query_tokens);
         ranked.extend(project);
-        let project_ms = project_started.elapsed().as_millis() as u64;
+        pipeline.timings.project_ms = project_started.elapsed().as_millis() as u64;
         if name_search
             && let Some(exact_name) = unique_qualified_hit_name(
                 ranked
@@ -1964,12 +2045,11 @@ impl Searcher {
             );
         }
         let fallback_started = Instant::now();
-        let mut fallback_used = false;
         if base_warming
             || symbolic_source_term(query).is_some()
             || !named_argument_terms(query).is_empty()
         {
-            fallback_used = true;
+            pipeline.fallback_used = true;
             match fallback_source_candidates(&workspace.path, query, &query_tokens) {
                 Ok(hits) => ranked.extend(hits),
                 Err(error) => append_log(
@@ -1978,16 +2058,14 @@ impl Searcher {
                 ),
             }
         }
-        let fallback_ms = fallback_started.elapsed().as_millis() as u64;
+        pipeline.timings.fallback_ms = fallback_started.elapsed().as_millis() as u64;
         if strict_type {
             ranked.retain(|candidate| {
                 candidate
                     .hit
                     .signature
                     .as_deref()
-                    .is_some_and(|signature| {
-                        structural_result_type_score(query, signature) > 0.0
-                    })
+                    .is_some_and(|signature| structural_result_type_score(query, signature) > 0.0)
             });
         }
         let finish_started = Instant::now();
@@ -2060,26 +2138,32 @@ impl Searcher {
             note,
             ok: true,
         };
-        let total_ms = search_started.elapsed().as_millis() as u64;
-        let finish_ms = finish_started.elapsed().as_millis() as u64;
-        let accounted_ms = import_ms
-            + candidates_ms
-            + type_search_ms
-            + ranking_ms
-            + project_ms
-            + fallback_ms
-            + finish_ms;
-        let unaccounted_ms = total_ms.saturating_sub(accounted_ms);
-        let sampled_fallback = fallback_used
-            && query.bytes().fold(0_u8, |hash, byte| {
-                hash.wrapping_mul(31).wrapping_add(byte)
-            }) % 8 == 0;
+        pipeline.timings.finish_ms = finish_started.elapsed().as_millis() as u64;
+        let total_ms = pipeline.total_ms();
+        let unaccounted_ms = pipeline.unaccounted_ms(total_ms);
+        let sampled_fallback = pipeline.fallback_used
+            && query
+                .bytes()
+                .fold(0_u8, |hash, byte| hash.wrapping_mul(31).wrapping_add(byte))
+                % 8
+                == 0;
         if (total_ms >= 2_000 || sampled_fallback)
             && let Some(store) = &self.telemetry
         {
+            let timings = &pipeline.timings;
             let detail = format!(
-                "import={import_ms}ms candidates={candidates_ms}ms type_search={type_search_ms}ms type_matches={type_search_matches} type_suggestions={type_search_suggestions} type_stages={} rank={ranking_ms}ms project={project_ms}ms fallback={fallback_ms}ms used={fallback_used} top={fallback_top} unique_top={fallback_unique_top} finish={finish_ms}ms other={unaccounted_ms}ms hits={}",
-                type_search_stages.join(" | "),
+                "import={}ms candidates={}ms type_search={}ms type_matches={} type_suggestions={} type_stages={} rank={}ms project={}ms fallback={}ms used={} top={fallback_top} unique_top={fallback_unique_top} finish={}ms other={unaccounted_ms}ms hits={}",
+                timings.import_ms,
+                timings.candidates_ms,
+                timings.type_search_ms,
+                pipeline.type_matches,
+                pipeline.type_suggestions,
+                pipeline.type_stages.join(" | "),
+                timings.ranking_ms,
+                timings.project_ms,
+                timings.fallback_ms,
+                pipeline.fallback_used,
+                timings.finish_ms,
                 result.hits.len(),
             );
             let _ = store.record_operation(
@@ -2233,12 +2317,7 @@ impl Searcher {
             if let [row] = structures.as_slice() {
                 let tokens = meaningful_query_tokens(query);
                 let (source, _) = detailed_source_excerpt(
-                    &row.body,
-                    query,
-                    &tokens,
-                    row.line,
-                    &row.kind,
-                    &row.name,
+                    &row.body, query, &tokens, row.line, &row.kind, &row.name,
                 );
                 return Ok(Some(ExactMatch {
                     candidate: Candidate {
@@ -2338,10 +2417,7 @@ impl Searcher {
             return Some(paths.clone());
         }
         let paths = dirty_lean_files(&workspace.path).ok()?;
-        cache.insert(
-            workspace.reference.clone(),
-            (Instant::now(), paths.clone()),
-        );
+        cache.insert(workspace.reference.clone(), (Instant::now(), paths.clone()));
         Some(paths)
     }
 
@@ -2453,12 +2529,9 @@ impl Searcher {
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             let found = !named_rows.is_empty();
             rows.extend(named_rows);
-            let compound_query = token.eq_ignore_ascii_case(query)
-                && identifier_query_parts(query).len() >= 2;
-            if !found
-                && !compound_query
-                && (token.len() >= 8 || token.contains(['.', '_']))
-            {
+            let compound_query =
+                token.eq_ignore_ascii_case(query) && identifier_query_parts(query).len() >= 2;
+            if !found && !compound_query && (token.len() >= 8 || token.contains(['.', '_'])) {
                 contains_tokens.push(token.clone());
             }
         }
@@ -2471,8 +2544,7 @@ impl Searcher {
                 &rows,
             )?);
         }
-        if name_query && let Some((owner, leaf)) = query.rsplit_once('.')
-        {
+        if name_query && let Some((owner, leaf)) = query.rsplit_once('.') {
             let owner = owner.rsplit('.').next().unwrap_or(owner).to_lowercase();
             let namespace_query = format!("name : \"{}\"", owner.replace('"', "\"\""));
             rows.extend(
@@ -2512,11 +2584,7 @@ impl Searcher {
         Ok(rows)
     }
 
-    fn exact_candidates(
-        &self,
-        query: &str,
-        scopes: &HashSet<String>,
-    ) -> Result<Vec<IndexedRow>> {
+    fn exact_candidates(&self, query: &str, scopes: &HashSet<String>) -> Result<Vec<IndexedRow>> {
         let connection = self.open()?;
         install_active_scopes(&connection, scopes)?;
         let sql = indexed_rows_sql(&format!(
@@ -2597,10 +2665,7 @@ impl Searcher {
             SEARCH_TUNING.retrieval.field_rows,
         ));
         let mut statement = connection.prepare(&sql)?;
-        let query = format!(
-            "name : \"{}\"*",
-            indexed_parent_name.replace('"', "\"\"")
-        );
+        let query = format!("name : \"{}\"*", indexed_parent_name.replace('"', "\"\""));
         let prefix = format!("{}.", parent.hit.name);
         let rows = statement
             .query_map([query], indexed_row_from_row)?
@@ -2653,11 +2718,7 @@ impl Searcher {
         Ok(Some(exact_search_result(vec![hit], base_warming)))
     }
 
-    fn direct_continuations(
-        &self,
-        query: &str,
-        scopes: &HashSet<String>,
-    ) -> Result<Vec<String>> {
+    fn direct_continuations(&self, query: &str, scopes: &HashSet<String>) -> Result<Vec<String>> {
         let connection = self.open()?;
         install_active_scopes(&connection, scopes)?;
         let sql = format!(
@@ -2762,7 +2823,8 @@ impl Searcher {
         Ok(ranked
             .into_iter()
             .filter_map(|(_, candidate)| {
-                seen.insert(candidate.hit.name.clone()).then_some(candidate.hit)
+                seen.insert(candidate.hit.name.clone())
+                    .then_some(candidate.hit)
             })
             .take(SEARCH_TUNING.promotion.context_group_size)
             .collect())
@@ -2924,19 +2986,19 @@ fn unknown_type_identifier(error: &str) -> Option<&str> {
 
 fn search_index_writer_lock(repo: &Repo) -> Result<fs::File> {
     let path = repo.state_dir.join("search-index.lock");
-    let file = open_lock(&path)
-        .with_context(|| format!("cannot open {}", path.display()))?;
+    let file = open_lock(&path).with_context(|| format!("cannot open {}", path.display()))?;
     lock_exclusive(&file).with_context(|| format!("cannot lock {}", path.display()))?;
     Ok(file)
 }
 
 impl Searcher {
     fn project_source(&self, path: &Path, module: &str) -> Result<CachedSource> {
-        let metadata = fs::metadata(path)
-            .with_context(|| format!("cannot inspect {}", path.display()))?;
+        let metadata =
+            fs::metadata(path).with_context(|| format!("cannot inspect {}", path.display()))?;
         let stamp = modified_ns(&metadata);
         let size = metadata.len();
         let mut cache = self
+            .index
             .source_cache
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2971,10 +3033,7 @@ impl Searcher {
         let mut ranked = Vec::new();
         // Dirty source must override the persistent index immediately. Cold clean
         // workspaces use the targeted source fallback while indexing completes.
-        for path in paths
-            .into_iter()
-            .take(SEARCH_TUNING.retrieval.dirty_files)
-        {
+        for path in paths.into_iter().take(SEARCH_TUNING.retrieval.dirty_files) {
             let absolute = workspace.path.join(&path);
             let module = project_module_name(&workspace.path, &path);
             let Ok(cached) = self.project_source(&absolute, &module) else {

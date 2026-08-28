@@ -12,19 +12,23 @@ use fs2::FileExt;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use crate::git::{dirty_lean_files, lake_command, merge_in_progress, project_lean_files};
 use crate::coordination::{
     SHARED_WAIT_TIMEOUT, lock_exclusive_until, lock_mutex_until, lock_shared_until, open_lock,
 };
+use crate::git::{dirty_lean_files, lake_command, merge_in_progress, project_lean_files};
 use crate::issue::{TelemetryOperation, TelemetryStore};
 use crate::lean_service::{LeanServiceProcess, ServiceRequestError, reap_stale_processes};
-use crate::repo::Repo;
 use crate::reference::ReferenceKind;
+use crate::repo::Repo;
 use crate::state::{
     CheckProfile, CheckProfileEntry, CheckRecord, CheckRun, CheckStatus, Diagnostic,
     FileCheckProfile, State, Workspace,
 };
 use crate::util::{hash_bytes, hash_file, now_unix_ms};
+
+mod diagnostics;
+
+use diagnostics::{attach_source_context, deduplicate, partition_diagnostics};
 
 const CHECK_RESULT_VERSION: &[u8] = b"check-result-v2";
 const CHECK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -51,7 +55,11 @@ impl std::fmt::Display for CheckTimeout {
         } else if self.0 < Duration::from_secs(1) {
             write!(formatter, "Lean probe exceeded {}ms", self.0.as_millis())
         } else {
-            write!(formatter, "Lean probe exceeded {} seconds", self.0.as_secs())
+            write!(
+                formatter,
+                "Lean probe exceeded {} seconds",
+                self.0.as_secs()
+            )
         }
     }
 }
@@ -166,6 +174,22 @@ type WorkerKey = (String, PathBuf, bool);
 type CheckKey = (String, PathBuf);
 type CheckLocks = Mutex<HashMap<CheckKey, Weak<Mutex<()>>>>;
 
+#[derive(Default)]
+struct CheckCoordinator {
+    checks: CheckLocks,
+    setups: Mutex<HashMap<String, Weak<Mutex<()>>>>,
+}
+
+#[derive(Default)]
+struct CheckCache {
+    failed: Mutex<HashMap<CheckKey, FileCheck>>,
+}
+
+#[derive(Default)]
+struct LeanCheckRunner {
+    workers: Mutex<HashMap<WorkerKey, Arc<Mutex<LeanWorker>>>>,
+}
+
 #[derive(Clone, Copy)]
 enum WorkerRun<'a> {
     Check,
@@ -184,19 +208,14 @@ struct ImportCoverage<'a> {
 pub struct Checker {
     repo: Repo,
     state: State,
-    workers: Mutex<HashMap<WorkerKey, Arc<Mutex<LeanWorker>>>>,
-    check_locks: CheckLocks,
-    failed_checks: Mutex<HashMap<CheckKey, FileCheck>>,
-    setup_locks: Mutex<HashMap<String, Weak<Mutex<()>>>>,
+    coordinator: CheckCoordinator,
+    cache: CheckCache,
+    runner: LeanCheckRunner,
     telemetry: Option<Arc<TelemetryStore>>,
 }
 
 impl Checker {
-    pub fn new(
-        repo: Repo,
-        state: State,
-        telemetry: Option<Arc<TelemetryStore>>,
-    ) -> Result<Self> {
+    pub fn new(repo: Repo, state: State, telemetry: Option<Arc<TelemetryStore>>) -> Result<Self> {
         let reaped = reap_stale_processes(&repo);
         if reaped > 0
             && let Ok(mut log) = fs::OpenOptions::new()
@@ -209,10 +228,9 @@ impl Checker {
         Ok(Self {
             repo,
             state,
-            workers: Mutex::new(HashMap::new()),
-            check_locks: Mutex::new(HashMap::new()),
-            failed_checks: Mutex::new(HashMap::new()),
-            setup_locks: Mutex::new(HashMap::new()),
+            coordinator: CheckCoordinator::default(),
+            cache: CheckCache::default(),
+            runner: LeanCheckRunner::default(),
             telemetry,
         })
     }
@@ -275,13 +293,8 @@ impl Checker {
                     suggestions.extend(result.suggestions);
                     if result.ok {
                         covered_targets.insert(target.clone());
-                        covered_targets.extend(
-                            result
-                                .certificate
-                                .dependencies
-                                .iter()
-                                .map(PathBuf::from),
-                        );
+                        covered_targets
+                            .extend(result.certificate.dependencies.iter().map(PathBuf::from));
                         passed.push(target_name);
                         certificates.push(result.certificate);
                     } else {
@@ -320,7 +333,11 @@ impl Checker {
         let run = CheckRun {
             reference: reference.clone(),
             workspace_ref: workspace.reference.clone(),
-            status: if ok { CheckStatus::Passed } else { CheckStatus::Failed },
+            status: if ok {
+                CheckStatus::Passed
+            } else {
+                CheckStatus::Failed
+            },
             files,
             passed,
             failed,
@@ -362,7 +379,10 @@ impl Checker {
             return Ok(None);
         };
         let primary_fingerprint = repetition_fingerprint(primary);
-        let mut fingerprints = vec![(primary_fingerprint, primary.text.contains("deterministic timeout"))];
+        let mut fingerprints = vec![(
+            primary_fingerprint,
+            primary.text.contains("deterministic timeout"),
+        )];
         fingerprints.extend(
             current
                 .diagnostics
@@ -378,19 +398,21 @@ impl Checker {
         let recent = self
             .state
             .recent_failed_checks(&current.workspace_ref, 64)?;
-        let Some((deterministic_timeout, matches)) = fingerprints.into_iter().find_map(|(fingerprint, timeout)| {
-            let matches = recent
-                .iter()
-                .filter(|run| !cache_only_run(run))
-                .filter(|run| run.failed.as_deref() == Some(target))
-                .filter(|run| {
-                    run.diagnostics.iter().any(|diagnostic| {
-                        repetition_fingerprint(diagnostic) == fingerprint
+        let Some((deterministic_timeout, matches)) =
+            fingerprints.into_iter().find_map(|(fingerprint, timeout)| {
+                let matches = recent
+                    .iter()
+                    .filter(|run| !cache_only_run(run))
+                    .filter(|run| run.failed.as_deref() == Some(target))
+                    .filter(|run| {
+                        run.diagnostics
+                            .iter()
+                            .any(|diagnostic| repetition_fingerprint(diagnostic) == fingerprint)
                     })
-                })
-                .collect::<Vec<_>>();
-            (matches.len() >= 3).then_some((timeout, matches))
-        }) else {
+                    .collect::<Vec<_>>();
+                (matches.len() >= 3).then_some((timeout, matches))
+            })
+        else {
             return Ok(None);
         };
         Ok(Some(CheckRepetition {
@@ -420,13 +442,21 @@ impl Checker {
         let file_started = Instant::now();
         let check_lock = {
             let key = (workspace.reference.clone(), target.to_path_buf());
-            let mut locks = self.check_locks.lock().expect("check lock map poisoned");
+            let mut locks = self
+                .coordinator
+                .checks
+                .lock()
+                .expect("check lock map poisoned");
             locks.retain(|_, lock| lock.strong_count() > 0);
-            locks.entry(key.clone()).or_default().upgrade().unwrap_or_else(|| {
-                let lock = Arc::new(Mutex::new(()));
-                locks.insert(key, Arc::downgrade(&lock));
-                lock
-            })
+            locks
+                .entry(key.clone())
+                .or_default()
+                .upgrade()
+                .unwrap_or_else(|| {
+                    let lock = Arc::new(Mutex::new(()));
+                    locks.insert(key, Arc::downgrade(&lock));
+                    lock
+                })
         };
         let _check_guard = match check_lock.try_lock() {
             Ok(guard) => guard,
@@ -444,10 +474,10 @@ impl Checker {
         let lock_directory = self.repo.state_dir.join("check-locks");
         fs::create_dir_all(&lock_directory)?;
         let process_lock = open_lock(&lock_directory.join(format!(
-                "{}-{}.lock",
-                workspace.reference,
-                hash_bytes(target.to_string_lossy().as_bytes())
-            )))?;
+            "{}-{}.lock",
+            workspace.reference,
+            hash_bytes(target.to_string_lossy().as_bytes())
+        )))?;
         if let Err(error) = process_lock.try_lock_exclusive() {
             if error.kind() == std::io::ErrorKind::WouldBlock {
                 report(&format!("waiting for shared check of {}", target.display()));
@@ -458,9 +488,8 @@ impl Checker {
                     )
                 })?;
             } else {
-                return Err(error).with_context(|| {
-                    format!("cannot lock check target {}", target.display())
-                });
+                return Err(error)
+                    .with_context(|| format!("cannot lock check target {}", target.display()));
             }
         }
         report(&format!("resolving imports for {}", target.display()));
@@ -503,11 +532,8 @@ impl Checker {
         let fingerprint = self.full_fingerprint(workspace, target, &dependencies)?;
         let check_key = (workspace.reference.clone(), target.to_path_buf());
         if !include_profile
-            && let Some(cached) = matching_failed_check(
-                &self.failed_checks,
-                &check_key,
-                &fingerprint,
-            )
+            && let Some(cached) =
+                matching_failed_check(&self.cache.failed, &check_key, &fingerprint)
         {
             let mut cached = cached;
             cached.certificate.reference = reference.to_owned();
@@ -524,13 +550,7 @@ impl Checker {
         }
         let phase = Instant::now();
         if let Some(cached) =
-            self.cached_check(
-                workspace,
-                target,
-                &fingerprint,
-                reference,
-                include_profile,
-            )?
+            self.cached_check(workspace, target, &fingerprint, reference, include_profile)?
         {
             let mut cached = cached;
             cached.profile.target = target_name;
@@ -653,7 +673,8 @@ impl Checker {
                         entries: Vec::new(),
                     },
                 };
-                self.failed_checks
+                self.cache
+                    .failed
                     .lock()
                     .expect("failed check cache poisoned")
                     .insert(check_key, result.clone());
@@ -667,19 +688,18 @@ impl Checker {
         let setup_ms = phase.elapsed().as_millis() as u64;
         let phase = Instant::now();
         report(&format!("elaborating {}", target.display()));
-        let (mut response, mode, reused_prefix_lines) =
-            self.run_worker(
-                workspace,
-                target,
-                &setup_path,
-                &environment,
-                &source,
-                if include_profile {
-                    WorkerRun::Profile
-                } else {
-                    WorkerRun::Check
-                },
-            )?;
+        let (mut response, mode, reused_prefix_lines) = self.run_worker(
+            workspace,
+            target,
+            &setup_path,
+            &environment,
+            &source,
+            if include_profile {
+                WorkerRun::Profile
+            } else {
+                WorkerRun::Check
+            },
+        )?;
         let elaborate_ms = phase.elapsed().as_millis() as u64;
         ensure!(
             response.version > 0,
@@ -743,7 +763,8 @@ impl Checker {
             },
         };
         let mut failed_checks = self
-            .failed_checks
+            .cache
+            .failed
             .lock()
             .expect("failed check cache poisoned");
         if result.ok {
@@ -781,10 +802,7 @@ impl Checker {
         if require_profile
             && stored_profile.is_none_or(|profile| {
                 profile.entries.is_empty()
-                    || profile
-                        .entries
-                        .iter()
-                        .all(|entry| entry.duration_ms < 0.01)
+                    || profile.entries.iter().all(|entry| entry.duration_ms < 0.01)
             })
         {
             return Ok(None);
@@ -830,7 +848,7 @@ impl Checker {
         let profile = matches!(run, WorkerRun::Profile);
         let key = (workspace.reference.clone(), target.to_path_buf(), profile);
         let (worker, inserted) = {
-            let mut workers = self.workers.lock().expect("worker map poisoned");
+            let mut workers = self.runner.workers.lock().expect("worker map poisoned");
             if let Some(worker) = workers.get(&key) {
                 (worker.clone(), false)
             } else {
@@ -881,8 +899,8 @@ impl Checker {
             }
         };
         let mut worker_guard = worker.lock().expect("Lean worker poisoned");
-        let replace = !inserted
-            && (worker_guard.environment != environment || !worker_guard.alive());
+        let replace =
+            !inserted && (worker_guard.environment != environment || !worker_guard.alive());
         if replace {
             match LeanWorker::start(
                 &self.repo,
@@ -899,9 +917,7 @@ impl Checker {
                     if allow_fallback {
                         return fallback_check(&self.repo, &workspace.path, target)
                             .map(|response| (response, "fallback", None))
-                            .with_context(|| {
-                                format!("direct Lean worker unavailable: {error:#}")
-                            });
+                            .with_context(|| format!("direct Lean worker unavailable: {error:#}"));
                     }
                     return Err(error).context("direct Lean worker unavailable");
                 }
@@ -958,7 +974,8 @@ impl Checker {
                         action,
                     ) {
                         Ok((response, _)) => {
-                            self.workers
+                            self.runner
+                                .workers
                                 .lock()
                                 .expect("worker map poisoned")
                                 .insert(key, Arc::new(Mutex::new(replacement)));
@@ -979,7 +996,7 @@ impl Checker {
     }
 
     fn remove_worker(&self, key: &WorkerKey, expected: &Arc<Mutex<LeanWorker>>) {
-        let mut workers = self.workers.lock().expect("worker map poisoned");
+        let mut workers = self.runner.workers.lock().expect("worker map poisoned");
         if workers
             .get(key)
             .is_some_and(|worker| Arc::ptr_eq(worker, expected))
@@ -1096,8 +1113,7 @@ impl Checker {
         target: &Path,
         environment: &str,
     ) -> Option<PathBuf> {
-        let (setup_path, current_environment) =
-            self.active_worker_setup(workspace, target)?;
+        let (setup_path, current_environment) = self.active_worker_setup(workspace, target)?;
         (current_environment == environment).then_some(setup_path)
     }
 
@@ -1107,6 +1123,7 @@ impl Checker {
         target: &Path,
     ) -> Option<(PathBuf, String)> {
         let worker = self
+            .runner
             .workers
             .lock()
             .expect("worker map poisoned")
@@ -1167,7 +1184,11 @@ impl Checker {
         has_project_dependencies: bool,
     ) -> Result<PathBuf> {
         let build_lock = has_project_dependencies.then(|| {
-            let mut locks = self.setup_locks.lock().expect("setup lock map poisoned");
+            let mut locks = self
+                .coordinator
+                .setups
+                .lock()
+                .expect("setup lock map poisoned");
             locks.retain(|_, lock| lock.strong_count() > 0);
             locks
                 .entry(workspace.reference.clone())
@@ -1253,13 +1274,10 @@ impl Checker {
     }
 
     fn shared_setup_path(&self, target: &Path, input_fingerprint: &str) -> PathBuf {
-        self.repo
-            .state_dir
-            .join("setups/shared")
-            .join(format!(
-                "{}.json",
-                hash_bytes(format!("{}\0{input_fingerprint}", target.display()).as_bytes())
-            ))
+        self.repo.state_dir.join("setups/shared").join(format!(
+            "{}.json",
+            hash_bytes(format!("{}\0{input_fingerprint}", target.display()).as_bytes())
+        ))
     }
 
     fn immutable_artifact_roots(&self) -> [PathBuf; 2] {
@@ -1270,7 +1288,8 @@ impl Checker {
     }
 
     pub fn evict_workspace_workers(&self, workspace_ref: &str) {
-        self.workers
+        self.runner
+            .workers
             .lock()
             .expect("worker map poisoned")
             .retain(|(reference, _, _), _| reference != workspace_ref);
@@ -1281,7 +1300,8 @@ impl Checker {
             self.evict_workspace_workers(&workspace.reference);
             return;
         };
-        self.workers
+        self.runner
+            .workers
             .lock()
             .expect("worker map poisoned")
             .retain(|(reference, target, _), _| {
@@ -1291,7 +1311,7 @@ impl Checker {
     }
 
     pub fn evict_idle_workers(&self, idle_for: std::time::Duration) -> bool {
-        let mut workers = self.workers.lock().expect("worker map poisoned");
+        let mut workers = self.runner.workers.lock().expect("worker map poisoned");
         workers.retain(|_, worker| match worker.try_lock() {
             Ok(mut worker) => worker.last_used.elapsed() < idle_for && worker.alive(),
             Err(std::sync::TryLockError::WouldBlock) => true,
@@ -1395,7 +1415,11 @@ fn profile_declaration_near<'a>(
         .map_or(0, |line| line + 1);
     for line in (start..=index).rev() {
         if let Some(captures) = declaration.captures(lines[line].trim_start()) {
-            return Some((line as u64 + 1, captures.get(1)?.as_str(), captures.get(2)?.as_str()));
+            return Some((
+                line as u64 + 1,
+                captures.get(1)?.as_str(),
+                captures.get(2)?.as_str(),
+            ));
         }
     }
     let end = lines.len().min(index + 9);
@@ -1404,7 +1428,11 @@ fn profile_declaration_near<'a>(
             break;
         }
         if let Some(captures) = declaration.captures(text.trim_start()) {
-            return Some((line as u64 + 1, captures.get(1)?.as_str(), captures.get(2)?.as_str()));
+            return Some((
+                line as u64 + 1,
+                captures.get(1)?.as_str(),
+                captures.get(2)?.as_str(),
+            ));
         }
     }
     None
@@ -1540,7 +1568,10 @@ fn prune_shared_setups(directory: &Path, current: &Path) {
         return;
     };
     for path in entries.flatten().map(|entry| entry.path()).filter(|path| {
-        path != current && path.extension().is_some_and(|extension| extension == "json")
+        path != current
+            && path
+                .extension()
+                .is_some_and(|extension| extension == "json")
     }) {
         let Ok(metadata) = fs::metadata(&path) else {
             continue;
@@ -1581,10 +1612,7 @@ impl LeanWorker {
         environment: &str,
         profile: bool,
     ) -> Result<Self> {
-        let mut arguments = vec![
-            "file".to_owned(),
-            setup_path.to_string_lossy().into_owned(),
-        ];
+        let mut arguments = vec!["file".to_owned(), setup_path.to_string_lossy().into_owned()];
         if profile {
             arguments.push("--profile".to_owned());
         }
@@ -1656,9 +1684,7 @@ impl LeanWorker {
                 let stderr = self.process.stderr_since(stderr_start);
                 if stderr.contains("cumulative profiling times:") {
                     let first_native = response.profile.len();
-                    response
-                        .profile
-                        .extend(parse_native_profile(&stderr));
+                    response.profile.extend(parse_native_profile(&stderr));
                     for entry in &mut response.profile[first_native..] {
                         if !entry.detail.is_empty() {
                             continue;
@@ -1714,20 +1740,17 @@ fn parse_native_profile(output: &str) -> Vec<CheckProfileEntry> {
             })
         })
         .collect::<Vec<_>>();
-    entries.extend(cumulative
-        .lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            let (kind, duration_ms) = parse_native_duration(line, " ")?;
-            Some(CheckProfileEntry {
-                line: 0,
-                column: 0,
-                kind: kind.to_owned(),
-                detail: String::new(),
-                duration_ms,
-            })
+    entries.extend(cumulative.lines().filter_map(|line| {
+        let line = line.trim();
+        let (kind, duration_ms) = parse_native_duration(line, " ")?;
+        Some(CheckProfileEntry {
+            line: 0,
+            column: 0,
+            kind: kind.to_owned(),
+            detail: String::new(),
+            duration_ms,
         })
-    );
+    }));
     entries
 }
 
@@ -1812,16 +1835,17 @@ fn diagnostic_fingerprint(diagnostic: &str) -> String {
     let location = LOCATION.get_or_init(|| {
         Regex::new(r"^[^:\n]+:\d+:\d+:\s*").expect("valid diagnostic location regex")
     });
-    let generated = GENERATED.get_or_init(|| {
-        Regex::new(r"\?[A-Za-z]+\.\d+").expect("valid generated name regex")
-    });
-    let dagger_suffix = DAGGER_SUFFIX.get_or_init(|| {
-        Regex::new(r"✝[⁰¹²³⁴⁵⁶⁷⁸⁹]+").expect("valid dagger suffix regex")
-    });
+    let generated = GENERATED
+        .get_or_init(|| Regex::new(r"\?[A-Za-z]+\.\d+").expect("valid generated name regex"));
+    let dagger_suffix = DAGGER_SUFFIX
+        .get_or_init(|| Regex::new(r"✝[⁰¹²³⁴⁵⁶⁷⁸⁹]+").expect("valid dagger suffix regex"));
     let without_location = location.replace(diagnostic, "");
     let without_generated = generated.replace_all(&without_location, "?_");
     let without_daggers = dagger_suffix.replace_all(&without_generated, "✝");
-    without_daggers.split_whitespace().collect::<Vec<_>>().join(" ")
+    without_daggers
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn cache_only_run(run: &CheckRun) -> bool {
@@ -1877,169 +1901,6 @@ fn invalidates_worker(root: &Path, path: &Path, target: &Path) -> bool {
         && transitive_dependencies(root, target)
             .map(|dependencies| dependencies.iter().any(|dependency| dependency == path))
             .unwrap_or(true)
-}
-
-fn partition_diagnostics(
-    diagnostics: &[WorkerDiagnostic],
-) -> (
-    Vec<Diagnostic>,
-    Vec<Diagnostic>,
-    Vec<Diagnostic>,
-    Vec<Diagnostic>,
-) {
-    let mut warnings = Vec::new();
-    let mut linters = Vec::new();
-    let mut suggestions = Vec::new();
-    let mut errors = Vec::new();
-    for diagnostic in diagnostics {
-        let value = Diagnostic {
-            kind: diagnostic.kind.clone(),
-            text: enriched_diagnostic_text(diagnostic),
-            context: None,
-        };
-        match diagnostic.severity.as_str() {
-            "warning" if is_linter(diagnostic) => linters.push(value),
-            "warning" | "information" | "info" if is_tactic_suggestion(diagnostic) => {
-                suggestions.push(value)
-            }
-            "warning" => warnings.push(value),
-            "error" => errors.push(value),
-            _ => {}
-        }
-    }
-    deduplicate(&mut warnings);
-    deduplicate(&mut linters);
-    deduplicate(&mut suggestions);
-    deduplicate(&mut errors);
-    errors.sort_by_key(|diagnostic| !is_syntax_diagnostic(diagnostic));
-    if errors
-        .iter()
-        .any(|diagnostic| diagnostic.text.contains("failed to synthesize instance of type class\n  LE Type"))
-        && let Some(syntax) = errors.iter_mut().find(|diagnostic| is_syntax_diagnostic(diagnostic))
-    {
-        syntax.text.push_str(
-            "\nhint: a notation may be inactive; open its scope or use its named declaration",
-        );
-    }
-    (warnings, linters, suggestions, errors)
-}
-
-fn enriched_diagnostic_text(diagnostic: &WorkerDiagnostic) -> String {
-    let mut text = diagnostic.text.clone();
-    if diagnostic.severity != "error" {
-        return text;
-    }
-    if text.contains(
-        "elaboration function for `Mathlib.Tactic.subscriptTerm` has not been implemented",
-    ) {
-        text.push_str(
-            "\nhint: this notation is not active; open its scoped notation or use the named declaration",
-        );
-    } else if text.contains("failed to synthesize instance of type class\n  DecidableEq ") {
-        text.push_str("\nhint: add `classical` locally or provide the `DecidableEq` instance");
-    } else if text.contains(
-        "synthesized type class instance is not definitionally equal to expression inferred by typing rules",
-    ) {
-        text.push_str(
-            "\nhint: construct both expressions under the same local instance; introduce `classical` before either expression when decidability is involved",
-        );
-    }
-    text
-}
-
-fn is_syntax_diagnostic(diagnostic: &Diagnostic) -> bool {
-    let kind = diagnostic.kind.to_ascii_lowercase();
-    kind.contains("parser")
-        || kind.contains("syntax")
-        || diagnostic.text.lines().next().is_some_and(|line| {
-            line.contains("expected token") || line.contains("unexpected token")
-        })
-}
-
-fn is_tactic_suggestion(diagnostic: &WorkerDiagnostic) -> bool {
-    diagnostic.text.contains("Try this:")
-}
-
-fn attach_source_context(diagnostics: &mut [Diagnostic], target: &Path, source: &str) {
-    let target_path = target.to_string_lossy();
-    let basename = target_path.rsplit('/').next().unwrap_or(&target_path);
-    let module = target
-        .with_extension("")
-        .components()
-        .filter_map(|component| component.as_os_str().to_str())
-        .collect::<Vec<_>>()
-        .join(".");
-    let lines = source.lines().collect::<Vec<_>>();
-    for diagnostic in diagnostics {
-        let first = diagnostic.text.lines().next().unwrap_or_default();
-        let rest = [target_path.as_ref(), basename, module.as_str()]
-            .iter()
-            .find_map(|prefix| {
-                first
-                    .strip_prefix(prefix)
-                    .and_then(|rest| rest.strip_prefix(':'))
-            });
-        let Some(line) = rest
-            .and_then(|rest| rest.split(':').next())
-            .and_then(|line| line.parse::<usize>().ok())
-            .filter(|line| *line > 0 && *line <= lines.len())
-        else {
-            continue;
-        };
-        let start = line.saturating_sub(2).max(1);
-        let end = (line + 2).min(lines.len());
-        let ambient = diagnostic
-            .text
-            .contains("failed to synthesize instance of type class")
-            .then(|| {
-                let lower = start.saturating_sub(33);
-                let nearest = (lower..start.saturating_sub(1))
-                    .rev()
-                    .find(|index| lines[*index].trim_start().starts_with("variable "))?;
-                let first = (lower..=nearest)
-                    .rev()
-                    .take_while(|index| lines[*index].trim_start().starts_with("variable "))
-                    .last()
-                    .unwrap_or(nearest);
-                Some((first..=nearest).rev().take(4).collect::<Vec<_>>())
-            })
-            .flatten()
-            .unwrap_or_default();
-        let render = |current: usize| {
-            format!(
-                "{} {:>4} | {}",
-                if current + 1 == line { ">" } else { " " },
-                current + 1,
-                lines[current]
-            )
-        };
-        diagnostic.context = Some(
-            ambient
-                .into_iter()
-                .rev()
-                .map(render)
-                .chain((start - 1..end).map(render))
-                .collect::<Vec<_>>()
-                .join("\n"),
-        );
-    }
-}
-
-fn is_linter(diagnostic: &WorkerDiagnostic) -> bool {
-    let kind = diagnostic.kind.to_ascii_lowercase();
-    let text = diagnostic.text.to_ascii_lowercase();
-    kind.contains("linter")
-        || text.contains("this linter can be disabled")
-        || text.contains("declaration uses 'sorry'")
-        || text.contains("declaration uses `sorry`")
-        || text.contains("unused variable")
-        || text.contains("automatically included section variable")
-        || text.contains("contains a placeholder")
-}
-
-fn deduplicate(diagnostics: &mut Vec<Diagnostic>) {
-    let mut seen = HashSet::new();
-    diagnostics.retain(|diagnostic| seen.insert(diagnostic.clone()));
 }
 
 pub fn resolve_target(root: &Path, requested: &Path) -> Result<PathBuf> {
@@ -2162,8 +2023,8 @@ fn import_only_coverage(
 ) -> Result<bool> {
     if !source_is_import_only(source)
         || dependencies
-        .iter()
-        .any(|path| dirty_targets.contains(path) && !passed_targets.contains(path))
+            .iter()
+            .any(|path| dirty_targets.contains(path) && !passed_targets.contains(path))
     {
         return Ok(false);
     }
@@ -2192,9 +2053,9 @@ fn import_only_coverage(
         .collect::<HashMap<_, _>>();
     Ok(imports.into_iter().all(|module| {
         base_imports.contains(&module)
-            || project_modules.get(&module).is_some_and(|path| {
-                !dirty_targets.contains(path) || passed_targets.contains(path)
-            })
+            || project_modules
+                .get(&module)
+                .is_some_and(|path| !dirty_targets.contains(path) || passed_targets.contains(path))
     }))
 }
 
@@ -2374,11 +2235,7 @@ fn environment_fingerprint(root: &Path, dependencies: &[PathBuf]) -> Result<Stri
     Ok(hash_bytes(&material))
 }
 
-fn setup_input_fingerprint(
-    root: &Path,
-    target: &Path,
-    dependencies: &[PathBuf],
-) -> Result<String> {
+fn setup_input_fingerprint(root: &Path, target: &Path, dependencies: &[PathBuf]) -> Result<String> {
     let mut material = b"mathmux-setup-v1".to_vec();
     material.extend_from_slice(target.to_string_lossy().as_bytes());
     let target_source = fs::read_to_string(root.join(target))?;
@@ -2518,33 +2375,39 @@ mod tests {
         let dependency = PathBuf::from("Base.lean");
         let dirty = HashSet::from([target.clone(), dependency.clone()]);
         let source = "import Mathlib\nimport Base\n";
-        assert!(!import_only_coverage(
-            directory.path(),
-            &target,
-            source,
-            std::slice::from_ref(&dependency),
-            &dirty,
-            &HashSet::new(),
-        )
-        .unwrap());
-        assert!(import_only_coverage(
-            directory.path(),
-            &target,
-            source,
-            std::slice::from_ref(&dependency),
-            &dirty,
-            &HashSet::from([dependency.clone()]),
-        )
-        .unwrap());
-        assert!(!import_only_coverage(
-            directory.path(),
-            &target,
-            "import Mathlib\nimport Missing\n",
-            &[],
-            &HashSet::from([target.clone()]),
-            &HashSet::new(),
-        )
-        .unwrap());
+        assert!(
+            !import_only_coverage(
+                directory.path(),
+                &target,
+                source,
+                std::slice::from_ref(&dependency),
+                &dirty,
+                &HashSet::new(),
+            )
+            .unwrap()
+        );
+        assert!(
+            import_only_coverage(
+                directory.path(),
+                &target,
+                source,
+                std::slice::from_ref(&dependency),
+                &dirty,
+                &HashSet::from([dependency.clone()]),
+            )
+            .unwrap()
+        );
+        assert!(
+            !import_only_coverage(
+                directory.path(),
+                &target,
+                "import Mathlib\nimport Missing\n",
+                &[],
+                &HashSet::from([target.clone()]),
+                &HashSet::new(),
+            )
+            .unwrap()
+        );
     }
 
     #[test]
@@ -2653,32 +2516,23 @@ mod tests {
         )
         .unwrap();
         let dependencies = vec![PathBuf::from("Base.lean")];
-        let before = setup_input_fingerprint(
-            directory.path(),
-            Path::new("Proof.lean"),
-            &dependencies,
-        )
-        .unwrap();
+        let before =
+            setup_input_fingerprint(directory.path(), Path::new("Proof.lean"), &dependencies)
+                .unwrap();
         fs::write(
             directory.path().join("Proof.lean"),
             "import Base\n\ntheorem result : True := by exact True.intro\n",
         )
         .unwrap();
-        let body_changed = setup_input_fingerprint(
-            directory.path(),
-            Path::new("Proof.lean"),
-            &dependencies,
-        )
-        .unwrap();
+        let body_changed =
+            setup_input_fingerprint(directory.path(), Path::new("Proof.lean"), &dependencies)
+                .unwrap();
         assert_eq!(before, body_changed);
 
         fs::write(directory.path().join("Base.lean"), "def value := 2\n").unwrap();
-        let dependency_changed = setup_input_fingerprint(
-            directory.path(),
-            Path::new("Proof.lean"),
-            &dependencies,
-        )
-        .unwrap();
+        let dependency_changed =
+            setup_input_fingerprint(directory.path(), Path::new("Proof.lean"), &dependencies)
+                .unwrap();
         assert_ne!(before, dependency_changed);
 
         fs::write(directory.path().join("Base.lean"), "def value := 1\n").unwrap();
@@ -2687,12 +2541,9 @@ mod tests {
             "public import Base\n\ntheorem result : True := by exact True.intro\n",
         )
         .unwrap();
-        let header_changed = setup_input_fingerprint(
-            directory.path(),
-            Path::new("Proof.lean"),
-            &dependencies,
-        )
-        .unwrap();
+        let header_changed =
+            setup_input_fingerprint(directory.path(), Path::new("Proof.lean"), &dependencies)
+                .unwrap();
         assert_ne!(before, header_changed);
     }
 
@@ -2804,7 +2655,10 @@ noncomputable def second : Nat := 2
             .join("\n");
         let mut diagnostics = vec![Diagnostic {
             kind: "lean.dependency".into(),
-            text: compact.strip_prefix("error: ").unwrap_or(&compact).to_owned(),
+            text: compact
+                .strip_prefix("error: ")
+                .unwrap_or(&compact)
+                .to_owned(),
             context: None,
         }];
         attach_source_context(&mut diagnostics, Path::new("Demo.lean"), &source);
@@ -2825,9 +2679,7 @@ noncomputable def second : Nat := 2
             diagnostic_fingerprint(
                 "Demo.Proof:3:1: error: Type mismatch\n  ?m.127 x✝¹⁷ has type A"
             ),
-            diagnostic_fingerprint(
-                "Demo.Proof:30:9: error: Type mismatch\n ?m.42 x✝² has type A"
-            )
+            diagnostic_fingerprint("Demo.Proof:30:9: error: Type mismatch\n ?m.42 x✝² has type A")
         );
         let at = |line, source| Diagnostic {
             kind: "error".into(),
@@ -2853,8 +2705,9 @@ noncomputable def second : Nat := 2
             WorkerDiagnostic {
                 severity: "warning".into(),
                 kind: "declaration".into(),
-                text: "Proof.lean:2:1: warning: Try this: use let\nNote: This linter can be disabled"
-                    .into(),
+                text:
+                    "Proof.lean:2:1: warning: Try this: use let\nNote: This linter can be disabled"
+                        .into(),
             },
             WorkerDiagnostic {
                 severity: "error".into(),
@@ -2869,7 +2722,9 @@ noncomputable def second : Nat := 2
             WorkerDiagnostic {
                 severity: "error".into(),
                 kind: "lean.synthInstanceFailed".into(),
-                text: "Proof.lean:1:9: error: failed to synthesize instance of type class\n  LE Type".into(),
+                text:
+                    "Proof.lean:1:9: error: failed to synthesize instance of type class\n  LE Type"
+                        .into(),
             },
             WorkerDiagnostic {
                 severity: "information".into(),
@@ -2887,8 +2742,7 @@ noncomputable def second : Nat := 2
                 text: "Proof.lean:5:1: information: ordinary trace".into(),
             },
         ];
-        let (warnings, linters, suggestions, mut errors) =
-            partition_diagnostics(&diagnostics);
+        let (warnings, linters, suggestions, mut errors) = partition_diagnostics(&diagnostics);
         assert_eq!(
             (
                 warnings.len(),
@@ -2914,7 +2768,9 @@ noncomputable def second : Nat := 2
 
         let mut instance_error = vec![Diagnostic {
             kind: "lean.synthInstanceFailed".into(),
-            text: "Proof.lean:9:1: error: failed to synthesize instance of type class\n  Nonempty B".into(),
+            text:
+                "Proof.lean:9:1: error: failed to synthesize instance of type class\n  Nonempty B"
+                    .into(),
             context: None,
         }];
         attach_source_context(
@@ -2930,8 +2786,9 @@ noncomputable def second : Nat := 2
         let (_, _, _, notation_errors) = partition_diagnostics(&[WorkerDiagnostic {
             severity: "error".into(),
             kind: "unsupportedSyntax".into(),
-            text: "elaboration function for `Mathlib.Tactic.subscriptTerm` has not been implemented"
-                .into(),
+            text:
+                "elaboration function for `Mathlib.Tactic.subscriptTerm` has not been implemented"
+                    .into(),
         }]);
         assert!(notation_errors[0].text.contains("open its scoped notation"));
 

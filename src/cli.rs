@@ -2,23 +2,23 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
 #[cfg(feature = "development")]
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::{Command as ProcessCommand, Stdio};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail, ensure};
-use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
-#[cfg(feature = "development")]
-use clap::ValueEnum;
-use crate::daemon;
 use crate::coordination::{lock_exclusive, open_lock};
+use crate::daemon;
 use crate::issue::development_enabled;
 #[cfg(feature = "development")]
 use crate::issue::{IssueStore, TelemetryStore};
 use crate::protocol::{Command, Progress, Request, Response};
 use crate::repo::Repo;
+use anyhow::{Context, Result, bail, ensure};
+#[cfg(feature = "development")]
+use clap::ValueEnum;
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 const WORKFLOW_HELP: &str = r#"AGENT CONTRACT
   scope     Use the preassigned workspace; never run ws or enter main/another workspace.
@@ -345,11 +345,7 @@ pub fn run() -> Result<u8> {
             WsCommand::List => Command::WsList,
             WsCommand::Delete { name } => Command::WsDelete { name },
         },
-        TopCommand::Status {
-            formalization_yaml,
-        } => Command::Status {
-            formalization_yaml,
-        },
+        TopCommand::Status { formalization_yaml } => Command::Status { formalization_yaml },
         TopCommand::Check { file, profile } => Command::Check {
             file: file.map(|path| {
                 let path = if path.is_absolute() {
@@ -865,7 +861,10 @@ mod tests {
             "Use NAME signature, not",
             "no nearby-line fallback",
         ] {
-            assert!(probe_help.contains(contract), "missing probe contract {contract}");
+            assert!(
+                probe_help.contains(contract),
+                "missing probe contract {contract}"
+            );
         }
         assert!(!probe_help.contains("API       NAME"));
         assert!(!probe_help.contains("LEAN      FILE"));

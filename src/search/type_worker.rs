@@ -165,7 +165,10 @@ impl TypeSearchWorker {
                 Duration::from_secs(30),
             )
             .map_err(|error| anyhow::anyhow!(error))?;
-        ensure!(response.version == self.version, "stale type search response");
+        ensure!(
+            response.version == self.version,
+            "stale type search response"
+        );
         Ok(response)
     }
 

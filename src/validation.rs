@@ -5,16 +5,16 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail, ensure};
 use crate::check::{parse_imports, project_module_name};
 use crate::coordination::{lock_exclusive, open_lock};
 use crate::git::{lake_command, project_lean_files};
 use crate::issue::{TelemetryOperation, TelemetryStore};
 use crate::repo::Repo;
-use crate::state::{State, Submission, ValidationReport};
 #[cfg(test)]
 use crate::state::ValidationStatus;
+use crate::state::{State, Submission, ValidationReport};
 use crate::util::{command_detail, output_text, run_checked, run_output};
+use anyhow::{Context, Result, bail, ensure};
 
 type ValidationSignal = Arc<(Mutex<bool>, Condvar)>;
 

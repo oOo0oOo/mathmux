@@ -6,8 +6,21 @@ use super::*;
 use crate::reference::{Reference, ReferenceKind};
 
 const FOCUSES: &[&str] = &[
-    "signature", "apply", "fields", "constructors", "ext", "simp", "instances",
-    "coercions", "usages", "source", "goal", "types", "defeq", "rewrite", "profile",
+    "signature",
+    "apply",
+    "fields",
+    "constructors",
+    "ext",
+    "simp",
+    "instances",
+    "coercions",
+    "usages",
+    "source",
+    "goal",
+    "types",
+    "defeq",
+    "rewrite",
+    "profile",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,8 +70,16 @@ impl ProbeRequest {
         }
         let directive_query = unquote(remainder);
         if let Some(directive) = parse_directive(directive_query)? {
-            ensure!(context.is_some(), "Lean directives require FILE, FILE:LINE, cREF, or qREF context");
-            return Ok(Self { context, subject: None, focus: None, directive: Some(directive) });
+            ensure!(
+                context.is_some(),
+                "Lean directives require FILE, FILE:LINE, cREF, or qREF context"
+            );
+            return Ok(Self {
+                context,
+                subject: None,
+                focus: None,
+                directive: Some(directive),
+            });
         }
         if context.is_none() {
             if remainder
@@ -108,15 +129,26 @@ impl ProbeRequest {
             }
         }
         let subject = (!terms.is_empty()).then(|| terms.join(" "));
-        ensure!(context.is_some() || subject.is_some(), "probe requires a subject or context");
-        Ok(Self { context, subject, focus, directive: None })
+        ensure!(
+            context.is_some() || subject.is_some(),
+            "probe requires a subject or context"
+        );
+        Ok(Self {
+            context,
+            subject,
+            focus,
+            directive: None,
+        })
     }
 }
 
 fn unquote(value: &str) -> &str {
     let value = value.trim();
     for quote in ['\'', '"'] {
-        if let Some(value) = value.strip_prefix(quote).and_then(|value| value.strip_suffix(quote)) {
+        if let Some(value) = value
+            .strip_prefix(quote)
+            .and_then(|value| value.strip_suffix(quote))
+        {
             return value.trim();
         }
     }
@@ -126,14 +158,20 @@ fn unquote(value: &str) -> &str {
 fn usage_path_matches_scope(path: &str, scope: &str) -> bool {
     let path = path.trim_start_matches("./").trim_end_matches('/');
     let scope = scope.trim_start_matches("./").trim_end_matches('/');
-    path == scope || path.strip_prefix(scope).is_some_and(|rest| rest.starts_with('/'))
+    path == scope
+        || path
+            .strip_prefix(scope)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 fn indexed_check_hit<'a>(run: &'a SearchRun, subject: &str) -> Option<&'a SearchHit> {
     declaration_name_query(subject).then_some(())?;
     run.hits.iter().find(|hit| {
         qualified_name_matches(&hit.name, subject)
-            && hit.signature.as_deref().is_some_and(|value| !value.trim().is_empty())
+            && hit
+                .signature
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
     })
 }
 
@@ -144,18 +182,26 @@ fn parse_context(value: &str) -> Option<ProbeContext> {
     if Reference::is_kind(value, ReferenceKind::Query) {
         return Some(ProbeContext::Query(value.into()));
     }
-    if value.rsplit_once(':').is_some_and(|(_, line)| line.parse::<u64>().is_ok()) {
+    if value
+        .rsplit_once(':')
+        .is_some_and(|(_, line)| line.parse::<u64>().is_ok())
+    {
         return Some(ProbeContext::Position(value.into()));
     }
     if value.ends_with(".lean") {
         return Some(ProbeContext::File(value.into()));
     }
-    value.contains('/').then(|| ProbeContext::Scope(value.into()))
+    value
+        .contains('/')
+        .then(|| ProbeContext::Scope(value.into()))
 }
 
 fn parse_directive(value: &str) -> Result<Option<LeanDirective>> {
     for (prefix, make) in [
-        ("#check", LeanDirective::Check as fn(String) -> LeanDirective),
+        (
+            "#check",
+            LeanDirective::Check as fn(String) -> LeanDirective,
+        ),
         ("#synth", LeanDirective::Synth),
         ("#reduce", LeanDirective::Reduce),
         ("by", LeanDirective::Tactic),
@@ -163,7 +209,10 @@ fn parse_directive(value: &str) -> Result<Option<LeanDirective>> {
         if value == prefix {
             bail!("{prefix} requires an argument");
         }
-        if let Some(body) = value.strip_prefix(prefix).and_then(|rest| rest.strip_prefix(char::is_whitespace)) {
+        if let Some(body) = value
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.strip_prefix(char::is_whitespace))
+        {
             let body = body.trim();
             ensure!(!body.is_empty(), "{prefix} requires an argument");
             return Ok(Some(make(body.to_owned())));
@@ -184,7 +233,11 @@ impl Searcher {
             }
             return self.run_lean_probe(workspace, cwd, context, directive);
         }
-        match (&request.context, request.subject.as_deref(), request.focus.as_deref()) {
+        match (
+            &request.context,
+            request.subject.as_deref(),
+            request.focus.as_deref(),
+        ) {
             (Some(ProbeContext::Check(reference)), None, focus) => {
                 self.probe_check_reference(workspace, reference, focus)
             }
@@ -198,7 +251,9 @@ impl Searcher {
                 self.run_position_probe(workspace, cwd, location, Some(subject))
             }
             (Some(ProbeContext::Position(_)), _, Some(focus)) => {
-                bail!("focus `{focus}` is not valid at FILE:LINE; use goal, TERM, or a Lean directive")
+                bail!(
+                    "focus `{focus}` is not valid at FILE:LINE; use goal, TERM, or a Lean directive"
+                )
             }
             (Some(ProbeContext::Query(reference)), subject, focus) => {
                 self.probe_query_reference(workspace, cwd, reference, subject, focus)
@@ -208,14 +263,13 @@ impl Searcher {
                 Some(subject),
                 Some("usages"),
             ) => self.probe_scoped_usages(workspace, context, subject),
-            (Some(ProbeContext::File(file)), Some(subject), None | Some("signature")) => {
-                self.run_lean_probe(
+            (Some(ProbeContext::File(file)), Some(subject), None | Some("signature")) => self
+                .run_lean_probe(
                     workspace,
                     cwd,
                     ProbeContext::File(file.clone()),
                     LeanDirective::Check(subject.to_owned()),
-                )
-            }
+                ),
             (None, Some(subject), Some("constructors")) => {
                 self.run_constructors_probe(workspace, cwd, subject)
             }
@@ -267,7 +321,10 @@ impl Searcher {
             result.note = Some(format!("declaration not found: {subject}"));
             result.ok = false;
         } else if result.hits[0].usages.is_empty()
-            && !result.note.as_deref().is_some_and(|note| note.contains("warming"))
+            && !result
+                .note
+                .as_deref()
+                .is_some_and(|note| note.contains("warming"))
         {
             result.note = Some(format!("no indexed usages under {scope}"));
         }
@@ -288,7 +345,6 @@ impl Searcher {
         if ok { Ok(rendered) } else { bail!(rendered) }
     }
 
-
     fn probe_indexed_check(
         &self,
         workspace: &Workspace,
@@ -304,7 +360,10 @@ impl Searcher {
         let Some(hit) = indexed_check_hit(&run, subject) else {
             return Ok(None);
         };
-        let signature = hit.signature.as_deref().expect("indexed check requires a signature");
+        let signature = hit
+            .signature
+            .as_deref()
+            .expect("indexed check requires a signature");
         self.store_probe_result(
             workspace,
             &format!("{reference} #check {subject}"),
@@ -327,7 +386,9 @@ impl Searcher {
             .check_run(reference)?
             .with_context(|| format!("unknown check reference {reference}"))?;
         let diagnostic = run.diagnostics.first().or_else(|| run.warnings.first());
-        let text = diagnostic.map(|diagnostic| diagnostic.text.as_str()).unwrap_or("check has no diagnostic");
+        let text = diagnostic
+            .map(|diagnostic| diagnostic.text.as_str())
+            .unwrap_or("check has no diagnostic");
         let (path, line) = diagnostic_position(text, run.failed.as_deref());
         let detail = match focus {
             Some("types") => diagnostic_type_detail(text)
@@ -344,7 +405,8 @@ impl Searcher {
                 self.state.show(reference, true)?
             }
             None => {
-                let diagnostic = diagnostic.with_context(|| format!("{reference} has no failure to probe"))?;
+                let diagnostic =
+                    diagnostic.with_context(|| format!("{reference} has no failure to probe"))?;
                 diagnostic_context(text, diagnostic.context.as_deref())
             }
             Some(other) => bail!("focus `{other}` is not meaningful for a stored check"),
@@ -387,10 +449,7 @@ impl Searcher {
             );
         }
         let positioned = run.inference == "probe"
-            || matches!(
-                hit.kind.as_str(),
-                "location" | "location-expanded"
-            );
+            || matches!(hit.kind.as_str(), "location" | "location-expanded");
         if positioned
             && hit.line > 0
             && !hit.path.is_empty()
@@ -430,12 +489,7 @@ impl Searcher {
             return self.run_constructors_probe(workspace, cwd, subject);
         }
         let query = static_probe_query(None, subject, focus)?;
-        self.run_static_probe_query(
-            workspace,
-            cwd,
-            &query,
-            focus.unwrap_or("signature"),
-        )
+        self.run_static_probe_query(workspace, cwd, &query, focus.unwrap_or("signature"))
     }
 
     fn run_static_probe_query(
@@ -602,13 +656,9 @@ impl Searcher {
         location: &str,
         subject: Option<&str>,
     ) -> Result<String> {
-        let location = parse_source_location(
-            &workspace.path,
-            cwd,
-            Some(&self.repo.root),
-            location,
-        )?
-        .with_context(|| format!("invalid probe location {location}"))?;
+        let location =
+            parse_source_location(&workspace.path, cwd, Some(&self.repo.root), location)?
+                .with_context(|| format!("invalid probe location {location}"))?;
         let stored_path = location.display_path.clone().unwrap_or_else(|| {
             location
                 .path
@@ -667,18 +717,16 @@ impl Searcher {
             LeanDirective::Synth(input) => ("synth", input),
             LeanDirective::Reduce(input) => ("reduce", input),
             LeanDirective::Tactic(input) => {
-                ensure!(line > 0, "by TACTIC requires FILE:LINE, cREF, or positioned qREF context");
+                ensure!(
+                    line > 0,
+                    "by TACTIC requires FILE:LINE, cREF, or positioned qREF context"
+                );
                 ("tactic", input)
             }
         };
-        let (ok, detail) = self.checker.probe_context(
-            workspace,
-            &path,
-            line,
-            0,
-            operation,
-            &input,
-        )?;
+        let (ok, detail) = self
+            .checker
+            .probe_context(workspace, &path, line, 0, operation, &input)?;
         let query = format!("{} {} {}", path.display(), operation, input);
         let stored_path = path
             .strip_prefix(&workspace.path)
@@ -704,13 +752,9 @@ impl Searcher {
     ) -> Result<(PathBuf, u64)> {
         match context {
             ProbeContext::Position(location) => {
-                let location = parse_source_location(
-                    &workspace.path,
-                    cwd,
-                    Some(&self.repo.root),
-                    &location,
-                )?
-                .with_context(|| format!("invalid probe location {location}"))?;
+                let location =
+                    parse_source_location(&workspace.path, cwd, Some(&self.repo.root), &location)?
+                        .with_context(|| format!("invalid probe location {location}"))?;
                 Ok((location.path, location.line))
             }
             ProbeContext::File(file) => {
@@ -723,7 +767,9 @@ impl Searcher {
                 .with_context(|| format!("invalid probe file {file}"))?;
                 Ok((location.path, 0))
             }
-            ProbeContext::Scope(path) => bail!("{path} is a search scope, not a Lean elaboration context"),
+            ProbeContext::Scope(path) => {
+                bail!("{path} is a search scope, not a Lean elaboration context")
+            }
             ProbeContext::Check(reference) => {
                 let run = self
                     .state
@@ -736,7 +782,9 @@ impl Searcher {
                 );
                 let diagnostic = run.diagnostics.first().or_else(|| run.warnings.first());
                 let (path, line) = diagnostic_position(
-                    diagnostic.map(|value| value.text.as_str()).unwrap_or_default(),
+                    diagnostic
+                        .map(|value| value.text.as_str())
+                        .unwrap_or_default(),
                     run.failed.as_deref(),
                 );
                 let path = path.with_context(|| format!("{reference} has no source context"))?;
@@ -764,12 +812,13 @@ impl Searcher {
                     "{reference} belongs to {}; run the Lean probe from that workspace",
                     run.workspace_ref
                 );
-                let hit = run.hits.first().with_context(|| format!("{reference} has no source context"))?;
+                let hit = run
+                    .hits
+                    .first()
+                    .with_context(|| format!("{reference} has no source context"))?;
                 ensure!(!hit.path.is_empty(), "{reference} has no source path");
-                let positioned = run.inference == "probe" && hit.line > 0 || matches!(
-                    hit.kind.as_str(),
-                    "location" | "location-expanded"
-                );
+                let positioned = run.inference == "probe" && hit.line > 0
+                    || matches!(hit.kind.as_str(), "location" | "location-expanded");
                 let source_context = if positioned {
                     format!("{}:{}", hit.path, hit.line)
                 } else {
@@ -810,7 +859,10 @@ fn render_static_probe_summary(run: &SearchRun, focus: &str) -> String {
                     .is_some_and(|source| source.contains("@[simp"))
             });
             if run.hits.is_empty()
-                && !run.note.as_deref().is_some_and(|note| note.contains("warming"))
+                && !run
+                    .note
+                    .as_deref()
+                    .is_some_and(|note| note.contains("warming"))
             {
                 run.note = Some("no indexed @[simp] declaration in this name family".into());
             }
@@ -848,23 +900,40 @@ fn is_declaration_header(line: &str) -> bool {
         }
     }
     [
-        "abbrev ", "class ", "def ", "example ", "inductive ", "instance ", "lemma ",
-        "structure ", "theorem ",
+        "abbrev ",
+        "class ",
+        "def ",
+        "example ",
+        "inductive ",
+        "instance ",
+        "lemma ",
+        "structure ",
+        "theorem ",
     ]
     .iter()
     .any(|keyword| line.starts_with(keyword))
 }
 
-fn static_probe_query(context: Option<&ProbeContext>, subject: &str, focus: Option<&str>) -> Result<String> {
+fn static_probe_query(
+    context: Option<&ProbeContext>,
+    subject: &str,
+    focus: Option<&str>,
+) -> Result<String> {
     match context {
         None => {}
         Some(ProbeContext::File(_)) => {
-            bail!("FILE with a declaration supports signature only; use probe NAME for API dossiers")
+            bail!(
+                "FILE with a declaration supports signature only; use probe NAME for API dossiers"
+            )
         }
         Some(_) => bail!("this probe requires a declaration or type subject"),
     }
     let subject = subject.strip_prefix("_root_.").unwrap_or(subject);
-    let default_focus = if subject.starts_with("type:") { "types" } else { "signature" };
+    let default_focus = if subject.starts_with("type:") {
+        "types"
+    } else {
+        "signature"
+    };
     let query = match focus.unwrap_or(default_focus) {
         "signature" => format!("name:{subject}"),
         "source" => format!("{subject} source"),
@@ -1024,7 +1093,9 @@ mod tests {
             }
         );
         assert_eq!(
-            ProbeRequest::parse("Mathlib/ Demo.foo usages").unwrap().context,
+            ProbeRequest::parse("Mathlib/ Demo.foo usages")
+                .unwrap()
+                .context,
             Some(ProbeContext::Scope("Mathlib/".into()))
         );
         assert_eq!(
@@ -1098,12 +1169,14 @@ mod tests {
             static_probe_query(None, "Demo.apply", Some("simp")).unwrap(),
             "declaration Demo.apply*"
         );
-        assert!(static_probe_query(
-            Some(&ProbeContext::File("Demo.lean".into())),
-            "Demo.foo",
-            Some("fields")
-        )
-        .is_err());
+        assert!(
+            static_probe_query(
+                Some(&ProbeContext::File("Demo.lean".into())),
+                "Demo.foo",
+                Some("fields")
+            )
+            .is_err()
+        );
         assert!(ProbeRequest::parse("#check Nat").is_err());
         assert_eq!(
             ProbeRequest::parse("mathmux probe Demo.foo source")
@@ -1182,7 +1255,10 @@ mod tests {
             inference: "exact".into(),
             hits: vec![
                 hit("Demo.first", "theorem first (n : Nat) : n = n := by\n  rfl"),
-                hit("Demo.second", "@[simp] theorem second (n : Nat) : n = n := by\n  rfl"),
+                hit(
+                    "Demo.second",
+                    "@[simp] theorem second (n : Nat) : n = n := by\n  rfl",
+                ),
             ],
             note: Some("search indexes warming".into()),
             duration_ms: 1,

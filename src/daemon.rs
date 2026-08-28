@@ -15,12 +15,11 @@ use crate::check::{CheckOutcome, Checker};
 use crate::git::{self, dirty_lean_files, dirty_paths};
 use crate::issue::{TelemetryOperation, TelemetryStore, development_enabled};
 use crate::presentation::{
-    CHECK_ADDITIONAL_DIAGNOSTIC_CHARS, CHECK_ADDITIONAL_DIAGNOSTICS,
-    CHECK_DIAGNOSTIC_CHARS,
+    CHECK_ADDITIONAL_DIAGNOSTIC_CHARS, CHECK_ADDITIONAL_DIAGNOSTICS, CHECK_DIAGNOSTIC_CHARS,
 };
 use crate::protocol::{Command, Progress, Request, Response};
-use crate::repo::Repo;
 use crate::reference::ReferenceKind;
+use crate::repo::Repo;
 use crate::search::Searcher;
 use crate::state::{State, Submission, ValidationStatus};
 use crate::status;
@@ -166,11 +165,7 @@ pub fn run(repo: Repo) -> Result<()> {
         {
             break;
         }
-        if active_clients == 0
-            && !has_workers
-            && !has_jobs
-            && last_activity.elapsed() >= grace
-        {
+        if active_clients == 0 && !has_workers && !has_jobs && last_activity.elapsed() >= grace {
             break;
         }
     }
@@ -231,11 +226,7 @@ fn build_precedes(
     !other.is_empty() && other != current && other_generation > current_generation
 }
 
-fn handled_response(
-    service: &Service,
-    request: Request,
-    report: &mut dyn FnMut(&str),
-) -> Response {
+fn handled_response(service: &Service, request: Request, report: &mut dyn FnMut(&str)) -> Response {
     match service.handle(request, report) {
         Ok(summary) => Response::ok(summary),
         Err(error) => Response::error(format!("{error:#}")),
@@ -297,9 +288,7 @@ impl Service {
                     .collect::<Vec<_>>()
                     .join("\n"))
             }
-            Command::Status {
-                formalization_yaml,
-            } => {
+            Command::Status { formalization_yaml } => {
                 if formalization_yaml {
                     status::render_formalization_yaml(
                         &self.repo,
@@ -324,9 +313,12 @@ impl Service {
             Command::Check { file, profile } => {
                 let workspace = self.state.workspace_for_path(&cwd)?;
                 git::prepare_workspace(&self.repo, &workspace.path)?;
-                let outcome =
-                    self.checker
-                        .check(&workspace, file.as_deref().map(Path::new), profile, report)?;
+                let outcome = self.checker.check(
+                    &workspace,
+                    file.as_deref().map(Path::new),
+                    profile,
+                    report,
+                )?;
                 let summary = check_summary(&outcome);
                 if outcome.ok {
                     Ok(format!("ok {summary}"))
@@ -501,7 +493,13 @@ fn check_summary(outcome: &CheckOutcome) -> String {
     if let Some(profile) = &outcome.profile {
         output.push('\n');
         output.push_str(&profile.render(false));
-        if profile.files.iter().map(|file| file.entries.len()).sum::<usize>() > 8 {
+        if profile
+            .files
+            .iter()
+            .map(|file| file.entries.len())
+            .sum::<usize>()
+            > 8
+        {
             output.push_str(&format!("\nfull profile: show {} --all", outcome.reference));
         }
     }
@@ -509,8 +507,11 @@ fn check_summary(outcome: &CheckOutcome) -> String {
 }
 
 fn is_root_scratch(path: &Path) -> bool {
-    path.parent().is_none_or(|parent| parent.as_os_str().is_empty())
-        && path.extension().is_some_and(|extension| extension == "lean")
+    path.parent()
+        .is_none_or(|parent| parent.as_os_str().is_empty())
+        && path
+            .extension()
+            .is_some_and(|extension| extension == "lean")
         && path
             .file_stem()
             .and_then(|stem| stem.to_str())
@@ -632,7 +633,9 @@ mod tests {
                 deterministic_timeout: true,
             }),
         });
-        assert!(summary.contains("repeated blocker: 4 checks (c1..c3, previous c2); check --profile"));
+        assert!(
+            summary.contains("repeated blocker: 4 checks (c1..c3, previous c2); check --profile")
+        );
     }
 
     #[test]

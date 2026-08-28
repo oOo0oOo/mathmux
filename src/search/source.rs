@@ -913,12 +913,8 @@ pub(super) fn fallback_source_candidates(
     if terms.is_empty() {
         return Ok(Vec::new());
     }
-    let mut scanned = source_scan_path_counts(
-        &workspace,
-        packages.as_deref(),
-        &terms,
-        scan_deadline,
-    )?;
+    let mut scanned =
+        source_scan_path_counts(&workspace, packages.as_deref(), &terms, scan_deadline)?;
     scanned.sort_by(|(left_path, left_score), (right_path, right_score)| {
         right_score.cmp(left_score).then_with(|| {
             let left_dependency = packages
@@ -1004,14 +1000,8 @@ pub(super) fn fallback_source_candidates(
                 body: entry.body,
                 rank: 0.0,
             };
-            let (excerpt, matched_line) = detailed_source_excerpt(
-                &row.body,
-                query,
-                &terms,
-                row.line,
-                &row.kind,
-                &row.name,
-            );
+            let (excerpt, matched_line) =
+                detailed_source_excerpt(&row.body, query, &terms, row.line, &row.kind, &row.name);
             let score = lexical_score(query, query_tokens, &row)
                 + named_argument_score as f64 * SEARCH_TUNING.source.fallback_named_argument
                 + if symbolic_name_match {

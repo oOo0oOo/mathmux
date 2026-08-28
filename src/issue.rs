@@ -4,8 +4,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use rusqlite::types::Type;
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 
 use crate::git::{dirty_paths, head};
@@ -903,9 +903,7 @@ fn error_class(summary: &str) -> String {
         .iter()
         .copied()
         .find(|line| {
-            line.contains("error(")
-                || line.contains(": error: ")
-                || line.starts_with("error: ")
+            line.contains("error(") || line.contains(": error: ") || line.starts_with("error: ")
         })
         .or_else(|| lines.first().copied())
         .unwrap_or("error");
@@ -1217,13 +1215,7 @@ mod tests {
         let connection = open_db(&store.path).unwrap();
         for (verb, duration, ok, reference, outcome_class) in [
             ("check", 12, true, None, None),
-            (
-                "check",
-                1200,
-                false,
-                Some("c1"),
-                Some("formalization"),
-            ),
+            ("check", 1200, false, Some("c1"), Some("formalization")),
             ("search", 8, false, None, Some("operational")),
         ] {
             connection
@@ -1275,9 +1267,7 @@ mod tests {
     #[test]
     fn telemetry_error_classes_ignore_run_specific_headers() {
         assert_eq!(
-            error_class(
-                "c5364 27639ms\nDemo:12:3: error: No goals to be solved\n  12 | exact h"
-            ),
+            error_class("c5364 27639ms\nDemo:12:3: error: No goals to be solved\n  12 | exact h"),
             "no goals to be solved"
         );
         assert_eq!(

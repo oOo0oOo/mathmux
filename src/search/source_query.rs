@@ -7,7 +7,9 @@ impl Searcher {
         location: SourceLocation,
     ) -> Result<SearchResult> {
         let source = fs::read_to_string(&location.path)?;
-        Ok(source_location_result(workspace, &location, &source, None, false))
+        Ok(source_location_result(
+            workspace, &location, &source, None, false,
+        ))
     }
 }
 pub(super) struct SourceLocation {
@@ -106,7 +108,9 @@ pub(super) fn parse_source_regex_query(
     let scope = if scope.is_empty() {
         fs::canonicalize(root)?
     } else if range.is_some()
-        || Path::new(scope).extension().is_some_and(|extension| extension == "lean")
+        || Path::new(scope)
+            .extension()
+            .is_some_and(|extension| extension == "lean")
     {
         match resolve_source_path(root, cwd, scope)? {
             Some((path, _, _)) => path,
@@ -133,7 +137,9 @@ fn resolve_source_directory(root: &Path, cwd: &Path, scope: &str) -> Result<Path
         vec![cwd.join(requested), root.join(requested)]
     };
     let packages = fs::canonicalize(root.join(".lake/packages")).ok();
-    if !requested.is_absolute() && let Some(packages) = &packages {
+    if !requested.is_absolute()
+        && let Some(packages) = &packages
+    {
         candidates.push(packages.join(requested));
         for package in fs::read_dir(packages)?.flatten() {
             candidates.push(package.path().join(requested));
@@ -158,7 +164,9 @@ fn resolve_source_directory(root: &Path, cwd: &Path, scope: &str) -> Result<Path
     };
     ensure!(
         resolved.starts_with(&root)
-            || packages.as_ref().is_some_and(|packages| resolved.starts_with(packages)),
+            || packages
+                .as_ref()
+                .is_some_and(|packages| resolved.starts_with(packages)),
         "source regex scope is outside the workspace"
     );
     Ok(resolved.clone())
@@ -252,7 +260,11 @@ pub(super) fn source_regex_result(
     })
 }
 
-fn source_display_path(workspace: &Workspace, dependency_root: Option<&Path>, path: &Path) -> String {
+fn source_display_path(
+    workspace: &Workspace,
+    dependency_root: Option<&Path>,
+    path: &Path,
+) -> String {
     if let Ok(relative) = path.strip_prefix(&workspace.path) {
         return relative.to_string_lossy().into_owned();
     }
@@ -332,7 +344,10 @@ pub(super) fn parse_source_occurrence_query(
                 .rsplit_once(':')
                 .filter(|(_, range)| parse_source_line_range(range).is_some())
                 .map_or(**part, |(path, _)| path);
-            Path::new(path).extension().and_then(|extension| extension.to_str()) == Some("lean")
+            Path::new(path)
+                .extension()
+                .and_then(|extension| extension.to_str())
+                == Some("lean")
         })
         .map(|(index, _)| index);
     let target_index = match (lean_targets.next(), lean_targets.next()) {
@@ -363,7 +378,10 @@ pub(super) fn parse_source_occurrence_query(
     let requested_path = path;
     let inferred_outline_path = Path::new(path).extension().is_none()
         && terms.len() == 1
-        && matches!(terms[0].to_ascii_lowercase().as_str(), "outline" | "declarations");
+        && matches!(
+            terms[0].to_ascii_lowercase().as_str(),
+            "outline" | "declarations"
+        );
     if inferred_outline_path && path.eq_ignore_ascii_case("FILE") {
         bail!("FILE is a help placeholder; replace it with a Lean source path");
     }
@@ -418,7 +436,10 @@ pub(super) fn reject_colon_attached_source_facet(query: &str) -> Result<()> {
         let Some((path, facet)) = token.rsplit_once(':') else {
             continue;
         };
-        if Path::new(path).extension().and_then(|extension| extension.to_str()) == Some("lean")
+        if Path::new(path)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            == Some("lean")
             && matches!(
                 facet.to_ascii_lowercase().as_str(),
                 "outline" | "declarations" | "imports" | "dependents"
@@ -437,7 +458,10 @@ pub(super) fn source_occurrence_result(
 ) -> Result<SearchResult> {
     let source = fs::read_to_string(&query.path)?;
     if query.terms.len() == 1
-        && matches!(query.terms[0].to_ascii_lowercase().as_str(), "outline" | "declarations")
+        && matches!(
+            query.terms[0].to_ascii_lowercase().as_str(),
+            "outline" | "declarations"
+        )
     {
         return Ok(source_outline_result(workspace, &query, &source));
     }
@@ -462,16 +486,14 @@ pub(super) fn source_occurrence_result(
                     .iter()
                     .any(|(first, last)| number >= *first && number <= *last);
             let trimmed = line.trim_start();
-            let is_import = trimmed.starts_with("import ")
-                || trimmed.starts_with("public import ");
+            let is_import = trimmed.starts_with("import ") || trimmed.starts_with("public import ");
             (in_range
                 && if import_query {
                     is_import
                         && (match_terms.is_empty()
                             || match_terms.iter().any(|term| line.contains(*term)))
                 } else {
-                    query.terms.is_empty()
-                        || query.terms.iter().any(|term| line.contains(term))
+                    query.terms.is_empty() || query.terms.iter().any(|term| line.contains(term))
                 })
             .then_some((number, line))
         })
@@ -535,11 +557,7 @@ pub(super) fn source_occurrence_result(
             signature: Some(if query.terms.is_empty() {
                 format!("{} lines", matches.len())
             } else {
-                format!(
-                    "{} for {}",
-                    matches.len(),
-                    terms_label
-                )
+                format!("{} for {}", matches.len(), terms_label)
             }),
             module: String::new(),
             path: relative,
@@ -729,7 +747,10 @@ fn is_source_location_token(token: &str) -> bool {
         .rsplit_once(':')
         .filter(|(_, line)| line.parse::<u64>().is_ok())
         .map_or(prefix, |(path, _)| path);
-    Path::new(path).extension().and_then(|extension| extension.to_str()) == Some("lean")
+    Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        == Some("lean")
 }
 
 pub(super) fn missing_source_message(
@@ -787,8 +808,8 @@ fn nearby_source_paths(root: &Path, requested: &str) -> Vec<String> {
                 .filter(|part| parts.contains(part))
                 .count();
             let distance = edit_distance(&requested_lower, &stem.to_lowercase());
-            let related_parts = requested_parts.len() >= 2
-                && shared.saturating_add(1) >= requested_parts.len();
+            let related_parts =
+                requested_parts.len() >= 2 && shared.saturating_add(1) >= requested_parts.len();
             let close_name = distance <= 2.max(requested_lower.chars().count() / 5);
             if !related_parts && !close_name {
                 return None;
@@ -816,9 +837,7 @@ fn source_request_path(display: &str) -> Option<PathBuf> {
     let path = Path::new(display);
     if !display.contains(['/', '\\'])
         && display.contains('.')
-        && path
-            .extension()
-            .is_none_or(|extension| extension != "lean")
+        && path.extension().is_none_or(|extension| extension != "lean")
     {
         Some(PathBuf::from(format!("{}.lean", display.replace('.', "/"))))
     } else if path.extension().is_none() {
@@ -878,9 +897,10 @@ pub(super) fn resolve_source_path(
         variants.dedup();
     }
     let requested_components = requested.components().count();
-    for variant in variants.iter().filter(|variant| {
-        requested_components == 1 || variant.components().count() > 1
-    }) {
+    for variant in variants
+        .iter()
+        .filter(|variant| requested_components == 1 || variant.components().count() > 1)
+    {
         let mut candidates = Vec::new();
         let project = root.join(variant);
         if project.is_file() {
@@ -984,8 +1004,7 @@ pub(super) fn resolve_source_path(
             .iter()
             .filter(|candidate| {
                 candidate.file_name().is_some_and(|name| {
-                    name.to_string_lossy()
-                        .eq_ignore_ascii_case(&requested_name)
+                    name.to_string_lossy().eq_ignore_ascii_case(&requested_name)
                 })
             })
             .filter_map(|candidate| fs::canonicalize(root.join(candidate)).ok())

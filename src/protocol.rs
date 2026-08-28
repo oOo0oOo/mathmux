@@ -148,10 +148,8 @@ mod tests {
         .unwrap();
         assert_eq!(request.generation, 0);
 
-        let request: Request = serde_json::from_str(
-            r#"{"cwd":"/project","command":{"verb":"status"}}"#,
-        )
-        .unwrap();
+        let request: Request =
+            serde_json::from_str(r#"{"cwd":"/project","command":{"verb":"status"}}"#).unwrap();
         let Command::Status { formalization_yaml } = request.command else {
             panic!("expected status command");
         };
@@ -175,10 +173,8 @@ mod tests {
         assert!(!all);
         assert_eq!(limit, Some(12));
 
-        let request: Request = serde_json::from_str(
-            r#"{"cwd":"/project","command":{"verb":"sync"}}"#,
-        )
-        .unwrap();
+        let request: Request =
+            serde_json::from_str(r#"{"cwd":"/project","command":{"verb":"sync"}}"#).unwrap();
         let Command::Sync { push } = request.command else {
             panic!("expected sync command");
         };
@@ -201,7 +197,12 @@ mod tests {
             }
             .transport_retry_safe()
         );
-        assert!(Command::Probe { query: "Demo".into() }.transport_retry_safe());
+        assert!(
+            Command::Probe {
+                query: "Demo".into()
+            }
+            .transport_retry_safe()
+        );
         assert!(!Command::Submit { message: None }.transport_retry_safe());
         assert!(
             !Command::WsCreate {

@@ -6,9 +6,9 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result, bail, ensure};
 use walkdir::WalkDir;
 
-use crate::repo::Repo;
 use crate::coordination::{lock_exclusive, open_lock};
 use crate::reference::ReferenceKind;
+use crate::repo::Repo;
 use crate::state::{State, Workspace};
 use crate::util::{canonical, command_detail, run_checked, run_output};
 
@@ -204,7 +204,9 @@ pub fn dirty_lean_files(root: &Path) -> Result<Vec<PathBuf>> {
 
 pub fn tracked_at_head(root: &Path, path: &Path) -> Result<bool> {
     let object = format!("HEAD:{}", path.to_string_lossy());
-    Ok(run_output("git", ["cat-file", "-e", &object], root)?.status.success())
+    Ok(run_output("git", ["cat-file", "-e", &object], root)?
+        .status
+        .success())
 }
 
 pub fn project_lean_files(root: &Path) -> Vec<PathBuf> {
@@ -344,10 +346,7 @@ pub fn sync(repo: &Repo, workspace: &Workspace) -> Result<SyncResult> {
     })
 }
 
-fn continue_autostash_sync(
-    workspace: &Workspace,
-    conflicts: Vec<PathBuf>,
-) -> Result<SyncResult> {
+fn continue_autostash_sync(workspace: &Workspace, conflicts: Vec<PathBuf>) -> Result<SyncResult> {
     let unresolved = conflicts
         .iter()
         .filter(|path| has_conflict_markers(&workspace.path.join(path)))
@@ -434,9 +433,7 @@ fn unmerged_paths(root: &Path) -> Result<Vec<PathBuf>> {
 fn has_conflict_markers(path: &Path) -> bool {
     fs::read_to_string(path).is_ok_and(|source| {
         source.lines().any(|line| {
-            line.starts_with("<<<<<<< ")
-                || line == "======="
-                || line.starts_with(">>>>>>> ")
+            line.starts_with("<<<<<<< ") || line == "=======" || line.starts_with(">>>>>>> ")
         })
     })
 }
@@ -603,8 +600,12 @@ mod tests {
         let directory = tempdir().unwrap();
         let remote = directory.path().join("remote.git");
         let root = directory.path().join("repo");
-        run_checked("git", ["init", "--bare", remote.to_str().unwrap()], directory.path())
-            .unwrap();
+        run_checked(
+            "git",
+            ["init", "--bare", remote.to_str().unwrap()],
+            directory.path(),
+        )
+        .unwrap();
         fs::create_dir(&root).unwrap();
         run_checked("git", ["init", "-b", "main"], &root).unwrap();
         run_checked("git", ["config", "user.name", "mathmux test"], &root).unwrap();
@@ -617,8 +618,12 @@ mod tests {
         fs::write(root.join("Proof.lean"), "def value := 0\n").unwrap();
         run_checked("git", ["add", "."], &root).unwrap();
         run_checked("git", ["commit", "-m", "initial"], &root).unwrap();
-        run_checked("git", ["remote", "add", "origin", remote.to_str().unwrap()], &root)
-            .unwrap();
+        run_checked(
+            "git",
+            ["remote", "add", "origin", remote.to_str().unwrap()],
+            &root,
+        )
+        .unwrap();
         run_checked("git", ["push", "-u", "origin", "main"], &root).unwrap();
         fs::write(root.join("Proof.lean"), "def value := 1\n").unwrap();
         run_checked("git", ["add", "."], &root).unwrap();

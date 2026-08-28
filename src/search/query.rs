@@ -3,7 +3,10 @@ use super::*;
 pub(super) fn refined_search_query(base: &str, refinement: &str) -> String {
     let refinement = refinement.trim();
     let facet = refinement.to_ascii_lowercase();
-    if matches!(facet.as_str(), "field" | "fields" | "projection" | "projections") {
+    if matches!(
+        facet.as_str(),
+        "field" | "fields" | "projection" | "projections"
+    ) {
         return format!("{base} fields");
     }
     if matches!(facet.as_str(), "constructor" | "constructors") {
@@ -27,10 +30,10 @@ pub(super) fn field_inventory_query(query: &str) -> Option<&str> {
     let (name, facet) = match terms.as_slice() {
         [name, facet] => (*name, *facet),
         [kind, name, facet]
-            if matches!(
-                kind.to_ascii_lowercase().as_str(),
-                "class" | "structure"
-            ) => (*name, *facet),
+            if matches!(kind.to_ascii_lowercase().as_str(), "class" | "structure") =>
+        {
+            (*name, *facet)
+        }
         _ => return None,
     };
     (declaration_name_query(name)
@@ -241,11 +244,11 @@ pub(super) fn diagnostic_type_detail(diagnostic: &str) -> Option<String> {
 
 pub(super) fn diagnostic_defeq_detail(diagnostic: &str) -> Option<String> {
     let (_, comparison) = diagnostic.split_once("left-hand side")?;
-    let (left, right) = comparison.split_once("is not definitionally equal to the right-hand side")?;
+    let (left, right) =
+        comparison.split_once("is not definitionally equal to the right-hand side")?;
     let left = diagnostic_expression(left);
     let right = diagnostic_expression(right);
-    (!left.is_empty() && !right.is_empty())
-        .then(|| format!("left\n{left}\nright\n{right}"))
+    (!left.is_empty() && !right.is_empty()).then(|| format!("left\n{left}\nright\n{right}"))
 }
 
 pub(super) fn diagnostic_rewrite_detail(
@@ -259,7 +262,11 @@ pub(super) fn diagnostic_rewrite_detail(
         return None;
     }
     let source = source_context
-        .and_then(|context| context.lines().find(|line| line.trim_start().starts_with('>')))
+        .and_then(|context| {
+            context
+                .lines()
+                .find(|line| line.trim_start().starts_with('>'))
+        })
         .and_then(|line| line.split_once('|'))
         .map(|(_, code)| code.trim())
         .filter(|code| !code.is_empty());
@@ -400,7 +407,9 @@ pub(super) fn explicit_declaration_name(query: &str) -> Option<&str> {
 
 pub(super) fn declaration_glob_query(query: &str) -> bool {
     let alternatives = query.split('|').map(str::trim).collect::<Vec<_>>();
-    alternatives.iter().any(|alternative| alternative.contains('*'))
+    alternatives
+        .iter()
+        .any(|alternative| alternative.contains('*'))
         && alternatives.iter().all(|alternative| {
             alternative
                 .chars()
@@ -481,10 +490,7 @@ pub(super) fn declaration_glob_leaf_matches(name: &str, query: &str) -> bool {
         .unwrap_or(name);
     query.split('|').map(str::trim).any(|alternative| {
         declaration_glob_matches(name, alternative)
-            && declaration_glob_matches(
-                leaf,
-                alternative.rsplit('.').next().unwrap_or(alternative),
-            )
+            && declaration_glob_matches(leaf, alternative.rsplit('.').next().unwrap_or(alternative))
     })
 }
 
@@ -610,12 +616,7 @@ pub(super) fn rank_discovery_candidates(
     let glob_name_miss = apply_declaration_glob(&mut candidates, query);
     apply_context_scores(&mut candidates, import_context);
     let mut ranked = sort_and_merge_candidates(candidates);
-    promote_ranked_candidates(
-        &mut ranked,
-        query,
-        query_tokens,
-        explicit_declaration,
-    );
+    promote_ranked_candidates(&mut ranked, query, query_tokens, explicit_declaration);
     if !explicit_declaration {
         diversify_ranked_candidates(&mut ranked, query, query_tokens);
     }
@@ -649,11 +650,7 @@ fn promote_ranked_candidates(
     promote_query_coverage(ranked, query, query_tokens);
 }
 
-fn diversify_ranked_candidates(
-    ranked: &mut Vec<Candidate>,
-    query: &str,
-    query_tokens: &[String],
-) {
+fn diversify_ranked_candidates(ranked: &mut Vec<Candidate>, query: &str, query_tokens: &[String]) {
     let qualified_anchor = ranked.first().and_then(|candidate| {
         query_tokens
             .iter()
@@ -691,9 +688,7 @@ fn promote_strongest_query_coverage(ranked: &mut Vec<Candidate>, tokens: &[Strin
         .iter()
         .enumerate()
         .skip(1)
-        .map(|(position, candidate)| {
-            (position, hit_query_coverage(&candidate.hit, tokens).0)
-        })
+        .map(|(position, candidate)| (position, hit_query_coverage(&candidate.hit, tokens).0))
         .max_by_key(|(_, coverage)| *coverage)
     else {
         return;
@@ -906,9 +901,7 @@ fn numeric_subscript_alias(token: &str) -> Option<String> {
     const ASCII: &str = "0123456789";
     const SUBSCRIPT: &str = "₀₁₂₃₄₅₆₇₈₉";
     let has_ascii = token.chars().any(|character| ASCII.contains(character));
-    let has_subscript = token
-        .chars()
-        .any(|character| SUBSCRIPT.contains(character));
+    let has_subscript = token.chars().any(|character| SUBSCRIPT.contains(character));
     if has_ascii == has_subscript {
         return None;
     }
@@ -1046,11 +1039,7 @@ pub(super) fn qualified_member_score(query: &str, name: &str) -> f64 {
             * tuning.affix_character
 }
 
-pub(super) fn promote_query_coverage(
-    ranked: &mut Vec<Candidate>,
-    query: &str,
-    tokens: &[String],
-) {
+pub(super) fn promote_query_coverage(ranked: &mut Vec<Candidate>, query: &str, tokens: &[String]) {
     if ranked.len() <= 1 || tokens.len() <= 1 {
         return;
     }
@@ -1220,11 +1209,7 @@ fn compound_name_query_parts(query: &str) -> Option<Vec<String>> {
         .filter(|parts| parts.len() >= 2)
 }
 
-pub(super) fn promote_result_context(
-    ranked: &mut Vec<Candidate>,
-    query: &str,
-    tokens: &[String],
-) {
+pub(super) fn promote_result_context(ranked: &mut Vec<Candidate>, query: &str, tokens: &[String]) {
     let mut seen = HashSet::new();
     let compound_name_parts = compound_name_query_parts(query);
     let tokens = compound_name_parts.as_ref().map_or_else(
@@ -1349,10 +1334,8 @@ pub(super) fn text_matches_token(text: &str, token: &str) -> bool {
 
 pub(super) fn words_match(left: &str, right: &str) -> bool {
     left.eq_ignore_ascii_case(right)
-        || numeric_subscript_alias(left)
-            .is_some_and(|alias| alias.eq_ignore_ascii_case(right))
-        || numeric_subscript_alias(right)
-            .is_some_and(|alias| alias.eq_ignore_ascii_case(left))
+        || numeric_subscript_alias(left).is_some_and(|alias| alias.eq_ignore_ascii_case(right))
+        || numeric_subscript_alias(right).is_some_and(|alias| alias.eq_ignore_ascii_case(left))
         || right
             .strip_suffix('s')
             .filter(|singular| singular.len() >= 4)

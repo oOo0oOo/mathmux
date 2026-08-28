@@ -273,8 +273,8 @@ impl State {
     fn migrate(&self) -> Result<()> {
         let mut connection = self.open()?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
-        let transaction = connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         transaction.execute_batch(
             "CREATE TABLE IF NOT EXISTS state_meta (
                 key TEXT PRIMARY KEY,
@@ -573,11 +573,7 @@ impl State {
     pub fn add_check_run(&self, run: &CheckRun, certificates: &[CheckRecord]) -> Result<()> {
         let mut connection = self.open()?;
         let transaction = connection.transaction()?;
-        let profile_json = run
-            .profile
-            .as_ref()
-            .map(stored_profile_json)
-            .transpose()?;
+        let profile_json = run.profile.as_ref().map(stored_profile_json).transpose()?;
         transaction.execute(
             "INSERT INTO check_runs(
                 ref, workspace_ref, status, files_json, passed_json, failed, not_checked_json,
@@ -634,11 +630,7 @@ impl State {
             .map_err(Into::into)
     }
 
-    pub fn recent_failed_checks(
-        &self,
-        workspace_ref: &str,
-        limit: usize,
-    ) -> Result<Vec<CheckRun>> {
+    pub fn recent_failed_checks(&self, workspace_ref: &str, limit: usize) -> Result<Vec<CheckRun>> {
         let connection = self.open()?;
         let mut statement = connection.prepare(
             "SELECT ref, workspace_ref, status, files_json, passed_json, failed,
@@ -878,8 +870,8 @@ impl State {
     pub fn add_search(&self, run: &SearchRun) -> Result<()> {
         let hits_json = serde_json::to_string(&run.hits)?;
         let mut connection = self.open()?;
-        let transaction = connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         transaction.execute(
             "INSERT INTO searches(
                 ref, workspace_ref, query, inference, hits_json, note, duration_ms, created_at
@@ -960,11 +952,12 @@ impl State {
                 }
                 files.sort();
                 files.dedup();
-                let later_passing_validation = if submission.validation_status == ValidationStatus::Failed {
-                    self.later_passing_validation(&submission)?
-                } else {
-                    None
-                };
+                let later_passing_validation =
+                    if submission.validation_status == ValidationStatus::Failed {
+                        self.later_passing_validation(&submission)?
+                    } else {
+                        None
+                    };
                 Ok(render_submission(
                     &submission,
                     &files,
@@ -1107,10 +1100,7 @@ fn add_column_if_missing(
     if table_has_column(connection, table, column)? {
         return Ok(());
     }
-    connection.execute(
-        &format!("ALTER TABLE {table} ADD COLUMN {definition}"),
-        [],
-    )?;
+    connection.execute(&format!("ALTER TABLE {table} ADD COLUMN {definition}"), [])?;
     Ok(())
 }
 
@@ -1541,9 +1531,7 @@ mod tests {
                 .unwrap()
                 .contains("files:\n  Demo/Changed.lean")
         );
-        for (reference, status, created_at) in
-            [("s2", "failed", 2), ("s3", "passed", 3)]
-        {
+        for (reference, status, created_at) in [("s2", "failed", 2), ("s3", "passed", 3)] {
             state
                 .add_submission(&Submission {
                     reference: reference.into(),

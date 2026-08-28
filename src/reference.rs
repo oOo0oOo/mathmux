@@ -73,9 +73,9 @@ impl Reference {
     }
 
     pub(crate) fn parse_kind(value: &str, expected: ReferenceKind) -> Result<Self> {
-        let reference = value.parse::<Self>().with_context(|| {
-            format!("malformed {} reference {value}", expected.label())
-        })?;
+        let reference = value
+            .parse::<Self>()
+            .with_context(|| format!("malformed {} reference {value}", expected.label()))?;
         ensure!(
             reference.kind == expected,
             "malformed {} reference {value}",

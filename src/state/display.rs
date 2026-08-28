@@ -1,8 +1,7 @@
 use std::collections::HashSet;
 
 use super::{
-    CheckProfile, CheckRun, Diagnostic, SEARCH_USAGE_LIMIT, SearchRun, Submission,
-    ValidationStatus,
+    CheckProfile, CheckRun, Diagnostic, SEARCH_USAGE_LIMIT, SearchRun, Submission, ValidationStatus,
 };
 use crate::presentation::{
     BUILD_OUTPUT_LINES, BUILD_OUTPUT_TAIL_LINES, SOURCE_PREVIEW_LINES, bounded_head_tail,
@@ -69,9 +68,7 @@ impl CheckProfile {
             let source = hotspots
                 .iter()
                 .filter(|(_, entry)| entry.line > 0)
-                .filter(|(target, entry)| {
-                    seen.insert((*target, entry.line))
-                })
+                .filter(|(target, entry)| seen.insert((*target, entry.line)))
                 .take(limit)
                 .collect::<Vec<_>>();
             if !source.is_empty() {
@@ -191,7 +188,9 @@ pub(super) fn render_search_run(run: &SearchRun, all: bool) -> String {
                     output.push_str(&format!("\n   doc: {}", truncate_line(line.trim(), 240)));
                 }
             }
-            if index < 3 && let Some(source) = &hit.source {
+            if index < 3
+                && let Some(source) = &hit.source
+            {
                 let source = without_repeated_ambient_context(source, &mut shown_ambient_contexts);
                 if !matches!(hit.kind.as_str(), "fields" | "location") {
                     output.push_str("\n   source:");
@@ -290,7 +289,9 @@ pub(super) fn render_submission(
     if submission.validation_status == ValidationStatus::Failed
         && let Some(reference) = later_passing_validation
     {
-        output.push_str(&format!("\nhistorical: later validation {reference} passed"));
+        output.push_str(&format!(
+            "\nhistorical: later validation {reference} passed"
+        ));
     }
     if !submission.checks.is_empty() {
         output.push_str(&format!("\ncheck: {}", submission.checks.join(" ")));
@@ -494,8 +495,7 @@ fn relevant_passed_build_output(output: &str, files: &[String]) -> String {
             .iter()
             .any(|prefix| trimmed.starts_with(prefix))
         {
-            keep = !trimmed.contains(".lean:")
-                || files.iter().any(|file| trimmed.contains(file));
+            keep = !trimmed.contains(".lean:") || files.iter().any(|file| trimmed.contains(file));
         } else if trimmed.starts_with("Build completed")
             || trimmed.starts_with('⚠')
             || trimmed.starts_with("Building ")

@@ -12,9 +12,9 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+use crate::coordination::{lock_exclusive, open_lock};
 use crate::git::{lake_command, lake_executable};
 use crate::repo::Repo;
-use crate::coordination::{lock_exclusive, open_lock};
 use crate::util::hash_bytes;
 
 const SERVICE_SOURCE: &str = include_str!("MathmuxLeanService.lean");
@@ -116,23 +116,22 @@ impl LeanServiceProcess {
             .map_err(|error| ServiceRequestError::Failed(error.into()))?;
         let line = self.read_line(timeout)?;
         serde_json::from_str(&line).map_err(|error| {
-            ServiceRequestError::Failed(anyhow::Error::new(error).context(format!(
-                "invalid Lean service response: {}",
-                line.trim()
-            )))
+            ServiceRequestError::Failed(
+                anyhow::Error::new(error)
+                    .context(format!("invalid Lean service response: {}", line.trim())),
+            )
         })
     }
 
     pub(crate) fn read_ready(&mut self, timeout: Duration) -> Result<serde_json::Value> {
-        let line = self.read_line(timeout).map_err(|error| anyhow::anyhow!(error))?;
+        let line = self
+            .read_line(timeout)
+            .map_err(|error| anyhow::anyhow!(error))?;
         serde_json::from_str(&line)
             .with_context(|| format!("invalid Lean service startup response: {}", line.trim()))
     }
 
-    fn read_line(
-        &mut self,
-        timeout: Duration,
-    ) -> std::result::Result<String, ServiceRequestError> {
+    fn read_line(&mut self, timeout: Duration) -> std::result::Result<String, ServiceRequestError> {
         let mut descriptor = libc::pollfd {
             fd: self.stdout.get_ref().as_raw_fd(),
             events: libc::POLLIN,
@@ -155,9 +154,10 @@ impl LeanServiceProcess {
             ));
         }
         let mut line = String::new();
-        let read = self.stdout.read_line(&mut line).map_err(|error| {
-            ServiceRequestError::Failed(anyhow::Error::from(error))
-        })?;
+        let read = self
+            .stdout
+            .read_line(&mut line)
+            .map_err(|error| ServiceRequestError::Failed(anyhow::Error::from(error)))?;
         if read == 0 {
             let stderr = self.stderr();
             return Err(ServiceRequestError::Failed(anyhow::anyhow!(
@@ -249,8 +249,8 @@ impl Drop for LeanServiceProcess {
 pub(crate) fn prepare(repo: &Repo, workspace: &Path) -> Result<PathBuf> {
     fs::create_dir_all(&repo.state_dir)?;
     let lock_path = repo.state_dir.join("lean-service.lock");
-    let lock = open_lock(&lock_path)
-        .with_context(|| format!("cannot open {}", lock_path.display()))?;
+    let lock =
+        open_lock(&lock_path).with_context(|| format!("cannot open {}", lock_path.display()))?;
     lock_exclusive(&lock)?;
 
     let toolchain = fs::read_to_string(workspace.join("lean-toolchain")).unwrap_or_default();
@@ -259,10 +259,7 @@ pub(crate) fn prepare(repo: &Repo, workspace: &Path) -> Result<PathBuf> {
         material.extend_from_slice(source.as_bytes());
     }
     let fingerprint = hash_bytes(&material);
-    let root = repo
-        .state_dir
-        .join("lean-service")
-        .join(&fingerprint[..16]);
+    let root = repo.state_dir.join("lean-service").join(&fingerprint[..16]);
     let marker = root.join("built");
     if fs::read_to_string(&marker).ok().as_deref() == Some(fingerprint.as_str()) {
         return Ok(root);
@@ -369,9 +366,9 @@ fn has_daemon_parent(process: &Path) -> bool {
     let parent = fs::read_to_string(process.join("status"))
         .ok()
         .and_then(|status| {
-            status.lines().find_map(|line| {
-                line.strip_prefix("PPid:")?.trim().parse::<u32>().ok()
-            })
+            status
+                .lines()
+                .find_map(|line| line.strip_prefix("PPid:")?.trim().parse::<u32>().ok())
         });
     let Some(parent) = parent else {
         return false;
@@ -408,5 +405,4 @@ mod tests {
         fs::write(daemon.join("cmdline"), b"init\0").unwrap();
         assert!(!has_daemon_parent(&worker));
     }
-
 }

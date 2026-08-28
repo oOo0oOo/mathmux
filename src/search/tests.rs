@@ -1,5 +1,36 @@
 use super::*;
 
+fn search_hit(name: &str) -> SearchHit {
+    SearchHit {
+        name: name.into(),
+        kind: "theorem".into(),
+        signature: None,
+        module: "Demo".into(),
+        path: "Demo.lean".into(),
+        line: 1,
+        doc: None,
+        source: None,
+        usages: Vec::new(),
+        applicable: false,
+        required_import: None,
+    }
+}
+
+fn indexed_row(name: &str) -> IndexedRow {
+    IndexedRow {
+        owner: "workspace:w1".into(),
+        path: "Demo.lean".into(),
+        module: "Demo".into(),
+        line: 1,
+        name: name.into(),
+        kind: "structure".into(),
+        signature: String::new(),
+        docs: String::new(),
+        body: String::new(),
+        rank: 0.0,
+    }
+}
+
 fn fallback_source_hits(
     workspace: &Path,
     query: &str,
@@ -183,7 +214,11 @@ end Demo
     );
     assert!(!commented.iter().any(|entry| entry.name.ends_with("hidden")));
     assert!(!commented.iter().any(|entry| entry.name.ends_with("nested")));
-    assert!(!commented.iter().any(|entry| entry.name.contains("hiddenSyntax")));
+    assert!(
+        !commented
+            .iter()
+            .any(|entry| entry.name.contains("hiddenSyntax"))
+    );
     assert!(commented.iter().any(|entry| entry.name == "Demo.visible"));
 }
 
@@ -193,7 +228,10 @@ fn source_parser_labels_private_declarations() {
         "namespace Demo\nprivate theorem hidden : True := by trivial\nend Demo\n",
         "Demo",
     );
-    let hidden = entries.iter().find(|entry| entry.name == "Demo.hidden").unwrap();
+    let hidden = entries
+        .iter()
+        .find(|entry| entry.name == "Demo.hidden")
+        .unwrap();
     assert!(hidden.signature.starts_with("[private]"));
 }
 
@@ -240,7 +278,8 @@ fn incompatible_reference_storage_is_rebuilt() {
     assert_eq!(columns, ["file_id", "target", "line", "context"]);
     assert_eq!(
         connection
-            .query_row("SELECT count(*) FROM search_references", [], |row| row.get::<_, i64>(0))
+            .query_row("SELECT count(*) FROM search_references", [], |row| row
+                .get::<_, i64>(0))
             .unwrap(),
         0
     );
@@ -298,16 +337,8 @@ fn query_parsing_scoring_and_ranking_regressions() {
     );
     assert_eq!(unknown_type_identifier("unexpected token"), None);
     let indexed_homotopy = IndexedRow {
-        owner: "workspace:w1".into(),
-        path: "Demo.lean".into(),
-        module: "Demo".into(),
-        line: 1,
-        name: "Demo.homotopy".into(),
-        kind: "theorem".into(),
         signature: "ContinuousMap.Homotopy f g".into(),
-        docs: String::new(),
-        body: String::new(),
-        rank: 0.0,
+        ..indexed_row("Demo.homotopy")
     };
     assert!(indexed_type_fallback(
         "A placeholder `_` cannot be used where a function is expected",
@@ -374,17 +405,10 @@ fn query_parsing_scoring_and_ranking_regressions() {
     );
     assert_eq!(declaration_predicate_base("Demo.iso"), None);
     let contextual_hit = SearchHit {
-        name: "Demo.projectionRange_nearby_isomorphic".into(),
-        kind: "theorem".into(),
         signature: Some("Isomorphic X Y".into()),
         module: "Demo.Pullback".into(),
         path: "Demo/Pullback.lean".into(),
-        line: 1,
-        doc: None,
-        source: None,
-        usages: Vec::new(),
-        applicable: false,
-        required_import: None,
+        ..search_hit("Demo.projectionRange_nearby_isomorphic")
     };
     assert_eq!(
         hit_query_coverage(
@@ -418,11 +442,7 @@ fn query_parsing_scoring_and_ranking_regressions() {
         },
     ];
     let tokens = meaningful_query_tokens("CircleSeparatedOnRadius circleMap");
-    promote_query_coverage(
-        &mut ranked,
-        "CircleSeparatedOnRadius circleMap",
-        &tokens,
-    );
+    promote_query_coverage(&mut ranked, "CircleSeparatedOnRadius circleMap", &tokens);
     assert!(ranked[0].hit.name.contains("CircleSeparatedOnRadius"));
     let broad_query = "gaugeRelated canonicalIndexClass indexClass invariant gauge";
     let (broad, _) = rank_discovery_candidates(
@@ -513,10 +533,12 @@ fn query_parsing_scoring_and_ranking_regressions() {
         false,
         None,
     );
-    assert!(compound_name[0]
-        .hit
-        .name
-        .contains("projectionRangePretrivialization"));
+    assert!(
+        compound_name[0]
+            .hit
+            .name
+            .contains("projectionRangePretrivialization")
+    );
     let mut qualified_leaf = vec![
         Candidate {
             hit: SearchHit {
@@ -587,8 +609,7 @@ fn query_parsing_scoring_and_ranking_regressions() {
         alternatives[0].hit.name,
         "AtiyahSinger.matrixToeplitzOperator_add"
     );
-    let approximate_query =
-        "Bundle.Trivial.continuousLinearMapAt|continuousLinearMapAt_trivial";
+    let approximate_query = "Bundle.Trivial.continuousLinearMapAt|continuousLinearMapAt_trivial";
     let approximate_tokens = meaningful_query_tokens(approximate_query);
     let (approximate, _) = rank_discovery_candidates(
         vec![
@@ -865,9 +886,11 @@ fn query_parsing_scoring_and_ranking_regressions() {
     let exact = exact_plan("changeModelIso declarations", false).unwrap();
     assert_eq!(exact.anchor, "changeModelIso");
     assert!(!exact.recover_continuation);
-    assert!(exact_plan("ContinuousLinearBundleIso", false)
-        .unwrap()
-        .recover_continuation);
+    assert!(
+        exact_plan("ContinuousLinearBundleIso", false)
+            .unwrap()
+            .recover_continuation
+    );
     assert!(exact_plan("Continuous f", true).is_none());
     assert!(
         context_refinement_score(&contextual_hit, &["isomorphic".into()])
@@ -958,10 +981,7 @@ fn query_parsing_scoring_and_ranking_regressions() {
         "Matrix.conjTranspose_mul",
         "matrix.conjtranspose_mul"
     ));
-    assert!(hit_name_matches(
-        "instTopologicalSpaceQuotient",
-        "topology"
-    ));
+    assert!(hit_name_matches("instTopologicalSpaceQuotient", "topology"));
     assert!(declaration_leaf_matches(
         "AtiyahSinger.ContinuousLinearBundleHom.matrixEquiv",
         "ContinuousLinearBundleHom matrixEquiv"
@@ -970,28 +990,16 @@ fn query_parsing_scoring_and_ranking_regressions() {
         "AtiyahSinger.ContinuousLinearBundleHom.matrixEquiv_apply",
         "ContinuousLinearBundleHom matrixEquiv"
     ));
-    let named_row = |name: &str| IndexedRow {
-        owner: "workspace:w1".into(),
-        path: "Demo.lean".into(),
-        module: "Demo".into(),
-        line: 1,
-        name: name.into(),
-        kind: "structure".into(),
-        signature: String::new(),
-        docs: String::new(),
-        body: String::new(),
-        rank: 0.0,
-    };
     let tokens = meaningful_query_tokens("HermitianBundleMetric");
     assert!(
         lexical_score(
             "HermitianBundleMetric",
             &tokens,
-            &named_row("AtiyahSinger.HermitianBundleMetric")
+            &indexed_row("AtiyahSinger.HermitianBundleMetric")
         ) > lexical_score(
             "HermitianBundleMetric",
             &tokens,
-            &named_row("AtiyahSinger.Bundle.Trivial.hermitianBundleMetric")
+            &indexed_row("AtiyahSinger.Bundle.Trivial.hermitianBundleMetric")
         )
     );
     let conceptual_tokens = meaningful_query_tokens("quotient topology");
@@ -999,13 +1007,17 @@ fn query_parsing_scoring_and_ranking_regressions() {
         lexical_score(
             "quotient topology",
             &conceptual_tokens,
-            &named_row("instTopologicalSpaceQuotient")
+            &indexed_row("instTopologicalSpaceQuotient")
         ) > lexical_score(
             "quotient topology",
             &conceptual_tokens,
-            &named_row("Path.Homotopic.Quotient")
+            &indexed_row("Path.Homotopic.Quotient")
         )
     );
+}
+
+#[test]
+fn empty_search_summary_omits_internal_timing() {
     let summary = render_summary(&SearchRun {
         reference: "q1".into(),
         workspace_ref: "w1".into(),
@@ -1102,8 +1114,7 @@ fn broad_search_summary_prefers_ranked_signatures_over_source_body() {
             line: 865,
             doc: None,
             source: Some(
-                "theorem adjoint_eq_symm :\n    e.adjoint = e.symm := by\n  ext\n  simp"
-                    .into(),
+                "theorem adjoint_eq_symm :\n    e.adjoint = e.symm := by\n  ext\n  simp".into(),
             ),
             usages: Vec::new(),
             applicable: false,
@@ -1284,9 +1295,7 @@ fn stale_workspace_source_queries_recommend_sync() {
     )
     .unwrap();
     assert!(message.contains("nearby sources:"));
-    assert!(message.contains(
-        "Demo/Topology/PseudolocalFredholmCycleCanonicalParametrix.lean"
-    ));
+    assert!(message.contains("Demo/Topology/PseudolocalFredholmCycleCanonicalParametrix.lean"));
 }
 
 #[test]
@@ -1359,7 +1368,10 @@ fn source_outline_lists_declarations_without_structure_fields() {
         false,
     )
     .unwrap();
-    assert_eq!(imports.hits[0].source.as_deref(), Some("    1  import Demo"));
+    assert_eq!(
+        imports.hits[0].source.as_deref(),
+        Some("    1  import Demo")
+    );
 
     fs::write(
         directory.path().join("Imports.lean"),
@@ -1618,7 +1630,10 @@ fn source_query_regressions() {
         "Homeomorph fields"
     );
     assert_eq!(refined_search_query("Homeomorph", "usages"), "Homeomorph");
-    assert_eq!(field_inventory_query("Homeomorph fields"), Some("Homeomorph"));
+    assert_eq!(
+        field_inventory_query("Homeomorph fields"),
+        Some("Homeomorph")
+    );
     assert_eq!(
         field_inventory_query("structure Homeomorph projections"),
         Some("Homeomorph")
@@ -1675,9 +1690,8 @@ fn source_query_regressions() {
         )
         .is_some_and(|detail| detail.contains("rw [map_zpow]"))
     );
-    let mut inferred_note = Some(
-        "no nearby match for internal.instance; source index warming".to_owned(),
-    );
+    let mut inferred_note =
+        Some("no nearby match for internal.instance; source index warming".to_owned());
     suppress_inferred_missing_note(&mut inferred_note);
     assert_eq!(inferred_note.as_deref(), Some("source index warming"));
     let source = (1..=30)
@@ -1690,16 +1704,16 @@ fn source_query_regressions() {
 
     let directory = tempfile::tempdir().unwrap();
     fs::write(directory.path().join("Demo.lean"), &source).unwrap();
-    let column_error = match parse_source_location(
-        directory.path(),
-        directory.path(),
-        None,
-        "Demo.lean:15:2",
-    ) {
-        Err(error) => error,
-        Ok(_) => panic!("column position should be rejected"),
-    };
-    assert!(column_error.to_string().contains("columns are not supported"));
+    let column_error =
+        match parse_source_location(directory.path(), directory.path(), None, "Demo.lean:15:2") {
+            Err(error) => error,
+            Ok(_) => panic!("column position should be rejected"),
+        };
+    assert!(
+        column_error
+            .to_string()
+            .contains("columns are not supported")
+    );
     let duplicated_root = resolve_source_path(directory.path(), directory.path(), "Demo/Demo.lean")
         .unwrap()
         .unwrap();
@@ -1749,20 +1763,18 @@ fn source_query_regressions() {
         "def casing := true\n",
     )
     .unwrap();
-    let recovered_case = resolve_source_path(
-        directory.path(),
-        directory.path(),
-        "caseSensitive.lean",
-    )
-    .unwrap()
-    .unwrap();
+    let recovered_case =
+        resolve_source_path(directory.path(), directory.path(), "caseSensitive.lean")
+            .unwrap()
+            .unwrap();
     assert_eq!(
         recovered_case.0,
         fs::canonicalize(directory.path().join("Actual/Topology/CaseSensitive.lean")).unwrap()
     );
-    let location = parse_source_location(directory.path(), directory.path(), None, "Demo.lean:tail")
-        .unwrap()
-        .unwrap();
+    let location =
+        parse_source_location(directory.path(), directory.path(), None, "Demo.lean:tail")
+            .unwrap()
+            .unwrap();
     assert_eq!(location.line, 30);
     assert!(location.tail);
     assert!(!location.expanded);
@@ -1849,7 +1861,11 @@ fn source_query_regressions() {
         Err(error) => error,
         Ok(_) => panic!("placeholder query unexpectedly accepted"),
     };
-    assert!(placeholder.to_string().contains("FILE is a help placeholder"));
+    assert!(
+        placeholder
+            .to_string()
+            .contains("FILE is a help placeholder")
+    );
     let result = source_occurrence_result(
         &Workspace {
             reference: "w1".into(),
@@ -1950,7 +1966,13 @@ fn source_query_regressions() {
     );
     assert_eq!(
         long_range.note.as_deref(),
-        Some(format!("+{} lines omitted; rerun search --all", 250 - SOURCE_RANGE_LIMIT).as_str())
+        Some(
+            format!(
+                "+{} lines omitted; rerun search --all",
+                250 - SOURCE_RANGE_LIMIT
+            )
+            .as_str()
+        )
     );
     let long_summary = render_summary(&SearchRun {
         reference: "q-range".into(),
@@ -2061,14 +2083,10 @@ fn source_query_regressions() {
         .to_string()
         .contains("source file not found or ambiguous")
     );
-    let outline = parse_source_occurrence_query(
-        directory.path(),
-        directory.path(),
-        None,
-        "Nested outline",
-    )
-    .unwrap()
-    .unwrap();
+    let outline =
+        parse_source_occurrence_query(directory.path(), directory.path(), None, "Nested outline")
+            .unwrap()
+            .unwrap();
     assert_eq!(outline.path, recovered.path);
     let other = directory.path().join("Other");
     fs::create_dir_all(&other).unwrap();
@@ -2218,14 +2236,9 @@ fn source_dependents_include_the_active_workspace_index() {
         branch: "demo".into(),
         model: None,
     };
-    let query = parse_source_occurrence_query(
-        &root,
-        &root,
-        None,
-        "Target.lean dependents",
-    )
-    .unwrap()
-    .unwrap();
+    let query = parse_source_occurrence_query(&root, &root, None, "Target.lean dependents")
+        .unwrap()
+        .unwrap();
 
     let result = searcher.source_dependents(&workspace, &query).unwrap();
 
@@ -2403,7 +2416,13 @@ fn source_regex_queries_scan_a_bounded_scope_with_context() {
     assert_eq!(result.inference, "source-regex");
     assert_eq!(result.hits.len(), 2);
     assert_eq!(result.hits[1].name, "theorem beta_apply := by trivial");
-    assert!(result.hits[0].source.as_deref().unwrap().contains(">    2 | theorem alpha_apply"));
+    assert!(
+        result.hits[0]
+            .source
+            .as_deref()
+            .unwrap()
+            .contains(">    2 | theorem alpha_apply")
+    );
     assert!(result.hits[1].path.ends_with("Nested/Two.lean"));
 
     let bracketed = parse_source_regex_query(
@@ -2414,7 +2433,10 @@ fn source_regex_queries_scan_a_bounded_scope_with_context() {
     )
     .unwrap()
     .unwrap();
-    assert_eq!(bracketed.scope, fs::canonicalize(directory.path().join("Nested")).unwrap());
+    assert_eq!(
+        bracketed.scope,
+        fs::canonicalize(directory.path().join("Nested")).unwrap()
+    );
 
     let ranged = parse_source_regex_query(
         directory.path(),
@@ -2436,7 +2458,10 @@ fn source_regex_queries_scan_a_bounded_scope_with_context() {
         false,
     )
     .unwrap();
-    assert_eq!(ranged.hits.iter().map(|hit| hit.line).collect::<Vec<_>>(), [3]);
+    assert_eq!(
+        ranged.hits.iter().map(|hit| hit.line).collect::<Vec<_>>(),
+        [3]
+    );
 
     let compact = parse_source_regex_query(
         directory.path(),
@@ -2455,7 +2480,11 @@ fn source_regex_queries_scan_a_bounded_scope_with_context() {
     let packages = tempfile::tempdir().unwrap();
     let dependency = packages.path().join("demo/Mathlib/Analysis");
     fs::create_dir_all(&dependency).unwrap();
-    fs::write(dependency.join("Api.lean"), "theorem dependency_hit := by trivial\n").unwrap();
+    fs::write(
+        dependency.join("Api.lean"),
+        "theorem dependency_hit := by trivial\n",
+    )
+    .unwrap();
     fs::create_dir(directory.path().join(".lake")).unwrap();
     std::os::unix::fs::symlink(packages.path(), directory.path().join(".lake/packages")).unwrap();
     let dependency = parse_source_regex_query(
@@ -2490,7 +2519,10 @@ fn source_regex_queries_scan_a_bounded_scope_with_context() {
         false,
     )
     .unwrap();
-    assert_eq!(dependency.hits[0].path, "<dependency>/Mathlib/Analysis/Api.lean");
+    assert_eq!(
+        dependency.hits[0].path,
+        "<dependency>/Mathlib/Analysis/Api.lean"
+    );
 }
 
 #[test]

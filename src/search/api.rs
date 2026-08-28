@@ -1,8 +1,15 @@
-use anyhow::{Result, bail, ensure};
 use crate::reference::{Reference, ReferenceKind};
+use anyhow::{Result, bail, ensure};
 
 const KINDS: &[&str] = &[
-    "abbrev", "class", "def", "inductive", "instance", "lemma", "structure", "theorem",
+    "abbrev",
+    "class",
+    "def",
+    "inductive",
+    "instance",
+    "lemma",
+    "structure",
+    "theorem",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,10 +33,15 @@ impl SearchRequest {
         let query = query.trim();
         ensure!(!query.is_empty(), "search query is empty");
         if let Some(limit) = limit {
-            ensure!((1..=200).contains(&limit), "--limit must be between 1 and 200");
+            ensure!(
+                (1..=200).contains(&limit),
+                "--limit must be between 1 and 200"
+            );
         }
         ensure!(
-            !query.split_whitespace().any(|term| term.eq_ignore_ascii_case("more")),
+            !query
+                .split_whitespace()
+                .any(|term| term.eq_ignore_ascii_case("more")),
             "search has no `more` modifier; use `show qREF --all`"
         );
         ensure!(
@@ -40,7 +52,10 @@ impl SearchRequest {
             "inspect a stored check with `mathmux probe cREF`"
         );
         ensure!(
-            !matches!(query.split_whitespace().next(), Some("#check" | "#synth" | "#reduce" | "#print")),
+            !matches!(
+                query.split_whitespace().next(),
+                Some("#check" | "#synth" | "#reduce" | "#print")
+            ),
             "Lean directives belong to `mathmux probe CONTEXT \"#check TERM\"`"
         );
 
@@ -50,7 +65,10 @@ impl SearchRequest {
         }
 
         let expression = if let Some(names) = query.strip_prefix("name:") {
-            ensure!(!names.chars().any(char::is_whitespace), "name: accepts one name or a `|` batch");
+            ensure!(
+                !names.chars().any(char::is_whitespace),
+                "name: accepts one name or a `|` batch"
+            );
             let names = names.split('|').map(str::trim).collect::<Vec<_>>();
             ensure!(
                 !names.is_empty() && names.iter().all(|name| declaration_name(name)),
@@ -105,7 +123,10 @@ fn validate_type_pattern(pattern: &str) -> Result<()> {
                     '}' => '{',
                     _ => unreachable!(),
                 };
-                ensure!(stack.pop() == Some(expected), "invalid type: unmatched `{ch}`");
+                ensure!(
+                    stack.pop() == Some(expected),
+                    "invalid type: unmatched `{ch}`"
+                );
             }
             _ => {}
         }
@@ -117,7 +138,10 @@ fn validate_type_pattern(pattern: &str) -> Result<()> {
 
 fn canonical_regex(path: Option<&str>, regex: &str) -> Result<String> {
     let regex = regex.trim();
-    ensure!(regex.starts_with('/') && regex.ends_with('/') && regex.len() > 2, "re: expects /REGEX/");
+    ensure!(
+        regex.starts_with('/') && regex.ends_with('/') && regex.len() > 2,
+        "re: expects /REGEX/"
+    );
     Ok(match path {
         Some(path) => format!("{path} {regex}"),
         None => regex.to_owned(),
@@ -143,15 +167,21 @@ mod tests {
     #[test]
     fn parses_forced_query_classes_without_fallback() {
         assert_eq!(
-            SearchRequest::parse("name:A.B|C.D", None, false).unwrap().expression,
+            SearchRequest::parse("name:A.B|C.D", None, false)
+                .unwrap()
+                .expression,
             SearchExpression::ExactNames(vec!["A.B".into(), "C.D".into()])
         );
         assert_eq!(
-            SearchRequest::parse("type:_ ≃L[ℂ] F", None, false).unwrap().expression,
+            SearchRequest::parse("type:_ ≃L[ℂ] F", None, false)
+                .unwrap()
+                .expression,
             SearchExpression::Type("_ ≃L[ℂ] F".into())
         );
         assert_eq!(
-            SearchRequest::parse("Mathlib re:/foo|bar/", None, false).unwrap().expression,
+            SearchRequest::parse("Mathlib re:/foo|bar/", None, false)
+                .unwrap()
+                .expression,
             SearchExpression::Regex("Mathlib /foo|bar/".into())
         );
         assert!(SearchRequest::parse("type:(Nat → Nat", None, false).is_err());
