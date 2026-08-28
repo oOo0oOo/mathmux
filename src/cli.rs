@@ -72,8 +72,11 @@ FORMS — type one directly; there are no API, LEAN, or other category keywords
 RESULT
   API focuses return one bounded dossier. goal returns the exact local goal;
   TERM/directives return Lean's elaborated answer; by returns solved or subgoals.
+  NAME source returns that declaration body; search FILE:LINE/RANGE reads file text.
 
 RULES
+  fields/constructors target structures/inductives; ext/simp may be empty.
+  cREF analyses need a matching stored failure; profile needs check --profile.
   Context is mandatory for directives and never guessed. FILE uses its imports;
   FILE:LINE uses that exact line—there is no nearby-line fallback. Probe never
   edits or certifies source; use check after editing. Use NAME signature, not
@@ -884,6 +887,8 @@ mod tests {
             .render_help()
             .to_string();
         assert!(short_probe.contains("FILE:LINE [goal]"));
+        assert!(short_probe.contains("NAME source returns that declaration body"));
+        assert!(short_probe.contains("cREF analyses need a matching stored failure"));
     }
 
     #[test]

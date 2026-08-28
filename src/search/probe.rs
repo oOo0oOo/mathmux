@@ -220,6 +220,9 @@ impl Searcher {
                     LeanDirective::Check(subject.to_owned()),
                 )
             }
+            (None, Some(subject), Some("constructors")) => {
+                self.run_constructors_probe(workspace, cwd, subject)
+            }
             (context, Some(subject), focus) => {
                 let query = static_probe_query(context.as_ref(), subject, focus)?;
                 let effective_focus = focus.unwrap_or(if subject.starts_with("type:") {
@@ -427,6 +430,9 @@ impl Searcher {
         }
         let selected_name = hit.name.strip_prefix("_root_.").unwrap_or(&hit.name);
         let subject = subject.unwrap_or(selected_name);
+        if focus == Some("constructors") {
+            return self.run_constructors_probe(workspace, cwd, subject);
+        }
         let query = static_probe_query(None, subject, focus)?;
         self.run_static_probe_query(
             workspace,
@@ -455,6 +461,84 @@ impl Searcher {
             return Ok(rendered);
         };
         Ok(render_static_probe_summary(&run, focus))
+    }
+
+    fn run_constructors_probe(
+        &self,
+        workspace: &Workspace,
+        cwd: &Path,
+        subject: &str,
+    ) -> Result<String> {
+        let source_search = || -> Result<(String, Option<SearchRun>)> {
+            let rendered = self.search(workspace, cwd, &format!("name:{subject}"), None, false)?;
+            let run = rendered
+                .split_whitespace()
+                .next()
+                .filter(|term| reference(term, 'q'))
+                .map(|reference| self.state.search_run(reference))
+                .transpose()?
+                .flatten();
+            Ok((rendered, run))
+        };
+        let (mut rendered, mut run) = source_search()?;
+        if indexes_warming(&rendered) {
+            (rendered, run) = source_search()?;
+        }
+        ensure!(
+            !indexes_warming(&rendered),
+            "constructor index warming; retry the probe"
+        );
+        let Some(run) = run else {
+            return Ok(rendered);
+        };
+        let Some(hit) = run
+            .hits
+            .iter()
+            .find(|hit| qualified_name_matches(&hit.name, subject))
+        else {
+            return Ok(rendered);
+        };
+        let name = hit.name.strip_prefix("_root_.").unwrap_or(&hit.name);
+        let query = if matches!(hit.kind.as_str(), "class" | "structure") {
+            format!("name:{name}.mk")
+        } else if hit.kind == "inductive" {
+            let constructors = inductive_constructors(name, hit.source.as_deref().unwrap_or(""));
+            ensure!(
+                !constructors.is_empty(),
+                "no indexed constructors found for {name}"
+            );
+            let run = SearchRun {
+                reference: self.state.next_ref('q')?,
+                workspace_ref: workspace.reference.clone(),
+                query: format!("{name} constructors"),
+                inference: "exact-batch".into(),
+                hits: constructors
+                    .into_iter()
+                    .map(|constructor| SearchHit {
+                        name: constructor.name,
+                        kind: "constructor".into(),
+                        signature: nonempty(constructor.signature),
+                        module: hit.module.clone(),
+                        path: hit.path.clone(),
+                        line: hit.line + constructor.line_offset,
+                        doc: None,
+                        source: None,
+                        usages: Vec::new(),
+                        applicable: false,
+                        required_import: hit.required_import.clone(),
+                    })
+                    .collect(),
+                note: None,
+                duration_ms: 0,
+                created_at: now_unix_ms(),
+            };
+            self.state.add_search(&run)?;
+            self.state.touch_workspace(&workspace.reference)?;
+            return Ok(render_static_probe_summary(&run, "constructors"));
+        } else {
+            bail!("constructors requires a structure, class, or inductive declaration")
+        };
+        self.run_static_probe_query(workspace, cwd, &query, "constructors")
     }
 
     fn store_query_hit_refinement(
@@ -797,6 +881,118 @@ fn static_probe_query(context: Option<&ProbeContext>, subject: &str, focus: Opti
     Ok(query)
 }
 
+struct InductiveConstructor {
+    name: String,
+    signature: String,
+    line_offset: u64,
+}
+
+fn indexes_warming(rendered: &str) -> bool {
+    rendered.contains("warming") && rendered.contains("index")
+}
+
+fn inductive_constructors(name: &str, source: &str) -> Vec<InductiveConstructor> {
+    let lines = source.lines().collect::<Vec<_>>();
+    let declaration = lines
+        .iter()
+        .position(|line| line.trim_start().starts_with("inductive "))
+        .unwrap_or(0);
+    let Some(constructor_indent) = lines
+        .iter()
+        .enumerate()
+        .skip(declaration + 1)
+        .filter(|(_, line)| line.trim_start().starts_with('|'))
+        .map(|(_, line)| line.len() - line.trim_start().len())
+        .min()
+    else {
+        return Vec::new();
+    };
+    let starts = lines
+        .iter()
+        .enumerate()
+        .skip(declaration + 1)
+        .filter(|(_, line)| {
+            line.len() - line.trim_start().len() == constructor_indent
+                && line.trim_start().starts_with('|')
+        })
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    starts
+        .iter()
+        .enumerate()
+        .filter_map(|(position, &start)| {
+            let end = starts.get(position + 1).copied().unwrap_or(lines.len());
+            let mut content = Vec::new();
+            let mut in_comment = false;
+            let mut name_line = start;
+            for (index, line) in lines[start..end].iter().enumerate() {
+                let trimmed = line.trim_start();
+                let indent = line.len() - trimmed.len();
+                if index > 0
+                    && !in_comment
+                    && indent <= constructor_indent
+                    && !trimmed.is_empty()
+                    && !trimmed.starts_with("/-")
+                    && !trimmed.starts_with("--")
+                {
+                    break;
+                }
+                let mut rest = if index == 0 {
+                    trimmed.strip_prefix('|')?.trim_start()
+                } else {
+                    line.trim()
+                };
+                loop {
+                    if in_comment {
+                        let Some((_, after)) = rest.split_once("-/") else {
+                            rest = "";
+                            break;
+                        };
+                        in_comment = false;
+                        rest = after.trim_start();
+                    } else if rest.starts_with("/-") {
+                        let Some((_, after)) = rest.split_once("-/") else {
+                            in_comment = true;
+                            rest = "";
+                            break;
+                        };
+                        rest = after.trim_start();
+                    } else {
+                        break;
+                    }
+                }
+                if !rest.is_empty() && !rest.starts_with("--") {
+                    if content.is_empty() {
+                        name_line = start + index;
+                    }
+                    content.push(rest);
+                }
+            }
+            let constructor = content.join(" ");
+            let leaf = constructor.split_whitespace().next()?.trim_end_matches(':');
+            if leaf.is_empty() {
+                return None;
+            }
+            let signature = constructor
+                .strip_prefix(leaf)
+                .unwrap_or_default()
+                .trim()
+                .trim_start_matches(':')
+                .trim()
+                .to_owned();
+            Some(InductiveConstructor {
+                name: if leaf.contains('.') {
+                    leaf.to_owned()
+                } else {
+                    format!("{name}.{leaf}")
+                },
+                signature,
+                line_offset: (name_line - declaration) as u64,
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -857,6 +1053,32 @@ mod tests {
         assert_eq!(
             static_probe_query(None, "ContinuousMap", Some("constructors")).unwrap(),
             "name:ContinuousMap.mk"
+        );
+        assert_eq!(
+            inductive_constructors(
+                "Option",
+                "inductive Option (α : Type) where\n  | none : Option α\n  | some (value : α) : Option α"
+            )
+            .into_iter()
+            .map(|constructor| (constructor.name, constructor.signature, constructor.line_offset))
+            .collect::<Vec<_>>(),
+            [
+                ("Option.none".into(), "Option α".into(), 1),
+                ("Option.some".into(), "(value : α) : Option α".into(), 2),
+            ]
+        );
+        assert_eq!(
+            inductive_constructors(
+                "IntInterval",
+                "inductive IntInterval : Type where\n  | /-- A finite interval. -/\n    co (lo hi : Int)\n  |\n    /-- An infinite interval. -/\n    infinite\n  deriving Inhabited\n\nnamespace IntInterval"
+            )
+            .into_iter()
+            .map(|constructor| (constructor.name, constructor.signature, constructor.line_offset))
+            .collect::<Vec<_>>(),
+            [
+                ("IntInterval.co".into(), "(lo hi : Int)".into(), 2),
+                ("IntInterval.infinite".into(), "".into(), 5),
+            ]
         );
         assert_eq!(
             static_probe_query(None, "_root_.ContinuousMap", Some("source")).unwrap(),
