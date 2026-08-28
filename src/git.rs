@@ -30,7 +30,7 @@ pub fn workspace_limit() -> usize {
                 .map(|kib| kib / 1024 / 1024)
         })
         .unwrap_or(32);
-    (((gib.saturating_sub(8)) / 6) as usize).clamp(1, 8)
+    (((gib.saturating_sub(8)) / 6) as usize).clamp(1, 12)
 }
 
 pub fn create_workspace(
@@ -592,7 +592,7 @@ mod tests {
         assert!(validate_name("proof_2-a").is_ok());
         assert!(validate_name("-bad").is_err());
         assert!(validate_name("a/b").is_err());
-        assert!((1..=8).contains(&workspace_limit()));
+        assert!((1..=12).contains(&workspace_limit()));
     }
 
     #[test]
