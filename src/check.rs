@@ -1358,7 +1358,7 @@ fn first_source_column(source: &str, line: u64) -> u64 {
                 .strip_prefix('·')
                 .map(|rest| 1 + rest.chars().take_while(|ch| ch.is_whitespace()).count())
                 .unwrap_or(0);
-            (indentation + bullet) as u64 + 1
+            (indentation + bullet) as u64 + 2
         })
         .unwrap_or(1)
 }
@@ -2467,9 +2467,9 @@ mod tests {
     #[test]
     fn positioned_probes_start_at_the_first_source_token() {
         let source = "theorem demo : True := by\n    · trivial\n\t· exact True.intro\n";
-        assert_eq!(first_source_column(source, 1), 1);
-        assert_eq!(first_source_column(source, 2), 7);
-        assert_eq!(first_source_column(source, 3), 4);
+        assert_eq!(first_source_column(source, 1), 2);
+        assert_eq!(first_source_column(source, 2), 8);
+        assert_eq!(first_source_column(source, 3), 5);
         assert_eq!(first_source_column(source, 99), 1);
     }
 
