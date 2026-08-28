@@ -214,19 +214,12 @@ impl Searcher {
             }
             (context, Some(subject), focus) => {
                 let query = static_probe_query(context.as_ref(), subject, focus)?;
-                let rendered = self.search(workspace, cwd, &query, None, false)?;
                 let effective_focus = focus.unwrap_or(if subject.starts_with("type:") {
                     "types"
                 } else {
                     "signature"
                 });
-                let Some(reference) = rendered.split_whitespace().next().filter(|term| reference(term, 'q')) else {
-                    return Ok(rendered);
-                };
-                let Some(run) = self.state.search_run(reference)? else {
-                    return Ok(rendered);
-                };
-                Ok(render_static_probe_summary(&run, effective_focus))
+                self.run_static_probe_query(workspace, cwd, &query, effective_focus)
             }
             (Some(ProbeContext::File(file)), None, Some("goal")) => {
                 bail!("goal requires an exact FILE:LINE context, not {file}")
@@ -403,9 +396,78 @@ impl Searcher {
                 None,
             );
         }
-        let subject = subject.unwrap_or(&hit.name);
+        if run.inference != "probe"
+            && subject.is_none()
+            && matches!(focus, Some("types" | "defeq" | "rewrite" | "profile"))
+        {
+            let focus = focus.unwrap();
+            bail!(
+                "focus `{focus}` is not valid for a declaration qREF; use a declaration focus such as signature, source, or usages, or probe a cREF failure"
+            )
+        }
+        if run.inference != "probe"
+            && subject.is_none()
+            && matches!(focus, None | Some("signature" | "source" | "usages"))
+        {
+            return self.store_query_hit_refinement(
+                workspace,
+                reference,
+                hit,
+                focus.unwrap_or("signature"),
+            );
+        }
+        let selected_name = hit.name.strip_prefix("_root_.").unwrap_or(&hit.name);
+        let subject = subject.unwrap_or(selected_name);
         let query = static_probe_query(None, subject, focus)?;
-        self.search(workspace, cwd, &query, None, false)
+        self.run_static_probe_query(
+            workspace,
+            cwd,
+            &query,
+            focus.unwrap_or("signature"),
+        )
+    }
+
+    fn run_static_probe_query(
+        &self,
+        workspace: &Workspace,
+        cwd: &Path,
+        query: &str,
+        focus: &str,
+    ) -> Result<String> {
+        let rendered = self.search(workspace, cwd, query, None, false)?;
+        let Some(reference) = rendered
+            .split_whitespace()
+            .next()
+            .filter(|term| reference(term, 'q'))
+        else {
+            return Ok(rendered);
+        };
+        let Some(run) = self.state.search_run(reference)? else {
+            return Ok(rendered);
+        };
+        Ok(render_static_probe_summary(&run, focus))
+    }
+
+    fn store_query_hit_refinement(
+        &self,
+        workspace: &Workspace,
+        reference: &str,
+        hit: &SearchHit,
+        focus: &str,
+    ) -> Result<String> {
+        let run = SearchRun {
+            reference: self.state.next_ref('q')?,
+            workspace_ref: workspace.reference.clone(),
+            query: format!("{reference} {focus}"),
+            inference: "probe-refinement".into(),
+            hits: vec![hit.clone()],
+            note: None,
+            duration_ms: 0,
+            created_at: now_unix_ms(),
+        };
+        self.state.add_search(&run)?;
+        self.state.touch_workspace(&workspace.reference)?;
+        Ok(render_static_probe_summary(&run, focus))
     }
 
     fn store_probe_result(
@@ -636,7 +698,12 @@ fn render_static_probe_summary(run: &SearchRun, focus: &str) -> String {
                 hit.source = None;
             }
         }
-        "source" => run.hits.truncate(1),
+        "source" => {
+            run.hits.truncate(1);
+            for hit in &mut run.hits {
+                hit.usages.clear();
+            }
+        }
         "simp" => {
             run.hits.retain(|hit| {
                 hit.source

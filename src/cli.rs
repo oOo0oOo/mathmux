@@ -63,7 +63,7 @@ FORMS — type one directly; there are no API, LEAN, or other category keywords
   FILE:LINE [goal] | FILE:LINE TERM [signature]
   PATH NAME usages
   cREF [types|defeq|rewrite|profile]
-  qREF [FOCUS]
+  qREF [same focus as NAME]
   FILE|FILE:LINE|cREF|qREF "#check TERM"|"#synth TYPE"|"#reduce TERM"
   FILE:LINE|cREF|positioned-qREF "by TACTIC"
 
