@@ -1950,7 +1950,7 @@ fn source_query_regressions() {
     );
     assert_eq!(
         long_range.note.as_deref(),
-        Some("+130 lines omitted; use --all")
+        Some(format!("+{} lines omitted; rerun search --all", 250 - SOURCE_RANGE_LIMIT).as_str())
     );
     let long_summary = render_summary(&SearchRun {
         reference: "q-range".into(),
@@ -1962,9 +1962,18 @@ fn source_query_regressions() {
         duration_ms: 1,
         created_at: 0,
     });
-    assert!(long_summary.contains("\n120\tline 120\n"));
-    assert!(!long_summary.contains("\n121\tline 121\n"));
-    assert!(long_summary.ends_with("+130 lines omitted; use --all"));
+    assert!(long_summary.contains(&format!(
+        "\n{SOURCE_RANGE_LIMIT}\tline {SOURCE_RANGE_LIMIT}\n"
+    )));
+    assert!(!long_summary.contains(&format!(
+        "\n{}\tline {}\n",
+        SOURCE_RANGE_LIMIT + 1,
+        SOURCE_RANGE_LIMIT + 1
+    )));
+    assert!(long_summary.ends_with(&format!(
+        "+{} lines omitted; rerun search --all",
+        250 - SOURCE_RANGE_LIMIT
+    )));
     let long_range =
         parse_source_occurrence_query(directory.path(), directory.path(), None, "Long.lean:1-250")
             .unwrap()

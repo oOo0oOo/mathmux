@@ -574,7 +574,7 @@ pub(super) fn source_occurrence_result(
                 if all {
                     format!("+{omitted} lines omitted; narrow the range")
                 } else {
-                    format!("+{omitted} lines omitted; use --all")
+                    format!("+{omitted} lines omitted; rerun search --all")
                 }
             } else if all {
                 format!("+{omitted} matches omitted; narrow the query")
