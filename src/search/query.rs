@@ -668,6 +668,9 @@ fn diversify_ranked_candidates(
     });
     if !query.contains('|') {
         promote_result_context(ranked, query, query_tokens);
+        if !declaration_name_query(query) {
+            promote_strongest_query_coverage(ranked, query_tokens);
+        }
     }
     if let Some(anchor) = qualified_anchor
         && let Some(position) = ranked
@@ -676,6 +679,28 @@ fn diversify_ranked_candidates(
     {
         let anchor = ranked.remove(position);
         ranked.insert(0, anchor);
+    }
+}
+
+fn promote_strongest_query_coverage(ranked: &mut Vec<Candidate>, tokens: &[String]) {
+    if ranked.len() <= 1 || tokens.len() <= 1 {
+        return;
+    }
+    let top_coverage = hit_query_coverage(&ranked[0].hit, tokens).0;
+    let Some((position, best_coverage)) = ranked
+        .iter()
+        .enumerate()
+        .skip(1)
+        .map(|(position, candidate)| {
+            (position, hit_query_coverage(&candidate.hit, tokens).0)
+        })
+        .max_by_key(|(_, coverage)| *coverage)
+    else {
+        return;
+    };
+    if best_coverage >= 2 && best_coverage > top_coverage {
+        let candidate = ranked.remove(position);
+        ranked.insert(0, candidate);
     }
 }
 

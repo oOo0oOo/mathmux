@@ -418,6 +418,37 @@ fn query_parsing_scoring_and_ranking_regressions() {
         &tokens,
     );
     assert!(ranked[0].hit.name.contains("CircleSeparatedOnRadius"));
+    let broad_query = "gaugeRelated canonicalIndexClass indexClass invariant gauge";
+    let (broad, _) = rank_discovery_candidates(
+        vec![
+            Candidate {
+                hit: SearchHit {
+                    name: "delabCheckingCanonical".into(),
+                    signature: Some("DelabM Term".into()),
+                    ..contextual_hit.clone()
+                },
+                score: 1_000.0,
+                origins: 0,
+            },
+            Candidate {
+                hit: SearchHit {
+                    name: "Demo.gaugeRelated_canonicalIndexClass_invariant".into(),
+                    signature: Some("canonicalIndexClass f = canonicalIndexClass g".into()),
+                    ..contextual_hit.clone()
+                },
+                score: 1.0,
+                origins: 0,
+            },
+        ],
+        broad_query,
+        &meaningful_query_tokens(broad_query),
+        false,
+        None,
+    );
+    assert_eq!(
+        broad[0].hit.name,
+        "Demo.gaugeRelated_canonicalIndexClass_invariant"
+    );
     let compound_name = vec![
         Candidate {
             hit: SearchHit {
