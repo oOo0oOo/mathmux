@@ -114,15 +114,16 @@ def goalAtPosition (tree : Language.SnapshotTree) (fileMap : FileMap)
   let stop := fileMap.ofPosition {line := zeroLine + 1, column := 0}
   goalInSnapshotTree tree fileMap start.byteIdx stop.byteIdx
 
-def contextBetweenOffsets (trees : Array InfoTree) (start stop : Nat) : Option ContextInfo := Id.run do
+def contextBetweenOffsets (trees : Array InfoTree) (start stop : Nat) :
+    Option (ContextInfo × LocalContext) := Id.run do
   for tree in trees do
     for offset in [start:stop + 1] do
       if let some info := tree.termGoalAt? ⟨offset⟩ then
-        return some info.ctx
+        return some (info.ctx, info.info.lctx)
   return none
 
 partial def contextInSnapshotTree (tree : Language.SnapshotTree) (fileMap : FileMap)
-    (start stop : Nat) : BaseIO (Option ContextInfo) := do
+    (start stop : Nat) : BaseIO (Option (ContextInfo × LocalContext)) := do
   if let some ctx := contextBetweenOffsets tree.element.infoTree?.toArray start stop then
     return some ctx
   for child in tree.children do
@@ -131,7 +132,7 @@ partial def contextInSnapshotTree (tree : Language.SnapshotTree) (fileMap : File
   return none
 
 def contextAtPosition (tree : Language.SnapshotTree) (fileMap : FileMap)
-    (line column : Nat) : BaseIO (Option ContextInfo) := do
+    (line column : Nat) : BaseIO (Option (ContextInfo × LocalContext)) := do
   if line == 0 then return none
   let zeroLine := line - 1
   let start := fileMap.ofPosition {line := zeroLine, column := column - 1}
@@ -219,10 +220,11 @@ def runLocalProbe (snapshot : Language.Lean.InitialSnapshot) (request : Request)
           mvar.withContext do
             (inspectTerm request.operation request.input {}).run' {}
       | none =>
-        let some ctx ← contextAtPosition tree fileMap request.line request.column
+        let some (ctx, lctx) ← contextAtPosition tree fileMap request.line request.column
           | throw <| IO.userError s!"no elaboration context at line {request.line}"
-        ctx.runMetaM {} do
-          (inspectTerm request.operation request.input {}).run' {}
+        ctx.runMetaM lctx do
+          Meta.withLocalInstances (lctx.decls.toArray.toList.filterMap id) do
+            (inspectTerm request.operation request.input {}).run' {}
     return {ok := true, diagnostics := #[], detail, version := request.version}
   catch error =>
     return probeFailure (toString error) request.version
