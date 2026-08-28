@@ -3,6 +3,7 @@ pub mod cli;
 pub mod daemon;
 pub mod git;
 pub mod issue;
+mod lean_service;
 pub mod protocol;
 pub mod repo;
 pub mod search;

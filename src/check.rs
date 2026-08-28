@@ -1,22 +1,20 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
-use std::os::fd::AsRawFd;
-use std::os::unix::ffi::OsStrExt;
+use std::io::Write;
 use std::os::unix::fs::MetadataExt;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock, TryLockError, Weak};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use fs2::FileExt;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use crate::git::{dirty_lean_files, lake_command, merge_in_progress, project_lean_files};
 use crate::issue::{TelemetryOperation, TelemetryStore, development_enabled};
+use crate::lean_service::{LeanServiceProcess, ServiceRequestError, reap_stale_processes};
 use crate::repo::Repo;
 use crate::state::{
     CheckProfile, CheckProfileEntry, CheckRecord, CheckRun, Diagnostic, FileCheckProfile, State,
@@ -24,7 +22,6 @@ use crate::state::{
 };
 use crate::util::{hash_bytes, hash_file, now_unix_ms};
 
-const WORKER_SOURCE: &str = include_str!("MathmuxWorker.lean");
 const CHECK_RESULT_VERSION: &[u8] = b"check-result-v2";
 const CHECK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const COLD_PROBE_TIMEOUT: Duration = Duration::from_secs(16);
@@ -190,8 +187,7 @@ pub struct Checker {
 
 impl Checker {
     pub fn new(repo: Repo, state: State) -> Result<Self> {
-        let worker_path = repo.state_dir.join("MathmuxWorker.lean");
-        let reaped = reap_stale_workers(&worker_path);
+        let reaped = reap_stale_processes(&repo);
         if reaped > 0
             && let Ok(mut log) = fs::OpenOptions::new()
                 .create(true)
@@ -199,10 +195,6 @@ impl Checker {
                 .open(&repo.log_path)
         {
             let _ = writeln!(log, "reaped {reaped} stale Lean worker group(s)");
-        }
-        if fs::read_to_string(&worker_path).ok().as_deref() != Some(WORKER_SOURCE) {
-            fs::write(&worker_path, WORKER_SOURCE)
-                .with_context(|| format!("cannot write {}", worker_path.display()))?;
         }
         Ok(Self {
             repo,
@@ -1402,71 +1394,6 @@ fn profile_declaration_near<'a>(
     None
 }
 
-fn reap_stale_workers(worker_path: &Path) -> usize {
-    let Ok(processes) = fs::read_dir("/proc") else {
-        return 0;
-    };
-    let worker_path = worker_path.as_os_str().as_bytes();
-    let own_group = unsafe { libc::getpgrp() };
-    let mut groups = HashSet::new();
-    for process in processes.flatten() {
-        let Some(pid) = process
-            .file_name()
-            .to_str()
-            .and_then(|name| name.parse::<i32>().ok())
-        else {
-            continue;
-        };
-        let Ok(command) = fs::read(process.path().join("cmdline")) else {
-            continue;
-        };
-        if !command
-            .split(|byte| *byte == 0)
-            .any(|argument| argument == worker_path)
-        {
-            continue;
-        }
-        let group = unsafe { libc::getpgid(pid) };
-        if group == pid
-            && group != own_group
-            && !worker_has_daemon_parent(&process.path())
-        {
-            groups.insert(group);
-        }
-    }
-    for group in &groups {
-        unsafe {
-            libc::kill(-group, libc::SIGTERM);
-        }
-    }
-    groups.len()
-}
-
-fn worker_has_daemon_parent(process: &Path) -> bool {
-    let parent = fs::read_to_string(process.join("status"))
-        .ok()
-        .and_then(|status| {
-            status.lines().find_map(|line| {
-                line.strip_prefix("PPid:")?.trim().parse::<u32>().ok()
-            })
-        });
-    let Some(parent) = parent else {
-        return false;
-    };
-    fs::read(
-        process
-            .parent()
-            .unwrap_or(Path::new("/proc"))
-            .join(parent.to_string())
-            .join("cmdline"),
-    )
-    .is_ok_and(|command| {
-            command
-                .split(|byte| *byte == 0)
-                .any(|argument| argument == b"__daemon")
-        })
-}
-
 fn compact_dependency_failure(stderr: &[u8]) -> String {
     const BLOCK_LINES: usize = 32;
 
@@ -1615,13 +1542,10 @@ fn prune_shared_setups(directory: &Path, current: &Path) {
 }
 
 struct LeanWorker {
-    child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    process: LeanServiceProcess,
     environment: String,
     setup_path: PathBuf,
     version: u64,
-    stderr: Arc<Mutex<String>>,
     last_used: Instant,
     last_source: Option<String>,
     last_response: Option<WorkerResponse>,
@@ -1641,50 +1565,20 @@ impl LeanWorker {
         environment: &str,
         profile: bool,
     ) -> Result<Self> {
-        let mut command = lake_command(repo, root);
-        command
-            .args(["env", "lean", "--run"])
-            .arg(repo.state_dir.join("MathmuxWorker.lean"))
-            .arg(setup_path);
+        let mut arguments = vec![
+            "file".to_owned(),
+            setup_path.to_string_lossy().into_owned(),
+        ];
         if profile {
-            command.arg("--profile");
+            arguments.push("--profile".to_owned());
         }
-        command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        command.process_group(0);
-        let mut child = command.spawn().context("cannot start direct Lean worker")?;
-        let stdin = child.stdin.take().context("Lean worker has no stdin")?;
-        let stdout = BufReader::new(child.stdout.take().context("Lean worker has no stdout")?);
-        let mut stderr_pipe = child.stderr.take().context("Lean worker has no stderr")?;
-        let stderr = Arc::new(Mutex::new(String::new()));
-        let stderr_copy = stderr.clone();
-        std::thread::spawn(move || {
-            let mut reader = BufReader::new(&mut stderr_pipe);
-            let mut line = String::new();
-            loop {
-                line.clear();
-                let Ok(read) = reader.read_line(&mut line) else {
-                    break;
-                };
-                if read == 0 {
-                    break;
-                }
-                stderr_copy
-                    .lock()
-                    .expect("stderr buffer poisoned")
-                    .push_str(&line);
-            }
-        });
+        let process = LeanServiceProcess::start(repo, root, &arguments)
+            .context("cannot start file Lean service")?;
         Ok(Self {
-            child,
-            stdin,
-            stdout,
+            process,
             environment: environment.to_owned(),
             setup_path: setup_path.to_path_buf(),
             version: 0,
-            stderr,
             last_used: Instant::now(),
             last_source: None,
             last_response: None,
@@ -1720,9 +1614,8 @@ impl LeanWorker {
             .map(|previous| common_prefix_lines(previous, source))
             .unwrap_or(0);
         self.version += 1;
-        let stderr_start = self.stderr.lock().expect("stderr buffer poisoned").len();
-        serde_json::to_writer(
-            &mut self.stdin,
+        let stderr_start = self.process.stderr_len();
+        let response = self.process.request(
             &WorkerRequest {
                 operation: action.operation,
                 source,
@@ -1732,50 +1625,23 @@ impl LeanWorker {
                 column: action.column,
                 input: action.input,
             },
-        )?;
-        self.stdin.write_all(b"\n")?;
-        self.stdin.flush()?;
-        let mut descriptor = libc::pollfd {
-            fd: self.stdout.get_ref().as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
+            timeout,
+        );
+        let mut response: WorkerResponse = match response {
+            Ok(response) => response,
+            Err(ServiceRequestError::Timeout(_)) => return Err(CheckTimeout(timeout).into()),
+            Err(ServiceRequestError::Failed(error)) => return Err(error),
         };
-        let ready = unsafe {
-            libc::poll(
-                &mut descriptor,
-                1,
-                timeout.as_millis().min(i32::MAX as u128) as i32,
-            )
-        };
-        if ready == 0 {
-            let pid = self.child.id() as i32;
-            unsafe {
-                libc::kill(-pid, libc::SIGKILL);
-            }
-            let _ = self.child.wait();
-            return Err(CheckTimeout(timeout).into());
-        }
-        if ready < 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        let mut line = String::new();
-        let read = self.stdout.read_line(&mut line)?;
-        if read == 0 {
-            let stderr = self.stderr.lock().expect("stderr buffer poisoned").clone();
-            bail!("Lean worker exited: {stderr}");
-        }
-        let mut response: WorkerResponse = serde_json::from_str(&line)
-            .with_context(|| format!("invalid Lean response: {}", line.trim()))?;
         ensure!(response.version == self.version, "stale Lean response");
         if !reuse_response {
             for _ in 0..10 {
                 std::thread::sleep(Duration::from_millis(1));
-                let stderr = self.stderr.lock().expect("stderr buffer poisoned");
-                if stderr[stderr_start..].contains("cumulative profiling times:") {
+                let stderr = self.process.stderr_since(stderr_start);
+                if stderr.contains("cumulative profiling times:") {
                     let first_native = response.profile.len();
                     response
                         .profile
-                        .extend(parse_native_profile(&stderr[stderr_start..]));
+                        .extend(parse_native_profile(&stderr));
                     for entry in &mut response.profile[first_native..] {
                         if !entry.detail.is_empty() {
                             continue;
@@ -1807,7 +1673,7 @@ impl LeanWorker {
     }
 
     fn alive(&mut self) -> bool {
-        matches!(self.child.try_wait(), Ok(None))
+        self.process.alive()
     }
 }
 
@@ -1864,16 +1730,6 @@ fn common_prefix_lines(previous: &str, current: &str) -> u64 {
         .zip(current.split_inclusive('\n'))
         .take_while(|(left, right)| left == right)
         .count() as u64
-}
-
-impl Drop for LeanWorker {
-    fn drop(&mut self) {
-        let pid = self.child.id() as i32;
-        unsafe {
-            libc::kill(-pid, libc::SIGTERM);
-        }
-        let _ = self.child.wait();
-    }
 }
 
 fn fallback_check(repo: &Repo, root: &Path, target: &Path) -> Result<WorkerResponse> {
@@ -3073,20 +2929,6 @@ noncomputable def second : Nat := 2
                 .as_deref()
                 .is_some_and(|context| context.contains(">    3 | problem"))
         );
-    }
-
-    #[test]
-    fn live_daemon_workers_are_not_reaped_during_replacement() {
-        let proc = tempdir().unwrap();
-        let worker = proc.path().join("101");
-        let daemon = proc.path().join("42");
-        fs::create_dir(&worker).unwrap();
-        fs::create_dir(&daemon).unwrap();
-        fs::write(worker.join("status"), "Name:\tlean\nPPid:\t42\n").unwrap();
-        fs::write(daemon.join("cmdline"), b"mathmux\0__daemon\0--repo\0Demo").unwrap();
-        assert!(worker_has_daemon_parent(&worker));
-        fs::write(daemon.join("cmdline"), b"init\0").unwrap();
-        assert!(!worker_has_daemon_parent(&worker));
     }
 
     #[test]

@@ -1,23 +1,24 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::os::fd::AsRawFd;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
 use regex::Regex;
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use walkdir::WalkDir;
 
 use crate::check::{Checker, parse_imports, project_module_name};
-use crate::git::{dirty_lean_files, lake_command, lake_executable, project_lean_files};
+use crate::git::{dirty_lean_files, lake_command, project_lean_files};
 use crate::issue::{TelemetryOperation, TelemetryStore, development_enabled};
+use crate::lean_service::{LeanServiceProcess, prepare as prepare_lean_service};
 use crate::repo::Repo;
 use crate::state::{SEARCH_USAGE_LIMIT, SearchHit, SearchRun, SearchUsage, State, Workspace};
 use crate::util::{
@@ -70,7 +71,7 @@ pub struct Searcher {
     dirty_cache: Mutex<HashMap<String, (Instant, Vec<PathBuf>)>>,
     source_cache: Mutex<HashMap<PathBuf, CachedSource>>,
     base_lock: Arc<Mutex<()>>,
-    loogle: Mutex<LoogleState>,
+    type_search: Mutex<TypeSearchState>,
     base: Mutex<HashMap<String, BaseState>>,
 }
 
@@ -109,7 +110,7 @@ struct Candidate {
 #[derive(Clone, Copy)]
 enum CandidateOrigin {
     Index = 1,
-    Loogle = 2,
+    TypeSearch = 2,
     ProjectSource = 4,
     FallbackSource = 8,
 }
@@ -362,10 +363,10 @@ enum SourceKind {
     Stdlib,
 }
 
-enum LoogleState {
+enum TypeSearchState {
     Empty,
-    Starting(std::sync::mpsc::Receiver<std::result::Result<LoogleWorker, String>>),
-    Running(LoogleWorker),
+    Starting(std::sync::mpsc::Receiver<std::result::Result<TypeSearchWorker, String>>),
+    Running(TypeSearchWorker),
     Unavailable,
 }
 
@@ -378,19 +379,40 @@ enum BaseState {
     Failed(HashSet<String>),
 }
 
-struct LoogleWorker {
-    child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+struct TypeSearchWorker {
+    process: LeanServiceProcess,
+    version: u64,
     last_used: Instant,
+    cache: HashMap<(String, bool), (Vec<TypeSearchHit>, Option<String>)>,
 }
 
-#[derive(Debug)]
-struct LoogleHit {
+#[derive(Clone, Debug, Deserialize)]
+struct TypeSearchHit {
     name: String,
+    #[serde(rename = "type")]
     signature: String,
-    module: String,
+    module: Option<String>,
     doc: Option<String>,
+}
+
+#[derive(Serialize)]
+struct TypeSearchRequest<'a> {
+    operation: &'static str,
+    source: &'static str,
+    file_name: &'static str,
+    version: u64,
+    line: u64,
+    column: u64,
+    input: &'a str,
+}
+
+#[derive(Deserialize)]
+struct TypeSearchResponse {
+    ok: bool,
+    detail: String,
+    hits: Vec<TypeSearchHit>,
+    suggestions: Vec<String>,
+    version: u64,
 }
 
 struct SourceRoot {
@@ -424,7 +446,7 @@ impl Searcher {
             dirty_cache: Mutex::new(HashMap::new()),
             source_cache: Mutex::new(HashMap::new()),
             base_lock: Arc::new(Mutex::new(())),
-            loogle: Mutex::new(LoogleState::Empty),
+            type_search: Mutex::new(TypeSearchState::Empty),
             base: Mutex::new(HashMap::new()),
         }
     }
@@ -732,79 +754,78 @@ impl Searcher {
     pub fn evict_idle_worker(&self, idle_for: std::time::Duration) -> bool {
         let base_running = self.poll_base_workers();
         let mut state = self
-            .loogle
+            .type_search
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let retain = match &mut *state {
-            LoogleState::Starting(_) => true,
-            LoogleState::Running(worker) => worker.last_used.elapsed() < idle_for && worker.alive(),
+            TypeSearchState::Starting(_) => true,
+            TypeSearchState::Running(worker) => worker.last_used.elapsed() < idle_for && worker.alive(),
             _ => false,
         };
-        if !retain && matches!(&*state, LoogleState::Running(_)) {
-            *state = LoogleState::Empty;
+        if !retain && matches!(&*state, TypeSearchState::Running(_)) {
+            *state = TypeSearchState::Empty;
         }
         retain || base_running
     }
 
-    fn loogle_hits(
+    fn type_search_hits(
         &self,
         workspace: &Workspace,
         query: &str,
         accept_suggestions: bool,
-    ) -> (Vec<LoogleHit>, bool, Option<String>) {
-        self.loogle_hits_with_suggestions(workspace, query, accept_suggestions)
+    ) -> (Vec<TypeSearchHit>, bool, Option<String>) {
+        self.type_search_hits_with_suggestions(workspace, query, accept_suggestions)
     }
 
-    fn loogle_exact_name_hits(
+    fn type_search_exact_name_hits(
         &self,
         workspace: &Workspace,
         query: &str,
-    ) -> (Vec<LoogleHit>, bool, Option<String>) {
-        self.loogle_hits_with_suggestions(workspace, query, false)
+    ) -> (Vec<TypeSearchHit>, bool, Option<String>) {
+        self.type_search_hits_with_suggestions(workspace, query, false)
     }
 
-    fn loogle_hits_with_suggestions(
+    fn type_search_hits_with_suggestions(
         &self,
         workspace: &Workspace,
         query: &str,
         accept_suggestions: bool,
-    ) -> (Vec<LoogleHit>, bool, Option<String>) {
+    ) -> (Vec<TypeSearchHit>, bool, Option<String>) {
         if !type_search_enabled() || !workspace.path.join(".lake/packages/mathlib").is_dir() {
             return (Vec::new(), false, None);
         }
-        let mut state = match self.loogle.try_lock() {
-            Ok(state) => state,
-            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
-            Err(std::sync::TryLockError::WouldBlock) => return (Vec::new(), true, None),
-        };
+        let mut state = self
+            .type_search
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let stopped = match &mut *state {
-            LoogleState::Running(worker) => !worker.alive(),
+            TypeSearchState::Running(worker) => !worker.alive(),
             _ => false,
         };
         if stopped {
-            *state = LoogleState::Empty;
+            *state = TypeSearchState::Empty;
         }
-        if matches!(&*state, LoogleState::Empty) {
+        if matches!(&*state, TypeSearchState::Empty) {
             let (sender, receiver) = std::sync::mpsc::channel();
             let repo = self.repo.clone();
             let workspace = workspace.path.clone();
             std::thread::spawn(move || {
                 let started = Instant::now();
                 let result =
-                    LoogleWorker::start(&repo, &workspace).map_err(|error| format!("{error:#}"));
+                    TypeSearchWorker::start(&repo, &workspace).map_err(|error| format!("{error:#}"));
                 if development_enabled()
                     && let Ok(store) = TelemetryStore::global()
                 {
                     let detail = result
                         .as_ref()
-                        .map(|_| "Loogle ready")
+                        .map(|_| "type search ready")
                         .unwrap_or_else(|error| error.as_str());
-                    let rss_kib = result.as_ref().ok().and_then(LoogleWorker::rss_kib);
+                    let rss_kib = result.as_ref().ok().and_then(TypeSearchWorker::rss_kib);
                     let _ = store.record_operation(
                         &repo,
                         &TelemetryOperation {
                             workspace: None,
-                            verb: "loogle_index",
+                            verb: "type_search_index",
                             reference: None,
                             ok: result.is_ok(),
                             duration_ms: started.elapsed().as_millis() as u64,
@@ -815,30 +836,30 @@ impl Searcher {
                 }
                 let _ = sender.send(result);
             });
-            *state = LoogleState::Starting(receiver);
+            *state = TypeSearchState::Starting(receiver);
             return (Vec::new(), true, None);
         }
-        if let LoogleState::Starting(receiver) = &*state {
+        if let TypeSearchState::Starting(receiver) = &*state {
             match receiver.try_recv() {
-                Ok(Ok(worker)) => *state = LoogleState::Running(worker),
+                Ok(Ok(worker)) => *state = TypeSearchState::Running(worker),
                 Ok(Err(error)) => {
-                    append_log(&self.repo, &format!("Loogle unavailable: {error}"));
-                    *state = LoogleState::Unavailable;
+                    append_log(&self.repo, &format!("type search unavailable: {error}"));
+                    *state = TypeSearchState::Unavailable;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    *state = LoogleState::Unavailable;
+                    *state = TypeSearchState::Unavailable;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => return (Vec::new(), true, None),
             }
         }
-        let LoogleState::Running(worker) = &mut *state else {
+        let TypeSearchState::Running(worker) = &mut *state else {
             return (Vec::new(), false, None);
         };
         match worker.query(query, accept_suggestions) {
             Ok((hits, error)) => (hits, false, error),
             Err(error) => {
-                append_log(&self.repo, &format!("Loogle query failed: {error:#}"));
-                *state = LoogleState::Unavailable;
+                append_log(&self.repo, &format!("type search failed: {error:#}"));
+                *state = TypeSearchState::Unavailable;
                 (Vec::new(), false, None)
             }
         }
@@ -1669,7 +1690,7 @@ impl Searcher {
         let mut ranked = Vec::new();
         let mut warming = false;
         let mut structural_type_fallback = false;
-        let loogle_started = Instant::now();
+        let type_search_started = Instant::now();
         if type_search {
             let explicit_conclusion = conclusion_query(query);
             let applicability_query = if explicit_conclusion {
@@ -1678,7 +1699,7 @@ impl Searcher {
                 format!("⊢ {query}")
             };
             let (applicable_hits, applicable_warming, applicable_error) =
-                self.loogle_hits(workspace, &applicability_query, !strict_type);
+                self.type_search_hits(workspace, &applicability_query, !strict_type);
             if strict_type
                 && let Some(error) = applicable_error
             {
@@ -1690,29 +1711,29 @@ impl Searcher {
             }
             warming |= applicable_warming;
             let has_full_applicability_page = applicable_hits.len() >= RESULT_LIMIT;
-            let applicable = self.ranked_loogle_hits(
+            let applicable = self.ranked_type_search_hits(
                 applicable_hits,
                 scopes,
                 workspace,
                 true,
-                SEARCH_TUNING.type_score.loogle_applicable,
+                SEARCH_TUNING.type_score.type_query_applicable,
             )?;
             ranked.extend(applicable);
             if !strict_type && !explicit_conclusion && !has_full_applicability_page {
-                let (loogle_hits, is_warming, _) =
-                    self.loogle_hits(workspace, query, !strict_type);
+                let (type_search_hits, is_warming, _) =
+                    self.type_search_hits(workspace, query, !strict_type);
                 warming |= is_warming;
-                let loogle = self.ranked_loogle_hits(
-                    loogle_hits,
+                let type_search = self.ranked_type_search_hits(
+                    type_search_hits,
                     scopes,
                     workspace,
                     false,
-                    SEARCH_TUNING.type_score.loogle_related,
+                    SEARCH_TUNING.type_score.type_query_related,
                 )?;
-                ranked.extend(loogle);
+                ranked.extend(type_search);
             }
         }
-        let loogle_ms = loogle_started.elapsed().as_millis() as u64;
+        let type_search_ms = type_search_started.elapsed().as_millis() as u64;
         let ranking_started = Instant::now();
         for row in rows.into_iter().filter(|row| scopes.contains(&row.owner)) {
             let type_score = if type_search {
@@ -1888,7 +1909,7 @@ impl Searcher {
         let finish_ms = finish_started.elapsed().as_millis() as u64;
         let accounted_ms = import_ms
             + candidates_ms
-            + loogle_ms
+            + type_search_ms
             + ranking_ms
             + project_ms
             + fallback_ms
@@ -1903,7 +1924,7 @@ impl Searcher {
             && let Ok(store) = TelemetryStore::global()
         {
             let detail = format!(
-                "import={import_ms}ms candidates={candidates_ms}ms loogle={loogle_ms}ms rank={ranking_ms}ms project={project_ms}ms fallback={fallback_ms}ms used={fallback_used} top={fallback_top} unique_top={fallback_unique_top} finish={finish_ms}ms other={unaccounted_ms}ms hits={}",
+                "import={import_ms}ms candidates={candidates_ms}ms type_search={type_search_ms}ms rank={ranking_ms}ms project={project_ms}ms fallback={fallback_ms}ms used={fallback_used} top={fallback_top} unique_top={fallback_unique_top} finish={finish_ms}ms other={unaccounted_ms}ms hits={}",
                 result.hits.len(),
             );
             let _ = store.record_operation(
@@ -1922,9 +1943,9 @@ impl Searcher {
         Ok(result)
     }
 
-    fn ranked_loogle_hits(
+    fn ranked_type_search_hits(
         &self,
-        hits: Vec<LoogleHit>,
+        hits: Vec<TypeSearchHit>,
         scopes: &HashSet<String>,
         workspace: &Workspace,
         applicable: bool,
@@ -1933,10 +1954,11 @@ impl Searcher {
         hits.into_iter()
             .enumerate()
             .map(|(position, hit)| {
+                let module = hit.module.unwrap_or_default();
                 let usages = self.usages(&hit.name, scopes, workspace)?;
                 Ok(Candidate {
                     hit: SearchHit {
-                        path: format!("{}.lean", hit.module.replace('.', "/")),
+                        path: format!("{}.lean", module.replace('.', "/")),
                         line: 1,
                         kind: "declaration".into(),
                         signature: nonempty(hit.signature),
@@ -1944,12 +1966,12 @@ impl Searcher {
                         source: None,
                         usages,
                         name: hit.name,
-                        module: hit.module,
+                        module,
                         applicable,
                         required_import: None,
                     },
                     score: base_score - position as f64,
-                    origins: CandidateOrigin::Loogle as u8,
+                    origins: CandidateOrigin::TypeSearch as u8,
                 })
             })
             .collect()
@@ -2088,7 +2110,7 @@ impl Searcher {
             }
         }
         let name_pattern = format!("\"{}\"", query.replace('"', "\\\""));
-        let (mut hits, warming, _) = self.loogle_exact_name_hits(workspace, &name_pattern);
+        let (mut hits, warming, _) = self.type_search_exact_name_hits(workspace, &name_pattern);
         let positions = hits
             .iter()
             .enumerate()
@@ -2099,10 +2121,11 @@ impl Searcher {
             return Ok(None);
         };
         let hit = hits.remove(*position);
+        let module = hit.module.unwrap_or_default();
         Ok(Some(ExactMatch {
             candidate: Candidate {
                 hit: SearchHit {
-                    path: format!("{}.lean", hit.module.replace('.', "/")),
+                    path: format!("{}.lean", module.replace('.', "/")),
                     line: 1,
                     kind: "declaration".into(),
                     signature: nonempty(hit.signature),
@@ -2110,12 +2133,12 @@ impl Searcher {
                     source: None,
                     usages: Vec::new(),
                     name: hit.name,
-                    module: hit.module,
+                    module,
                     applicable: false,
                     required_import: None,
                 },
                 score: SEARCH_TUNING.lexical.exact_resolution,
-                origins: CandidateOrigin::Loogle as u8,
+                origins: CandidateOrigin::TypeSearch as u8,
             },
             matched: query.to_owned(),
             warming,
@@ -2742,12 +2765,12 @@ impl Searcher {
     }
 }
 
-fn indexed_loogle_identifier(
+fn indexed_unknown_type_identifier(
     error: &str,
     rows: &[IndexedRow],
     scopes: &HashSet<String>,
 ) -> bool {
-    let Some(identifier) = loogle_unknown_identifier(error) else {
+    let Some(identifier) = unknown_type_identifier(error) else {
         return false;
     };
     rows.iter().any(|row| {
@@ -2763,7 +2786,7 @@ fn indexed_type_fallback(
     rows: &[IndexedRow],
     scopes: &HashSet<String>,
 ) -> bool {
-    indexed_loogle_identifier(error, rows, scopes)
+    indexed_unknown_type_identifier(error, rows, scopes)
         || (error.contains("placeholder `_` cannot be used where a function is expected")
             && rows.iter().any(|row| {
                 scopes.contains(&row.owner)
@@ -2771,7 +2794,7 @@ fn indexed_type_fallback(
             }))
 }
 
-fn loogle_unknown_identifier(error: &str) -> Option<&str> {
+fn unknown_type_identifier(error: &str) -> Option<&str> {
     error
         .split_once("Unknown identifier `")
         .and_then(|(_, rest)| rest.split_once('`'))
@@ -2920,88 +2943,33 @@ impl Searcher {
     }
 }
 
-const LOOGLE_FILES: &[(&str, &str)] = &[
-    (
-        "Loogle/BaseIOThunk.lean",
-        include_str!("../lean/loogle/Loogle/BaseIOThunk.lean"),
-    ),
-    (
-        "Loogle/BlackListed.lean",
-        include_str!("../lean/loogle/Loogle/BlackListed.lean"),
-    ),
-    (
-        "Loogle/Cache.lean",
-        include_str!("../lean/loogle/Loogle/Cache.lean"),
-    ),
-    (
-        "Loogle/NameRel.lean",
-        include_str!("../lean/loogle/Loogle/NameRel.lean"),
-    ),
-    (
-        "Loogle/TreeMap.lean",
-        include_str!("../lean/loogle/Loogle/TreeMap.lean"),
-    ),
-    (
-        "Loogle/Trie.lean",
-        include_str!("../lean/loogle/Loogle/Trie.lean"),
-    ),
-    (
-        "Loogle/Find.lean",
-        include_str!("../lean/loogle/Loogle/Find.lean"),
-    ),
-    (
-        "MathmuxLoogle.lean",
-        include_str!("../lean/loogle/MathmuxLoogle.lean"),
-    ),
-];
-
-impl LoogleWorker {
+impl TypeSearchWorker {
     fn start(repo: &Repo, workspace: &Path) -> Result<Self> {
-        let root = prepare_loogle(repo, workspace)?;
-        let lean_path = loogle_lean_path(repo, workspace, &root)?;
-        let runner = root.join("MathmuxLoogle.lean");
-        let index = root.join(format!("{}.index", mathlib_artifact_id(workspace)));
-        let mut command = lake_command(repo, workspace);
-        command
-            .args(["env", "lean"])
-            .arg("-R")
-            .arg(&root)
-            .arg("--run")
-            .arg(&runner)
-            .arg("Mathlib")
-            .arg(index)
-            .env("LEAN_PATH", lean_path)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::from(
-                fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&repo.log_path)?,
-            ));
-        command.process_group(0);
-        let mut child = command.spawn().context("cannot start Loogle worker")?;
-        let stdin = child.stdin.take().context("Loogle worker has no stdin")?;
-        let stdout = child.stdout.take().context("Loogle worker has no stdout")?;
-        let mut stdout = BufReader::new(stdout);
-        let ready = read_line_timeout(&mut stdout, std::time::Duration::from_secs(300));
-        let ready = match ready {
-            Ok(line) if line.contains("Mathmux Loogle is ready.") => line,
-            Ok(line) => {
-                kill_child_group(&mut child);
-                bail!("unexpected Loogle startup response: {}", clean_line(&line));
-            }
-            Err(error) => {
-                kill_child_group(&mut child);
-                return Err(error).context("Loogle startup failed");
-            }
-        };
-        drop(ready);
+        prepare_lean_service(repo, workspace)?;
+        let index_root = repo.state_dir.join("type-search-index");
+        fs::create_dir_all(&index_root)?;
+        let index = index_root.join(format!("{}.index", mathlib_artifact_id(workspace)));
+        let arguments = vec![
+            "type-search".to_owned(),
+            "Mathlib".to_owned(),
+            index.to_string_lossy().into_owned(),
+        ];
+        let mut process = LeanServiceProcess::start(repo, workspace, &arguments)
+            .context("cannot start type search service")?;
+        let ready = process
+            .read_ready(Duration::from_secs(15 * 60))
+            .context("type search service did not become ready")?;
+        ensure!(
+            ready.get("ok").and_then(Value::as_bool) == Some(true)
+                && ready.get("detail").and_then(Value::as_str) == Some("ready"),
+            "unexpected type search startup response: {}",
+            clean_line(&ready.to_string())
+        );
         Ok(Self {
-            child,
-            stdin,
-            stdout,
+            process,
+            version: 0,
             last_used: Instant::now(),
+            cache: HashMap::new(),
         })
     }
 
@@ -3009,159 +2977,61 @@ impl LoogleWorker {
         &mut self,
         query: &str,
         accept_suggestions: bool,
-    ) -> Result<(Vec<LoogleHit>, Option<String>)> {
+    ) -> Result<(Vec<TypeSearchHit>, Option<String>)> {
         self.last_used = Instant::now();
         let query = query.lines().collect::<Vec<_>>().join(" ");
+        let cache_key = (query.clone(), accept_suggestions);
+        if let Some(result) = self.cache.get(&cache_key) {
+            return Ok(result.clone());
+        }
         let mut value = self.query_value(&query)?;
         if accept_suggestions
-            && value.get("error").is_some()
-            && let Some(suggestion) = value
-                .get("suggestions")
-                .and_then(Value::as_array)
-                .and_then(|suggestions| suggestions.first())
-                .and_then(Value::as_str)
-            && suggestion != query
+            && !value.ok
+            && let Some(suggestion) = value.suggestions.first()
+            && suggestion.as_str() != query
         {
             value = self.query_value(suggestion)?;
         }
-        if let Some(error) = value.get("error").and_then(Value::as_str) {
-            return Ok((Vec::new(), Some(error.to_owned())));
+        let result = if value.ok {
+            (value.hits, None)
+        } else {
+            (Vec::new(), Some(value.detail))
+        };
+        if self.cache.len() >= 64 {
+            self.cache.clear();
         }
-        let hits = value
-            .get("hits")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|hit| {
-                Some(LoogleHit {
-                    name: hit.get("name")?.as_str()?.to_owned(),
-                    signature: hit
-                        .get("type")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned(),
-                    module: hit
-                        .get("module")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned(),
-                    doc: hit.get("doc").and_then(Value::as_str).map(str::to_owned),
-                })
-            })
-            .collect();
-        Ok((hits, None))
+        self.cache.insert(cache_key, result.clone());
+        Ok(result)
     }
 
-    fn query_value(&mut self, query: &str) -> Result<Value> {
-        self.stdin.write_all(query.as_bytes())?;
-        self.stdin.write_all(b"\n")?;
-        self.stdin.flush()?;
-        let line = read_line_timeout(&mut self.stdout, std::time::Duration::from_secs(30))?;
-        serde_json::from_str(&line)
-            .with_context(|| format!("invalid Loogle response: {}", clean_line(&line)))
+    fn query_value(&mut self, query: &str) -> Result<TypeSearchResponse> {
+        self.version += 1;
+        let response: TypeSearchResponse = self
+            .process
+            .request(
+                &TypeSearchRequest {
+                    operation: "type_search",
+                    source: "",
+                    file_name: "",
+                    version: self.version,
+                    line: 0,
+                    column: 0,
+                    input: query,
+                },
+                Duration::from_secs(30),
+            )
+            .map_err(|error| anyhow::anyhow!(error))?;
+        ensure!(response.version == self.version, "stale type search response");
+        Ok(response)
     }
 
     fn alive(&mut self) -> bool {
-        matches!(self.child.try_wait(), Ok(None))
+        self.process.alive()
     }
 
     fn rss_kib(&self) -> Option<u64> {
-        fs::read_to_string(format!("/proc/{}/status", self.child.id()))
-            .ok()?
-            .lines()
-            .find_map(|line| line.strip_prefix("VmRSS:"))?
-            .split_whitespace()
-            .next()?
-            .parse()
-            .ok()
+        self.process.rss_kib()
     }
-}
-
-impl Drop for LoogleWorker {
-    fn drop(&mut self) {
-        kill_child_group(&mut self.child);
-    }
-}
-
-fn prepare_loogle(repo: &Repo, workspace: &Path) -> Result<PathBuf> {
-    let toolchain = fs::read_to_string(workspace.join("lean-toolchain")).unwrap_or_default();
-    let mut material = toolchain.into_bytes();
-    for (_, source) in LOOGLE_FILES {
-        material.extend_from_slice(source.as_bytes());
-    }
-    let fingerprint = hash_bytes(&material);
-    let root = repo.state_dir.join("loogle").join(&fingerprint[..16]);
-    let marker = root.join("built");
-    if fs::read_to_string(&marker).ok().as_deref() == Some(fingerprint.as_str()) {
-        return Ok(root);
-    }
-    for (relative, source) in LOOGLE_FILES {
-        let path = root.join(relative);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(path, source)?;
-    }
-    let order = [
-        "Loogle/BaseIOThunk.lean",
-        "Loogle/BlackListed.lean",
-        "Loogle/Cache.lean",
-        "Loogle/NameRel.lean",
-        "Loogle/TreeMap.lean",
-        "Loogle/Trie.lean",
-        "Loogle/Find.lean",
-        "MathmuxLoogle.lean",
-    ];
-    let lean_path = loogle_lean_path(repo, workspace, &root)?;
-    for relative in order {
-        let source = root.join(relative);
-        let output = source.with_extension("olean");
-        let result = std::process::Command::new("timeout")
-            .args(["--signal=KILL", "180s"])
-            .arg(lake_executable())
-            .args(["env", "lean"])
-            .arg("-R")
-            .arg(&root)
-            .arg("-o")
-            .arg(&output)
-            .arg(&source)
-            .current_dir(workspace)
-            .env("LAKE_ARTIFACT_CACHE", "true")
-            .env("LAKE_CACHE_DIR", &repo.cache_dir)
-            .env("LEAN_PATH", &lean_path)
-            .stdin(Stdio::null())
-            .output()
-            .with_context(|| format!("cannot compile bundled Loogle module {relative}"))?;
-        if !result.status.success() {
-            let detail = if result.stderr.is_empty() {
-                String::from_utf8_lossy(&result.stdout)
-            } else {
-                String::from_utf8_lossy(&result.stderr)
-            };
-            bail!(
-                "cannot compile bundled Loogle module {relative}: {}",
-                detail.trim()
-            );
-        }
-    }
-    fs::write(marker, &fingerprint)?;
-    Ok(root)
-}
-
-fn loogle_lean_path(repo: &Repo, workspace: &Path, root: &Path) -> Result<String> {
-    let output = lake_command(repo, workspace)
-        .args(["env", "printenv", "LEAN_PATH"])
-        .output()
-        .context("cannot read the Lake search path")?;
-    ensure!(
-        output.status.success(),
-        "Lake did not provide a Lean search path"
-    );
-    Ok(format!(
-        "{}:{}",
-        root.display(),
-        String::from_utf8_lossy(&output.stdout).trim()
-    ))
 }
 
 fn mathlib_artifact_id(workspace: &Path) -> String {
@@ -3186,37 +3056,6 @@ fn base_input_id(workspace: &Path) -> String {
 
 fn dependency_sources_missing(workspace: &Path) -> bool {
     workspace.join("lake-manifest.json").is_file() && !workspace.join(".lake/packages").is_dir()
-}
-
-fn read_line_timeout(
-    reader: &mut BufReader<ChildStdout>,
-    timeout: std::time::Duration,
-) -> Result<String> {
-    let mut descriptor = libc::pollfd {
-        fd: reader.get_ref().as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    let milliseconds = timeout.as_millis().min(i32::MAX as u128) as i32;
-    let ready = unsafe { libc::poll(&mut descriptor, 1, milliseconds) };
-    if ready == 0 {
-        bail!("Loogle response timed out");
-    }
-    if ready < 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    let mut line = String::new();
-    let bytes = reader.read_line(&mut line)?;
-    ensure!(bytes > 0, "Loogle worker exited");
-    Ok(line)
-}
-
-fn kill_child_group(child: &mut Child) {
-    let pid = child.id() as i32;
-    unsafe {
-        libc::kill(-pid, libc::SIGTERM);
-    }
-    let _ = child.wait();
 }
 
 fn append_log(repo: &Repo, detail: &str) {

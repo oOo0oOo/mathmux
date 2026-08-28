@@ -14,7 +14,7 @@ pub(super) struct SearchTuning {
     pub(super) lexical: LexicalTuning,
     /// Namespace/member and qualified-path affinity.
     pub(super) qualified: QualifiedTuning,
-    /// Structural type and Loogle source calibration.
+    /// Structural type and type-search source calibration.
     pub(super) type_score: TypeScoreTuning,
     /// Dirty-project and bounded source-fallback calibration.
     pub(super) source: SourceTuning,
@@ -91,8 +91,8 @@ pub(super) struct TypeScoreTuning {
     pub(super) exact_arrows: f64,
     pub(super) compatible_arrows: f64,
     pub(super) token: f64,
-    pub(super) loogle_applicable: f64,
-    pub(super) loogle_related: f64,
+    pub(super) type_query_applicable: f64,
+    pub(super) type_query_related: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -192,8 +192,8 @@ pub(super) const SEARCH_TUNING: SearchTuning = SearchTuning {
         exact_arrows: 24.0,
         compatible_arrows: 10.0,
         token: 5.0,
-        loogle_applicable: 280.0,
-        loogle_related: 180.0,
+        type_query_applicable: 280.0,
+        type_query_related: 180.0,
     },
     source: SourceTuning {
         dirty_base: 320.0,

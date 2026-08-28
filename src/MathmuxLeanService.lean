@@ -2,8 +2,11 @@ import Lean.Language.Lean
 import Lean.Setup
 import Lean.Server.InfoUtils
 import Lean.Elab.Tactic
+import Loogle.Find
 
 open Lean Lean.Elab
+open Lean.Core Lean.Meta Lean.Elab Lean.Elab.Term
+open Loogle
 
 structure Request where
   operation : String
@@ -21,6 +24,16 @@ structure Diagnostic where
   text : String
 deriving ToJson
 
+def deduplicateDiagnostics (diagnostics : Array Diagnostic) : Array Diagnostic := Id.run do
+  let mut seen : Std.HashSet String := {}
+  let mut unique := #[]
+  for diagnostic in diagnostics do
+    let key := diagnostic.severity ++ "\u0000" ++ diagnostic.kind ++ "\u0000" ++ diagnostic.text
+    if !seen.contains key then
+      seen := seen.insert key
+      unique := unique.push diagnostic
+  return unique
+
 structure ProfileEntry where
   line : Nat
   column : Nat
@@ -29,11 +42,21 @@ structure ProfileEntry where
   duration_ms : Float
 deriving ToJson
 
+structure TypeSearchHit where
+  name : String
+  type : String
+  module : Option String := none
+  doc : Option String := none
+deriving ToJson
+
 structure Response where
   ok : Bool
   diagnostics : Array Diagnostic
   profile : Array ProfileEntry := #[]
   detail : String := ""
+  count : Nat := 0
+  hits : Array TypeSearchHit := #[]
+  suggestions : Array String := #[]
   version : Nat
 deriving ToJson
 
@@ -331,7 +354,7 @@ def processSnapshot (snapshot : Language.Lean.InitialSnapshot) (version : Nat)
   let (failed, commandMessages, profileEntries) ←
     firstErrorOrFinal processed.firstCmdSnap snapshot.ictx.fileMap profile
   let messages ← if failed then pure commandMessages else collectTree (Language.toSnapshotTree snapshot)
-  let diagnostics ← renderMessages messages
+  let diagnostics := deduplicateDiagnostics (← renderMessages messages)
   return { ok := !messages.hasErrors, diagnostics, profile := profileEntries, version := version }
 
 where
@@ -370,7 +393,9 @@ unsafe def runServer (setup : ModuleSetup) (profile : Bool) : IO Unit := do
         fresh input
       else
         processor input
-      let response ← if request.operation == "check" then
+      let response ← if request.operation ∉ ["check", "goal", "tactic", "term", "synth", "reduce"] then
+        pure (probeFailure s!"unknown file operation: {request.operation}" request.version)
+      else if request.operation == "check" then
         processSnapshot snapshot request.version profile
       else if request.line > 0 then
         runLocalProbe snapshot request
@@ -391,9 +416,112 @@ unsafe def runServer (setup : ModuleSetup) (profile : Bool) : IO Unit := do
       loop
   loop
 
+def parseTypeSearchQuery (env : Environment) (input : String) : Except String Syntax :=
+  let parser := Parser.andthenFn Parser.whitespace (Parser.evalParserConst `Loogle.Find.find_filters)
+  let context := Parser.mkInputContext input "<mathmux-type-search>"
+  let state := parser.run context { env, options := {} } (Parser.getTokenTable env)
+    (Parser.mkParserState input)
+  if state.hasError then
+    .error (state.toErrorMsg context)
+  else if state.pos.atEnd input then
+    .ok state.stxStack.back
+  else
+    .error ((state.mkError "end of input").toErrorMsg context)
+
+open PrettyPrinter in
+def typeSearchSignature (name : Name) : MetaM String := withCurrHeartbeats do
+  let expression ← mkConstWithLevelParams name
+  let (stx, _) ← delabCore expression (delab := Delaborator.delabConstWithSignature)
+  let stx : Syntax := stx
+  return (← ppTerm ⟨stx[1]!⟩).pretty (width := 10000)
+
+abbrev TypeSearchQueryResult := Except String Find.Result × Array String
+
+def runTypeSearchQuery (index : Find.Index) (request : Request) : CoreM Response :=
+    withCurrHeartbeats do
+  let (result, suggestions) : TypeSearchQueryResult ← tryCatchRuntimeEx
+    (handler := fun error => do
+      return (.error (← error.toMessageData.toString), #[])) do
+      match parseTypeSearchQuery (← getEnv) request.input with
+      | .error error => pure (.error error, #[])
+      | .ok stx => MetaM.run' do
+        match ← TermElabM.run' <| Find.find index (.mk stx) with
+        | .ok result =>
+          let suggestions ← result.suggestions.mapM fun suggestion => do
+            return (← PrettyPrinter.ppCategory ``Find.find_filters suggestion).pretty
+              (width := 10000)
+          pure (.ok result, suggestions)
+        | .error error =>
+          let suggestions ← error.suggestions.mapM fun suggestion => do
+            return (← PrettyPrinter.ppCategory ``Find.find_filters suggestion).pretty
+              (width := 10000)
+          pure (.error (← error.message.toString), suggestions)
+  match result with
+  | .error error =>
+    return {
+      ok := false
+      diagnostics := #[]
+      detail := error
+      suggestions
+      version := request.version
+    }
+  | .ok result =>
+    let hits ← result.hits.take 24 |>.mapM fun (info, module?) => do
+      let type ← (typeSearchSignature info.name).run'
+      let doc ← findDocString? (← getEnv) info.name false
+      return {
+        name := info.name.toString
+        type
+        module := module?.map (·.toString)
+        doc
+      }
+    return {
+      ok := true
+      diagnostics := #[]
+      count := result.count
+      hits
+      suggestions
+      version := request.version
+    }
+
+unsafe def runTypeSearchServer (module : Name) (indexPath : System.FilePath) : IO Unit := do
+  enableInitializersExecution
+  let environment ← importModules (loadExts := true)
+    #[{module}, {module := `Loogle.Find}] {}
+  let context := { fileName := "/", fileMap := Inhabited.default }
+  let state := { env := environment }
+  let action : CoreM Unit := do
+    let index ← if ← indexPath.pathExists then
+      let (cache, _) ← unpickle _ indexPath
+      Find.Index.mkFromCache cache
+    else
+      Find.Index.mk
+    let _ ← index.1.cache.get.run'
+    let _ ← index.2.cache.get.run'
+    unless ← indexPath.pathExists do
+      pickle indexPath (← index.getCache)
+    writeResponse {ok := true, diagnostics := #[], detail := "ready", version := 0}
+    let stdin ← IO.getStdin
+    while true do
+      let line ← stdin.getLine
+      if line.isEmpty then break
+      if !line.trimAscii.isEmpty then
+        let response ← match Json.parse line >>= fromJson? with
+          | .error error => pure (failureResponse error 0)
+          | .ok (request : Request) =>
+            if request.operation == "type_search" then
+              runTypeSearchQuery index request
+            else
+              pure (probeFailure s!"unknown type-search operation: {request.operation}" request.version)
+        writeResponse response
+  let (_, _) ← action.toIO context state
+
 unsafe def main (args : List String) : IO UInt32 := do
   initSearchPath (← findSysroot)
   match args with
-  | [setupPath] => runServer (← ModuleSetup.load setupPath) false; return 0
-  | [setupPath, "--profile"] => runServer (← ModuleSetup.load setupPath) true; return 0
-  | _ => IO.eprintln "usage: MathmuxWorker SETUP_JSON [--profile]"; return 2
+  | ["file", setupPath] => runServer (← ModuleSetup.load setupPath) false; return 0
+  | ["file", setupPath, "--profile"] => runServer (← ModuleSetup.load setupPath) true; return 0
+  | ["type-search", module, indexPath] => runTypeSearchServer module.toName indexPath; return 0
+  | _ =>
+    IO.eprintln "usage: MathmuxLeanService (file SETUP_JSON [--profile] | type-search MODULE INDEX)"
+    return 2

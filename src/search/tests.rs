@@ -287,10 +287,10 @@ fn query_parsing_scoring_and_ranking_regressions() {
         0.0
     );
     assert_eq!(
-        loogle_unknown_identifier("Unknown identifier `ComplexVectorBundle.Isomorphic`"),
+        unknown_type_identifier("Unknown identifier `ComplexVectorBundle.Isomorphic`"),
         Some("ComplexVectorBundle.Isomorphic")
     );
-    assert_eq!(loogle_unknown_identifier("unexpected token"), None);
+    assert_eq!(unknown_type_identifier("unexpected token"), None);
     let indexed_homotopy = IndexedRow {
         owner: "workspace:w1".into(),
         path: "Demo.lean".into(),
@@ -309,7 +309,7 @@ fn query_parsing_scoring_and_ranking_regressions() {
         std::slice::from_ref(&indexed_homotopy),
         &HashSet::from(["workspace:w1".into()]),
     ));
-    assert!(indexed_loogle_identifier(
+    assert!(indexed_unknown_type_identifier(
         "Unknown identifier `homotopy`",
         &[indexed_homotopy],
         &HashSet::from(["workspace:w1".into()]),
