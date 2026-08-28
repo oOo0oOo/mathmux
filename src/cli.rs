@@ -31,6 +31,7 @@ const WORKFLOW_HELP: &str = r#"AGENT CONTRACT
   safety    sorry is tracked; new axioms fail validation. Never edit .lake/generated artifacts."#;
 
 const SEARCH_HELP: &str = r#"SEARCH — find or read unknown things; returns qREF
+FORMS — type one directly; declaration/type/source/compose are labels, not keywords
   declaration  NAME | NAME* | KIND NAME [source|body|proof]
                name:NAME | name:A|B|C
   type/concept TYPE_OR_CONCEPT_TERMS | type:LEAN_TYPE
@@ -840,6 +841,7 @@ mod tests {
             "outline|declarations|imports|dependents",
             "PATH /REGEX/",
             "name:A|B|C",
+            "source/compose are labels, not keywords",
             "sREF requires TERMS",
             "Source facets follow a space, not a colon.",
             "--limit",
