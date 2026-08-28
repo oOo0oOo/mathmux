@@ -586,11 +586,18 @@ impl Searcher {
                 missing.push(name.clone());
             }
         }
+        let note = (!missing.is_empty()).then(|| {
+            let missing = format!("not found: {}", missing.join(", "));
+            if warming {
+                format!("{missing}; search indexes warming")
+            } else {
+                missing
+            }
+        });
         Ok(SearchResult {
             hits,
             inference: "exact-batch".into(),
-            note: (!missing.is_empty()).then(|| format!("not found: {}", missing.join(", ")))
-                .or_else(|| warming.then(|| "search indexes warming".into())),
+            note,
             ok: missing.is_empty(),
         })
     }
