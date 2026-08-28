@@ -254,6 +254,17 @@ fn query_parsing_scoring_and_ranking_regressions() {
     assert!(structural_type_score("_ → Injective _", "Bijective f → Injective f") > 0.0);
     assert!(
         structural_type_score(
+            "ComplexVectorBundle.Isomorphic _ _",
+            "(V W : ComplexVectorBundle B) : Isomorphic V W",
+        ) > 0.0
+    );
+    assert_eq!(
+        loogle_unknown_identifier("Unknown identifier `ComplexVectorBundle.Isomorphic`"),
+        Some("ComplexVectorBundle.Isomorphic")
+    );
+    assert_eq!(loogle_unknown_identifier("unexpected token"), None);
+    assert!(
+        structural_type_score(
             "⊢ Continuous (_ ∘ _)",
             "{f : X → Y} {g : Y → Z} (hf : Continuous f) (hg : Continuous g) : Continuous (g ∘ f)",
         ) > structural_type_score(

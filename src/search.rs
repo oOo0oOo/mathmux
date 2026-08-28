@@ -1678,7 +1678,10 @@ impl Searcher {
             };
             let (applicable_hits, applicable_warming, applicable_error) =
                 self.loogle_hits(workspace, &applicability_query, !strict_type);
-            if strict_type && let Some(error) = applicable_error {
+            if strict_type
+                && let Some(error) = applicable_error
+                && !indexed_loogle_identifier(&error, &rows, scopes)
+            {
                 bail!("invalid type pattern: {}", clean_line(&error));
             }
             warming |= applicable_warming;
@@ -1694,7 +1697,10 @@ impl Searcher {
             if !explicit_conclusion && !has_full_applicability_page {
                 let (loogle_hits, is_warming, related_error) =
                     self.loogle_hits(workspace, query, !strict_type);
-                if strict_type && let Some(error) = related_error {
+                if strict_type
+                    && let Some(error) = related_error
+                    && !indexed_loogle_identifier(&error, &rows, scopes)
+                {
                     bail!("invalid type pattern: {}", clean_line(&error));
                 }
                 warming |= is_warming;
@@ -2711,6 +2717,27 @@ impl Searcher {
         }
         Ok(usages)
     }
+}
+
+fn indexed_loogle_identifier(
+    error: &str,
+    rows: &[IndexedRow],
+    scopes: &HashSet<String>,
+) -> bool {
+    let Some(identifier) = loogle_unknown_identifier(error) else {
+        return false;
+    };
+    identifier.contains('.')
+        && rows.iter().any(|row| {
+            scopes.contains(&row.owner) && qualified_name_matches(&row.name, identifier)
+        })
+}
+
+fn loogle_unknown_identifier(error: &str) -> Option<&str> {
+    error
+        .split_once("Unknown identifier `")
+        .and_then(|(_, rest)| rest.split_once('`'))
+        .map(|(identifier, _)| identifier)
 }
 
 fn search_index_writer_lock(repo: &Repo) -> Result<fs::File> {

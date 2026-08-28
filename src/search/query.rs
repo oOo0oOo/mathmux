@@ -1562,6 +1562,7 @@ pub(super) fn structural_type_score(pattern: &str, signature: &str) -> f64 {
     let pattern_tokens = query_tokens(pattern)
         .into_iter()
         .filter(|token| token != "_")
+        .map(|token| token.rsplit('.').next().unwrap_or(&token).to_owned())
         .collect::<Vec<_>>();
     let signature_lower = signature.to_lowercase();
     if !pattern_tokens
