@@ -12,9 +12,7 @@ use fs2::FileExt;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use crate::coordination::{
-    SHARED_WAIT_TIMEOUT, lock_exclusive_until, lock_mutex_until, lock_shared_until, open_lock,
-};
+use crate::coordination::{SHARED_WAIT_TIMEOUT, lock_exclusive_until, lock_mutex_until, open_lock};
 use crate::git::{dirty_lean_files, lake_command, merge_in_progress, project_lean_files};
 use crate::issue::{TelemetryOperation, TelemetryStore};
 use crate::lean_service::{LeanServiceProcess, ServiceRequestError, reap_stale_processes};
@@ -1222,12 +1220,6 @@ impl Checker {
             materialize_setup(&shared, &path, input_fingerprint)?;
             return Ok(path);
         }
-        let validation_lock = open_lock(&self.repo.validation_lock)?;
-        // setup-file may build imported project modules, so do not let it race
-        // validation's exclusive mutation of the same workspace artifacts.
-        lock_shared_until(&validation_lock, SHARED_WAIT_TIMEOUT).context(
-            "validation is still using workspace artifacts after 30 seconds; retry after it finishes",
-        )?;
         let output = lake_command(&self.repo, &workspace.path)
             .arg("setup-file")
             .arg(target)

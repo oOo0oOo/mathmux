@@ -37,32 +37,9 @@ pub(crate) fn lock_mutex_until<'a, T>(
 }
 
 pub(crate) fn lock_exclusive_until(file: &File, timeout: Duration) -> Result<()> {
-    lock_file_until(file, timeout, FileLockMode::Exclusive)
-}
-
-pub(crate) fn lock_exclusive(file: &File) -> Result<()> {
-    FileExt::lock_exclusive(file)?;
-    Ok(())
-}
-
-pub(crate) fn lock_shared_until(file: &File, timeout: Duration) -> Result<()> {
-    lock_file_until(file, timeout, FileLockMode::Shared)
-}
-
-#[derive(Clone, Copy)]
-enum FileLockMode {
-    Exclusive,
-    Shared,
-}
-
-fn lock_file_until(file: &File, timeout: Duration, mode: FileLockMode) -> Result<()> {
     let deadline = Instant::now() + timeout;
     loop {
-        let result = match mode {
-            FileLockMode::Exclusive => FileExt::try_lock_exclusive(file),
-            FileLockMode::Shared => FileExt::try_lock_shared(file),
-        };
-        match result {
+        match FileExt::try_lock_exclusive(file) {
             Ok(()) => return Ok(()),
             Err(error)
                 if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline =>
@@ -75,6 +52,11 @@ fn lock_file_until(file: &File, timeout: Duration, mode: FileLockMode) -> Result
             Err(error) => return Err(error.into()),
         }
     }
+}
+
+pub(crate) fn lock_exclusive(file: &File) -> Result<()> {
+    FileExt::lock_exclusive(file)?;
+    Ok(())
 }
 
 fn pause(timeout: Duration) {
