@@ -6,7 +6,6 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use fs2::FileExt;
 
-pub(crate) const SHARED_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 pub(crate) fn open_lock(path: &Path) -> Result<File> {

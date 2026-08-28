@@ -12,7 +12,7 @@ use fs2::FileExt;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use crate::coordination::{SHARED_WAIT_TIMEOUT, lock_exclusive_until, lock_mutex_until, open_lock};
+use crate::coordination::{lock_exclusive_until, lock_mutex_until, open_lock};
 use crate::git::{dirty_lean_files, lake_command, merge_in_progress, project_lean_files};
 use crate::issue::{TelemetryOperation, TelemetryStore};
 use crate::lean_service::{LeanServiceProcess, ServiceRequestError, reap_stale_processes};
@@ -30,6 +30,7 @@ use diagnostics::{attach_source_context, deduplicate, partition_diagnostics};
 
 const CHECK_RESULT_VERSION: &[u8] = b"check-result-v2";
 const CHECK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const CHECK_QUEUE_TIMEOUT: Duration = CHECK_TIMEOUT;
 const COLD_PROBE_TIMEOUT: Duration = Duration::from_secs(16);
 const SLOW_CHECK_PROFILE_MS: u64 = 5_000;
 const PROFILE_ENTRY_LIMIT: usize = 512;
@@ -460,9 +461,9 @@ impl Checker {
             Ok(guard) => guard,
             Err(TryLockError::WouldBlock) => {
                 report(&format!("waiting for shared check of {}", target.display()));
-                lock_mutex_until(&check_lock, SHARED_WAIT_TIMEOUT).with_context(|| {
+                lock_mutex_until(&check_lock, CHECK_QUEUE_TIMEOUT).with_context(|| {
                     format!(
-                        "shared check of {} is still running after 30 seconds; retry after it finishes",
+                        "shared check of {} is still running after five minutes; retry after it finishes",
                         target.display()
                     )
                 })?
@@ -479,9 +480,9 @@ impl Checker {
         if let Err(error) = process_lock.try_lock_exclusive() {
             if error.kind() == std::io::ErrorKind::WouldBlock {
                 report(&format!("waiting for shared check of {}", target.display()));
-                lock_exclusive_until(&process_lock, SHARED_WAIT_TIMEOUT).with_context(|| {
+                lock_exclusive_until(&process_lock, CHECK_QUEUE_TIMEOUT).with_context(|| {
                     format!(
-                        "shared check of {} is still running after 30 seconds; retry after it finishes",
+                        "shared check of {} is still running after five minutes; retry after it finishes",
                         target.display()
                     )
                 })?;
@@ -1201,8 +1202,8 @@ impl Checker {
         let _build_guard = build_lock
             .as_ref()
             .map(|lock| {
-                lock_mutex_until(lock, SHARED_WAIT_TIMEOUT).context(
-                    "workspace import preparation is still running after 30 seconds; retry after it finishes",
+                lock_mutex_until(lock, CHECK_QUEUE_TIMEOUT).context(
+                    "workspace import preparation is still running after five minutes; retry after it finishes",
                 )
             })
             .transpose()?;
@@ -1213,8 +1214,8 @@ impl Checker {
         let shared = self.shared_setup_path(target, input_fingerprint);
         fs::create_dir_all(shared.parent().expect("shared setup has a parent"))?;
         let shared_lock = open_lock(&shared.with_extension("lock"))?;
-        lock_exclusive_until(&shared_lock, SHARED_WAIT_TIMEOUT).context(
-            "shared import preparation is still running after 30 seconds; retry after it finishes",
+        lock_exclusive_until(&shared_lock, CHECK_QUEUE_TIMEOUT).context(
+            "shared import preparation is still running after five minutes; retry after it finishes",
         )?;
         if setup_is_usable(&shared, input_fingerprint) {
             materialize_setup(&shared, &path, input_fingerprint)?;
