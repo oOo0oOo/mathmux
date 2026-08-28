@@ -104,6 +104,7 @@ struct WorkerRequest<'a> {
     line: u64,
     column: u64,
     input: &'a str,
+    names: &'a [String],
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1624,6 +1625,7 @@ impl LeanWorker {
                 line: action.line,
                 column: action.column,
                 input: action.input,
+                names: &[],
             },
             timeout,
         );
@@ -2728,6 +2730,22 @@ noncomputable def second : Nat := 2
             profile_declaration_near(&lines, 6),
             Some((7, "def", "second"))
         );
+    }
+
+    #[test]
+    fn worker_request_matches_unified_lean_schema() {
+        let request = WorkerRequest {
+            operation: "check",
+            source: "",
+            file_name: "Demo.lean",
+            version: 1,
+            line: 0,
+            column: 0,
+            input: "",
+            names: &[],
+        };
+        let value = serde_json::to_value(request).unwrap();
+        assert_eq!(value["names"], serde_json::json!([]));
     }
 
     #[test]
