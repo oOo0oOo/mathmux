@@ -2,11 +2,9 @@ import Lean.Language.Lean
 import Lean.Setup
 import Lean.Server.InfoUtils
 import Lean.Elab.Tactic
-import Loogle.Find
 
 open Lean Lean.Elab
 open Lean.Core Lean.Meta Lean.Elab Lean.Elab.Term
-open Loogle
 
 structure Request where
   operation : String
@@ -16,6 +14,7 @@ structure Request where
   line : Nat := 0
   column : Nat := 0
   input : String := ""
+  names : Array String := #[]
 deriving FromJson
 
 structure Diagnostic where
@@ -56,7 +55,8 @@ structure Response where
   detail : String := ""
   count : Nat := 0
   hits : Array TypeSearchHit := #[]
-  suggestions : Array String := #[]
+  anchors : Array String := #[]
+  names : Array String := #[]
   version : Nat
 deriving ToJson
 
@@ -416,18 +416,6 @@ unsafe def runServer (setup : ModuleSetup) (profile : Bool) : IO Unit := do
       loop
   loop
 
-def parseTypeSearchQuery (env : Environment) (input : String) : Except String Syntax :=
-  let parser := Parser.andthenFn Parser.whitespace (Parser.evalParserConst `Loogle.Find.find_filters)
-  let context := Parser.mkInputContext input "<mathmux-type-search>"
-  let state := parser.run context { env, options := {} } (Parser.getTokenTable env)
-    (Parser.mkParserState input)
-  if state.hasError then
-    .error (state.toErrorMsg context)
-  else if state.pos.atEnd input then
-    .ok state.stxStack.back
-  else
-    .error ((state.mkError "end of input").toErrorMsg context)
-
 open PrettyPrinter in
 def typeSearchSignature (name : Name) : MetaM String := withCurrHeartbeats do
   let expression ← mkConstWithLevelParams name
@@ -435,93 +423,120 @@ def typeSearchSignature (name : Name) : MetaM String := withCurrHeartbeats do
   let stx : Syntax := stx
   return (← ppTerm ⟨stx[1]!⟩).pretty (width := 10000)
 
-abbrev TypeSearchQueryResult := Except String Find.Result × Array String
+structure MathmuxTypePattern where
+  conclusion : Bool
+  value : AbstractMVarsResult
+  anchors : Array Name
+  needles : Array Name
 
-def runTypeSearchQuery (index : Find.Index) (request : Request) : CoreM Response :=
-    withCurrHeartbeats do
-  let (result, suggestions) : TypeSearchQueryResult ← tryCatchRuntimeEx
+def parseMathmuxTypePattern (env : Environment) (input : String) : Except String (Bool × Syntax) := do
+  let input := input.trimAscii.toString
+  let conclusion := input.startsWith "⊢" || input.startsWith "|-"
+  let input := if input.startsWith "⊢" then
+      (input.drop 1).trimAscii.toString
+    else if input.startsWith "|-" then
+      (input.drop 2).trimAscii.toString
+    else
+      input
+  if input.isEmpty then throw "empty type pattern"
+  return (conclusion, ← Parser.runParserCategory env `term input "<mathmux-type-search>")
+
+def elaborateMathmuxTypePattern (input : String) : TermElabM MathmuxTypePattern := do
+  let (conclusion, stx) ← match parseMathmuxTypePattern (← getEnv) input with
+    | .ok value => pure value
+    | .error error => throwError error
+  withTheReader Term.Context ({ · with ignoreTCFailures := true, errToSorry := false }) do
+    let expression ← Term.elabTerm stx (some (mkSort (← mkFreshLevelMVar)))
+    let expression ← instantiateMVars expression
+    let (_, _, result) ← forallMetaTelescope expression
+    let anchors := result.getAppFn.constName?.toArray
+    let value ← abstractMVars expression
+    return {conclusion, value, anchors, needles := value.expr.getUsedConstantsAsSet.toArray}
+
+partial def matchMathmuxHypotheses : List Expr → List Expr → List Expr → MetaM Bool
+  | pattern :: patterns, skipped, candidate :: candidates => do
+    if ← isDefEq (← inferType pattern) (← inferType candidate) then
+      matchMathmuxHypotheses patterns [] (skipped ++ candidates)
+    else
+      matchMathmuxHypotheses (pattern :: patterns) (candidate :: skipped) candidates
+  | [], _, _ => pure true
+  | _ :: _, _, [] => pure false
+
+def matchMathmuxTypeAt (pattern : MathmuxTypePattern) (candidate : Expr) : MetaM Bool :=
+    withReducible do
+  let (candidateParameters, _, candidateConclusion) ← forallMetaTelescope candidate
+  let (_, _, patternExpression) ← openAbstractMVarsResult pattern.value
+  let (patternParameters, _, patternConclusion) ← forallMetaTelescope patternExpression
+  isDefEq patternConclusion candidateConclusion <&&>
+    matchMathmuxHypotheses patternParameters.toList [] candidateParameters.toList
+
+def matchesMathmuxType (pattern : MathmuxTypePattern) (info : ConstantInfo) : MetaM Bool := do
+  let candidate := info.instantiateTypeLevelParams (← mkFreshLevelMVars info.numLevelParams)
+  let constants := candidate.getUsedConstantsAsSet
+  unless pattern.anchors.isEmpty || pattern.anchors.any constants.contains do return false
+  if pattern.conclusion then
+    matchMathmuxTypeAt pattern candidate
+  else
+    let found ← IO.mkRef false
+    Lean.Meta.forEachExpr' candidate fun expression => do
+      if ← matchMathmuxTypeAt pattern expression then found.set true
+      return !(← found.get)
+    found.get
+
+def runMathmuxTypePrepare (request : Request) : CoreM Response := withCurrHeartbeats do
+  tryCatchRuntimeEx
     (handler := fun error => do
-      return (.error (← error.toMessageData.toString), #[])) do
-      match parseTypeSearchQuery (← getEnv) request.input with
-      | .error error => pure (.error error, #[])
-      | .ok stx => MetaM.run' do
-        match ← TermElabM.run' <| Find.find index (.mk stx) (maxShown := 24) with
-        | .ok result =>
-          let suggestions ← result.suggestions.mapM fun suggestion => do
-            return (← PrettyPrinter.ppCategory ``Find.find_filters suggestion).pretty
-              (width := 10000)
-          pure (.ok result, suggestions)
-        | .error error =>
-          let suggestions ← error.suggestions.mapM fun suggestion => do
-            return (← PrettyPrinter.ppCategory ``Find.find_filters suggestion).pretty
-              (width := 10000)
-          pure (.error (← error.message.toString), suggestions)
-  match result with
-  | .error error =>
-    return {
-      ok := false
-      diagnostics := #[]
-      detail := error
-      suggestions
-      version := request.version
-    }
-  | .ok result =>
-    let detail ← result.header.toString
-    let hits ← result.hits.take 24 |>.mapM fun (info, module?) => do
-      let type ← (typeSearchSignature info.name).run'
-      let doc ← findDocString? (← getEnv) info.name false
-      return {
-        name := info.name.toString
-        type
-        module := module?.map (·.toString)
-        doc
-      }
+      return {ok := false, diagnostics := #[], detail := (← error.toMessageData.toString), version := request.version}) do
+    let pattern ← MetaM.run' <| TermElabM.run' <| elaborateMathmuxTypePattern request.input
     return {
       ok := true
       diagnostics := #[]
-      detail
-      count := result.count
-      hits
-      suggestions
+      anchors := pattern.anchors.map (·.toString)
+      names := pattern.needles.map (·.toString)
+      count := pattern.needles.size
       version := request.version
     }
 
-unsafe def runTypeSearchServer (module : Name) (indexPath : System.FilePath) : IO Unit := do
+def runMathmuxTypeVerify (request : Request) : CoreM Response := withCurrHeartbeats do
+  tryCatchRuntimeEx
+    (handler := fun error => do
+      return {ok := false, diagnostics := #[], detail := (← error.toMessageData.toString), version := request.version}) do
+    let pattern ← MetaM.run' <| TermElabM.run' <| elaborateMathmuxTypePattern request.input
+    let environment ← getEnv
+    let mut matched := #[]
+    let mut count := 0
+    for candidate in request.names do
+      let name := candidate.toName
+      let some info := environment.find? name | continue
+      if ← MetaM.run' <| matchesMathmuxType pattern info then
+        count := count + 1
+        if matched.size < 24 then matched := matched.push info
+    let hits ← matched.mapM fun info => do
+      let type ← (typeSearchSignature info.name).run'
+      let module := do
+        let index ← environment.getModuleIdxFor? info.name
+        environment.header.moduleNames[index.toNat]?
+      let doc ← findDocString? environment info.name false
+      return {name := info.name.toString, type, module := module.map (·.toString), doc}
+    return {
+      ok := true
+      diagnostics := #[]
+      detail := s!"verified {count} of {request.names.size} candidates"
+      count
+      hits
+      version := request.version
+    }
+
+unsafe def runTypeSearchServer (module : Name) : IO Unit := do
   enableInitializersExecution
   let serverStarted ← IO.monoMsNow
-  let environment ← importModules (loadExts := true)
-    #[{module}, {module := `Loogle.Find}] {}
+  let environment ← importModules (loadExts := true) #[{module}] {}
   let environmentReady ← IO.monoMsNow
   let context := { fileName := "/", fileMap := Inhabited.default }
   let state := { env := environment }
   let action : CoreM Unit := do
-    let cached ← indexPath.pathExists
-    let indexStarted ← IO.monoMsNow
-    let index ← if cached then
-      let (cache, _) ← unpickle _ indexPath
-      Find.Index.mkFromCache cache
-    else
-      Find.Index.mk
-    let indexReady ← IO.monoMsNow
-    let started ← IO.monoMsNow
-    let nameRelFinished ← IO.mkRef started
-    let trieFinished ← IO.mkRef started
-    let recordNameRelFinished : MetaM Unit := do nameRelFinished.set (← IO.monoMsNow)
-    let recordTrieFinished : MetaM Unit := do trieFinished.set (← IO.monoMsNow)
-    (index.1.cache.startInBackground recordNameRelFinished).run'
-    (index.2.cache.startInBackground recordTrieFinished).run'
-    let _ ← index.1.cache.get.run'
-    let _ ← index.2.cache.get.run'
-    let pickleStarted ← IO.monoMsNow
-    unless cached do
-      pickle indexPath (← index.getCache)
-    let finished ← IO.monoMsNow
     let profile := #[
-      {line := 0, column := 0, kind := "type-search-import", detail := "", duration_ms := (environmentReady - serverStarted).toFloat},
-      {line := 0, column := 0, kind := "type-search-index-open", detail := "", duration_ms := (indexReady - indexStarted).toFloat},
-      {line := 0, column := 0, kind := "type-search-name-relation", detail := "", duration_ms := ((← nameRelFinished.get) - started).toFloat},
-      {line := 0, column := 0, kind := "type-search-name-trie", detail := "", duration_ms := ((← trieFinished.get) - started).toFloat},
-      {line := 0, column := 0, kind := "type-search-index-pickle", detail := "", duration_ms := (finished - pickleStarted).toFloat}
+      {line := 0, column := 0, kind := "type-search-import", detail := "", duration_ms := (environmentReady - serverStarted).toFloat}
     ]
     writeResponse {ok := true, diagnostics := #[], profile, detail := "ready", version := 0}
     let stdin ← IO.getStdin
@@ -532,8 +547,10 @@ unsafe def runTypeSearchServer (module : Name) (indexPath : System.FilePath) : I
         let response ← match Json.parse line >>= fromJson? with
           | .error error => pure (failureResponse error 0)
           | .ok (request : Request) =>
-            if request.operation == "type_search" then
-              runTypeSearchQuery index request
+            if request.operation == "type_prepare" then
+              runMathmuxTypePrepare request
+            else if request.operation == "type_verify" then
+              runMathmuxTypeVerify request
             else
               pure (probeFailure s!"unknown type-search operation: {request.operation}" request.version)
         writeResponse response
@@ -544,7 +561,7 @@ unsafe def main (args : List String) : IO UInt32 := do
   match args with
   | ["file", setupPath] => runServer (← ModuleSetup.load setupPath) false; return 0
   | ["file", setupPath, "--profile"] => runServer (← ModuleSetup.load setupPath) true; return 0
-  | ["type-search", module, indexPath] => runTypeSearchServer module.toName indexPath; return 0
+  | ["type-search", module] => runTypeSearchServer module.toName; return 0
   | _ =>
-    IO.eprintln "usage: MathmuxLeanService (file SETUP_JSON [--profile] | type-search MODULE INDEX)"
+    IO.eprintln "usage: MathmuxLeanService (file SETUP_JSON [--profile] | type-search MODULE)"
     return 2

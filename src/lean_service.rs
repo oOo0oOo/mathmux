@@ -19,48 +19,9 @@ use crate::util::hash_bytes;
 
 const SERVICE_SOURCE: &str = include_str!("MathmuxLeanService.lean");
 
-const SERVICE_FILES: &[(&str, &str)] = &[
-    (
-        "Loogle/BaseIOThunk.lean",
-        include_str!("../lean/type-search-engine/Loogle/BaseIOThunk.lean"),
-    ),
-    (
-        "Loogle/BlackListed.lean",
-        include_str!("../lean/type-search-engine/Loogle/BlackListed.lean"),
-    ),
-    (
-        "Loogle/Cache.lean",
-        include_str!("../lean/type-search-engine/Loogle/Cache.lean"),
-    ),
-    (
-        "Loogle/NameRel.lean",
-        include_str!("../lean/type-search-engine/Loogle/NameRel.lean"),
-    ),
-    (
-        "Loogle/TreeMap.lean",
-        include_str!("../lean/type-search-engine/Loogle/TreeMap.lean"),
-    ),
-    (
-        "Loogle/Trie.lean",
-        include_str!("../lean/type-search-engine/Loogle/Trie.lean"),
-    ),
-    (
-        "Loogle/Find.lean",
-        include_str!("../lean/type-search-engine/Loogle/Find.lean"),
-    ),
-    ("MathmuxLeanService.lean", SERVICE_SOURCE),
-];
+const SERVICE_FILES: &[(&str, &str)] = &[("MathmuxLeanService.lean", SERVICE_SOURCE)];
 
-const COMPILE_ORDER: &[&str] = &[
-    "Loogle/BaseIOThunk.lean",
-    "Loogle/BlackListed.lean",
-    "Loogle/Cache.lean",
-    "Loogle/NameRel.lean",
-    "Loogle/TreeMap.lean",
-    "Loogle/Trie.lean",
-    "Loogle/Find.lean",
-    "MathmuxLeanService.lean",
-];
+const COMPILE_ORDER: &[&str] = &["MathmuxLeanService.lean"];
 
 #[derive(Debug)]
 pub(crate) enum ServiceRequestError {

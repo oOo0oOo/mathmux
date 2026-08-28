@@ -50,7 +50,7 @@ pub(super) fn plan_search(
 }
 
 pub(super) fn text_search_plan(query: &str) -> TextSearchPlan {
-    let type_search = type_search_enabled() && type_shaped(query);
+    let type_search = type_shaped(query);
     if type_search {
         TextSearchPlan::Type
     } else if field_inventory_query(query).is_some() || exact_plan(query, false).is_some() {

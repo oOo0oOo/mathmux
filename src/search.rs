@@ -384,7 +384,7 @@ struct TypeSearchWorker {
     version: u64,
     last_used: Instant,
     startup_detail: String,
-    cache: HashMap<(String, bool), TypeSearchResult>,
+    cache: HashMap<(String, String), TypeSearchResult>,
 }
 
 #[derive(Clone, Default)]
@@ -414,6 +414,7 @@ struct TypeSearchRequest<'a> {
     line: u64,
     column: u64,
     input: &'a str,
+    names: &'a [String],
 }
 
 #[derive(Deserialize)]
@@ -422,7 +423,10 @@ struct TypeSearchResponse {
     detail: String,
     count: usize,
     hits: Vec<TypeSearchHit>,
-    suggestions: Vec<String>,
+    #[serde(default)]
+    anchors: Vec<String>,
+    #[serde(default)]
+    names: Vec<String>,
     version: u64,
 }
 
@@ -784,16 +788,16 @@ impl Searcher {
         workspace: &Workspace,
         query: &str,
         accept_suggestions: bool,
+        scopes: &HashSet<String>,
+        fallback_candidates: &[String],
     ) -> (TypeSearchResult, bool) {
-        self.type_search_hits_with_suggestions(workspace, query, accept_suggestions)
-    }
-
-    fn type_search_exact_name_hits(
-        &self,
-        workspace: &Workspace,
-        query: &str,
-    ) -> (TypeSearchResult, bool) {
-        self.type_search_hits_with_suggestions(workspace, query, false)
+        self.type_search_hits_with_suggestions(
+            workspace,
+            query,
+            accept_suggestions,
+            scopes,
+            fallback_candidates,
+        )
     }
 
     fn type_search_hits_with_suggestions(
@@ -801,8 +805,10 @@ impl Searcher {
         workspace: &Workspace,
         query: &str,
         accept_suggestions: bool,
+        scopes: &HashSet<String>,
+        fallback_candidates: &[String],
     ) -> (TypeSearchResult, bool) {
-        if !type_search_enabled() || !workspace.path.join(".lake/packages/mathlib").is_dir() {
+        if !workspace.path.join(".lake/packages/mathlib").is_dir() {
             return (TypeSearchResult::default(), false);
         }
         let mut state = self
@@ -868,7 +874,50 @@ impl Searcher {
         let TypeSearchState::Running(worker) = &mut *state else {
             return (TypeSearchResult::default(), false);
         };
-        match worker.query(query, accept_suggestions) {
+        let mut prepared = match worker.prepare(query) {
+            Ok(response) => response,
+            Err(error) => {
+                append_log(&self.repo, &format!("type search preparation failed: {error:#}"));
+                *state = TypeSearchState::Unavailable;
+                return (TypeSearchResult::default(), false);
+            }
+        };
+        let mut suggestions = Vec::new();
+        let mut effective_query = query.to_owned();
+        if accept_suggestions
+            && !prepared.ok
+            && let Some(identifier) = unknown_type_identifier(&prepared.detail)
+            && let Ok(Some(suggestion)) = self.type_name_suggestion(identifier, scopes)
+        {
+            effective_query = query.replacen(identifier, &suggestion, 1);
+            suggestions.push(effective_query.clone());
+            if let Ok(response) = worker.prepare(&effective_query) {
+                prepared = response;
+            }
+        }
+        if !prepared.ok {
+            return (
+                TypeSearchResult {
+                    suggestions,
+                    error: Some(prepared.detail),
+                    ..TypeSearchResult::default()
+                },
+                false,
+            );
+        }
+        let candidates = match self.type_candidate_names(
+            &prepared.anchors,
+            &prepared.names,
+            scopes,
+            fallback_candidates,
+        ) {
+            Ok(candidates) => candidates,
+            Err(error) => {
+                append_log(&self.repo, &format!("type candidate selection failed: {error:#}"));
+                return (TypeSearchResult::default(), false);
+            }
+        };
+        match worker.query(&effective_query, &candidates, suggestions) {
             Ok(result) => (result, false),
             Err(error) => {
                 append_log(&self.repo, &format!("type search failed: {error:#}"));
@@ -876,6 +925,100 @@ impl Searcher {
                 (TypeSearchResult::default(), false)
             }
         }
+    }
+
+    fn type_candidate_names(
+        &self,
+        anchors: &[String],
+        needles: &[String],
+        scopes: &HashSet<String>,
+        fallback: &[String],
+    ) -> Result<Vec<String>> {
+        let connection = self.open()?;
+        install_active_scopes(&connection, scopes)?;
+        let limit = SEARCH_TUNING.retrieval.type_reference_candidates;
+        let mut candidates = Vec::new();
+        let mut seen = HashSet::new();
+        for (targets, include_namespace) in [(anchors, true), (needles, false)] {
+            let remaining = limit.saturating_sub(candidates.len());
+            if targets.is_empty() || remaining == 0 {
+                continue;
+            }
+            let mut parameters = Vec::new();
+            let condition = if include_namespace {
+                targets
+                    .iter()
+                    .map(|target| {
+                        parameters.push(target.clone());
+                        parameters.push(format!("{target}.%"));
+                        let exact = parameters.len() - 1;
+                        let prefix = parameters.len();
+                        format!("(refs.target = ?{exact} OR refs.target LIKE ?{prefix})")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" OR ")
+            } else {
+                parameters.extend_from_slice(targets);
+                let placeholders = (1..=parameters.len())
+                    .map(|index| format!("?{index}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("refs.target IN ({placeholders})")
+            };
+            let sql = format!(
+                "SELECT refs.context, count(DISTINCT refs.target) AS matched
+                 FROM search_references refs
+                 JOIN search_reference_files files ON files.id = refs.file_id
+                 WHERE ({condition})
+                   AND refs.context IS NOT NULL
+                   AND files.owner IN (SELECT owner FROM active_search_scopes)
+                 GROUP BY refs.context
+                 ORDER BY matched DESC, refs.context
+                 LIMIT {remaining}",
+            );
+            for candidate in connection
+                .prepare(&sql)?
+                .query_map(params_from_iter(&parameters), |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+            {
+                if seen.insert(candidate.clone()) {
+                    candidates.push(candidate);
+                }
+            }
+        }
+        candidates.extend(
+            fallback
+                .iter()
+                .filter(|name| seen.insert((*name).clone()))
+                .take(limit.saturating_sub(candidates.len()))
+                .cloned(),
+        );
+        Ok(candidates)
+    }
+
+    fn type_name_suggestion(
+        &self,
+        identifier: &str,
+        scopes: &HashSet<String>,
+    ) -> Result<Option<String>> {
+        let connection = self.open()?;
+        install_active_scopes(&connection, scopes)?;
+        let mut statement = connection.prepare(
+            "SELECT DISTINCT name
+             FROM search_fts
+             WHERE (lower(name) = lower(?1)
+                    OR lower(substr(name, -(length(?1) + 1))) = ('.' || lower(?1)))
+               AND owner IN (SELECT owner FROM active_search_scopes)
+             ORDER BY length(name), name
+             LIMIT 2",
+        )?;
+        let names = statement
+            .query_map([identifier], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let [name] = names.as_slice() else {
+            return Ok(None);
+        };
+        Ok(Some(name.clone()))
     }
 
     fn migrate(&self) -> Result<()> {
@@ -1706,6 +1849,11 @@ impl Searcher {
         let mut type_search_matches = 0;
         let mut type_search_suggestions = 0;
         let mut type_search_stages = Vec::new();
+        let type_fallback_candidates = rows
+            .iter()
+            .filter(|row| !matches!(row.kind.as_str(), "file" | "imports"))
+            .map(|row| row.name.clone())
+            .collect::<Vec<_>>();
         let type_search_started = Instant::now();
         if type_search {
             let explicit_conclusion = conclusion_query(query);
@@ -1715,7 +1863,13 @@ impl Searcher {
                 format!("⊢ {query}")
             };
             let (applicable_result, applicable_warming) =
-                self.type_search_hits(workspace, &applicability_query, !strict_type);
+                self.type_search_hits(
+                    workspace,
+                    &applicability_query,
+                    !strict_type,
+                    scopes,
+                    &type_fallback_candidates,
+                );
             if strict_type
                 && let Some(error) = &applicable_result.error
             {
@@ -1742,7 +1896,13 @@ impl Searcher {
             ranked.extend(applicable);
             if !strict_type && !explicit_conclusion && !has_full_applicability_page {
                 let (type_search_result, is_warming) =
-                    self.type_search_hits(workspace, query, !strict_type);
+                    self.type_search_hits(
+                        workspace,
+                        query,
+                        !strict_type,
+                        scopes,
+                        &type_fallback_candidates,
+                    );
                 warming |= is_warming;
                 type_search_matches += type_search_result.count;
                 type_search_suggestions += type_search_result.suggestions.len();
@@ -1923,8 +2083,6 @@ impl Searcher {
             hits: ranked.into_iter().map(|candidate| candidate.hit).collect(),
             inference: if type_search {
                 "hybrid+applicability".into()
-            } else if !type_search_enabled() {
-                "hybrid(type-off)".into()
             } else {
                 "hybrid".into()
             },
@@ -2037,7 +2195,7 @@ impl Searcher {
                     warming: false,
                 })
             } else {
-                self.generated_exact_match(workspace, &name, scopes)?
+                self.generated_exact_match(&name, scopes)?
             };
             if let Some(matched) = matched {
                 return self
@@ -2093,7 +2251,6 @@ impl Searcher {
 
     fn generated_exact_match(
         &self,
-        workspace: &Workspace,
         query: &str,
         scopes: &HashSet<String>,
     ) -> Result<Option<ExactMatch>> {
@@ -2136,41 +2293,7 @@ impl Searcher {
                 }));
             }
         }
-        let name_pattern = format!("\"{}\"", query.replace('"', "\\\""));
-        let (result, warming) = self.type_search_exact_name_hits(workspace, &name_pattern);
-        let mut hits = result.hits;
-        let positions = hits
-            .iter()
-            .enumerate()
-            .filter(|(_, hit)| qualified_name_matches(&hit.name, query))
-            .map(|(position, _)| position)
-            .collect::<Vec<_>>();
-        let [position] = positions.as_slice() else {
-            return Ok(None);
-        };
-        let hit = hits.remove(*position);
-        let module = hit.module.unwrap_or_default();
-        Ok(Some(ExactMatch {
-            candidate: Candidate {
-                hit: SearchHit {
-                    path: format!("{}.lean", module.replace('.', "/")),
-                    line: 1,
-                    kind: "declaration".into(),
-                    signature: nonempty(hit.signature),
-                    doc: hit.doc,
-                    source: None,
-                    usages: Vec::new(),
-                    name: hit.name,
-                    module,
-                    applicable: false,
-                    required_import: None,
-                },
-                score: SEARCH_TUNING.lexical.exact_resolution,
-                origins: CandidateOrigin::TypeSearch as u8,
-            },
-            matched: query.to_owned(),
-            warming,
-        }))
+        Ok(None)
     }
 
     fn import_context(
@@ -2973,18 +3096,11 @@ impl Searcher {
 
 impl TypeSearchWorker {
     fn start(repo: &Repo, workspace: &Path) -> Result<Self> {
-        let index_root = repo.state_dir.join("type-search-index");
-        fs::create_dir_all(&index_root)?;
-        let index = index_root.join(format!("{}.index", mathlib_artifact_id(workspace)));
-        let arguments = vec![
-            "type-search".to_owned(),
-            "Mathlib".to_owned(),
-            index.to_string_lossy().into_owned(),
-        ];
+        let arguments = vec!["type-search".to_owned(), "Mathlib".to_owned()];
         let mut process = LeanServiceProcess::start(repo, workspace, &arguments)
             .context("cannot start type search service")?;
         let ready = process
-            .read_ready(Duration::from_secs(15 * 60))
+            .read_ready(Duration::from_secs(60))
             .context("type search service did not become ready")?;
         ensure!(
             ready.get("ok").and_then(Value::as_bool) == Some(true)
@@ -3022,28 +3138,16 @@ impl TypeSearchWorker {
     fn query(
         &mut self,
         query: &str,
-        accept_suggestions: bool,
+        candidates: &[String],
+        suggestions: Vec<String>,
     ) -> Result<TypeSearchResult> {
         self.last_used = Instant::now();
         let query = query.lines().collect::<Vec<_>>().join(" ");
-        let cache_key = (query.clone(), accept_suggestions);
+        let cache_key = (query.clone(), hash_bytes(candidates.join("\0").as_bytes()));
         if let Some(result) = self.cache.get(&cache_key) {
             return Ok(result.clone());
         }
-        let mut value = self.query_value(&query)?;
-        let mut suggestions = value.suggestions.clone();
-        if accept_suggestions
-            && !value.ok
-            && let Some(suggestion) = value.suggestions.first()
-            && suggestion.as_str() != query
-        {
-            value = self.query_value(suggestion)?;
-            for suggestion in &value.suggestions {
-                if !suggestions.contains(suggestion) {
-                    suggestions.push(suggestion.clone());
-                }
-            }
-        }
+        let value = self.request_value("type_verify", &query, candidates)?;
         let result = if value.ok {
             TypeSearchResult {
                 hits: value.hits,
@@ -3068,19 +3172,30 @@ impl TypeSearchWorker {
         Ok(result)
     }
 
-    fn query_value(&mut self, query: &str) -> Result<TypeSearchResponse> {
+    fn prepare(&mut self, query: &str) -> Result<TypeSearchResponse> {
+        self.last_used = Instant::now();
+        self.request_value("type_prepare", query, &[])
+    }
+
+    fn request_value(
+        &mut self,
+        operation: &'static str,
+        query: &str,
+        names: &[String],
+    ) -> Result<TypeSearchResponse> {
         self.version += 1;
         let response: TypeSearchResponse = self
             .process
             .request(
                 &TypeSearchRequest {
-                    operation: "type_search",
+                    operation,
                     source: "",
                     file_name: "",
                     version: self.version,
                     line: 0,
                     column: 0,
                     input: query,
+                    names,
                 },
                 Duration::from_secs(30),
             )
@@ -3096,14 +3211,6 @@ impl TypeSearchWorker {
     fn rss_kib(&self) -> Option<u64> {
         self.process.rss_kib()
     }
-}
-
-fn mathlib_artifact_id(workspace: &Path) -> String {
-    let artifact = workspace.join(".lake/packages/mathlib/.lake/build/lib/lean/Mathlib.olean");
-    let hash = fs::read(&artifact)
-        .map(|contents| hash_bytes(&contents))
-        .unwrap_or_else(|_| hash_bytes(b"missing Mathlib.olean"));
-    hash[..16].to_owned()
 }
 
 fn base_input_id(workspace: &Path) -> String {

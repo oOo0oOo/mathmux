@@ -27,6 +27,7 @@ pub(super) struct SearchTuning {
 #[derive(Clone, Copy)]
 pub(super) struct RetrievalTuning {
     pub(super) type_rows: usize,
+    pub(super) type_reference_candidates: usize,
     pub(super) name_query_rows: usize,
     pub(super) discovery_rows: usize,
     pub(super) name_rows: usize,
@@ -136,6 +137,7 @@ pub(super) struct PresentationTuning {
 pub(super) const SEARCH_TUNING: SearchTuning = SearchTuning {
     retrieval: RetrievalTuning {
         type_rows: 20_000,
+        type_reference_candidates: 4_096,
         name_query_rows: 256,
         discovery_rows: 1_000,
         name_rows: 128,

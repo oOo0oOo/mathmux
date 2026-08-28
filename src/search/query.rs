@@ -1569,11 +1569,7 @@ pub(super) fn exact_search_result(mut hits: Vec<SearchHit>, base_warming: bool) 
     }
     SearchResult {
         hits,
-        inference: if type_search_enabled() {
-            "hybrid".into()
-        } else {
-            "hybrid(type-off)".into()
-        },
+        inference: "hybrid".into(),
         note: base_warming.then(|| "source index warming".into()),
         ok: true,
     }
@@ -1671,17 +1667,6 @@ fn declaration_result_type(signature: &str) -> &str {
         }
     }
     if begins_with_binder { "" } else { signature }
-}
-
-pub(super) fn type_search_enabled() -> bool {
-    let opted_out = std::env::var("MATHMUX_LOOGLE")
-        .ok()
-        .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "0" | "false" | "off"));
-    let memory_limited = std::env::var("MATHMUX_SEARCH_MEMORY_MB")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .is_some_and(|limit| limit < 16_384);
-    !opted_out && !memory_limited
 }
 
 pub(super) fn nonempty(value: String) -> Option<String> {
