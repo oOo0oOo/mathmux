@@ -65,7 +65,8 @@ FORMS — type one directly; there are no API, LEAN, or other category keywords
   FILE:LINE [goal] | FILE:LINE TERM [signature]
   PATH NAME usages
   cREF [types|defeq|rewrite|profile]
-  qREF [same focus as NAME]
+  declaration-qREF [signature|source|usages|constructors]
+  positioned-qREF [goal] | stored-probe-qREF
   FILE|FILE:LINE|cREF|qREF "#check TERM"|"#synth TYPE"|"#reduce TERM"
   FILE:LINE|cREF|positioned-qREF "by TACTIC"
 
@@ -76,6 +77,8 @@ RESULT
 
 RULES
   fields/constructors target structures/inductives; ext/simp may be empty.
+  instances/coercions find declarations in the subject's name family; inspect
+  signature for required typeclasses or a theorem result such as Bijective.
   cREF analyses need a matching stored failure; profile needs check --profile.
   Context is mandatory for directives and never guessed. FILE uses its imports;
   FILE:LINE uses that exact line—there is no nearby-line fallback. Probe never
@@ -771,8 +774,8 @@ mod tests {
         assert!(command.find_subcommand_mut("issue").is_none());
         assert!(command.find_subcommand_mut("dev").is_none());
         let help = command.render_help().to_string();
-        assert!(help.contains("never git, lean, lake build"));
-        assert!(help.contains("Use Lean modules"));
+        assert!(help.contains("never substitute git, lean, lake"));
+        assert!(help.contains("explicit narrow imports"));
     }
 
     #[cfg(feature = "development")]
@@ -864,6 +867,7 @@ mod tests {
             "NAME [signature|source|apply",
             "FILE:LINE [goal]",
             "cREF [types|defeq|rewrite|profile]",
+            "declaration-qREF [signature|source|usages|constructors]",
             "Context is mandatory",
             "Use NAME signature, not",
             "no nearby-line fallback",

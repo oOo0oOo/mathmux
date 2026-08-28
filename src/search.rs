@@ -1895,12 +1895,12 @@ impl Searcher {
                     structural_type_fallback = Some(
                         "project identifier unavailable to Lean type search; showing strict structural type matches",
                     );
-                } else if indexed_type_fallback(&error, query, &rows, scopes) {
+                } else if indexed_type_fallback(error, query, &rows, scopes) {
                     structural_type_fallback = Some(
                         "Lean unification rejected this pattern; showing strict structural type matches",
                     );
                 } else {
-                    bail!("invalid type pattern: {}", clean_line(&error));
+                    bail!("invalid type pattern: {}", clean_line(error));
                 }
             }
             warming |= applicable_warming;

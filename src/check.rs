@@ -4,7 +4,7 @@ use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex, OnceLock, TryLockError, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError, Weak};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use anyhow::{Context, Result, ensure};
@@ -25,6 +25,8 @@ use crate::util::{hash_bytes, hash_file, now_unix_ms};
 const CHECK_RESULT_VERSION: &[u8] = b"check-result-v2";
 const CHECK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const COLD_PROBE_TIMEOUT: Duration = Duration::from_secs(16);
+const SHARED_CHECK_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const SLOW_CHECK_PROFILE_MS: u64 = 5_000;
 const PROFILE_ENTRY_LIMIT: usize = 512;
 const PROJECT_CONFIG_FILES: [&str; 4] = [
@@ -418,13 +420,19 @@ impl Checker {
                 lock
             })
         };
-        let _check_guard = check_lock.try_lock().unwrap_or_else(|error| match error {
-            TryLockError::WouldBlock => {
+        let _check_guard = match check_lock.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::WouldBlock) => {
                 report(&format!("waiting for shared check of {}", target.display()));
-                check_lock.lock().expect("target check lock poisoned")
+                lock_check_until(&check_lock, SHARED_CHECK_WAIT_TIMEOUT).with_context(|| {
+                    format!(
+                        "shared check of {} is still running after 30 seconds; retry after it finishes",
+                        target.display()
+                    )
+                })?
             }
-            TryLockError::Poisoned(_) => panic!("target check lock poisoned"),
-        });
+            Err(TryLockError::Poisoned(_)) => panic!("target check lock poisoned"),
+        };
         let lock_directory = self.repo.state_dir.join("check-locks");
         fs::create_dir_all(&lock_directory)?;
         let process_lock = fs::OpenOptions::new()
@@ -440,8 +448,11 @@ impl Checker {
         if let Err(error) = process_lock.try_lock_exclusive() {
             if error.kind() == std::io::ErrorKind::WouldBlock {
                 report(&format!("waiting for shared check of {}", target.display()));
-                process_lock.lock_exclusive().with_context(|| {
-                    format!("cannot lock check target {}", target.display())
+                lock_file_until(&process_lock, SHARED_CHECK_WAIT_TIMEOUT).with_context(|| {
+                    format!(
+                        "shared check of {} is still running after 30 seconds; retry after it finishes",
+                        target.display()
+                    )
                 })?;
             } else {
                 return Err(error).with_context(|| {
@@ -1169,7 +1180,12 @@ impl Checker {
         });
         let _build_guard = build_lock
             .as_ref()
-            .map(|lock| lock.lock().expect("dependency build lock poisoned"));
+            .map(|lock| {
+                lock_check_until(lock, SHARED_CHECK_WAIT_TIMEOUT).context(
+                    "workspace import preparation is still running after 30 seconds; retry after it finishes",
+                )
+            })
+            .transpose()?;
         let path = self.setup_path(workspace, target);
         if setup_is_usable(&path, input_fingerprint) {
             return Ok(path);
@@ -1182,7 +1198,9 @@ impl Checker {
             .read(true)
             .write(true)
             .open(shared.with_extension("lock"))?;
-        shared_lock.lock_exclusive()?;
+        lock_file_until(&shared_lock, SHARED_CHECK_WAIT_TIMEOUT).context(
+            "shared import preparation is still running after 30 seconds; retry after it finishes",
+        )?;
         if setup_is_usable(&shared, input_fingerprint) {
             materialize_setup(&shared, &path, input_fingerprint)?;
             return Ok(path);
@@ -1344,6 +1362,39 @@ impl Checker {
                 .join(", ")
         );
         Ok(references)
+    }
+}
+
+fn lock_check_until<'a>(lock: &'a Mutex<()>, timeout: Duration) -> Result<MutexGuard<'a, ()>> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match lock.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                std::thread::sleep(LOCK_POLL_INTERVAL.min(timeout));
+            }
+            Err(TryLockError::WouldBlock) => anyhow::bail!("shared check wait timed out"),
+            Err(TryLockError::Poisoned(_)) => panic!("target check lock poisoned"),
+        }
+    }
+}
+
+fn lock_file_until(file: &fs::File, timeout: Duration) -> Result<()> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match file.try_lock_exclusive() {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    && Instant::now() < deadline =>
+            {
+                std::thread::sleep(LOCK_POLL_INTERVAL.min(timeout));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                anyhow::bail!("shared check wait timed out")
+            }
+            Err(error) => return Err(error.into()),
+        }
     }
 }
 
@@ -2462,6 +2513,35 @@ mod tests {
         let cache = Mutex::new(HashMap::from([(key.clone(), failed_file_check("one"))]));
         assert!(matching_failed_check(&cache, &key, "one").is_some());
         assert!(matching_failed_check(&cache, &key, "two").is_none());
+    }
+
+    #[test]
+    fn shared_check_lock_wait_is_bounded() {
+        let lock = Mutex::new(());
+        let _guard = lock.lock().unwrap();
+        let started = Instant::now();
+        assert!(lock_check_until(&lock, Duration::from_millis(5)).is_err());
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn shared_process_lock_wait_is_bounded() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("check.lock");
+        let owner = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        owner.lock_exclusive().unwrap();
+        let waiter = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap();
+        assert!(lock_file_until(&waiter, Duration::from_millis(5)).is_err());
     }
 
     #[test]
