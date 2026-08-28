@@ -637,6 +637,23 @@ fn render_static_probe_summary(run: &SearchRun, focus: &str) -> String {
             }
         }
         "source" => run.hits.truncate(1),
+        "simp" => {
+            run.hits.retain(|hit| {
+                hit.source
+                    .as_deref()
+                    .is_some_and(|source| source.contains("@[simp"))
+            });
+            if run.hits.is_empty()
+                && !run.note.as_deref().is_some_and(|note| note.contains("warming"))
+            {
+                run.note = Some("no indexed @[simp] declaration in this name family".into());
+            }
+        }
+        "usages" => {
+            for hit in &mut run.hits {
+                hit.source = None;
+            }
+        }
         _ => {}
     }
     if matches!(focus, "signature" | "source" | "ext")
@@ -685,7 +702,7 @@ fn static_probe_query(context: Option<&ProbeContext>, subject: &str, focus: Opti
         "signature" => format!("name:{subject}"),
         "source" => format!("{subject} source"),
         "fields" => format!("{subject} fields"),
-        "constructors" => format!("{subject}.mk"),
+        "constructors" => format!("name:{subject}.mk"),
         "coercions" => format!(
             "declaration {subject}.instCoe*|{subject}.instFunLike*|{subject}.instCoeFun*|{subject}.hasCoe*|{subject}.toFun*"
         ),
@@ -695,6 +712,9 @@ fn static_probe_query(context: Option<&ProbeContext>, subject: &str, focus: Opti
         "apply" => format!("{subject} theorem"),
         "usages" => format!("name:{subject}"),
         "types" if subject.starts_with("type:") => subject.to_owned(),
+        "types" => bail!(
+            "types requires type:LEAN_TYPE or a cREF with a type/instance failure; use NAME signature for a declaration type"
+        ),
         other => bail!("focus `{other}` requires source or failure context"),
     };
     Ok(query)
@@ -758,6 +778,10 @@ mod tests {
             "declaration ContinuousMap.inst*|ContinuousMap.instance*"
         );
         assert_eq!(
+            static_probe_query(None, "ContinuousMap", Some("constructors")).unwrap(),
+            "name:ContinuousMap.mk"
+        );
+        assert_eq!(
             static_probe_query(None, "ContinuousMap", Some("coercions")).unwrap(),
             "declaration ContinuousMap.instCoe*|ContinuousMap.instFunLike*|ContinuousMap.instCoeFun*|ContinuousMap.hasCoe*|ContinuousMap.toFun*"
         );
@@ -789,6 +813,12 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             "declaration types use `probe Demo.foo signature`"
+        );
+        assert_eq!(
+            static_probe_query(None, "Demo.foo", Some("types"))
+                .unwrap_err()
+                .to_string(),
+            "types requires type:LEAN_TYPE or a cREF with a type/instance failure; use NAME signature for a declaration type"
         );
         assert_eq!(
             ProbeRequest::parse("Demo.foo proof")
@@ -831,7 +861,7 @@ mod tests {
             inference: "exact".into(),
             hits: vec![
                 hit("Demo.first", "theorem first (n : Nat) : n = n := by\n  rfl"),
-                hit("Demo.second", "theorem second (n : Nat) : n = n := by\n  rfl"),
+                hit("Demo.second", "@[simp] theorem second (n : Nat) : n = n := by\n  rfl"),
             ],
             note: Some("search indexes warming".into()),
             duration_ms: 1,
@@ -855,5 +885,13 @@ mod tests {
         let source = render_static_probe_summary(&run, "source");
         assert!(source.contains("theorem first"));
         assert!(!source.contains("Demo.second"));
+
+        let simp = render_static_probe_summary(&run, "simp");
+        assert!(simp.contains("Demo.second"));
+        assert!(!simp.contains("Demo.first"));
+
+        let usages = render_static_probe_summary(&run, "usages");
+        assert!(usages.contains("Demo.first"));
+        assert!(!usages.contains("theorem first"));
     }
 }

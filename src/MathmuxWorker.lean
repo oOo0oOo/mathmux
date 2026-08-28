@@ -138,8 +138,10 @@ def inspectTerm (operation source : String) : Term.TermElabM String := do
   return s!"{(← Meta.ppExpr value).pretty} : {(← Meta.ppExpr (← Meta.inferType value)).pretty}"
 
 def evalTacticText (source : String) : Tactic.TacticM Unit := do
-  let stx ← parseCategory `tactic source
-  Tactic.evalTactic stx
+  let stx ← parseCategory `term s!"by {source}"
+  match stx with
+  | `(term| by $tactics:tacticSeq) => Tactic.evalTactic tactics
+  | _ => throwError "invalid tactic sequence"
 
 def probeFailure (detail : String) (version : Nat) : Response :=
   { ok := false,
