@@ -70,16 +70,30 @@ def goalContext (goal : GoalsAtResult) : ContextInfo :=
 def goalMVars (goal : GoalsAtResult) : List MVarId :=
   if useGoalsAfter goal then goal.tacticInfo.goalsAfter else goal.tacticInfo.goalsBefore
 
-def goalsBetweenOffsets (trees : Array InfoTree) (fileMap : FileMap)
+def goalsBetweenOffsets (trees : Array InfoTree) (_fileMap : FileMap)
     (start stop : Nat) :
     Option GoalsAtResult := Id.run do
+  let mut best : Option (Nat × GoalsAtResult) := none
   for tree in trees do
-    for offset in [start:stop + 1] do
-      let hover : String.Pos.Raw := ⟨offset⟩
-      if let some goal :=
-          (tree.goalsAt? fileMap hover).find? fun goal => !(goalMVars goal).isEmpty then
-        return some goal
-  return none
+    let candidates := tree.collectNodesBottomUp fun ctx info _ candidates => Id.run do
+      let Info.ofTacticInfo tacticInfo := info
+        | return candidates
+      let (some pos, some tailPos) := (info.pos?, info.tailPos?)
+        | return candidates
+      if pos.byteIdx ≤ stop && start ≤ tailPos.byteIdx && !tacticInfo.goalsBefore.isEmpty then
+        let span := tailPos.byteIdx - pos.byteIdx
+        return (span, {
+          ctxInfo := ctx
+          tacticInfo
+          useAfter := false
+          indented := false
+          priority := 1
+        }) :: candidates
+      candidates
+    for candidate in candidates do
+      if best.all fun current => candidate.1 < current.1 then
+        best := some candidate
+  return best.map (·.2)
 
 partial def goalInSnapshotTree (tree : Language.SnapshotTree) (fileMap : FileMap)
     (start stop : Nat) : BaseIO (Option GoalsAtResult) := do
