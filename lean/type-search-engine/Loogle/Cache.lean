@@ -46,6 +46,18 @@ provided in the constructor.
 -/
 def DeclCache2.get (cache : DeclCache2 α) : MetaM (α × α) := DeclCache.get cache
 
+/-- Start initialization without waiting, so independent declaration caches can build in parallel. -/
+def _root_.Batteries.Tactic.Cache.startInBackground (cache : Cache α)
+    (finished : MetaM Unit := pure ()) : MetaM Unit := do
+  match ← ST.Ref.get (m := BaseIO) cache with
+  | .inr _ => pure ()
+  | .inl init =>
+    let task ← EIO.asTask <| (← Meta.wrapAsync (fun _ => do
+      let result ← init
+      finished
+      pure result) (cancelTk? := none)) ()
+    cache.set (m := BaseIO) (.inr task)
+
 /--
 Access the cache (imports only).
 Suitable to get a value to be pickled and fed to `mkFromCache` later.

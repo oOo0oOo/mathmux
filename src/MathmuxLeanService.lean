@@ -445,7 +445,7 @@ def runTypeSearchQuery (index : Find.Index) (request : Request) : CoreM Response
       match parseTypeSearchQuery (← getEnv) request.input with
       | .error error => pure (.error error, #[])
       | .ok stx => MetaM.run' do
-        match ← TermElabM.run' <| Find.find index (.mk stx) with
+        match ← TermElabM.run' <| Find.find index (.mk stx) (maxShown := 24) with
         | .ok result =>
           let suggestions ← result.suggestions.mapM fun suggestion => do
             return (← PrettyPrinter.ppCategory ``Find.find_filters suggestion).pretty
@@ -466,6 +466,7 @@ def runTypeSearchQuery (index : Find.Index) (request : Request) : CoreM Response
       version := request.version
     }
   | .ok result =>
+    let detail ← result.header.toString
     let hits ← result.hits.take 24 |>.mapM fun (info, module?) => do
       let type ← (typeSearchSignature info.name).run'
       let doc ← findDocString? (← getEnv) info.name false
@@ -478,6 +479,7 @@ def runTypeSearchQuery (index : Find.Index) (request : Request) : CoreM Response
     return {
       ok := true
       diagnostics := #[]
+      detail
       count := result.count
       hits
       suggestions
@@ -486,21 +488,42 @@ def runTypeSearchQuery (index : Find.Index) (request : Request) : CoreM Response
 
 unsafe def runTypeSearchServer (module : Name) (indexPath : System.FilePath) : IO Unit := do
   enableInitializersExecution
+  let serverStarted ← IO.monoMsNow
   let environment ← importModules (loadExts := true)
     #[{module}, {module := `Loogle.Find}] {}
+  let environmentReady ← IO.monoMsNow
   let context := { fileName := "/", fileMap := Inhabited.default }
   let state := { env := environment }
   let action : CoreM Unit := do
-    let index ← if ← indexPath.pathExists then
+    let cached ← indexPath.pathExists
+    let indexStarted ← IO.monoMsNow
+    let index ← if cached then
       let (cache, _) ← unpickle _ indexPath
       Find.Index.mkFromCache cache
     else
       Find.Index.mk
+    let indexReady ← IO.monoMsNow
+    let started ← IO.monoMsNow
+    let nameRelFinished ← IO.mkRef started
+    let trieFinished ← IO.mkRef started
+    let recordNameRelFinished : MetaM Unit := do nameRelFinished.set (← IO.monoMsNow)
+    let recordTrieFinished : MetaM Unit := do trieFinished.set (← IO.monoMsNow)
+    (index.1.cache.startInBackground recordNameRelFinished).run'
+    (index.2.cache.startInBackground recordTrieFinished).run'
     let _ ← index.1.cache.get.run'
     let _ ← index.2.cache.get.run'
-    unless ← indexPath.pathExists do
+    let pickleStarted ← IO.monoMsNow
+    unless cached do
       pickle indexPath (← index.getCache)
-    writeResponse {ok := true, diagnostics := #[], detail := "ready", version := 0}
+    let finished ← IO.monoMsNow
+    let profile := #[
+      {line := 0, column := 0, kind := "type-search-import", detail := "", duration_ms := (environmentReady - serverStarted).toFloat},
+      {line := 0, column := 0, kind := "type-search-index-open", detail := "", duration_ms := (indexReady - indexStarted).toFloat},
+      {line := 0, column := 0, kind := "type-search-name-relation", detail := "", duration_ms := ((← nameRelFinished.get) - started).toFloat},
+      {line := 0, column := 0, kind := "type-search-name-trie", detail := "", duration_ms := ((← trieFinished.get) - started).toFloat},
+      {line := 0, column := 0, kind := "type-search-index-pickle", detail := "", duration_ms := (finished - pickleStarted).toFloat}
+    ]
+    writeResponse {ok := true, diagnostics := #[], profile, detail := "ready", version := 0}
     let stdin ← IO.getStdin
     while true do
       let line ← stdin.getLine

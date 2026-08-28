@@ -211,14 +211,38 @@ impl LeanServiceProcess {
     }
 
     pub(crate) fn rss_kib(&self) -> Option<u64> {
-        fs::read_to_string(format!("/proc/{}/status", self.child.id()))
-            .ok()?
-            .lines()
-            .find_map(|line| line.strip_prefix("VmRSS:"))?
-            .split_whitespace()
-            .next()?
-            .parse()
-            .ok()
+        let group = self.child.id() as i32;
+        let mut total = 0_u64;
+        let mut found = false;
+        for process in fs::read_dir("/proc").ok()?.flatten() {
+            let Some(pid) = process
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<i32>().ok())
+            else {
+                continue;
+            };
+            if unsafe { libc::getpgid(pid) } != group {
+                continue;
+            }
+            let Some(rss) = fs::read_to_string(process.path().join("status"))
+                .ok()
+                .and_then(|status| {
+                    status.lines().find_map(|line| {
+                        line.strip_prefix("VmRSS:")?
+                            .split_whitespace()
+                            .next()?
+                            .parse::<u64>()
+                            .ok()
+                    })
+                })
+            else {
+                continue;
+            };
+            total = total.saturating_add(rss);
+            found = true;
+        }
+        found.then_some(total)
     }
 
     pub(crate) fn stderr_len(&self) -> usize {
