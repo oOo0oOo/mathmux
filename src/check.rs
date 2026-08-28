@@ -986,7 +986,7 @@ impl Checker {
         let target = resolve_target(&workspace.path, requested)?;
         let source = fs::read_to_string(workspace.path.join(&target))
             .with_context(|| format!("cannot read probe context {}", target.display()))?;
-        let column = if line > 0 && column == 0 {
+        let column = if operation != "goal" && line > 0 && column == 0 {
             first_source_column(&source, line)
         } else {
             column
