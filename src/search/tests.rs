@@ -286,6 +286,12 @@ fn query_parsing_scoring_and_ranking_regressions() {
         structural_result_type_score("_ ≃L[ℂ] _", "(f : ℂ → E) : FormalMultilinearSeries ℂ ℂ E"),
         0.0
     );
+    assert!(
+        structural_result_type_score(
+            "∀ b, Nonempty (Topology.VectorBundle.MatrixGL.projectionRange _ b ≃L[ℂ] _)",
+            "(P : C(B, Matrix n n ℂ)) : ∀ b, Nonempty (projectionRange P b ≃L[ℂ] F)",
+        ) > 0.0
+    );
     assert_eq!(
         unknown_type_identifier("Unknown identifier `ComplexVectorBundle.Isomorphic`"),
         Some("ComplexVectorBundle.Isomorphic")

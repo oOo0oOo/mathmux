@@ -1847,12 +1847,12 @@ impl Searcher {
             return Ok(result);
         }
         let candidates_started = Instant::now();
-        let rows = self.candidates(query, &query_tokens, type_search, scopes)?;
+        let mut rows = self.candidates(query, &query_tokens, type_search, scopes)?;
         let candidates_ms = candidates_started.elapsed().as_millis() as u64;
         let name_search = !type_search && declaration_name_query(query);
         let mut ranked = Vec::new();
         let mut warming = false;
-        let mut structural_type_fallback = false;
+        let mut structural_type_fallback = None;
         let mut type_search_matches = 0;
         let mut type_search_suggestions = 0;
         let mut type_search_stages = Vec::new();
@@ -1880,8 +1880,25 @@ impl Searcher {
             if strict_type
                 && let Some(error) = &applicable_result.error
             {
-                if indexed_type_fallback(&error, query, &rows, scopes) {
-                    structural_type_fallback = true;
+                let anchor_rows = if let Some(identifier) = unknown_type_identifier(error) {
+                    self.candidates(
+                        identifier,
+                        &meaningful_query_tokens(identifier),
+                        true,
+                        scopes,
+                    )?
+                } else {
+                    Vec::new()
+                };
+                if indexed_unknown_type_identifier(error, &anchor_rows, scopes) {
+                    rows.extend(anchor_rows);
+                    structural_type_fallback = Some(
+                        "project identifier unavailable to Lean type search; showing strict structural type matches",
+                    );
+                } else if indexed_type_fallback(&error, query, &rows, scopes) {
+                    structural_type_fallback = Some(
+                        "Lean unification rejected this pattern; showing strict structural type matches",
+                    );
                 } else {
                     bail!("invalid type pattern: {}", clean_line(&error));
                 }
@@ -2079,12 +2096,8 @@ impl Searcher {
         if exact_name_miss {
             prepend_search_note(&mut note, "related results (no exact match)".into());
         }
-        if structural_type_fallback {
-            prepend_search_note(
-                &mut note,
-                "Lean unification rejected this pattern; showing strict structural type matches"
-                    .into(),
-            );
+        if let Some(fallback) = structural_type_fallback {
+            prepend_search_note(&mut note, fallback.into());
         }
         let result = SearchResult {
             hits: ranked.into_iter().map(|candidate| candidate.hit).collect(),
