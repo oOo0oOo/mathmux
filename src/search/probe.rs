@@ -38,6 +38,9 @@ impl ProbeRequest {
     fn parse(query: &str) -> Result<Self> {
         let query = query.trim();
         ensure!(!query.is_empty(), "probe query is empty");
+        if query == "mathmux probe" || query.starts_with("mathmux probe ") {
+            bail!("probe receives QUERY only; omit the leading `mathmux probe`")
+        }
         let mut parts = query.split_whitespace();
         let first = parts.next().unwrap();
         let context = parse_context(first);
@@ -46,6 +49,11 @@ impl ProbeRequest {
         } else {
             query
         };
+        if matches!(&context, Some(ProbeContext::Query(_)))
+            && matches!(remainder.split_whitespace().next(), Some("show" | "--all"))
+        {
+            bail!("expand stored detail with `show {first} --all`, outside probe")
+        }
         let directive_query = unquote(remainder);
         if let Some(directive) = parse_directive(directive_query)? {
             ensure!(context.is_some(), "Lean directives require FILE, FILE:LINE, cREF, or qREF context");
@@ -863,6 +871,18 @@ mod tests {
         )
         .is_err());
         assert!(ProbeRequest::parse("#check Nat").is_err());
+        assert_eq!(
+            ProbeRequest::parse("mathmux probe Demo.foo source")
+                .unwrap_err()
+                .to_string(),
+            "probe receives QUERY only; omit the leading `mathmux probe`"
+        );
+        assert_eq!(
+            ProbeRequest::parse("q123 show --all")
+                .unwrap_err()
+                .to_string(),
+            "expand stored detail with `show q123 --all`, outside probe"
+        );
         assert_eq!(
             ProbeRequest::parse("Demo.foo \"#check Demo.foo\"")
                 .unwrap_err()
