@@ -1234,6 +1234,38 @@ mod tests {
     }
 
     #[test]
+    fn expanded_probe_shows_the_full_stored_detail() {
+        let detail = (1..=24)
+            .map(|line| format!("probe line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let run = SearchRun {
+            reference: "q1".into(),
+            workspace_ref: "w1".into(),
+            query: "Demo.lean:10 goal".into(),
+            inference: "probe".into(),
+            hits: vec![SearchHit {
+                name: "goal".into(),
+                kind: "goal".into(),
+                signature: None,
+                module: String::new(),
+                path: "Demo.lean".into(),
+                line: 10,
+                doc: None,
+                source: Some(detail),
+                usages: Vec::new(),
+                applicable: false,
+                required_import: None,
+            }],
+            note: None,
+            duration_ms: 0,
+            created_at: 0,
+        };
+        assert!(!render_search_run(&run, false).contains("probe line 24"));
+        assert!(render_search_run(&run, true).contains("probe line 24"));
+    }
+
+    #[test]
     fn expanded_search_limits_source_to_top_three_hits() {
         let hits = (1..=4)
             .map(|index| SearchHit {

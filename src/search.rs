@@ -3378,11 +3378,29 @@ fn render_summary(run: &SearchRun) -> String {
                     _ => SOURCE_PREVIEW_LINES,
                 }
             };
-            for line in source.lines().take(source_lines) {
-                output.push('\n');
-                output.push_str(&truncate_line(line.trim_end(), 200));
+            let lines = source.lines().collect::<Vec<_>>();
+            let omitted = lines.len().saturating_sub(source_lines);
+            if run.inference == "probe" && omitted > 0 {
+                let head = source_lines.div_ceil(2);
+                let tail = source_lines - head;
+                for line in lines.iter().take(head) {
+                    output.push('\n');
+                    output.push_str(&truncate_line(line.trim_end(), 200));
+                }
+                output.push_str(&format!(
+                    "\n… {omitted} lines omitted; show {} --all",
+                    run.reference
+                ));
+                for line in lines.iter().skip(lines.len() - tail) {
+                    output.push('\n');
+                    output.push_str(&truncate_line(line.trim_end(), 200));
+                }
+            } else {
+                for line in lines.iter().take(source_lines) {
+                    output.push('\n');
+                    output.push_str(&truncate_line(line.trim_end(), 200));
+                }
             }
-            let omitted = source.lines().count().saturating_sub(source_lines);
             if omitted > 0 {
                 match hit.kind.as_str() {
                     "class" | "structure" => output.push_str(&format!(

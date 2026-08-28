@@ -1046,6 +1046,41 @@ fn search_summary_keeps_definition_body_after_ambient_context() {
 }
 
 #[test]
+fn probe_summary_keeps_the_decisive_tail() {
+    let detail = (1..=24)
+        .map(|line| format!("context line {line}"))
+        .chain(["⊢ target".into()])
+        .collect::<Vec<_>>()
+        .join("\n");
+    let summary = render_summary(&SearchRun {
+        reference: "q2".into(),
+        workspace_ref: "w1".into(),
+        query: "Demo.lean:10 goal".into(),
+        inference: "probe".into(),
+        hits: vec![SearchHit {
+            name: "goal".into(),
+            kind: "goal".into(),
+            signature: None,
+            module: String::new(),
+            path: "Demo.lean".into(),
+            line: 10,
+            doc: None,
+            source: Some(detail),
+            usages: Vec::new(),
+            applicable: false,
+            required_import: None,
+        }],
+        note: None,
+        duration_ms: 1,
+        created_at: 0,
+    });
+    assert!(summary.contains("context line 1"));
+    assert!(!summary.contains("context line 12"));
+    assert!(summary.contains("… 9 lines omitted; show q2 --all"));
+    assert!(summary.ends_with("⊢ target"));
+}
+
+#[test]
 fn broad_search_summary_prefers_ranked_signatures_over_source_body() {
     let summary = render_summary(&SearchRun {
         reference: "q-broad".into(),

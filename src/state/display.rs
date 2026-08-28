@@ -194,6 +194,7 @@ pub(super) fn render_search_run(run: &SearchRun, all: bool) -> String {
                     output.push_str("\n   source:");
                 }
                 let source_lines = match hit.kind.as_str() {
+                    _ if all && run.inference == "probe" => usize::MAX,
                     "fields" | "outline" | "source-range" | "source-occurrences" => usize::MAX,
                     "class" | "inductive" | "structure" => 48,
                     _ if index == 0 && query_requests_proof_body(&run.query) => 48,
