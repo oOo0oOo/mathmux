@@ -1611,6 +1611,43 @@ pub(super) fn structural_type_score(pattern: &str, signature: &str) -> f64 {
         + pattern_tokens.len() as f64 * tuning.token
 }
 
+pub(super) fn structural_result_type_score(pattern: &str, signature: &str) -> f64 {
+    let result = declaration_result_type(signature);
+    let required_shapes = ["≃L", "↔", "≤", "≥", "≠", "∈", "⊆", "∘"];
+    if required_shapes
+        .into_iter()
+        .any(|shape| pattern.contains(shape) && !result.contains(shape))
+        || (pattern.contains(" = ") && !result.contains(" = "))
+        || (pattern.contains(" < ") && !result.contains(" < "))
+        || (pattern.contains(" > ") && !result.contains(" > "))
+    {
+        return 0.0;
+    }
+    structural_type_score(pattern, result)
+}
+
+fn declaration_result_type(signature: &str) -> &str {
+    let signature = signature.trim();
+    if signature.starts_with('∀') {
+        return signature;
+    }
+    let begins_with_binder = matches!(signature.chars().next(), Some('{' | '['))
+        || (signature.starts_with('(')
+            && signature
+                .split_once(')')
+                .is_some_and(|(binder, _)| binder.contains(':')));
+    let mut depth = 0_u32;
+    for (index, character) in signature.char_indices() {
+        match character {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            ':' if depth == 0 => return signature[index + 1..].trim(),
+            _ => {}
+        }
+    }
+    if begins_with_binder { "" } else { signature }
+}
+
 pub(super) fn type_search_enabled() -> bool {
     let opted_out = std::env::var("MATHMUX_LOOGLE")
         .ok()

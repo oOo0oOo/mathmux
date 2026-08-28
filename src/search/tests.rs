@@ -258,11 +258,62 @@ fn query_parsing_scoring_and_ranking_regressions() {
             "(V W : ComplexVectorBundle B) : Isomorphic V W",
         ) > 0.0
     );
+    assert!(
+        structural_result_type_score(
+            "Continuous fun _ => Matrix.submatrix _ _ _",
+            "{A : X → Matrix l n R} (hA : Continuous A) : Continuous fun x => (A x).submatrix e₁ e₂",
+        ) > 0.0
+    );
+    assert_eq!(
+        structural_result_type_score(
+            "C(B, C(AddCircle (1 : ℝ), Matrix.GeneralLinearGroup (Fin _) ℂ))",
+            "{f : C(B, C(AddCircle (1 : ℝ), Matrix.GeneralLinearGroup (Fin n) ℂ))} : True",
+        ),
+        0.0
+    );
+    assert_eq!(
+        structural_result_type_score(
+            "C(B, C(AddCircle (1 : ℝ), Matrix.GeneralLinearGroup (Fin _) ℂ))",
+            "{f : C(B, C(AddCircle (1 : ℝ), Matrix.GeneralLinearGroup (Fin n) ℂ))} (hn : 0 < n)",
+        ),
+        0.0
+    );
+    assert_eq!(
+        structural_result_type_score("Norm _ ≤ _", "{α : Type*} [Norm α] : Norm α"),
+        0.0
+    );
+    assert_eq!(
+        structural_result_type_score("_ ≃L[ℂ] _", "(f : ℂ → E) : FormalMultilinearSeries ℂ ℂ E"),
+        0.0
+    );
     assert_eq!(
         loogle_unknown_identifier("Unknown identifier `ComplexVectorBundle.Isomorphic`"),
         Some("ComplexVectorBundle.Isomorphic")
     );
     assert_eq!(loogle_unknown_identifier("unexpected token"), None);
+    let indexed_homotopy = IndexedRow {
+        owner: "workspace:w1".into(),
+        path: "Demo.lean".into(),
+        module: "Demo".into(),
+        line: 1,
+        name: "Demo.homotopy".into(),
+        kind: "theorem".into(),
+        signature: "ContinuousMap.Homotopy f g".into(),
+        docs: String::new(),
+        body: String::new(),
+        rank: 0.0,
+    };
+    assert!(indexed_type_fallback(
+        "A placeholder `_` cannot be used where a function is expected",
+        "ContinuousMap.Homotopy (_ _)",
+        std::slice::from_ref(&indexed_homotopy),
+        &HashSet::from(["workspace:w1".into()]),
+    ));
+    assert!(indexed_loogle_identifier(
+        "Unknown identifier `homotopy`",
+        &[indexed_homotopy],
+        &HashSet::from(["workspace:w1".into()]),
+    ));
     assert!(
         structural_type_score(
             "⊢ Continuous (_ ∘ _)",

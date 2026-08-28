@@ -1668,6 +1668,7 @@ impl Searcher {
         let name_search = !type_search && declaration_name_query(query);
         let mut ranked = Vec::new();
         let mut warming = false;
+        let mut structural_type_fallback = false;
         let loogle_started = Instant::now();
         if type_search {
             let explicit_conclusion = conclusion_query(query);
@@ -1680,9 +1681,12 @@ impl Searcher {
                 self.loogle_hits(workspace, &applicability_query, !strict_type);
             if strict_type
                 && let Some(error) = applicable_error
-                && !indexed_loogle_identifier(&error, &rows, scopes)
             {
-                bail!("invalid type pattern: {}", clean_line(&error));
+                if indexed_type_fallback(&error, query, &rows, scopes) {
+                    structural_type_fallback = true;
+                } else {
+                    bail!("invalid type pattern: {}", clean_line(&error));
+                }
             }
             warming |= applicable_warming;
             let has_full_applicability_page = applicable_hits.len() >= RESULT_LIMIT;
@@ -1694,15 +1698,9 @@ impl Searcher {
                 SEARCH_TUNING.type_score.loogle_applicable,
             )?;
             ranked.extend(applicable);
-            if !explicit_conclusion && !has_full_applicability_page {
-                let (loogle_hits, is_warming, related_error) =
+            if !strict_type && !explicit_conclusion && !has_full_applicability_page {
+                let (loogle_hits, is_warming, _) =
                     self.loogle_hits(workspace, query, !strict_type);
-                if strict_type
-                    && let Some(error) = related_error
-                    && !indexed_loogle_identifier(&error, &rows, scopes)
-                {
-                    bail!("invalid type pattern: {}", clean_line(&error));
-                }
                 warming |= is_warming;
                 let loogle = self.ranked_loogle_hits(
                     loogle_hits,
@@ -1718,10 +1716,17 @@ impl Searcher {
         let ranking_started = Instant::now();
         for row in rows.into_iter().filter(|row| scopes.contains(&row.owner)) {
             let type_score = if type_search {
-                structural_type_score(query, &row.signature)
+                if strict_type {
+                    structural_result_type_score(query, &row.signature)
+                } else {
+                    structural_type_score(query, &row.signature)
+                }
             } else {
                 0.0
             };
+            if strict_type && type_score <= 0.0 {
+                continue;
+            }
             let lexical = lexical_score(query, &query_tokens, &row);
             if type_search && row.kind == "file" && type_score == 0.0 {
                 continue;
@@ -1792,6 +1797,17 @@ impl Searcher {
             }
         }
         let fallback_ms = fallback_started.elapsed().as_millis() as u64;
+        if strict_type {
+            ranked.retain(|candidate| {
+                candidate
+                    .hit
+                    .signature
+                    .as_deref()
+                    .is_some_and(|signature| {
+                        structural_result_type_score(query, signature) > 0.0
+                    })
+            });
+        }
         let finish_started = Instant::now();
         let (mut ranked, glob_name_miss) = rank_discovery_candidates(
             ranked,
@@ -1848,6 +1864,13 @@ impl Searcher {
         }
         if exact_name_miss {
             prepend_search_note(&mut note, "related results (no exact match)".into());
+        }
+        if structural_type_fallback {
+            prepend_search_note(
+                &mut note,
+                "Lean unification rejected this pattern; showing strict structural type matches"
+                    .into(),
+            );
         }
         let result = SearchResult {
             hits: ranked.into_iter().map(|candidate| candidate.hit).collect(),
@@ -2727,10 +2750,25 @@ fn indexed_loogle_identifier(
     let Some(identifier) = loogle_unknown_identifier(error) else {
         return false;
     };
-    identifier.contains('.')
-        && rows.iter().any(|row| {
-            scopes.contains(&row.owner) && qualified_name_matches(&row.name, identifier)
-        })
+    rows.iter().any(|row| {
+        scopes.contains(&row.owner)
+            && !matches!(row.kind.as_str(), "file" | "imports")
+            && qualified_name_matches(&row.name, identifier)
+    })
+}
+
+fn indexed_type_fallback(
+    error: &str,
+    query: &str,
+    rows: &[IndexedRow],
+    scopes: &HashSet<String>,
+) -> bool {
+    indexed_loogle_identifier(error, rows, scopes)
+        || (error.contains("placeholder `_` cannot be used where a function is expected")
+            && rows.iter().any(|row| {
+                scopes.contains(&row.owner)
+                    && structural_result_type_score(query, &row.signature) > 0.0
+            }))
 }
 
 fn loogle_unknown_identifier(error: &str) -> Option<&str> {
