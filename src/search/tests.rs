@@ -1452,8 +1452,9 @@ fn explicit_body_query_keeps_alternatives_compact() {
     });
     assert!(summary.contains("requested body"));
     assert!(summary.contains("Demo.proof : True"));
-    assert!(summary.contains("Other.proof : True"));
+    assert!(!summary.contains("Other.proof : True"));
     assert!(!summary.contains("alternative body"));
+    assert!(summary.contains("+1 results; show q3 --all"));
 
     let related = render_summary(&SearchRun {
         reference: "q-related".into(),

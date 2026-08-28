@@ -3268,7 +3268,9 @@ fn render_summary(run: &SearchRun) -> String {
     if run.hits.is_empty() {
         output.push_str(" no results");
     }
-    let summary_limit = if run.inference == "exact-batch" {
+    let summary_limit = if proof_body_requested && !related_results {
+        1
+    } else if run.inference == "exact-batch" {
         run.hits.len()
     } else {
         SUMMARY_LIMIT
@@ -3322,18 +3324,20 @@ fn render_summary(run: &SearchRun) -> String {
         if let Some(module) = &hit.required_import {
             output.push_str(&format!("\n  import {module}"));
         }
-        for usage in hit.usages.iter().take(3) {
-            output.push_str(&format!("\n  used: {}:{}", usage.path, usage.line));
-            if let Some(context) = &usage.context {
-                output.push_str(&format!(" in {context}"));
+        if !(proof_body_requested && index == 0) {
+            for usage in hit.usages.iter().take(3) {
+                output.push_str(&format!("\n  used: {}:{}", usage.path, usage.line));
+                if let Some(context) = &usage.context {
+                    output.push_str(&format!(" in {context}"));
+                }
             }
-        }
-        if hit.usages.len() > 3 {
-            output.push_str(&format!(
-                "\n  +{} usages; show {} --all",
-                hit.usages.len() - 3,
-                run.reference
-            ));
+            if hit.usages.len() > 3 {
+                output.push_str(&format!(
+                    "\n  +{} usages; show {} --all",
+                    hit.usages.len() - 3,
+                    run.reference
+                ));
+            }
         }
         if let Some(source) = displayed_source {
             if run.inference != "probe" && !matches!(
