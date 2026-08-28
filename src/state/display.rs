@@ -352,16 +352,31 @@ pub(super) fn render_submission(
     if let Some(build_output) = &submission.build_output
         && !build_output.trim().is_empty()
     {
-        if !all && submission.validation_status == "passed" {
+        if submission.validation_status == "passed" {
             let warnings = build_output
                 .lines()
                 .filter(|line| line.trim_start().starts_with("warning:"))
                 .count();
             if warnings > 0 {
-                output.push_str(&format!(
-                    "\nbuild warnings: {warnings}; show {} --all",
-                    submission.reference
-                ));
+                if all {
+                    output.push_str(&format!(
+                        "\nbuild warnings: {warnings} total; unrelated output omitted"
+                    ));
+                } else {
+                    output.push_str(&format!(
+                        "\nbuild warnings: {warnings}; show {} --all",
+                        submission.reference
+                    ));
+                }
+            }
+            if all {
+                let rendered = relevant_passed_build_output(build_output, files);
+                if !rendered.is_empty() {
+                    output.push_str("\noutput:");
+                    for line in rendered.lines() {
+                        output.push_str(&format!("\n  {line}"));
+                    }
+                }
             }
         } else {
             let rendered = if all {
@@ -492,6 +507,31 @@ fn bounded_build_output(output: &str) -> String {
     selected.join("\n")
 }
 
+fn relevant_passed_build_output(output: &str, files: &[String]) -> String {
+    let mut keep = false;
+    let mut selected = Vec::new();
+    for line in output.lines() {
+        let trimmed = line.trim_start();
+        if ["warning:", "info:", "error:"]
+            .iter()
+            .any(|prefix| trimmed.starts_with(prefix))
+        {
+            keep = files.iter().any(|file| trimmed.contains(file));
+        } else if trimmed.starts_with("Build completed")
+            || trimmed.starts_with('⚠')
+            || trimmed.starts_with("Building ")
+            || trimmed.starts_with("Built ")
+            || trimmed.starts_with("Replayed ")
+        {
+            keep = false;
+        }
+        if keep {
+            selected.push(line);
+        }
+    }
+    bounded_build_output(&selected.join("\n"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -525,5 +565,19 @@ mod tests {
         assert!(rendered.contains("build line 1"));
         assert!(rendered.contains("build line 300"));
         assert!(rendered.contains("180 build lines omitted"));
+    }
+
+    #[test]
+    fn passed_build_output_keeps_only_submitted_file_blocks() {
+        let output = "warning: Other.lean:1: unrelated\n  unrelated detail\n\
+info: Demo.lean:2: Demo.answer : Nat\n  signature detail\n\
+warning: Demo.lean:3: relevant warning\n  relevant detail\n\
+Build completed successfully";
+        let rendered = relevant_passed_build_output(output, &["Demo.lean".into()]);
+        assert!(!rendered.contains("Other.lean"));
+        assert!(!rendered.contains("unrelated detail"));
+        assert!(rendered.contains("Demo.answer : Nat"));
+        assert!(rendered.contains("relevant warning"));
+        assert!(rendered.contains("relevant detail"));
     }
 }
