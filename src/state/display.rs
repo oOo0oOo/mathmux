@@ -517,7 +517,8 @@ fn relevant_passed_build_output(output: &str, files: &[String]) -> String {
             .iter()
             .any(|prefix| trimmed.starts_with(prefix))
         {
-            keep = files.iter().any(|file| trimmed.contains(file));
+            keep = !trimmed.contains(".lean:")
+                || files.iter().any(|file| trimmed.contains(file));
         } else if trimmed.starts_with("Build completed")
             || trimmed.starts_with('⚠')
             || trimmed.starts_with("Building ")
