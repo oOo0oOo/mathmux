@@ -646,6 +646,10 @@ impl Checker {
                 return Ok(result);
             }
         };
+        // Setup preparation can create or refresh artifacts included in the
+        // certificate fingerprint. Certify the environment that Lean actually
+        // uses, not the pre-setup state observed during cache lookup.
+        let fingerprint = self.full_fingerprint(workspace, target, &dependencies)?;
         let setup_ms = phase.elapsed().as_millis() as u64;
         let phase = Instant::now();
         report(&format!("elaborating {}", target.display()));
