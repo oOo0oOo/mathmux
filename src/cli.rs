@@ -45,7 +45,8 @@ KIND = abbrev|class|def|inductive|instance|lemma|structure|theorem
 
 RESULT
   Start compact and inspect the result. Expand only a selected qREF with
-  show qREF --all. --limit N caps hits. Exact names include full signatures.
+  show qREF --all. --limit N caps hits and cannot combine with --all.
+  Exact names include full signatures.
 
 RULES
   name: forces exact lookup; its | batch returns all. Bare A|B|C stops after the
@@ -834,6 +835,7 @@ mod tests {
             .unwrap()
             .render_long_help()
             .to_string();
+        assert!(help.contains("--limit N caps hits and cannot combine with --all"));
         for form in [
             "name:NAME",
             "type:LEAN_TYPE",
