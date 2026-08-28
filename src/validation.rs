@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use crate::check::{parse_imports, project_module_name};
 use crate::coordination::{lock_exclusive, open_lock};
-use crate::git::{lake_command, project_lean_files};
+use crate::git::{background_lake_command, lake_command, project_lean_files};
 use crate::issue::{TelemetryOperation, TelemetryStore};
 use crate::repo::Repo;
 #[cfg(test)]
@@ -127,7 +127,7 @@ fn validate(repo: &Repo, submission: &Submission) -> Result<ValidationReport> {
     let root = prepare_worktree(repo, &submission.main_commit)?;
     let (roots, project_modules) = deliverable_modules(&root);
     invalidate_newer_project_artifacts(&root)?;
-    let output = lake_command(repo, &root)
+    let output = background_lake_command(repo, &root)
         .arg("build")
         .args(&roots)
         .output()

@@ -25,6 +25,7 @@ const WORKFLOW_HELP: &str = r#"AGENT CONTRACT
   discover  Search unknown things; probe known API, exact context, or failures.
             Read their --help. Start compact; expand only a selected qREF with show qREF --all.
   change    Edit intended files -> check -> submit. Use check FILE only to isolate dirty files.
+            Run one check at a time; do not launch bulk parallel check processes.
   update    Use sync. Use mathmux only—never substitute git, lean, lake, or other tooling.
   Lean      Use explicit narrow imports and aligned module/namespace/path; keep public imports API-only.
   safety    sorry is tracked; new axioms fail validation. Never edit .lake/generated artifacts."#;

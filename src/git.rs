@@ -533,7 +533,18 @@ pub fn submit(repo: &Repo, workspace: &Workspace, message: &str) -> Result<Submi
 }
 
 pub fn lake_command(repo: &Repo, root: &Path) -> Command {
-    let mut command = Command::new(lake_executable());
+    configure_lake_command(Command::new(lake_executable()), repo, root)
+}
+
+pub fn background_lake_command(repo: &Repo, root: &Path) -> Command {
+    let mut command = Command::new("ionice");
+    command
+        .args(["-c", "2", "-n", "7", "nice", "-n", "10"])
+        .arg(lake_executable());
+    configure_lake_command(command, repo, root)
+}
+
+fn configure_lake_command(mut command: Command, repo: &Repo, root: &Path) -> Command {
     command
         .current_dir(root)
         .env("LAKE_ARTIFACT_CACHE", "true")
@@ -593,6 +604,25 @@ mod tests {
         assert!(validate_name("-bad").is_err());
         assert!(validate_name("a/b").is_err());
         assert!((1..=12).contains(&workspace_limit()));
+    }
+
+    #[test]
+    fn validation_lake_commands_are_background_priority() {
+        let directory = tempdir().unwrap();
+        run_checked("git", ["init"], directory.path()).unwrap();
+        let repo = Repo::discover(directory.path()).unwrap();
+        let command = background_lake_command(&repo, directory.path());
+        assert_eq!(command.get_program(), "ionice");
+        let arguments = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(&arguments[..7], ["-c", "2", "-n", "7", "nice", "-n", "10"]);
+        assert!(
+            arguments
+                .last()
+                .is_some_and(|argument| argument.ends_with("lake"))
+        );
     }
 
     #[test]
