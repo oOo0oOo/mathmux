@@ -2312,6 +2312,19 @@ fn source_regex_queries_scan_a_bounded_scope_with_context() {
         "def before := 0\ntheorem alpha_apply := by trivial\ndef after := 1\n",
     )
     .unwrap();
+    let error = match parse_source_regex_query(
+        directory.path(),
+        directory.path(),
+        None,
+        "source /alpha_apply/ extra",
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("source label unexpectedly parsed as a scope"),
+    };
+    assert_eq!(
+        error.to_string(),
+        "source is a help label, not a keyword; use /REGEX/ or PATH /REGEX/ directly"
+    );
     fs::write(
         directory.path().join("Nested/Two.lean"),
         "theorem beta_apply := by trivial\n",

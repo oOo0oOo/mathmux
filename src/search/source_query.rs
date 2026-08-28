@@ -88,6 +88,13 @@ pub(super) fn parse_source_regex_query(
         .strip_prefix('[')
         .and_then(|scope| scope.strip_suffix(']'))
         .unwrap_or(scope);
+    if scope
+        .split_whitespace()
+        .next()
+        .is_some_and(|token| token.eq_ignore_ascii_case("source"))
+    {
+        bail!("source is a help label, not a keyword; use /REGEX/ or PATH /REGEX/ directly")
+    }
     ensure!(
         scope.split_whitespace().count() <= 1,
         "source regex accepts at most one file or directory scope"
