@@ -45,7 +45,7 @@ KIND = abbrev|class|def|inductive|instance|lemma|structure|theorem
 
 RESULT
   Start compact and inspect the result. Expand only a selected qREF with
-  show qREF --all. --limit N caps hits and cannot combine with --all.
+  show qREF --all. --limit N (1–200) caps hits and cannot combine with --all.
   Exact names include full signatures.
 
 RULES
@@ -131,7 +131,7 @@ enum TopCommand {
         /// Query terms; the query form is inferred as documented above.
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
-        /// Return at most N ranked results.
+        /// Return at most N ranked results (1–200).
         #[arg(long, conflicts_with = "all")]
         limit: Option<usize>,
         /// Print the complete result instead of its compact preview.
@@ -838,7 +838,7 @@ mod tests {
             .unwrap()
             .render_long_help()
             .to_string();
-        assert!(help.contains("--limit N caps hits and cannot combine with --all"));
+        assert!(help.contains("--limit N (1–200) caps hits and cannot combine with --all"));
         for form in [
             "name:NAME",
             "type:LEAN_TYPE",
