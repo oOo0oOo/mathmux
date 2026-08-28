@@ -733,6 +733,11 @@ impl Searcher {
                     .state
                     .check_run(&reference)?
                     .with_context(|| format!("unknown check reference {reference}"))?;
+                ensure!(
+                    run.workspace_ref == workspace.reference,
+                    "{reference} belongs to {}; run the Lean probe from that workspace",
+                    run.workspace_ref
+                );
                 let diagnostic = run.diagnostics.first().or_else(|| run.warnings.first());
                 let (path, line) = diagnostic_position(
                     diagnostic.map(|value| value.text.as_str()).unwrap_or_default(),
@@ -758,6 +763,11 @@ impl Searcher {
                     .state
                     .search_run(&reference)?
                     .with_context(|| format!("unknown query reference {reference}"))?;
+                ensure!(
+                    run.workspace_ref == workspace.reference,
+                    "{reference} belongs to {}; run the Lean probe from that workspace",
+                    run.workspace_ref
+                );
                 let hit = run.hits.first().with_context(|| format!("{reference} has no source context"))?;
                 ensure!(!hit.path.is_empty(), "{reference} has no source path");
                 let positioned = run.inference == "probe" && hit.line > 0 || matches!(
