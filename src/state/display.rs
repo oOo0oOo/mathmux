@@ -1,11 +1,14 @@
 use std::collections::HashSet;
 
-use anyhow::{Result, bail};
-
-use super::{CheckProfile, CheckRun, Diagnostic, SEARCH_USAGE_LIMIT, SearchRun, Submission};
+use super::{
+    CheckProfile, CheckRun, Diagnostic, SEARCH_USAGE_LIMIT, SearchRun, Submission,
+    ValidationStatus,
+};
+use crate::presentation::{
+    BUILD_OUTPUT_LINES, BUILD_OUTPUT_TAIL_LINES, SOURCE_PREVIEW_LINES, bounded_head_tail,
+};
 use crate::util::{
-    SOURCE_PREVIEW_LINES, format_duration, query_requests_proof_body, short_hash, single_line,
-    truncate_line,
+    format_duration, query_requests_proof_body, short_hash, single_line, truncate_line,
 };
 
 impl CheckProfile {
@@ -237,18 +240,6 @@ fn without_repeated_ambient_context<'a>(source: &'a str, shown: &mut HashSet<Str
     }
 }
 
-pub(super) fn validate_reference(reference: &str) -> Result<char> {
-    let mut characters = reference.chars();
-    let Some(kind) = characters.next() else {
-        bail!("empty reference");
-    };
-    let sequence = characters.collect::<String>();
-    if sequence.is_empty() || !sequence.chars().all(|value| value.is_ascii_digit()) {
-        bail!("malformed reference {reference}");
-    }
-    Ok(kind)
-}
-
 pub(super) fn render_check_run(run: &CheckRun, all: bool) -> String {
     let mut output = format!("{} {} {}ms", run.reference, run.status, run.duration_ms);
     output.push_str(&format!("\nworkspace: {}", run.workspace_ref));
@@ -288,7 +279,7 @@ pub(super) fn render_submission(
     later_passing_validation: Option<&str>,
     all: bool,
 ) -> String {
-    if submission.validation_status == "skipped" {
+    if submission.validation_status == ValidationStatus::Skipped {
         return format!(
             "{} covered-by:{}",
             submission.reference,
@@ -296,7 +287,7 @@ pub(super) fn render_submission(
         );
     }
     let mut output = format!("{} {}", submission.reference, submission.validation_status);
-    if submission.validation_status == "failed"
+    if submission.validation_status == ValidationStatus::Failed
         && let Some(reference) = later_passing_validation
     {
         output.push_str(&format!("\nhistorical: later validation {reference} passed"));
@@ -327,7 +318,7 @@ pub(super) fn render_submission(
             for axiom in &submission.axioms {
                 output.push_str(&format!("\n  {axiom}"));
             }
-        } else if submission.validation_status == "passed" {
+        } else if submission.validation_status == ValidationStatus::Passed {
             output.push_str("\naxioms: clean");
         } else if submission
             .validation_detail
@@ -353,7 +344,7 @@ pub(super) fn render_submission(
     if let Some(build_output) = &submission.build_output
         && !build_output.trim().is_empty()
     {
-        if submission.validation_status == "passed" {
+        if submission.validation_status == ValidationStatus::Passed {
             let warnings = build_output
                 .lines()
                 .filter(|line| line.trim_start().starts_with("warning:"))
@@ -486,26 +477,12 @@ fn condense_build_output(output: &str) -> String {
 }
 
 fn bounded_build_output(output: &str) -> String {
-    const LINE_LIMIT: usize = 120;
-    const TAIL_LINES: usize = 30;
-
-    let lines = output.trim().lines().collect::<Vec<_>>();
-    if lines.len() <= LINE_LIMIT {
-        return lines.join("\n");
-    }
-    let head_lines = LINE_LIMIT - TAIL_LINES;
-    let omitted = lines.len() - LINE_LIMIT;
-    let mut selected = lines[..head_lines]
-        .iter()
-        .map(|line| (*line).to_owned())
-        .collect::<Vec<_>>();
-    selected.push(format!("... {omitted} build lines omitted ..."));
-    selected.extend(
-        lines[lines.len() - TAIL_LINES..]
-            .iter()
-            .map(|line| (*line).to_owned()),
-    );
-    selected.join("\n")
+    bounded_head_tail(
+        output,
+        BUILD_OUTPUT_LINES,
+        BUILD_OUTPUT_TAIL_LINES,
+        "build lines",
+    )
 }
 
 fn relevant_passed_build_output(output: &str, files: &[String]) -> String {

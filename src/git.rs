@@ -1,13 +1,14 @@
-use std::fs::{self, File};
+use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail, ensure};
-use fs2::FileExt;
 use walkdir::WalkDir;
 
 use crate::repo::Repo;
+use crate::coordination::{lock_exclusive, open_lock};
+use crate::reference::ReferenceKind;
 use crate::state::{State, Workspace};
 use crate::util::{canonical, command_detail, run_checked, run_output};
 
@@ -58,7 +59,7 @@ pub fn create_workspace(
     let limit = workspace_limit();
     ensure!(count < limit, "workspace limit reached ({limit})");
 
-    let reference = state.next_ref('w')?;
+    let reference = state.next_reference(ReferenceKind::Workspace)?;
     let branch = format!("mathmux/{name}");
     let path = repo.workspace_parent()?.join(name);
     ensure!(
@@ -266,13 +267,8 @@ pub struct SyncResult {
 }
 
 pub fn push_main(repo: &Repo) -> Result<String> {
-    let lock = File::options()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(&repo.integration_lock)?;
-    lock.lock_exclusive()?;
+    let lock = open_lock(&repo.integration_lock)?;
+    lock_exclusive(&lock)?;
     ensure!(
         dirty_paths(&repo.root)?.is_empty(),
         "managed main worktree is not clean"
@@ -501,13 +497,8 @@ pub struct SubmitResult {
 
 pub fn submit(repo: &Repo, workspace: &Workspace, message: &str) -> Result<SubmitResult> {
     ensure!(!message.trim().is_empty(), "submission message is empty");
-    let lock = File::options()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(&repo.integration_lock)?;
-    lock.lock_exclusive()?;
+    let lock = open_lock(&repo.integration_lock)?;
+    lock_exclusive(&lock)?;
 
     ensure!(
         dirty_paths(&repo.root)?.is_empty(),

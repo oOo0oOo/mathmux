@@ -7,9 +7,11 @@ use std::time::UNIX_EPOCH;
 use anyhow::{Result, ensure};
 
 use crate::git::{dirty_paths, head};
-use crate::issue::{ContextEvent, TelemetryStore, development_enabled};
+use crate::issue::{ContextEvent, TelemetryStore};
 use crate::repo::Repo;
-use crate::state::{ActivityMetrics, State, Submission, SubmissionInterval, Workspace};
+use crate::state::{
+    ActivityMetrics, State, Submission, SubmissionInterval, ValidationStatus, Workspace,
+};
 use crate::util::{now_unix_ms, run_checked, run_output, short_hash, single_line, truncate_line};
 
 const HOUR_SECS: i64 = 60 * 60;
@@ -41,7 +43,7 @@ struct SubmissionContext {
     output_bytes: u64,
 }
 
-pub fn render(repo: &Repo, state: &State) -> Result<String> {
+pub fn render(repo: &Repo, state: &State, telemetry: Option<&TelemetryStore>) -> Result<String> {
     let now = now_unix_ms() / 1000;
     let project = repo
         .root
@@ -58,16 +60,12 @@ pub fn render(repo: &Repo, state: &State) -> Result<String> {
     remember_agent_models(state, &agents);
     let code = current_code(&repo.root)?;
     let sorries = audited_sorry_count(state, &revision)?;
-    let context = submission_context(repo, state, (now - DAY_SECS) * 1000);
-    let activity_events = development_enabled()
-        .then(|| {
-            TelemetryStore::global().and_then(|store| {
-                store.context_events(repo, (now - DAY_SECS - ACTIVE_SECS) * 1000)
-            })
-        })
-        .transpose()
-        .ok()
-        .flatten();
+    let context = submission_context(repo, state, telemetry, (now - DAY_SECS) * 1000);
+    let activity_events = telemetry.and_then(|store| {
+        store
+            .context_events(repo, (now - DAY_SECS - ACTIVE_SECS) * 1000)
+            .ok()
+    });
 
     let mut output = format!("{project} {}", short_hash(&revision));
     render_agents(&mut output, &agents, now)?;
@@ -137,7 +135,8 @@ fn render_validation_status(
             )?;
         }
         if let Some(submission) =
-            latest_completed.filter(|submission| submission.validation_status == "failed")
+            latest_completed
+                .filter(|submission| submission.validation_status == ValidationStatus::Failed)
         {
             write!(
                 output,
@@ -149,7 +148,8 @@ fn render_validation_status(
             }
         }
     } else if let Some(submission) =
-        latest_completed.filter(|submission| submission.validation_status == "failed")
+        latest_completed
+            .filter(|submission| submission.validation_status == ValidationStatus::Failed)
     {
         write!(
             output,
@@ -165,7 +165,11 @@ fn render_validation_status(
     Ok(())
 }
 
-pub fn render_formalization_yaml(repo: &Repo, state: &State) -> Result<String> {
+pub fn render_formalization_yaml(
+    repo: &Repo,
+    state: &State,
+    telemetry: Option<&TelemetryStore>,
+) -> Result<String> {
     let project = repo
         .root
         .file_name()
@@ -179,9 +183,8 @@ pub fn render_formalization_yaml(repo: &Repo, state: &State) -> Result<String> {
         .filter_map(|workspace| workspace.model)
         .filter(|model| publication_model(model))
         .collect::<std::collections::BTreeSet<_>>();
-    let agent_hours = TelemetryStore::global()
-        .and_then(|store| store.context_events(repo, 0))
-        .ok()
+    let agent_hours = telemetry
+        .and_then(|store| store.context_events(repo, 0).ok())
         .map(|events| recorded_agent_hours(&events))
         .filter(|hours| *hours > 0.0);
     let license = detected_license(&repo.root);
@@ -529,10 +532,15 @@ fn net_lean_lines(root: &Path, since: i64) -> Result<i64> {
     }))
 }
 
-fn submission_context(repo: &Repo, state: &State, since: i64) -> Vec<SubmissionContext> {
-    if !development_enabled() {
+fn submission_context(
+    repo: &Repo,
+    state: &State,
+    telemetry: Option<&TelemetryStore>,
+    since: i64,
+) -> Vec<SubmissionContext> {
+    let Some(telemetry) = telemetry else {
         return Vec::new();
-    }
+    };
     let Ok(submissions) = state.submission_intervals(since) else {
         return Vec::new();
     };
@@ -543,9 +551,7 @@ fn submission_context(repo: &Repo, state: &State, since: i64) -> Vec<SubmissionC
     else {
         return Vec::new();
     };
-    let Ok(events) =
-        TelemetryStore::global().and_then(|store| store.context_events(repo, earliest))
-    else {
+    let Ok(events) = telemetry.context_events(repo, earliest) else {
         return Vec::new();
     };
     let Ok(lines) = submitted_lean_lines(&repo.root, &submissions) else {
@@ -775,7 +781,7 @@ mod tests {
             main_commit: "main".into(),
             base_commit: "base".into(),
             checks: Vec::new(),
-            validation_status: status.into(),
+            validation_status: status.parse().unwrap(),
             validation_detail: detail.map(str::to_owned),
             build_output: None,
             axioms: Vec::new(),

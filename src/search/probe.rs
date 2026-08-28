@@ -3,6 +3,7 @@ use std::path::Path;
 use anyhow::{Result, bail, ensure};
 
 use super::*;
+use crate::reference::{Reference, ReferenceKind};
 
 const FOCUSES: &[&str] = &[
     "signature", "apply", "fields", "constructors", "ext", "simp", "instances",
@@ -137,10 +138,10 @@ fn indexed_check_hit<'a>(run: &'a SearchRun, subject: &str) -> Option<&'a Search
 }
 
 fn parse_context(value: &str) -> Option<ProbeContext> {
-    if reference(value, 'c') {
+    if Reference::is_kind(value, ReferenceKind::Check) {
         return Some(ProbeContext::Check(value.into()));
     }
-    if reference(value, 'q') {
+    if Reference::is_kind(value, ReferenceKind::Query) {
         return Some(ProbeContext::Query(value.into()));
     }
     if value.rsplit_once(':').is_some_and(|(_, line)| line.parse::<u64>().is_ok()) {
@@ -169,11 +170,6 @@ fn parse_directive(value: &str) -> Result<Option<LeanDirective>> {
         }
     }
     Ok(None)
-}
-
-fn reference(term: &str, kind: char) -> bool {
-    term.strip_prefix(kind)
-        .is_some_and(|digits| !digits.is_empty() && digits.chars().all(|ch| ch.is_ascii_digit()))
 }
 
 impl Searcher {
@@ -277,7 +273,7 @@ impl Searcher {
         }
         let ok = result.ok;
         let run = SearchRun {
-            reference: self.state.next_ref('q')?,
+            reference: self.state.next_reference(ReferenceKind::Query)?,
             workspace_ref: workspace.reference.clone(),
             query: format!("{scope} {subject} usages"),
             inference: "exact".into(),
@@ -453,7 +449,7 @@ impl Searcher {
         let Some(reference) = rendered
             .split_whitespace()
             .next()
-            .filter(|term| reference(term, 'q'))
+            .filter(|term| Reference::is_kind(term, ReferenceKind::Query))
         else {
             return Ok(rendered);
         };
@@ -474,7 +470,7 @@ impl Searcher {
             let run = rendered
                 .split_whitespace()
                 .next()
-                .filter(|term| reference(term, 'q'))
+                .filter(|term| Reference::is_kind(term, ReferenceKind::Query))
                 .map(|reference| self.state.search_run(reference))
                 .transpose()?
                 .flatten();
@@ -508,7 +504,7 @@ impl Searcher {
                 "no indexed constructors found for {name}"
             );
             let run = SearchRun {
-                reference: self.state.next_ref('q')?,
+                reference: self.state.next_reference(ReferenceKind::Query)?,
                 workspace_ref: workspace.reference.clone(),
                 query: format!("{name} constructors"),
                 inference: "exact-batch".into(),
@@ -549,7 +545,7 @@ impl Searcher {
         focus: &str,
     ) -> Result<String> {
         let run = SearchRun {
-            reference: self.state.next_ref('q')?,
+            reference: self.state.next_reference(ReferenceKind::Query)?,
             workspace_ref: workspace.reference.clone(),
             query: format!("{reference} {focus}"),
             inference: "probe-refinement".into(),
@@ -572,7 +568,7 @@ impl Searcher {
         path: Option<&str>,
         line: u64,
     ) -> Result<String> {
-        let reference = self.state.next_ref('q')?;
+        let reference = self.state.next_reference(ReferenceKind::Query)?;
         let run = SearchRun {
             reference: reference.clone(),
             workspace_ref: workspace.reference.clone(),

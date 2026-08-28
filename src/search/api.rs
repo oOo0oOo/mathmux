@@ -1,4 +1,5 @@
 use anyhow::{Result, bail, ensure};
+use crate::reference::{Reference, ReferenceKind};
 
 const KINDS: &[&str] = &[
     "abbrev", "class", "def", "inductive", "instance", "lemma", "structure", "theorem",
@@ -32,7 +33,10 @@ impl SearchRequest {
             "search has no `more` modifier; use `show qREF --all`"
         );
         ensure!(
-            !query.starts_with('c') || !reference(query.split_whitespace().next().unwrap_or(""), 'c'),
+            !Reference::is_kind(
+                query.split_whitespace().next().unwrap_or(""),
+                ReferenceKind::Check,
+            ),
             "inspect a stored check with `mathmux probe cREF`"
         );
         ensure!(
@@ -130,11 +134,6 @@ fn declaration_name(name: &str) -> bool {
                     .chars()
                     .all(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '\''))
         })
-}
-
-fn reference(term: &str, kind: char) -> bool {
-    term.strip_prefix(kind)
-        .is_some_and(|digits| !digits.is_empty() && digits.chars().all(|ch| ch.is_ascii_digit()))
 }
 
 #[cfg(test)]

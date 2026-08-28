@@ -5,10 +5,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::types::Type;
 use serde::{Deserialize, Serialize};
 
 use crate::git::{dirty_paths, head};
 use crate::protocol::{Command, Request, Response};
+use crate::reference::{Reference, ReferenceKind};
 use crate::repo::Repo;
 use crate::state::State;
 use crate::util::{build_id, format_duration, hash_bytes, now_unix_ms, resident_memory_kib};
@@ -941,12 +943,9 @@ fn error_class(summary: &str) -> String {
 }
 
 fn parse_event_reference(reference: &str) -> Result<i64> {
-    let value = reference
-        .strip_prefix('e')
-        .filter(|value| !value.is_empty())
-        .filter(|value| value.chars().all(|character| character.is_ascii_digit()))
-        .with_context(|| format!("malformed telemetry reference {reference}"))?;
-    Ok(value.parse()?)
+    Ok(Reference::parse_kind(reference, ReferenceKind::Event)?
+        .sequence()
+        .try_into()?)
 }
 
 fn capture_context(cwd: &Path, related_ref: Option<&str>) -> Result<IssueContext> {
@@ -1052,22 +1051,22 @@ fn table_has_column(connection: &Connection, table: &str, column: &str) -> Resul
 }
 
 fn parse_reference(reference: &str) -> Result<i64> {
-    let value = reference
-        .strip_prefix('i')
-        .filter(|value| !value.is_empty())
-        .filter(|value| value.chars().all(|character| character.is_ascii_digit()))
-        .with_context(|| format!("malformed issue reference {reference}"))?;
-    Ok(value.parse()?)
+    Ok(Reference::parse_kind(reference, ReferenceKind::Issue)?
+        .sequence()
+        .try_into()?)
 }
 
 fn issue_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Issue> {
     let context: String = row.get(4)?;
+    let context = serde_json::from_str(&context).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(4, Type::Text, Box::new(error))
+    })?;
     Ok(Issue {
         id: row.get(0)?,
         summary: row.get(1)?,
         status: row.get(2)?,
         occurrences: row.get(3)?,
-        context: serde_json::from_str(&context).unwrap_or_default(),
+        context,
         fixed_by: row.get(5)?,
         note: row.get(6)?,
         created_at: row.get(7)?,
@@ -1317,7 +1316,7 @@ mod tests {
                 &crate::state::CheckRun {
                     reference: "c1".into(),
                     workspace_ref: "w1".into(),
-                    status: "failed".into(),
+                    status: crate::state::CheckStatus::Failed,
                     files: vec!["Demo.lean".into()],
                     passed: Vec::new(),
                     failed: Some("Demo.lean".into()),

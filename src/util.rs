@@ -7,8 +7,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 
-pub const SOURCE_PREVIEW_LINES: usize = 16;
-
 pub fn now_unix_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

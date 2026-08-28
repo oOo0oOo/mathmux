@@ -20,8 +20,6 @@ pub(super) struct SearchTuning {
     pub(super) source: SourceTuning,
     /// Post-score promotion, grouping, and import-context rules.
     pub(super) promotion: PromotionTuning,
-    /// Final result breadth and detail budgets.
-    pub(super) presentation: PresentationTuning,
 }
 
 #[derive(Clone, Copy)]
@@ -124,16 +122,6 @@ pub(super) struct PromotionTuning {
     pub(super) import_missing: f64,
 }
 
-#[derive(Clone, Copy)]
-pub(super) struct PresentationTuning {
-    pub(super) result_limit: usize,
-    pub(super) summary_limit: usize,
-    pub(super) related_result_limit: usize,
-    pub(super) declaration_detail_lines: usize,
-    pub(super) fallback_candidate_multiplier: usize,
-    pub(super) source_range_all_lines: usize,
-}
-
 pub(super) const SEARCH_TUNING: SearchTuning = SearchTuning {
     retrieval: RetrievalTuning {
         type_rows: 20_000,
@@ -220,14 +208,6 @@ pub(super) const SEARCH_TUNING: SearchTuning = SearchTuning {
         exact_source_enrichment: 3,
         import_available: 30.0,
         import_missing: 10.0,
-    },
-    presentation: PresentationTuning {
-        result_limit: 24,
-        summary_limit: 5,
-        related_result_limit: 8,
-        declaration_detail_lines: 48,
-        fallback_candidate_multiplier: 8,
-        source_range_all_lines: 512,
     },
 };
 

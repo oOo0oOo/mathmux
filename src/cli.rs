@@ -1,4 +1,4 @@
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
@@ -12,9 +12,8 @@ use anyhow::{Context, Result, bail, ensure};
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 #[cfg(feature = "development")]
 use clap::ValueEnum;
-use fs2::FileExt;
-
 use crate::daemon;
+use crate::coordination::{lock_exclusive, open_lock};
 use crate::issue::development_enabled;
 #[cfg(feature = "development")]
 use crate::issue::{IssueStore, TelemetryStore};
@@ -618,13 +617,13 @@ fn connect_or_start(repo: &Repo) -> Result<UnixStream> {
         return Ok(stream);
     }
     let startup_lock = startup_lock(repo)?;
-    startup_lock.lock_exclusive()?;
+    lock_exclusive(&startup_lock)?;
     connect_or_start_locked(repo)
 }
 
 fn replace_daemon(repo: &Repo, request: &Request) -> Result<UnixStream> {
     let startup_lock = startup_lock(repo)?;
-    startup_lock.lock_exclusive()?;
+    lock_exclusive(&startup_lock)?;
     if let Ok(stream) = UnixStream::connect(&repo.socket_path) {
         let probe = Request {
             build: request.build.clone(),
@@ -649,13 +648,7 @@ fn replace_daemon(repo: &Repo, request: &Request) -> Result<UnixStream> {
 }
 
 fn startup_lock(repo: &Repo) -> Result<File> {
-    OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(&repo.startup_lock)
-        .map_err(Into::into)
+    open_lock(&repo.startup_lock)
 }
 
 fn connect_or_start_locked(repo: &Repo) -> Result<UnixStream> {

@@ -1059,7 +1059,7 @@ pub(super) fn fallback_source_candidates(
             .partial_cmp(&left.score)
             .unwrap_or(Ordering::Equal)
     });
-    ranked.truncate(RESULT_LIMIT * SEARCH_TUNING.presentation.fallback_candidate_multiplier);
+    ranked.truncate(RESULT_LIMIT * SEARCH_PRESENTATION.fallback_candidate_multiplier);
     Ok(ranked)
 }
 

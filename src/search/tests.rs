@@ -2209,8 +2209,8 @@ fn source_dependents_include_the_active_workspace_index() {
         startup_lock: state_dir.join("startup.lock"),
     };
     let state = State::new(repo.db_path.clone()).unwrap();
-    let checker = Arc::new(Checker::new(repo.clone(), state.clone()).unwrap());
-    let searcher = Searcher::new(repo, state, checker).unwrap();
+    let checker = Arc::new(Checker::new(repo.clone(), state.clone(), None).unwrap());
+    let searcher = Searcher::new(repo, state, checker, None).unwrap();
     let workspace = Workspace {
         reference: "w1".into(),
         name: "demo".into(),

@@ -9,12 +9,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
-use fs2::FileExt;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::git::{lake_command, lake_executable};
 use crate::repo::Repo;
+use crate::coordination::{lock_exclusive, open_lock};
 use crate::util::hash_bytes;
 
 const SERVICE_SOURCE: &str = include_str!("MathmuxLeanService.lean");
@@ -249,14 +249,9 @@ impl Drop for LeanServiceProcess {
 pub(crate) fn prepare(repo: &Repo, workspace: &Path) -> Result<PathBuf> {
     fs::create_dir_all(&repo.state_dir)?;
     let lock_path = repo.state_dir.join("lean-service.lock");
-    let lock = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(&lock_path)
+    let lock = open_lock(&lock_path)
         .with_context(|| format!("cannot open {}", lock_path.display()))?;
-    lock.lock_exclusive()?;
+    lock_exclusive(&lock)?;
 
     let toolchain = fs::read_to_string(workspace.join("lean-toolchain")).unwrap_or_default();
     let mut material = toolchain.into_bytes();

@@ -14,10 +14,15 @@ use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use crate::check::{CheckOutcome, Checker};
 use crate::git::{self, dirty_lean_files, dirty_paths};
 use crate::issue::{TelemetryOperation, TelemetryStore, development_enabled};
+use crate::presentation::{
+    CHECK_ADDITIONAL_DIAGNOSTIC_CHARS, CHECK_ADDITIONAL_DIAGNOSTICS,
+    CHECK_DIAGNOSTIC_CHARS,
+};
 use crate::protocol::{Command, Progress, Request, Response};
 use crate::repo::Repo;
+use crate::reference::ReferenceKind;
 use crate::search::Searcher;
-use crate::state::{State, Submission};
+use crate::state::{State, Submission, ValidationStatus};
 use crate::status;
 use crate::util::{
     build_generation, build_id, clean_line, now_unix_ms, resident_memory_kib, truncate_middle,
@@ -42,13 +47,31 @@ pub fn run(repo: Repo) -> Result<()> {
     let phase = Instant::now();
     let state = State::new(&repo.db_path)?;
     let state_ms = phase.elapsed().as_millis() as u64;
-    let checker = Arc::new(Checker::new(repo.clone(), state.clone())?);
+    let telemetry = development_enabled()
+        .then(TelemetryStore::global)
+        .and_then(Result::ok)
+        .map(Arc::new);
+    let checker = Arc::new(Checker::new(
+        repo.clone(),
+        state.clone(),
+        telemetry.clone(),
+    )?);
     let phase = Instant::now();
-    let searcher = Searcher::new(repo.clone(), state.clone(), checker.clone())?;
+    let searcher = Searcher::new(
+        repo.clone(),
+        state.clone(),
+        checker.clone(),
+        telemetry.clone(),
+    )?;
     let search_ms = phase.elapsed().as_millis() as u64;
     let retiring = Arc::new(AtomicBool::new(false));
     let phase = Instant::now();
-    let validation = ValidationQueue::start(repo.clone(), state.clone(), retiring.clone())?;
+    let validation = ValidationQueue::start(
+        repo.clone(),
+        state.clone(),
+        retiring.clone(),
+        telemetry.clone(),
+    )?;
     let validation_ms = phase.elapsed().as_millis() as u64;
     let phase = Instant::now();
     let watcher = WorkspaceWatcher::new(state.clone(), checker.clone())?;
@@ -58,9 +81,7 @@ pub fn run(repo: Repo) -> Result<()> {
         watcher.watch(&workspace.path)?;
     }
     let workspaces_ms = phase.elapsed().as_millis() as u64;
-    if development_enabled()
-        && let Ok(store) = TelemetryStore::global()
-    {
+    if let Some(store) = &telemetry {
         let detail = format!(
             "state={state_ms}ms search={search_ms}ms validation={validation_ms}ms workspaces={workspaces_ms}ms count={}",
             workspaces.len()
@@ -87,6 +108,7 @@ pub fn run(repo: Repo) -> Result<()> {
         watcher,
         mutations: Mutex::new(()),
         retiring: retiring.clone(),
+        telemetry,
     });
     let clients = Arc::new(AtomicUsize::new(0));
     let mut last_activity = Instant::now();
@@ -229,6 +251,7 @@ struct Service {
     watcher: WorkspaceWatcher,
     mutations: Mutex<()>,
     retiring: Arc<AtomicBool>,
+    telemetry: Option<Arc<TelemetryStore>>,
 }
 
 impl Service {
@@ -278,9 +301,13 @@ impl Service {
                 formalization_yaml,
             } => {
                 if formalization_yaml {
-                    status::render_formalization_yaml(&self.repo, &self.state)
+                    status::render_formalization_yaml(
+                        &self.repo,
+                        &self.state,
+                        self.telemetry.as_deref(),
+                    )
                 } else {
-                    status::render(&self.repo, &self.state)
+                    status::render(&self.repo, &self.state, self.telemetry.as_deref())
                 }
             }
             Command::WsDelete { name } => {
@@ -364,7 +391,7 @@ impl Service {
                         paths => format!("Update {} files", paths.len()),
                     });
                 let result = git::submit(&self.repo, &workspace, &message)?;
-                let reference = self.state.next_ref('s')?;
+                let reference = self.state.next_reference(ReferenceKind::Submission)?;
                 self.state.add_submission(&Submission {
                     reference: reference.clone(),
                     workspace_ref: workspace.reference.clone(),
@@ -372,7 +399,7 @@ impl Service {
                     main_commit: result.main_commit,
                     base_commit: result.base_commit,
                     checks,
-                    validation_status: "queued".into(),
+                    validation_status: ValidationStatus::Queued,
                     validation_detail: None,
                     build_output: None,
                     axioms: Vec::new(),
@@ -390,10 +417,6 @@ impl Service {
 }
 
 fn check_summary(outcome: &CheckOutcome) -> String {
-    const DIAGNOSTIC_PREVIEW_CHARS: usize = 1200;
-    const ADDITIONAL_DIAGNOSTIC_PREVIEW_CHARS: usize = 320;
-    const ADDITIONAL_DIAGNOSTIC_LIMIT: usize = 3;
-
     let mut output = format!("{} {}ms", outcome.reference, outcome.elapsed_ms);
     if outcome.ok {
         for warning in outcome.warnings.iter().take(3) {
@@ -426,13 +449,13 @@ fn check_summary(outcome: &CheckOutcome) -> String {
             let detail = clean_line(&diagnostic.text);
             output.push_str(&format!(
                 "\n{}",
-                truncate_middle(&detail, DIAGNOSTIC_PREVIEW_CHARS)
+                truncate_middle(&detail, CHECK_DIAGNOSTIC_CHARS)
             ));
             if let Some(context) = &diagnostic.context {
                 output.push('\n');
                 output.push_str(context);
             }
-            if detail.chars().count() > DIAGNOSTIC_PREVIEW_CHARS {
+            if detail.chars().count() > CHECK_DIAGNOSTIC_CHARS {
                 output.push_str(&format!("\nfull diagnostic: show {}", outcome.reference));
             }
         }
@@ -440,14 +463,14 @@ fn check_summary(outcome: &CheckOutcome) -> String {
             .diagnostics
             .iter()
             .skip(1)
-            .take(ADDITIONAL_DIAGNOSTIC_LIMIT)
+            .take(CHECK_ADDITIONAL_DIAGNOSTICS)
             .collect::<Vec<_>>();
         for diagnostic in &additional {
             output.push_str(&format!(
                 "\nalso {}",
                 truncate_middle(
                     &clean_line(&diagnostic.text),
-                    ADDITIONAL_DIAGNOSTIC_PREVIEW_CHARS
+                    CHECK_ADDITIONAL_DIAGNOSTIC_CHARS
                 )
             ));
         }

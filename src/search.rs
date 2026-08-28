@@ -2,7 +2,6 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
-use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -16,17 +15,21 @@ use serde_json::Value;
 use walkdir::WalkDir;
 
 use crate::check::{Checker, parse_imports, project_module_name};
+use crate::coordination::{lock_exclusive, open_lock};
 use crate::git::{dirty_lean_files, lake_command, project_lean_files};
-use crate::issue::{TelemetryOperation, TelemetryStore, development_enabled};
-use crate::lean_service::LeanServiceProcess;
+use crate::issue::{TelemetryOperation, TelemetryStore};
+use crate::presentation::{SEARCH_PRESENTATION, SOURCE_PREVIEW_LINES};
 use crate::repo::Repo;
+use crate::reference::{Reference, ReferenceKind};
 use crate::state::{SEARCH_USAGE_LIMIT, SearchHit, SearchRun, SearchUsage, State, Workspace};
 use crate::util::{
-    SOURCE_PREVIEW_LINES, clean_line, hash_bytes, now_unix_ms, query_requests_proof_body,
-    single_line, truncate_line, truncate_middle,
+    clean_line, hash_bytes, now_unix_ms, query_requests_proof_body, single_line, truncate_line,
+    truncate_middle,
 };
 
 mod api;
+mod display;
+mod type_worker;
 mod source_query;
 mod plan;
 mod probe;
@@ -38,25 +41,27 @@ mod tests;
 
 use source_query::*;
 use api::*;
+use display::{render_summary, source_has_complete_declaration_header};
+use type_worker::{TypeSearchHit, TypeSearchResult, TypeSearchState, TypeSearchWorker};
 use plan::*;
 use query::*;
 use source::*;
 use tuning::*;
 
-const RESULT_LIMIT: usize = SEARCH_TUNING.presentation.result_limit;
-const SUMMARY_LIMIT: usize = SEARCH_TUNING.presentation.summary_limit;
+const RESULT_LIMIT: usize = SEARCH_PRESENTATION.result_limit;
+const SUMMARY_LIMIT: usize = SEARCH_PRESENTATION.summary_limit;
 const LOCATION_PREVIEW_LINES: usize = 32;
 const LOCATION_EXPANDED_LINES: usize = 96;
 const SOURCE_OCCURRENCE_LIMIT: usize = 64;
 const SOURCE_RANGE_LIMIT: usize = 48;
-const SOURCE_RANGE_ALL_LIMIT: usize = SEARCH_TUNING.presentation.source_range_all_lines;
+const SOURCE_RANGE_ALL_LIMIT: usize = SEARCH_PRESENTATION.source_range_all_lines;
 const SOURCE_OCCURRENCE_ALL_LIMIT: usize = 200;
 const OUTLINE_PREVIEW_LINES: usize = 64;
 const OUTLINE_LINE_CHARS: usize = 120;
-const RELATED_RESULT_LIMIT: usize = SEARCH_TUNING.presentation.related_result_limit;
+const RELATED_RESULT_LIMIT: usize = SEARCH_PRESENTATION.related_result_limit;
 const SEARCH_INDEX_VERSION: i64 = 7;
 const SOURCE_INDEX_KIND: &str = "source-v12";
-const DECLARATION_DETAIL_LINES: usize = SEARCH_TUNING.presentation.declaration_detail_lines;
+const DECLARATION_DETAIL_LINES: usize = SEARCH_PRESENTATION.declaration_detail_lines;
 const INDEX_COMMIT_BATCH: usize = 64;
 const SEARCH_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 const SOURCE_SCAN_BUDGET: Duration = Duration::from_millis(300);
@@ -73,6 +78,7 @@ pub struct Searcher {
     base_lock: Arc<Mutex<()>>,
     type_search: Mutex<TypeSearchState>,
     base: Mutex<HashMap<String, BaseState>>,
+    telemetry: Option<Arc<TelemetryStore>>,
 }
 
 struct SearchResult {
@@ -363,13 +369,6 @@ enum SourceKind {
     Stdlib,
 }
 
-enum TypeSearchState {
-    Empty,
-    Starting(std::sync::mpsc::Receiver<std::result::Result<TypeSearchWorker, String>>),
-    Running(TypeSearchWorker),
-    Unavailable,
-}
-
 enum BaseState {
     Starting(
         std::sync::mpsc::Receiver<std::result::Result<HashSet<String>, String>>,
@@ -377,57 +376,6 @@ enum BaseState {
     ),
     Ready(HashSet<String>),
     Failed(HashSet<String>),
-}
-
-struct TypeSearchWorker {
-    process: LeanServiceProcess,
-    version: u64,
-    last_used: Instant,
-    startup_detail: String,
-    cache: HashMap<(String, String), TypeSearchResult>,
-}
-
-#[derive(Clone, Default)]
-struct TypeSearchResult {
-    hits: Vec<TypeSearchHit>,
-    count: usize,
-    detail: String,
-    suggestions: Vec<String>,
-    error: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct TypeSearchHit {
-    name: String,
-    #[serde(rename = "type")]
-    signature: String,
-    module: Option<String>,
-    doc: Option<String>,
-}
-
-#[derive(Serialize)]
-struct TypeSearchRequest<'a> {
-    operation: &'static str,
-    source: &'static str,
-    file_name: &'static str,
-    version: u64,
-    line: u64,
-    column: u64,
-    input: &'a str,
-    names: &'a [String],
-}
-
-#[derive(Deserialize)]
-struct TypeSearchResponse {
-    ok: bool,
-    detail: String,
-    count: usize,
-    hits: Vec<TypeSearchHit>,
-    #[serde(default)]
-    anchors: Vec<String>,
-    #[serde(default)]
-    names: Vec<String>,
-    version: u64,
 }
 
 struct SourceRoot {
@@ -445,13 +393,23 @@ struct CachedSource {
 }
 
 impl Searcher {
-    pub fn new(repo: Repo, state: State, checker: Arc<Checker>) -> Result<Self> {
-        let searcher = Self::initialized(repo, state, checker);
+    pub fn new(
+        repo: Repo,
+        state: State,
+        checker: Arc<Checker>,
+        telemetry: Option<Arc<TelemetryStore>>,
+    ) -> Result<Self> {
+        let searcher = Self::initialized(repo, state, checker, telemetry);
         searcher.migrate()?;
         Ok(searcher)
     }
 
-    fn initialized(repo: Repo, state: State, checker: Arc<Checker>) -> Self {
+    fn initialized(
+        repo: Repo,
+        state: State,
+        checker: Arc<Checker>,
+        telemetry: Option<Arc<TelemetryStore>>,
+    ) -> Self {
         Self {
             repo,
             state,
@@ -463,6 +421,7 @@ impl Searcher {
             base_lock: Arc::new(Mutex::new(())),
             type_search: Mutex::new(TypeSearchState::Empty),
             base: Mutex::new(HashMap::new()),
+            telemetry,
         }
     }
 
@@ -493,7 +452,7 @@ impl Searcher {
         )?;
         let source_show_all = request.all;
         let query = planned.query.as_str();
-        let reference = self.state.next_ref('q')?;
+        let reference = self.state.next_reference(ReferenceKind::Query)?;
         let result = if let Some(names) = exact_names {
             self.exact_name_batch(workspace, names, request.all)?
         } else { match planned.plan {
@@ -657,10 +616,7 @@ impl Searcher {
         let mut parts = query.splitn(2, char::is_whitespace);
         let reference = parts.next().unwrap_or_default();
         let refinement = parts.next().unwrap_or_default().trim();
-        if reference
-            .strip_prefix('s')
-            .is_some_and(|digits| !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()))
-        {
+        if Reference::is_kind(reference, ReferenceKind::Submission) {
             let submission = self
                 .state
                 .submission(reference)?
@@ -678,10 +634,7 @@ impl Searcher {
                 auxiliary_query: None,
             });
         }
-        if reference
-            .strip_prefix('q')
-            .is_some_and(|digits| !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()))
-        {
+        if Reference::is_kind(reference, ReferenceKind::Query) {
             let prior = self
                 .state
                 .search_run(reference)?
@@ -833,13 +786,12 @@ impl Searcher {
             let (sender, receiver) = std::sync::mpsc::channel();
             let repo = self.repo.clone();
             let workspace = workspace.path.clone();
+            let telemetry = self.telemetry.clone();
             std::thread::spawn(move || {
                 let started = Instant::now();
                 let result =
                     TypeSearchWorker::start(&repo, &workspace).map_err(|error| format!("{error:#}"));
-                if development_enabled()
-                    && let Ok(store) = TelemetryStore::global()
-                {
+                if let Some(store) = &telemetry {
                     let detail = result
                         .as_ref()
                         .map(|worker| worker.startup_detail.as_str())
@@ -1323,6 +1275,7 @@ impl Searcher {
                 let checker = self.checker.clone();
                 let workspace = workspace.clone();
                 let base_lock = self.base_lock.clone();
+                let telemetry = self.telemetry.clone();
                 let partial = package_scopes(&workspace.path);
                 std::thread::spawn(move || {
                     let started = Instant::now();
@@ -1337,13 +1290,11 @@ impl Searcher {
                                 return;
                             }
                         };
-                        Searcher::initialized(repo.clone(), state, checker)
+                        Searcher::initialized(repo.clone(), state, checker, telemetry.clone())
                             .refresh_base(&workspace)
                             .map_err(|error| format!("{error:#}"))
                     };
-                    if development_enabled()
-                        && let Ok(store) = TelemetryStore::global()
-                    {
+                    if let Some(store) = &telemetry {
                         let detail = result
                             .as_ref()
                             .map(|scopes| format!("{} scopes ready", scopes.len()))
@@ -2124,8 +2075,7 @@ impl Searcher {
                 hash.wrapping_mul(31).wrapping_add(byte)
             }) % 8 == 0;
         if (total_ms >= 2_000 || sampled_fallback)
-            && development_enabled()
-            && let Ok(store) = TelemetryStore::global()
+            && let Some(store) = &self.telemetry
         {
             let detail = format!(
                 "import={import_ms}ms candidates={candidates_ms}ms type_search={type_search_ms}ms type_matches={type_search_matches} type_suggestions={type_search_suggestions} type_stages={} rank={ranking_ms}ms project={project_ms}ms fallback={fallback_ms}ms used={fallback_used} top={fallback_top} unique_top={fallback_unique_top} finish={finish_ms}ms other={unaccounted_ms}ms hits={}",
@@ -2974,21 +2924,9 @@ fn unknown_type_identifier(error: &str) -> Option<&str> {
 
 fn search_index_writer_lock(repo: &Repo) -> Result<fs::File> {
     let path = repo.state_dir.join("search-index.lock");
-    let file = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(&path)
+    let file = open_lock(&path)
         .with_context(|| format!("cannot open {}", path.display()))?;
-    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
-    if result != 0 {
-        bail!(
-            "cannot lock {}: {}",
-            path.display(),
-            std::io::Error::last_os_error()
-        );
-    }
+    lock_exclusive(&file).with_context(|| format!("cannot lock {}", path.display()))?;
     Ok(file)
 }
 
@@ -3114,125 +3052,6 @@ impl Searcher {
     }
 }
 
-impl TypeSearchWorker {
-    fn start(repo: &Repo, workspace: &Path) -> Result<Self> {
-        let arguments = vec!["type-search".to_owned(), "Mathlib".to_owned()];
-        let mut process = LeanServiceProcess::start(repo, workspace, &arguments)
-            .context("cannot start type search service")?;
-        let ready = process
-            .read_ready(Duration::from_secs(60))
-            .context("type search service did not become ready")?;
-        ensure!(
-            ready.get("ok").and_then(Value::as_bool) == Some(true)
-                && ready.get("detail").and_then(Value::as_str) == Some("ready"),
-            "unexpected type search startup response: {}",
-            clean_line(&ready.to_string())
-        );
-        let startup_detail = ready
-            .get("profile")
-            .and_then(Value::as_array)
-            .map(|entries| {
-                entries
-                    .iter()
-                    .filter_map(|entry| {
-                        Some(format!(
-                            "{}={}ms",
-                            entry.get("kind")?.as_str()?,
-                            entry.get("duration_ms")?.as_f64()? as u64
-                        ))
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            })
-            .filter(|detail| !detail.is_empty())
-            .unwrap_or_else(|| "type search ready".into());
-        Ok(Self {
-            process,
-            version: 0,
-            last_used: Instant::now(),
-            startup_detail,
-            cache: HashMap::new(),
-        })
-    }
-
-    fn query(
-        &mut self,
-        query: &str,
-        candidates: &[String],
-        suggestions: Vec<String>,
-    ) -> Result<TypeSearchResult> {
-        self.last_used = Instant::now();
-        let query = query.lines().collect::<Vec<_>>().join(" ");
-        let cache_key = (query.clone(), hash_bytes(candidates.join("\0").as_bytes()));
-        if let Some(result) = self.cache.get(&cache_key) {
-            return Ok(result.clone());
-        }
-        let value = self.request_value("type_verify", &query, candidates)?;
-        let result = if value.ok {
-            TypeSearchResult {
-                hits: value.hits,
-                count: value.count,
-                detail: value.detail,
-                suggestions,
-                error: None,
-            }
-        } else {
-            TypeSearchResult {
-                hits: Vec::new(),
-                count: 0,
-                detail: String::new(),
-                suggestions,
-                error: Some(value.detail),
-            }
-        };
-        if self.cache.len() >= 64 {
-            self.cache.clear();
-        }
-        self.cache.insert(cache_key, result.clone());
-        Ok(result)
-    }
-
-    fn prepare(&mut self, query: &str) -> Result<TypeSearchResponse> {
-        self.last_used = Instant::now();
-        self.request_value("type_prepare", query, &[])
-    }
-
-    fn request_value(
-        &mut self,
-        operation: &'static str,
-        query: &str,
-        names: &[String],
-    ) -> Result<TypeSearchResponse> {
-        self.version += 1;
-        let response: TypeSearchResponse = self
-            .process
-            .request(
-                &TypeSearchRequest {
-                    operation,
-                    source: "",
-                    file_name: "",
-                    version: self.version,
-                    line: 0,
-                    column: 0,
-                    input: query,
-                    names,
-                },
-                Duration::from_secs(30),
-            )
-            .map_err(|error| anyhow::anyhow!(error))?;
-        ensure!(response.version == self.version, "stale type search response");
-        Ok(response)
-    }
-
-    fn alive(&mut self) -> bool {
-        self.process.alive()
-    }
-
-    fn rss_kib(&self) -> Option<u64> {
-        self.process.rss_kib()
-    }
-}
-
 fn base_input_id(workspace: &Path) -> String {
     let mut material = Vec::new();
     for relative in ["lean-toolchain", "lake-manifest.json"] {
@@ -3286,182 +3105,4 @@ fn git_file_at(root: &Path, commit: &str, path: &str) -> Result<Option<String>> 
         .status
         .success()
         .then(|| String::from_utf8_lossy(&output.stdout).into_owned()))
-}
-
-fn render_summary(run: &SearchRun) -> String {
-    let mut output = run.reference.clone();
-    let proof_body_requested = query_requests_proof_body(&run.query);
-    let related_results = run
-        .note
-        .as_deref()
-        .is_some_and(|note| note.contains("related results"));
-    if run.hits.is_empty() {
-        output.push_str(" no results");
-    }
-    let summary_limit = if proof_body_requested && !related_results {
-        1
-    } else if run.inference == "exact-batch" {
-        run.hits.len()
-    } else {
-        SUMMARY_LIMIT
-    };
-    for (index, hit) in run.hits.iter().take(summary_limit).enumerate() {
-        output.push('\n');
-        output.push_str(&hit.name);
-        let displayed_source = hit.source.as_deref().filter(|_| {
-            run.inference == "probe"
-                || (!related_results
-                && ((index == 0 && proof_body_requested)
-                    || (!proof_body_requested
-                        && (declaration_leaf_matches(&hit.name, &run.query)
-                            || (index < 3
-                                && matches!(
-                                    hit.kind.as_str(),
-                                    "class" | "inductive" | "structure"
-                                ))
-                            || matches!(
-                                hit.kind.as_str(),
-                                "fields"
-                                    | "file"
-                                    | "imports"
-                                    | "location"
-                                    | "location-expanded"
-                                    | "outline"
-                                    | "source-occurrences"
-                                    | "source-range"
-                            )))))
-        });
-        if let Some(signature) = &hit.signature
-            && !displayed_source
-                .is_some_and(|source| source_has_complete_declaration_header(hit, source))
-        {
-            output.push_str(" : ");
-            if matches!(run.inference.as_str(), "exact" | "exact-batch") {
-                output.push_str(&single_line(signature));
-            } else {
-                output.push_str(&truncate_line(&single_line(signature), 240));
-            }
-        }
-        if !hit.path.is_empty() {
-            output.push_str(&format!("  {}", hit.path));
-            if hit.line > 0 {
-                output.push_str(&format!(":{}", hit.line));
-            }
-        }
-        if hit.applicable {
-            output.push_str("  applicable");
-        }
-        if let Some(module) = &hit.required_import {
-            output.push_str(&format!("\n  import {module}"));
-        }
-        if !(proof_body_requested && index == 0) {
-            for usage in hit.usages.iter().take(3) {
-                output.push_str(&format!("\n  used: {}:{}", usage.path, usage.line));
-                if let Some(context) = &usage.context {
-                    output.push_str(&format!(" in {context}"));
-                }
-            }
-            if hit.usages.len() > 3 {
-                output.push_str(&format!(
-                    "\n  +{} usages; show {} --all",
-                    hit.usages.len() - 3,
-                    run.reference
-                ));
-            }
-        }
-        if let Some(source) = displayed_source {
-            if run.inference != "probe" && !matches!(
-                hit.kind.as_str(),
-                "file"
-                    | "fields"
-                    | "imports"
-                    | "location"
-                    | "location-expanded"
-                    | "outline"
-                    | "source-occurrences"
-                    | "source-range"
-            ) {
-                output.push_str("\nsource:");
-            }
-            let source_lines = if index == 0 && proof_body_requested {
-                DECLARATION_DETAIL_LINES
-            } else {
-                match hit.kind.as_str() {
-                    "class" | "inductive" | "structure" => 16,
-                    "fields" => SOURCE_OCCURRENCE_ALL_LIMIT,
-                    "imports" => 64,
-                    "outline" => OUTLINE_PREVIEW_LINES,
-                    "location" => LOCATION_PREVIEW_LINES,
-                    "location-expanded" => LOCATION_EXPANDED_LINES,
-                    "source-range" => SOURCE_RANGE_ALL_LIMIT,
-                    "source-occurrences" => SOURCE_OCCURRENCE_LIMIT,
-                    _ => SOURCE_PREVIEW_LINES,
-                }
-            };
-            let lines = source.lines().collect::<Vec<_>>();
-            let omitted = lines.len().saturating_sub(source_lines);
-            if run.inference == "probe" && omitted > 0 {
-                let head = source_lines.div_ceil(2);
-                let tail = source_lines - head;
-                for line in lines.iter().take(head) {
-                    output.push('\n');
-                    output.push_str(&truncate_line(line.trim_end(), 200));
-                }
-                output.push_str(&format!(
-                    "\n… {omitted} lines omitted; show {} --all",
-                    run.reference
-                ));
-                for line in lines.iter().skip(lines.len() - tail) {
-                    output.push('\n');
-                    output.push_str(&truncate_line(line.trim_end(), 200));
-                }
-            } else {
-                for line in lines.iter().take(source_lines) {
-                    output.push('\n');
-                    output.push_str(&truncate_line(line.trim_end(), 200));
-                }
-            }
-            if omitted > 0 {
-                match hit.kind.as_str() {
-                    "class" | "structure" => output.push_str(&format!(
-                        "\n+{omitted} lines; search {} fields",
-                        hit.name
-                    )),
-                    "outline" => output.push_str(&format!(
-                        "\n+{omitted} declarations; show {} --all",
-                        run.reference
-                    )),
-                    _ => {}
-                }
-            }
-        }
-    }
-    if run.hits.len() > summary_limit {
-        output.push_str(&format!(
-            "\n+{} results; show {} --all",
-            run.hits.len() - summary_limit,
-            run.reference
-        ));
-    }
-    if let Some(note) = &run.note {
-        output.push_str(&format!("\n{note}"));
-    }
-    output
-}
-
-fn source_has_complete_declaration_header(hit: &SearchHit, source: &str) -> bool {
-    let Some(leaf) = hit.name.rsplit('.').next() else {
-        return false;
-    };
-    let declaration = source.lines().skip_while(|line| {
-        let line = line.trim_start();
-        !line.contains(leaf) || !line.split_whitespace().any(|word| word == hit.kind)
-    });
-    let header = declaration.collect::<Vec<_>>().join("\n");
-    if header.is_empty() {
-        return false;
-    }
-    header.contains(":=")
-        || matches!(hit.kind.as_str(), "class" | "inductive" | "instance" | "structure")
-            && header.split_whitespace().any(|word| word == "where")
 }

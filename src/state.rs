@@ -1,17 +1,20 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
-use rusqlite::{Connection, OptionalExtension, params};
+use anyhow::{Context, Result, bail, ensure};
+use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, Type, ValueRef};
+use rusqlite::{Connection, OptionalExtension, ToSql, params};
 use serde::{Deserialize, Serialize};
 
+use crate::reference::{Reference, ReferenceKind};
 use crate::util::now_unix_ms;
 
 mod display;
-use display::{render_check_run, render_search_run, render_submission, validate_reference};
+use display::{render_check_run, render_search_run, render_submission};
 
 const SEARCH_HISTORY_LIMIT: i64 = 20_000;
 const SEARCH_HISTORY_AGE_MS: i64 = 48 * 60 * 60 * 1000;
 const STORED_PROFILE_LIMIT_BYTES: usize = 512 * 1024;
+const STATE_SCHEMA_VERSION: i64 = 1;
 pub(crate) const SEARCH_USAGE_LIMIT: usize = 8;
 
 #[derive(Debug, Clone)]
@@ -52,7 +55,7 @@ pub struct Diagnostic {
 pub struct CheckRun {
     pub reference: String,
     pub workspace_ref: String,
-    pub status: String,
+    pub status: CheckStatus,
     pub files: Vec<String>,
     pub passed: Vec<String>,
     pub failed: Option<String>,
@@ -127,7 +130,7 @@ pub struct Submission {
     pub main_commit: String,
     pub base_commit: String,
     pub checks: Vec<String>,
-    pub validation_status: String,
+    pub validation_status: ValidationStatus,
     pub validation_detail: Option<String>,
     pub build_output: Option<String>,
     pub axioms: Vec<String>,
@@ -136,6 +139,67 @@ pub struct Submission {
     pub validated_by: Option<String>,
     pub created_at: i64,
 }
+
+macro_rules! string_enum {
+    ($name:ident { $($variant:ident => $value:literal),+ $(,)? }) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+        #[serde(rename_all = "lowercase")]
+        pub enum $name { $($variant),+ }
+
+        impl $name {
+            pub const fn as_str(self) -> &'static str {
+                match self { $(Self::$variant => $value),+ }
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str(self.as_str())
+            }
+        }
+
+        impl std::str::FromStr for $name {
+            type Err = anyhow::Error;
+
+            fn from_str(value: &str) -> Result<Self> {
+                match value {
+                    $($value => Ok(Self::$variant),)+
+                    value => bail!("invalid {} value {value}", stringify!($name)),
+                }
+            }
+        }
+
+        impl ToSql for $name {
+            fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+                Ok(self.as_str().into())
+            }
+        }
+
+        impl FromSql for $name {
+            fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+                match value.as_str()? {
+                    $($value => Ok(Self::$variant),)+
+                    value => Err(FromSqlError::Other(
+                        format!("invalid {} value {value}", stringify!($name)).into(),
+                    )),
+                }
+            }
+        }
+    };
+}
+
+string_enum!(CheckStatus {
+    Passed => "passed",
+    Failed => "failed",
+});
+
+string_enum!(ValidationStatus {
+    Queued => "queued",
+    Running => "running",
+    Passed => "passed",
+    Failed => "failed",
+    Skipped => "skipped",
+});
 
 #[derive(Debug, Clone)]
 pub struct ValidationReport {
@@ -207,9 +271,11 @@ impl State {
     }
 
     fn migrate(&self) -> Result<()> {
-        let connection = self.open()?;
+        let mut connection = self.open()?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
-        connection.execute_batch(
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        transaction.execute_batch(
             "CREATE TABLE IF NOT EXISTS state_meta (
                 key TEXT PRIMARY KEY,
                 value INTEGER NOT NULL
@@ -228,17 +294,6 @@ impl State {
                 last_active INTEGER NOT NULL,
                 deleted_at INTEGER
              );
-             CREATE TABLE IF NOT EXISTS checks (
-                ref TEXT PRIMARY KEY,
-                workspace_ref TEXT NOT NULL REFERENCES workspaces(ref) ON DELETE CASCADE,
-                target TEXT NOT NULL,
-                fingerprint TEXT NOT NULL,
-                dependencies_json TEXT NOT NULL,
-                source_version INTEGER NOT NULL DEFAULT 1,
-                created_at INTEGER NOT NULL
-             );
-             CREATE INDEX IF NOT EXISTS checks_workspace_target
-                ON checks(workspace_ref, target, created_at DESC);
              CREATE TABLE IF NOT EXISTS check_runs (
                 ref TEXT PRIMARY KEY,
                 workspace_ref TEXT NOT NULL REFERENCES workspaces(ref),
@@ -305,81 +360,49 @@ impl State {
              CREATE INDEX IF NOT EXISTS searches_created
                 ON searches(created_at DESC);",
         )?;
-        let _ = connection.execute("ALTER TABLE workspaces ADD COLUMN deleted_at INTEGER", []);
-        let _ = connection.execute("ALTER TABLE workspaces ADD COLUMN model TEXT", []);
-        let _ = connection.execute(
-            "ALTER TABLE checks ADD COLUMN source_version INTEGER NOT NULL DEFAULT 1",
-            [],
-        );
-        let _ = connection.execute("ALTER TABLE check_runs ADD COLUMN profile_json TEXT", []);
-        let _ = connection.execute(
-            "ALTER TABLE check_runs ADD COLUMN suggestions_json TEXT NOT NULL DEFAULT '[]'",
-            [],
-        );
-        for statement in [
-            "ALTER TABLE submissions ADD COLUMN build_output TEXT",
-            "ALTER TABLE submissions ADD COLUMN axioms_json TEXT NOT NULL DEFAULT '[]'",
-            "ALTER TABLE submissions ADD COLUMN sorries_json TEXT NOT NULL DEFAULT '[]'",
-            "ALTER TABLE submissions ADD COLUMN sorry_audit_version INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE submissions ADD COLUMN validation_duration_ms INTEGER",
-        ] {
-            let _ = connection.execute(statement, []);
-        }
-        migrate_legacy_checks(&connection)?;
-        let legacy_search_removed: bool = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM state_meta WHERE key = 'legacy_search_removed')",
-            [],
-            |row| row.get(0),
-        )?;
-        if !legacy_search_removed {
-            // Search indexing moved to its own database. Remove legacy index
-            // tables so queue state no longer shares pages with stale FTS data.
-            connection.execute_batch(
-                "DROP TABLE IF EXISTS search_fts;
-                 DROP TABLE IF EXISTS search_references;
-                 DROP TABLE IF EXISTS search_imports;
-                 DROP TABLE IF EXISTS search_files;
-                 DROP TABLE IF EXISTS search_meta;
-                 INSERT INTO state_meta(key, value)
-                 VALUES ('legacy_search_removed', 1);",
-            )?;
-        }
-        let oversized_profiles_compacted: bool = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM state_meta WHERE key = 'oversized_profiles_compacted')",
-            [],
-            |row| row.get(0),
-        )?;
-        if !oversized_profiles_compacted {
-            connection.execute(
-                "UPDATE check_runs SET profile_json = NULL
-                 WHERE length(profile_json) > ?1",
-                [STORED_PROFILE_LIMIT_BYTES as i64],
-            )?;
-            connection.execute(
-                "INSERT INTO state_meta(key, value)
-                 VALUES ('oversized_profiles_compacted', 1)",
+        let version = transaction
+            .query_row(
+                "SELECT value FROM state_meta WHERE key = 'schema_version'",
                 [],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        ensure!(
+            version <= STATE_SCHEMA_VERSION,
+            "state schema version {version} is newer than supported version {STATE_SCHEMA_VERSION}"
+        );
+        for next in version + 1..=STATE_SCHEMA_VERSION {
+            match next {
+                1 => migrate_state_v1(&transaction)?,
+                _ => unreachable!("all state migrations are enumerated"),
+            }
+            transaction.execute(
+                "INSERT INTO state_meta(key, value) VALUES ('schema_version', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [next],
             )?;
         }
+        transaction.commit()?;
         Ok(())
     }
 
-    pub fn next_ref(&self, kind: char) -> Result<String> {
+    pub(crate) fn next_reference(&self, kind: ReferenceKind) -> Result<String> {
         let mut connection = self.open()?;
         let transaction =
             connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         transaction.execute(
             "INSERT INTO counters(kind, value) VALUES (?1, 1)
              ON CONFLICT(kind) DO UPDATE SET value = value + 1",
-            [kind.to_string()],
+            [kind.prefix().to_string()],
         )?;
         let value: i64 = transaction.query_row(
             "SELECT value FROM counters WHERE kind = ?1",
-            [kind.to_string()],
+            [kind.prefix().to_string()],
             |row| row.get(0),
         )?;
         transaction.commit()?;
-        Ok(format!("{kind}{value}"))
+        Ok(Reference::new(kind, value as u64).to_string())
     }
 
     pub fn add_workspace(&self, workspace: &Workspace) -> Result<()> {
@@ -402,7 +425,6 @@ impl State {
     pub fn remove_workspace(&self, reference: &str) -> Result<()> {
         let mut connection = self.open()?;
         let transaction = connection.transaction()?;
-        transaction.execute("DELETE FROM checks WHERE workspace_ref = ?1", [reference])?;
         transaction.execute(
             "UPDATE workspaces
              SET name = name || '#deleted#' || ref,
@@ -645,7 +667,7 @@ impl State {
     }
 
     pub fn add_sync(&self, workspace_ref: &str, status: &str, detail: &str) -> Result<String> {
-        let reference = self.next_ref('u')?;
+        let reference = self.next_reference(ReferenceKind::Sync)?;
         self.open()?.execute(
             "INSERT INTO syncs(ref, workspace_ref, status, detail, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -797,7 +819,7 @@ impl State {
             [&newest.reference],
         )?;
         Ok(Some(Submission {
-            validation_status: "running".into(),
+            validation_status: ValidationStatus::Running,
             ..newest
         }))
     }
@@ -873,10 +895,9 @@ impl State {
                 run.created_at,
             ],
         )?;
-        let sequence = run
-            .reference
-            .strip_prefix('q')
-            .and_then(|value| value.parse::<u64>().ok());
+        let sequence = Reference::parse_kind(&run.reference, ReferenceKind::Query)
+            .ok()
+            .map(Reference::sequence);
         if sequence.is_some_and(|value| value % 64 == 0) {
             transaction.execute(
                 "DELETE FROM searches WHERE created_at < ?1",
@@ -902,13 +923,12 @@ impl State {
                  FROM searches WHERE ref = ?1",
                 [reference],
                 |row| {
-                    let hits: String = row.get(4)?;
                     Ok(SearchRun {
                         reference: row.get(0)?,
                         workspace_ref: row.get(1)?,
                         query: row.get(2)?,
                         inference: row.get(3)?,
-                        hits: serde_json::from_str(&hits).unwrap_or_default(),
+                        hits: json_column(row, 4)?,
                         note: row.get(5)?,
                         duration_ms: row.get(6)?,
                         created_at: row.get(7)?,
@@ -920,15 +940,15 @@ impl State {
     }
 
     pub fn show(&self, reference: &str, all: bool) -> Result<String> {
-        let kind = validate_reference(reference).with_context(|| {
+        let kind = reference.parse::<Reference>().with_context(|| {
             "show expects a saved reference such as c123 or q456; use search FILE:LINE or FILE:tail for source context, or search --all DECLARATION for a body"
-        })?;
+        })?.kind();
         match kind {
-            'c' => self
+            ReferenceKind::Check => self
                 .check_run(reference)?
                 .map(|run| render_check_run(&run, all))
                 .with_context(|| format!("unknown reference {reference}")),
-            's' => {
+            ReferenceKind::Submission => {
                 let submission = self
                     .submission(reference)?
                     .with_context(|| format!("unknown reference {reference}"))?;
@@ -940,7 +960,7 @@ impl State {
                 }
                 files.sort();
                 files.dedup();
-                let later_passing_validation = if submission.validation_status == "failed" {
+                let later_passing_validation = if submission.validation_status == ValidationStatus::Failed {
                     self.later_passing_validation(&submission)?
                 } else {
                     None
@@ -952,13 +972,13 @@ impl State {
                     all,
                 ))
             }
-            'w' => self.show_workspace(reference, all),
-            'u' => self.show_sync(reference, all),
-            'q' => self
+            ReferenceKind::Workspace => self.show_workspace(reference, all),
+            ReferenceKind::Sync => self.show_sync(reference, all),
+            ReferenceKind::Query => self
                 .search_run(reference)?
                 .map(|run| render_search_run(&run, all))
                 .with_context(|| format!("unknown reference {reference}")),
-            _ => bail!("unknown reference type {kind}"),
+            _ => bail!("reference {reference} is not stored in project state"),
         }
     }
 
@@ -1026,6 +1046,82 @@ impl State {
     }
 }
 
+fn migrate_state_v1(transaction: &rusqlite::Transaction<'_>) -> Result<()> {
+    for (table, column, definition) in [
+        ("workspaces", "deleted_at", "deleted_at INTEGER"),
+        ("workspaces", "model", "model TEXT"),
+        ("check_runs", "profile_json", "profile_json TEXT"),
+        (
+            "check_runs",
+            "suggestions_json",
+            "suggestions_json TEXT NOT NULL DEFAULT '[]'",
+        ),
+        ("submissions", "build_output", "build_output TEXT"),
+        (
+            "submissions",
+            "axioms_json",
+            "axioms_json TEXT NOT NULL DEFAULT '[]'",
+        ),
+        (
+            "submissions",
+            "sorries_json",
+            "sorries_json TEXT NOT NULL DEFAULT '[]'",
+        ),
+        (
+            "submissions",
+            "sorry_audit_version",
+            "sorry_audit_version INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "submissions",
+            "validation_duration_ms",
+            "validation_duration_ms INTEGER",
+        ),
+    ] {
+        add_column_if_missing(transaction, table, column, definition)?;
+    }
+    transaction.execute(
+        "UPDATE check_runs SET profile_json = NULL WHERE length(profile_json) > ?1",
+        [STORED_PROFILE_LIMIT_BYTES as i64],
+    )?;
+    transaction.execute_batch(
+        "DROP INDEX IF EXISTS checks_workspace_target;
+         DROP TABLE IF EXISTS checks;
+         DROP TABLE IF EXISTS search_fts;
+         DROP TABLE IF EXISTS search_references;
+         DROP TABLE IF EXISTS search_imports;
+         DROP TABLE IF EXISTS search_files;
+         DROP TABLE IF EXISTS search_meta;
+         DELETE FROM state_meta
+            WHERE key IN ('legacy_search_removed', 'oversized_profiles_compacted');",
+    )?;
+    Ok(())
+}
+
+fn add_column_if_missing(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<()> {
+    if table_has_column(connection, table, column)? {
+        return Ok(());
+    }
+    connection.execute(
+        &format!("ALTER TABLE {table} ADD COLUMN {definition}"),
+        [],
+    )?;
+    Ok(())
+}
+
+fn table_has_column(connection: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(columns.iter().any(|candidate| candidate == column))
+}
+
 fn workspace_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Workspace> {
     Ok(Workspace {
         reference: row.get(0)?,
@@ -1037,13 +1133,12 @@ fn workspace_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Workspace> {
 }
 
 fn check_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CheckRecord> {
-    let dependencies: String = row.get(4)?;
     Ok(CheckRecord {
         reference: row.get(0)?,
         workspace_ref: row.get(1)?,
         target: row.get(2)?,
         fingerprint: row.get(3)?,
-        dependencies: serde_json::from_str(&dependencies).unwrap_or_default(),
+        dependencies: json_column(row, 4)?,
         source_version: row.get(5)?,
         created_at: row.get(6)?,
     })
@@ -1054,46 +1149,56 @@ fn check_run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CheckRun> {
         reference: row.get(0)?,
         workspace_ref: row.get(1)?,
         status: row.get(2)?,
-        files: json_column(row, 3),
-        passed: json_column(row, 4),
+        files: json_column(row, 3)?,
+        passed: json_column(row, 4)?,
         failed: row.get(5)?,
-        not_checked: json_column(row, 6),
-        warnings: json_column(row, 7),
-        linters: json_column(row, 8),
-        diagnostics: json_column(row, 9),
-        suggestions: json_column(row, 10),
-        profile: row
-            .get::<_, Option<String>>(11)?
-            .and_then(|value| serde_json::from_str(&value).ok()),
+        not_checked: json_column(row, 6)?,
+        warnings: json_column(row, 7)?,
+        linters: json_column(row, 8)?,
+        diagnostics: json_column(row, 9)?,
+        suggestions: json_column(row, 10)?,
+        profile: optional_json_column(row, 11)?,
         duration_ms: row.get(12)?,
         created_at: row.get(13)?,
     })
 }
 
-fn json_column<T: serde::de::DeserializeOwned + Default>(
+fn json_column<T: serde::de::DeserializeOwned>(
     row: &rusqlite::Row<'_>,
     index: usize,
-) -> T {
-    row.get::<_, String>(index)
-        .ok()
-        .and_then(|value| serde_json::from_str(&value).ok())
-        .unwrap_or_default()
+) -> rusqlite::Result<T> {
+    let value = row.get::<_, String>(index)?;
+    decode_json(index, &value)
+}
+
+fn optional_json_column<T: serde::de::DeserializeOwned>(
+    row: &rusqlite::Row<'_>,
+    index: usize,
+) -> rusqlite::Result<Option<T>> {
+    row.get::<_, Option<String>>(index)?
+        .map(|value| decode_json(index, &value))
+        .transpose()
+}
+
+fn decode_json<T: serde::de::DeserializeOwned>(index: usize, value: &str) -> rusqlite::Result<T> {
+    serde_json::from_str(value).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(index, Type::Text, Box::new(error))
+    })
 }
 
 fn submission_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Submission> {
-    let checks: String = row.get(5)?;
     Ok(Submission {
         reference: row.get(0)?,
         workspace_ref: row.get(1)?,
         workspace_commit: row.get(2)?,
         main_commit: row.get(3)?,
         base_commit: row.get(4)?,
-        checks: serde_json::from_str(&checks).unwrap_or_default(),
+        checks: json_column(row, 5)?,
         validation_status: row.get(6)?,
         validation_detail: row.get(7)?,
         build_output: row.get(8)?,
-        axioms: json_column(row, 9),
-        sorries: json_column(row, 10),
+        axioms: json_column(row, 9)?,
+        sorries: json_column(row, 10)?,
         validation_duration_ms: row.get(11)?,
         validated_by: row.get(12)?,
         created_at: row.get(13)?,
@@ -1110,45 +1215,6 @@ fn stored_profile_json(profile: &CheckProfile) -> Result<String> {
         file.entries.clear();
     }
     Ok(serde_json::to_string(&compact)?)
-}
-
-fn migrate_legacy_checks(connection: &Connection) -> Result<()> {
-    let legacy = {
-        let mut statement = connection.prepare(
-            "SELECT ref, workspace_ref, target, fingerprint, dependencies_json,
-                    source_version, created_at FROM checks",
-        )?;
-        let rows = statement.query_map([], check_from_row)?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()?
-    };
-    for check in legacy {
-        connection.execute(
-            "INSERT OR IGNORE INTO check_runs(
-                ref, workspace_ref, status, files_json, passed_json, failed, not_checked_json,
-                warnings_json, linters_json, diagnostics_json, duration_ms, created_at
-             ) VALUES (?1, ?2, 'passed', ?3, ?3, NULL, '[]', '[]', '[]', '[]', 0, ?4)",
-            params![
-                check.reference,
-                check.workspace_ref,
-                serde_json::to_string(&vec![&check.target])?,
-                check.created_at,
-            ],
-        )?;
-        connection.execute(
-            "INSERT OR IGNORE INTO certificates(
-                check_ref, workspace_ref, target, fingerprint, dependencies_json, source_version
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                check.reference,
-                check.workspace_ref,
-                check.target,
-                check.fingerprint,
-                serde_json::to_string(&check.dependencies)?,
-                check.source_version,
-            ],
-        )?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1192,10 +1258,64 @@ mod tests {
         let directory = tempdir().unwrap();
         let path = directory.path().join("state.db");
         let state = State::new(&path).unwrap();
-        assert_eq!(state.next_ref('c').unwrap(), "c1");
-        assert_eq!(State::new(&path).unwrap().next_ref('c').unwrap(), "c2");
+        assert_eq!(state.next_reference(ReferenceKind::Check).unwrap(), "c1");
+        assert_eq!(
+            State::new(&path)
+                .unwrap()
+                .next_reference(ReferenceKind::Check)
+                .unwrap(),
+            "c2"
+        );
         assert!(state.show("check:c2", false).is_err());
         assert!(state.show("", false).is_err());
+    }
+
+    #[test]
+    fn current_schema_is_versioned_and_drops_the_legacy_check_table() {
+        let directory = tempdir().unwrap();
+        let state = State::new(directory.path().join("state.db")).unwrap();
+        let connection = state.open().unwrap();
+        let version: i64 = connection
+            .query_row(
+                "SELECT value FROM state_meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let legacy_checks: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'checks')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, STATE_SCHEMA_VERSION);
+        assert!(!legacy_checks);
+    }
+
+    #[test]
+    fn malformed_persisted_json_is_reported_instead_of_defaulted() {
+        let directory = tempdir().unwrap();
+        let state = State::new(directory.path().join("state.db")).unwrap();
+        state
+            .add_workspace(&Workspace {
+                reference: "w1".into(),
+                name: "agent".into(),
+                path: directory.path().join("agent"),
+                branch: "mathmux/agent".into(),
+                model: None,
+            })
+            .unwrap();
+        state
+            .open()
+            .unwrap()
+            .execute(
+                "INSERT INTO searches(ref, workspace_ref, query, inference, hits_json, note, duration_ms, created_at)
+                 VALUES ('q1', 'w1', 'Demo', 'exact', '{broken', NULL, 1, 1)",
+                [],
+            )
+            .unwrap();
+        assert!(state.search_run("q1").is_err());
     }
 
     #[test]
@@ -1343,7 +1463,7 @@ mod tests {
             main_commit: "main".into(),
             base_commit: "base".into(),
             checks: vec!["c1".into()],
-            validation_status: "passed".into(),
+            validation_status: ValidationStatus::Passed,
             validation_detail: Some("build passed; axioms clean (1 modules)".into()),
             build_output: Some(
                 "warning: first warning\n  detail\nwarning: second warning\n  detail".into(),
@@ -1380,7 +1500,7 @@ mod tests {
                 &CheckRun {
                     reference: "c1".into(),
                     workspace_ref: "w1".into(),
-                    status: "passed".into(),
+                    status: CheckStatus::Passed,
                     files: vec!["Demo/Changed.lean".into()],
                     passed: vec!["Demo/Changed.lean".into()],
                     failed: None,
@@ -1404,7 +1524,7 @@ mod tests {
                 main_commit: "main".into(),
                 base_commit: "base".into(),
                 checks: vec!["c1".into()],
-                validation_status: "passed".into(),
+                validation_status: ValidationStatus::Passed,
                 validation_detail: None,
                 build_output: None,
                 axioms: Vec::new(),
@@ -1432,7 +1552,7 @@ mod tests {
                     main_commit: format!("main-{reference}"),
                     base_commit: "base".into(),
                     checks: vec!["c1".into()],
-                    validation_status: status.into(),
+                    validation_status: status.parse().unwrap(),
                     validation_detail: None,
                     build_output: None,
                     axioms: Vec::new(),
@@ -1473,7 +1593,7 @@ mod tests {
                     main_commit: format!("main-{reference}"),
                     base_commit: "base".into(),
                     checks: vec!["c1".into()],
-                    validation_status: "queued".into(),
+                    validation_status: ValidationStatus::Queued,
                     validation_detail: None,
                     build_output: None,
                     axioms: Vec::new(),
@@ -1486,7 +1606,7 @@ mod tests {
         }
         assert_eq!(state.next_validation().unwrap().unwrap().reference, "s2");
         let skipped = state.submission("s1").unwrap().unwrap();
-        assert_eq!(skipped.validation_status, "skipped");
+        assert_eq!(skipped.validation_status, ValidationStatus::Skipped);
         assert_eq!(skipped.validated_by.as_deref(), Some("s2"));
         state
             .finish_validation(
@@ -1541,7 +1661,7 @@ mod tests {
                 main_commit: "main".into(),
                 base_commit: "base".into(),
                 checks: vec!["c1".into()],
-                validation_status: "queued".into(),
+                validation_status: ValidationStatus::Queued,
                 validation_detail: None,
                 build_output: None,
                 axioms: Vec::new(),

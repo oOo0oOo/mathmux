@@ -6,13 +6,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
-use fs2::FileExt;
-
 use crate::check::{parse_imports, project_module_name};
+use crate::coordination::{lock_exclusive, open_lock};
 use crate::git::{lake_command, project_lean_files};
-use crate::issue::{TelemetryOperation, TelemetryStore, development_enabled};
+use crate::issue::{TelemetryOperation, TelemetryStore};
 use crate::repo::Repo;
 use crate::state::{State, Submission, ValidationReport};
+#[cfg(test)]
+use crate::state::ValidationStatus;
 use crate::util::{command_detail, output_text, run_checked, run_output};
 
 type ValidationSignal = Arc<(Mutex<bool>, Condvar)>;
@@ -23,14 +24,19 @@ pub struct ValidationQueue {
 }
 
 impl ValidationQueue {
-    pub fn start(repo: Repo, state: State, retiring: Arc<AtomicBool>) -> Result<Self> {
+    pub fn start(
+        repo: Repo,
+        state: State,
+        retiring: Arc<AtomicBool>,
+        telemetry: Option<Arc<TelemetryStore>>,
+    ) -> Result<Self> {
         let queue = Self {
             signal: Arc::new((Mutex::new(false), Condvar::new())),
         };
         let signal = queue.signal.clone();
         thread::Builder::new()
             .name("mathmux-validation".into())
-            .spawn(move || validation_loop(repo, state, signal, retiring))?;
+            .spawn(move || validation_loop(repo, state, signal, retiring, telemetry))?;
         Ok(queue)
     }
 
@@ -41,7 +47,13 @@ impl ValidationQueue {
     }
 }
 
-fn validation_loop(repo: Repo, state: State, signal: ValidationSignal, retiring: Arc<AtomicBool>) {
+fn validation_loop(
+    repo: Repo,
+    state: State,
+    signal: ValidationSignal,
+    retiring: Arc<AtomicBool>,
+    telemetry: Option<Arc<TelemetryStore>>,
+) {
     loop {
         if retiring.load(Ordering::SeqCst) {
             return;
@@ -73,9 +85,7 @@ fn validation_loop(repo: Repo, state: State, signal: ValidationSignal, retiring:
                     ),
                 };
                 let _ = state.finish_validation(&submission.reference, &report);
-                if development_enabled()
-                    && let Ok(store) = TelemetryStore::global()
-                {
+                if let Some(store) = &telemetry {
                     let _ = store.record_operation(
                         &repo,
                         &TelemetryOperation {
@@ -107,13 +117,8 @@ fn validation_loop(repo: Repo, state: State, signal: ValidationSignal, retiring:
 }
 
 fn acquire_validation_lock(path: &Path) -> Result<fs::File> {
-    let lock = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(path)?;
-    lock.lock_exclusive()?;
+    let lock = open_lock(path)?;
+    lock_exclusive(&lock)?;
     Ok(lock)
 }
 
@@ -482,7 +487,7 @@ mod tests {
                 main_commit: "main".into(),
                 base_commit: "base".into(),
                 checks: vec!["c1".into()],
-                validation_status: "queued".into(),
+                validation_status: ValidationStatus::Queued,
                 validation_detail: None,
                 build_output: None,
                 axioms: Vec::new(),
@@ -495,7 +500,7 @@ mod tests {
         assert_eq!(state.next_validation().unwrap().unwrap().reference, "s1");
         let active_lock = acquire_validation_lock(&repo.validation_lock).unwrap();
         let retiring = Arc::new(AtomicBool::new(false));
-        let _queue = ValidationQueue::start(repo, state.clone(), retiring.clone()).unwrap();
+        let _queue = ValidationQueue::start(repo, state.clone(), retiring.clone(), None).unwrap();
 
         assert!(state.has_running_validation().unwrap());
         retiring.store(true, Ordering::SeqCst);
