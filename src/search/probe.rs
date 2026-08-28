@@ -289,6 +289,7 @@ impl Searcher {
         if ok { Ok(rendered) } else { bail!(rendered) }
     }
 
+
     fn probe_indexed_check(
         &self,
         workspace: &Workspace,
@@ -772,6 +773,7 @@ fn static_probe_query(context: Option<&ProbeContext>, subject: &str, focus: Opti
         }
         Some(_) => bail!("this probe requires a declaration or type subject"),
     }
+    let subject = subject.strip_prefix("_root_.").unwrap_or(subject);
     let default_focus = if subject.starts_with("type:") { "types" } else { "signature" };
     let query = match focus.unwrap_or(default_focus) {
         "signature" => format!("name:{subject}"),
@@ -855,6 +857,10 @@ mod tests {
         assert_eq!(
             static_probe_query(None, "ContinuousMap", Some("constructors")).unwrap(),
             "name:ContinuousMap.mk"
+        );
+        assert_eq!(
+            static_probe_query(None, "_root_.ContinuousMap", Some("source")).unwrap(),
+            "ContinuousMap source"
         );
         assert_eq!(
             static_probe_query(None, "ContinuousMap", Some("coercions")).unwrap(),

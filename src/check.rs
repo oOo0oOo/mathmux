@@ -989,6 +989,11 @@ impl Checker {
         let target = resolve_target(&workspace.path, requested)?;
         let source = fs::read_to_string(workspace.path.join(&target))
             .with_context(|| format!("cannot read probe context {}", target.display()))?;
+        let column = if line > 0 && column == 0 {
+            first_source_column(&source, line)
+        } else {
+            column
+        };
         let (setup_path, environment) = match self.active_worker_setup(workspace, &target) {
             Some(current) => current,
             None => {
@@ -1343,6 +1348,22 @@ impl Checker {
         );
         Ok(references)
     }
+}
+
+fn first_source_column(source: &str, line: u64) -> u64 {
+    source
+        .lines()
+        .nth(line.saturating_sub(1) as usize)
+        .map(|line| {
+            let indentation = line.chars().take_while(|ch| ch.is_whitespace()).count();
+            let trimmed = line.trim_start();
+            let bullet = trimmed
+                .strip_prefix('·')
+                .map(|rest| 1 + rest.chars().take_while(|ch| ch.is_whitespace()).count())
+                .unwrap_or(0);
+            (indentation + bullet) as u64 + 1
+        })
+        .unwrap_or(1)
 }
 
 fn profile_declaration_near<'a>(
@@ -2579,6 +2600,15 @@ mod tests {
         let cache = Mutex::new(HashMap::from([(key.clone(), failed_file_check("one"))]));
         assert!(matching_failed_check(&cache, &key, "one").is_some());
         assert!(matching_failed_check(&cache, &key, "two").is_none());
+    }
+
+    #[test]
+    fn positioned_probes_start_at_the_first_source_token() {
+        let source = "theorem demo : True := by\n    · trivial\n\t· exact True.intro\n";
+        assert_eq!(first_source_column(source, 1), 1);
+        assert_eq!(first_source_column(source, 2), 7);
+        assert_eq!(first_source_column(source, 3), 4);
+        assert_eq!(first_source_column(source, 99), 1);
     }
 
     #[test]
