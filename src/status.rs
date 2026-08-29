@@ -778,7 +778,14 @@ fn agent_hours(
     let Some(events) = events else {
         return agents
             .iter()
-            .map(|agent| now.saturating_sub(agent.started_at.max(since)) as f64)
+            .map(|agent| {
+                let start = if agent.workspace_fallback {
+                    agent.last_active.saturating_sub(ACTIVE_SECS)
+                } else {
+                    agent.started_at
+                };
+                now.saturating_sub(start.max(since)) as f64
+            })
             .sum::<f64>()
             / HOUR_SECS as f64;
     };
@@ -1017,6 +1024,22 @@ mod tests {
             workspace_fallback: true,
         };
         assert_eq!(agent_hours(&[agent], Some(&[]), 6_900, 7_200), 1.0 / 12.0);
+    }
+
+    #[test]
+    fn fallback_agent_activity_counts_without_telemetry() {
+        let agent = AgentStatus {
+            id: 1,
+            workspace_ref: "w1".into(),
+            workspace: "demo".into(),
+            model: "agent".into(),
+            state: "active".into(),
+            started_at: 7_200,
+            last_active: 7_200,
+            dirty: 0,
+            workspace_fallback: true,
+        };
+        assert_eq!(agent_hours(&[agent], None, 6_900, 7_200), 1.0 / 12.0);
     }
 
     #[test]
