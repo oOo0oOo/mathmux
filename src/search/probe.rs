@@ -824,9 +824,11 @@ impl Searcher {
                 .and_then(|note| note.split(" is ").nth(1))
                 .and_then(|detail| detail.split(',').next())
                 .unwrap_or("a declaration");
-            bail!(
-                "{subject} is {kind}, not a class or structure; valid focuses: signature, source, usages, apply"
-            );
+            bail!(invalid_declaration_focus_message(
+                subject,
+                kind,
+                "a class or structure"
+            ));
         }
         Ok(render_static_probe_summary(&run, focus))
     }
@@ -905,7 +907,11 @@ impl Searcher {
             self.state.touch_workspace(&workspace.reference)?;
             return Ok(render_static_probe_summary(&run, "constructors"));
         } else {
-            bail!("constructors requires a structure, class, or inductive declaration")
+            bail!(invalid_declaration_focus_message(
+                name,
+                hit.kind.as_str(),
+                "a structure, class, or inductive declaration"
+            ))
         };
         self.run_static_probe_query(workspace, cwd, &query, "constructors")
     }
@@ -1279,6 +1285,10 @@ fn static_probe_query(
         other => bail!("focus `{other}` requires source or failure context"),
     };
     Ok(query)
+}
+
+fn invalid_declaration_focus_message(subject: &str, kind: &str, required: &str) -> String {
+    format!("{subject} is {kind}, not {required}; valid focuses: signature, source, usages, apply")
 }
 
 #[derive(Clone, Copy)]
@@ -1851,6 +1861,14 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             "Lean context requires an exact position; use `probe FILE:LINE goal` or `probe FILE:LINE TERM`"
+        );
+        assert_eq!(
+            invalid_declaration_focus_message(
+                "Demo.value",
+                "def",
+                "a structure, class, or inductive declaration"
+            ),
+            "Demo.value is def, not a structure, class, or inductive declaration; valid focuses: signature, source, usages, apply"
         );
         assert_eq!(
             ProbeRequest::parse("c123 goal").unwrap().focus.as_deref(),
