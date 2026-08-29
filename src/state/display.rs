@@ -1,14 +1,15 @@
 use std::collections::HashSet;
 
 use super::{
-    CheckProfile, CheckRun, Diagnostic, SEARCH_USAGE_LIMIT, SearchRun, Submission, ValidationStatus,
+    CheckProfile, CheckRun, CheckStatus, Diagnostic, SEARCH_USAGE_LIMIT, SearchRun, Submission,
+    ValidationStatus,
 };
 use crate::presentation::{
     BUILD_OUTPUT_LINES, BUILD_OUTPUT_TAIL_LINES, SOURCE_PREVIEW_LINES, bounded_head_tail,
 };
 use crate::util::{
-    enriched_validation_detail, format_duration, query_requests_proof_body, short_hash,
-    single_line, truncate_line,
+    enriched_validation_detail, format_duration, now_unix_ms, query_requests_proof_body,
+    short_hash, single_line, truncate_line,
 };
 
 impl CheckProfile {
@@ -241,7 +242,12 @@ fn without_repeated_ambient_context<'a>(source: &'a str, shown: &mut HashSet<Str
 }
 
 pub(super) fn render_check_run(run: &CheckRun, all: bool) -> String {
-    let mut output = format!("{} {} {}ms", run.reference, run.status, run.duration_ms);
+    let duration_ms = if run.status == CheckStatus::Running {
+        now_unix_ms().saturating_sub(run.created_at).max(0) as u64
+    } else {
+        run.duration_ms
+    };
+    let mut output = format!("{} {} {}ms", run.reference, run.status, duration_ms);
     output.push_str(&format!("\nworkspace: {}", run.workspace_ref));
     if !run.files.is_empty() {
         output.push_str("\nfiles:");

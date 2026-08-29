@@ -205,6 +205,7 @@ macro_rules! string_enum {
 }
 
 string_enum!(CheckStatus {
+    Running => "running",
     Passed => "passed",
     Failed => "failed",
 });
@@ -535,7 +536,7 @@ impl State {
             "SELECT COUNT(*),
                     COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
                     AVG(duration_ms)
-             FROM check_runs WHERE created_at >= ?1",
+             FROM check_runs WHERE created_at >= ?1 AND status != 'running'",
             [since],
             |row| {
                 Ok((
@@ -610,7 +611,21 @@ impl State {
                 ref, workspace_ref, status, files_json, passed_json, failed, not_checked_json,
                 warnings_json, linters_json, suggestions_json, diagnostics_json, profile_json,
                 duration_ms, created_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             ON CONFLICT(ref) DO UPDATE SET
+                workspace_ref = excluded.workspace_ref,
+                status = excluded.status,
+                files_json = excluded.files_json,
+                passed_json = excluded.passed_json,
+                failed = excluded.failed,
+                not_checked_json = excluded.not_checked_json,
+                warnings_json = excluded.warnings_json,
+                linters_json = excluded.linters_json,
+                suggestions_json = excluded.suggestions_json,
+                diagnostics_json = excluded.diagnostics_json,
+                profile_json = excluded.profile_json,
+                duration_ms = excluded.duration_ms,
+                created_at = excluded.created_at",
             params![
                 run.reference,
                 run.workspace_ref,
@@ -627,6 +642,10 @@ impl State {
                 run.duration_ms,
                 run.created_at,
             ],
+        )?;
+        transaction.execute(
+            "DELETE FROM certificates WHERE check_ref = ?1",
+            [&run.reference],
         )?;
         for certificate in certificates {
             transaction.execute(
@@ -645,6 +664,19 @@ impl State {
         }
         transaction.commit()?;
         Ok(())
+    }
+
+    pub fn running_check_runs(&self) -> Result<Vec<CheckRun>> {
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            "SELECT ref, workspace_ref, status, files_json, passed_json, failed,
+                    not_checked_json, warnings_json, linters_json, diagnostics_json,
+                    suggestions_json, profile_json, duration_ms, created_at
+             FROM check_runs WHERE status = 'running' ORDER BY created_at, ref",
+        )?;
+        let rows = statement.query_map([], check_run_from_row)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 
     pub fn add_warning_probe(&self, probe: &WarningProbe) -> Result<()> {

@@ -228,14 +228,65 @@ impl Checker {
         {
             let _ = writeln!(log, "reaped {reaped} stale Lean worker group(s)");
         }
-        Ok(Self {
+        let checker = Self {
             repo,
             state,
             coordinator: CheckCoordinator::default(),
             cache: CheckCache::default(),
             runner: LeanCheckRunner::default(),
             telemetry,
-        })
+        };
+        let recovered = checker.recover_interrupted_checks()?;
+        if recovered > 0
+            && let Ok(mut log) = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&checker.repo.log_path)
+        {
+            let _ = writeln!(log, "recovered {recovered} interrupted check(s)");
+        }
+        Ok(checker)
+    }
+
+    fn check_run_lock_path(&self, reference: &str) -> PathBuf {
+        self.repo
+            .state_dir
+            .join("check-runs")
+            .join(format!("{reference}.lock"))
+    }
+
+    fn recover_interrupted_checks(&self) -> Result<usize> {
+        let directory = self.repo.state_dir.join("check-runs");
+        fs::create_dir_all(&directory)?;
+        let mut recovered = 0;
+        for mut run in self.state.running_check_runs()? {
+            let path = self.check_run_lock_path(&run.reference);
+            let lock = open_lock(&path)?;
+            match lock.try_lock_exclusive() {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("cannot inspect running check {}", run.reference)
+                    });
+                }
+            }
+            run.status = CheckStatus::Failed;
+            run.failed = run.files.first().cloned();
+            run.not_checked = run.files.iter().skip(1).cloned().collect();
+            run.diagnostics = vec![Diagnostic {
+                kind: "mathmux".into(),
+                text: "check was interrupted when its mathmux daemon stopped; rerun the check"
+                    .into(),
+                context: None,
+            }];
+            run.duration_ms = now_unix_ms().saturating_sub(run.created_at).max(0) as u64;
+            self.state.add_check_run(&run, &[])?;
+            drop(lock);
+            let _ = fs::remove_file(path);
+            recovered += 1;
+        }
+        Ok(recovered)
     }
 
     pub fn check(
@@ -266,6 +317,31 @@ impl Checker {
             .iter()
             .map(|path| path.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
+        let run_lock_path = self.check_run_lock_path(&reference);
+        let run_lock = open_lock(&run_lock_path)?;
+        run_lock
+            .try_lock_exclusive()
+            .with_context(|| format!("cannot lock check run {reference}"))?;
+        let created_at = now_unix_ms();
+        self.state.add_check_run(
+            &CheckRun {
+                reference: reference.clone(),
+                workspace_ref: workspace.reference.clone(),
+                status: CheckStatus::Running,
+                files: files.clone(),
+                passed: Vec::new(),
+                failed: None,
+                not_checked: files.clone(),
+                warnings: Vec::new(),
+                linters: Vec::new(),
+                suggestions: Vec::new(),
+                diagnostics: Vec::new(),
+                profile: None,
+                duration_ms: 0,
+                created_at,
+            },
+            &[],
+        )?;
         let mut certificates = Vec::new();
         let mut passed = Vec::new();
         let mut warnings = Vec::new();
@@ -351,10 +427,12 @@ impl Checker {
             diagnostics: diagnostics.clone(),
             profile: (include_profile || elapsed_ms >= SLOW_CHECK_PROFILE_MS).then_some(profile),
             duration_ms: elapsed_ms,
-            created_at: now_unix_ms(),
+            created_at,
         };
         self.state
             .add_check_run(&run, if ok { &certificates } else { &[] })?;
+        drop(run_lock);
+        let _ = fs::remove_file(run_lock_path);
         self.state.touch_workspace(&workspace.reference)?;
         let repetition = if cache_only_run(&run) {
             None
@@ -2368,6 +2446,69 @@ mod tests {
 
     use super::*;
     use crate::util::run_checked;
+
+    fn test_repo(root: &Path) -> Repo {
+        run_checked("git", ["init", "-b", "main"], root).unwrap();
+        Repo::from_root(root).unwrap()
+    }
+
+    fn running_check(workspace: &Workspace, reference: &str) -> CheckRun {
+        CheckRun {
+            reference: reference.into(),
+            workspace_ref: workspace.reference.clone(),
+            status: CheckStatus::Running,
+            files: vec!["Proof.lean".into()],
+            passed: Vec::new(),
+            failed: None,
+            not_checked: vec!["Proof.lean".into()],
+            warnings: Vec::new(),
+            linters: Vec::new(),
+            suggestions: Vec::new(),
+            diagnostics: Vec::new(),
+            profile: None,
+            duration_ms: 0,
+            created_at: now_unix_ms(),
+        }
+    }
+
+    #[test]
+    fn daemon_restart_recovers_only_unlocked_running_checks() {
+        let directory = tempdir().unwrap();
+        let repo = test_repo(directory.path());
+        let state = State::new(&repo.db_path).unwrap();
+        let workspace = Workspace {
+            reference: "w1".into(),
+            name: "agent".into(),
+            path: directory.path().to_path_buf(),
+            branch: "main".into(),
+            model: None,
+        };
+        state.add_workspace(&workspace).unwrap();
+        state
+            .add_check_run(&running_check(&workspace, "c1"), &[])
+            .unwrap();
+        state
+            .add_check_run(&running_check(&workspace, "c2"), &[])
+            .unwrap();
+
+        let lock_path = repo.state_dir.join("check-runs/c1.lock");
+        fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+        let held = open_lock(&lock_path).unwrap();
+        held.try_lock_exclusive().unwrap();
+        let checker = Checker::new(repo, state.clone(), None).unwrap();
+        assert_eq!(
+            state.check_run("c1").unwrap().unwrap().status,
+            CheckStatus::Running
+        );
+        let recovered = state.check_run("c2").unwrap().unwrap();
+        assert_eq!(recovered.status, CheckStatus::Failed);
+        assert_eq!(recovered.failed.as_deref(), Some("Proof.lean"));
+        assert_eq!(recovered.diagnostics[0].kind, "mathmux");
+        assert!(recovered.diagnostics[0].text.contains("interrupted"));
+        assert_eq!(state.running_check_runs().unwrap().len(), 1);
+        drop(held);
+        drop(checker);
+    }
 
     #[test]
     fn shared_target_wait_covers_import_and_elaboration_budgets() {
