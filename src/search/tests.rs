@@ -2248,6 +2248,109 @@ fn source_dependents_include_the_active_workspace_index() {
 }
 
 #[test]
+fn warning_probe_indexes_current_residuals_and_invalidates_changed_source() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("root");
+    let state_dir = directory.path().join("state");
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(&state_dir).unwrap();
+    let source = "example (unused : Nat) : True := by\n  simp [Nat.add_zero]\n";
+    fs::write(root.join("Demo.lean"), source).unwrap();
+    let repo = Repo {
+        root: root.clone(),
+        common_git_dir: directory.path().join("git"),
+        state_dir: state_dir.clone(),
+        socket_path: state_dir.join("daemon.sock"),
+        db_path: state_dir.join("state.sqlite3"),
+        search_db_path: state_dir.join("search.sqlite3"),
+        log_path: state_dir.join("daemon.log"),
+        cache_dir: state_dir.join("cache"),
+        integration_lock: state_dir.join("integration.lock"),
+        validation_lock: state_dir.join("validation.lock"),
+        startup_lock: state_dir.join("startup.lock"),
+    };
+    let state = State::new(repo.db_path.clone()).unwrap();
+    let workspace = Workspace {
+        reference: "w1".into(),
+        name: "demo".into(),
+        path: root.clone(),
+        branch: "demo".into(),
+        model: None,
+    };
+    state.add_workspace(&workspace).unwrap();
+    let target = PathBuf::from("Demo.lean");
+    let fingerprint = crate::check::certificate_fingerprint(&root, &target, &[]).unwrap();
+    state
+        .add_check_run(
+            &crate::state::CheckRun {
+                reference: "c1".into(),
+                workspace_ref: workspace.reference.clone(),
+                status: crate::state::CheckStatus::Passed,
+                files: vec!["Demo.lean".into()],
+                passed: vec!["Demo.lean".into()],
+                failed: None,
+                not_checked: Vec::new(),
+                warnings: Vec::new(),
+                linters: vec![
+                    Diagnostic {
+                        kind: "linter.unusedVariables".into(),
+                        text: "Demo.lean:1:10: warning: unused variable `unused`".into(),
+                        context: None,
+                    },
+                    Diagnostic {
+                        kind: "linter.unusedSimpArgs".into(),
+                        text: "Demo.lean:2:3: warning: unused simp argument `Nat.add_zero`".into(),
+                        context: None,
+                    },
+                ],
+                suggestions: Vec::new(),
+                diagnostics: Vec::new(),
+                profile: None,
+                duration_ms: 1,
+                created_at: now_unix_ms(),
+            },
+            &[crate::state::CheckRecord {
+                reference: "c1".into(),
+                workspace_ref: workspace.reference.clone(),
+                target: "Demo.lean".into(),
+                fingerprint,
+                dependencies: Vec::new(),
+                source_version: 1,
+                created_at: now_unix_ms(),
+            }],
+        )
+        .unwrap();
+    let checker = Arc::new(Checker::new(repo.clone(), state.clone(), None).unwrap());
+    let searcher = Searcher::new(repo, state, checker, None).unwrap();
+
+    let index = searcher
+        .probe(&workspace, &root, "Demo.lean warnings")
+        .unwrap();
+    assert!(index.contains("1 residual warning(s) from c1"), "{index}");
+    assert!(index.contains("1 mechanical warning(s) omitted"), "{index}");
+    assert!(index.contains("[high] unused binder"), "{index}");
+    assert!(!index.contains("Nat.add_zero"), "{index}");
+    let index_ref = index.split_whitespace().next().unwrap();
+    let warning_ref = index
+        .split_whitespace()
+        .find(|term| Reference::is_kind(term, ReferenceKind::Query) && *term != index_ref)
+        .unwrap();
+    let dossier = searcher.probe(&workspace, &root, warning_ref).unwrap();
+    assert!(dossier.contains("risk: high"), "{dossier}");
+    assert!(dossier.contains("source context:"), "{dossier}");
+
+    fs::write(root.join("Demo.lean"), format!("{source}\n")).unwrap();
+    let stale = searcher
+        .probe(&workspace, &root, warning_ref)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        stale.contains("is stale because Demo.lean changed"),
+        "{stale}"
+    );
+}
+
+#[test]
 fn missing_dependency_sources_are_detected_from_the_manifest() {
     let directory = tempfile::tempdir().unwrap();
     fs::write(directory.path().join("lake-manifest.json"), "{}").unwrap();

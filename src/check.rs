@@ -728,6 +728,10 @@ impl Checker {
         }
         let (warnings, linters, mut suggestions, mut diagnostics) =
             partition_diagnostics(&response.diagnostics);
+        let mut warnings = warnings;
+        let mut linters = linters;
+        attach_source_context(&mut warnings, target, &source);
+        attach_source_context(&mut linters, target, &source);
         attach_source_context(&mut suggestions, target, &source);
         attach_source_context(&mut diagnostics, target, &source);
         let result = FileCheck {
@@ -1368,6 +1372,30 @@ impl Checker {
                 .join(", ")
         );
         Ok(references)
+    }
+
+    pub fn current_check_run_for_target(
+        &self,
+        workspace: &Workspace,
+        target: &Path,
+    ) -> Result<Option<CheckRun>> {
+        let target_name = target.to_string_lossy();
+        for check in self.state.checks_for_workspace(&workspace.reference)? {
+            if check.target != target_name {
+                continue;
+            }
+            let dependencies = transitive_dependencies(&workspace.path, target)?;
+            if check.fingerprint != self.full_fingerprint(workspace, target, &dependencies)? {
+                continue;
+            }
+            let Some(run) = self.state.check_run(&check.reference)? else {
+                continue;
+            };
+            if run.status == CheckStatus::Passed {
+                return Ok(Some(run));
+            }
+        }
+        Ok(None)
     }
 }
 

@@ -21,6 +21,7 @@ const FOCUSES: &[&str] = &[
     "defeq",
     "rewrite",
     "profile",
+    "warnings",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -247,6 +248,9 @@ impl Searcher {
             (Some(ProbeContext::Position(location)), None, None | Some("goal")) => {
                 self.run_position_probe(workspace, cwd, location, None)
             }
+            (Some(ProbeContext::File(file)), None, Some("warnings")) => {
+                self.probe_file_warnings(workspace, cwd, file)
+            }
             (Some(ProbeContext::Position(location)), Some(subject), None | Some("signature")) => {
                 self.run_position_probe(workspace, cwd, location, Some(subject))
             }
@@ -375,6 +379,234 @@ impl Searcher {
         .map(Some)
     }
 
+    fn probe_file_warnings(&self, workspace: &Workspace, cwd: &Path, file: &str) -> Result<String> {
+        let started = Instant::now();
+        let (path, _) =
+            self.resolve_probe_context(workspace, cwd, ProbeContext::File(file.to_owned()))?;
+        let target = path
+            .strip_prefix(&workspace.path)
+            .with_context(|| format!("{} is outside the active workspace", path.display()))?;
+        let target_name = target.to_string_lossy().into_owned();
+        let run = self
+            .checker
+            .current_check_run_for_target(workspace, target)?
+            .with_context(|| {
+                format!(
+                    "{target_name} has no current successful check; run `mathmux check {target_name}` first"
+                )
+            })?;
+        let source =
+            fs::read_to_string(&path).with_context(|| format!("cannot read {}", path.display()))?;
+        let source_hash = hash_bytes(source.as_bytes());
+        let mut residual = Vec::new();
+        let mut mechanical = 0usize;
+        for diagnostic in run.linters.iter().chain(&run.warnings) {
+            let (reported_path, line, column) = warning_location(&diagnostic.text);
+            if reported_path
+                .as_deref()
+                .is_some_and(|reported| !diagnostic_path_matches(reported, &target_name))
+            {
+                continue;
+            }
+            let classification = classify_warning(&diagnostic.text);
+            if classification.mechanical {
+                mechanical += 1;
+                continue;
+            }
+            residual.push((
+                classification,
+                diagnostic.clone(),
+                line.max(1),
+                column.max(1),
+            ));
+        }
+        residual.sort_by_key(|(classification, _, line, column)| {
+            (risk_rank(classification.risk), *line, *column)
+        });
+
+        let mut index_hits = Vec::with_capacity(residual.len());
+        for (classification, diagnostic, line, column) in residual {
+            let reference = self.state.next_reference(ReferenceKind::Query)?;
+            let declaration = enclosing_declaration(&source, line);
+            let subject = declaration
+                .as_ref()
+                .map(|value| value.name.clone())
+                .filter(|name| !name.is_empty());
+            let detail = warning_dossier(
+                &run.reference,
+                (&target_name, line, column),
+                &classification,
+                &diagnostic,
+                declaration.as_ref(),
+                &source,
+            );
+            let created_at = now_unix_ms();
+            let warning_run = SearchRun {
+                reference: reference.clone(),
+                workspace_ref: workspace.reference.clone(),
+                query: format!("{} warning {}:{}", run.reference, target_name, line),
+                inference: "probe".into(),
+                hits: vec![SearchHit {
+                    name: format!("{} warning", classification.category),
+                    kind: "warning-dossier".into(),
+                    signature: None,
+                    module: String::new(),
+                    path: target_name.clone(),
+                    line,
+                    doc: None,
+                    source: Some(detail),
+                    usages: Vec::new(),
+                    applicable: false,
+                    required_import: None,
+                }],
+                note: None,
+                duration_ms: 0,
+                created_at,
+            };
+            self.state.add_search(&warning_run)?;
+            self.state.add_warning_probe(&WarningProbe {
+                reference: reference.clone(),
+                workspace_ref: workspace.reference.clone(),
+                check_ref: run.reference.clone(),
+                path: target_name.clone(),
+                line,
+                column,
+                source_hash: source_hash.clone(),
+                category: classification.category.into(),
+                risk: classification.risk.into(),
+                subject,
+                diagnostic: diagnostic.clone(),
+                created_at,
+            })?;
+            index_hits.push(SearchHit {
+                name: format!(
+                    "{reference} [{}] {} — {}",
+                    classification.risk,
+                    classification.category,
+                    warning_summary(&diagnostic.text)
+                ),
+                kind: "warning-reference".into(),
+                signature: None,
+                module: String::new(),
+                path: target_name.clone(),
+                line,
+                doc: None,
+                source: None,
+                usages: Vec::new(),
+                applicable: false,
+                required_import: None,
+            });
+        }
+        let reference = self.state.next_reference(ReferenceKind::Query)?;
+        let residual_count = index_hits.len();
+        let note = match (residual_count, mechanical) {
+            (0, 0) => Some(format!("no warnings in current check {}", run.reference)),
+            (0, count) => Some(format!(
+                "no residual warnings; {count} mechanical warning(s) belong to Lean automation"
+            )),
+            (_, 0) => Some(format!(
+                "{residual_count} residual warning(s) from {}; probe a listed qREF for its dossier",
+                run.reference
+            )),
+            (_, count) => Some(format!(
+                "{residual_count} residual warning(s) from {}; {count} mechanical warning(s) omitted for Lean automation; probe a listed qREF",
+                run.reference
+            )),
+        };
+        let index = SearchRun {
+            reference,
+            workspace_ref: workspace.reference.clone(),
+            query: format!("{target_name} warnings"),
+            inference: "warning-index".into(),
+            hits: index_hits,
+            note,
+            duration_ms: started.elapsed().as_millis() as u64,
+            created_at: now_unix_ms(),
+        };
+        self.state.add_search(&index)?;
+        self.state.touch_workspace(&workspace.reference)?;
+        Ok(render_summary(&index))
+    }
+
+    fn probe_warning_reference(
+        &self,
+        workspace: &Workspace,
+        warning: &WarningProbe,
+    ) -> Result<String> {
+        ensure!(
+            warning.workspace_ref == workspace.reference,
+            "{} belongs to {}; probe it from that workspace",
+            warning.reference,
+            warning.workspace_ref
+        );
+        let path = workspace.path.join(&warning.path);
+        let source =
+            fs::read_to_string(&path).with_context(|| format!("cannot read {}", path.display()))?;
+        ensure!(
+            hash_bytes(source.as_bytes()) == warning.source_hash,
+            "{} is stale because {} changed; run check, then `mathmux probe {} warnings` again",
+            warning.reference,
+            warning.path,
+            warning.path
+        );
+        let run = self
+            .state
+            .search_run(&warning.reference)?
+            .with_context(|| format!("unknown warning reference {}", warning.reference))?;
+        let mut detail = run
+            .hits
+            .first()
+            .and_then(|hit| hit.source.clone())
+            .with_context(|| format!("{} has no stored warning dossier", warning.reference))?;
+        if let Some(subject) = warning.subject.as_deref() {
+            let mut result = self.planned_text_search(
+                workspace,
+                subject,
+                TextSearchPlan::ExactFirst,
+                None,
+                None,
+                false,
+            )?;
+            result
+                .hits
+                .retain(|hit| qualified_name_matches(&hit.name, subject));
+            let usages = result
+                .hits
+                .first()
+                .map(|hit| hit.usages.as_slice())
+                .unwrap_or_default();
+            detail.push_str(&format!("\nAPI/dependency evidence for {subject}:"));
+            if usages.is_empty() {
+                detail.push_str(" no indexed downstream usages found");
+            } else {
+                for usage in usages.iter().take(SEARCH_USAGE_LIMIT) {
+                    detail.push_str(&format!("\n  {}:{}", usage.path, usage.line));
+                    if let Some(context) = &usage.context {
+                        detail.push_str(&format!(" in {context}"));
+                    }
+                }
+                if usages.len() > SEARCH_USAGE_LIMIT {
+                    detail.push_str(&format!(
+                        "\n  +{} indexed usages omitted",
+                        usages.len() - SEARCH_USAGE_LIMIT
+                    ));
+                }
+            }
+        }
+        detail.push_str(&format!(
+            "\nVerification: edit a coherent packet in {}, then run `mathmux check {}`.",
+            warning.path, warning.path
+        ));
+        self.store_probe_result(
+            workspace,
+            &warning.reference,
+            "warning-dossier",
+            detail,
+            Some(&warning.path),
+            warning.line,
+        )
+    }
+
     fn probe_check_reference(
         &self,
         workspace: &Workspace,
@@ -429,6 +661,13 @@ impl Searcher {
         subject: Option<&str>,
         focus: Option<&str>,
     ) -> Result<String> {
+        if let Some(warning) = self.state.warning_probe(reference)? {
+            ensure!(
+                subject.is_none() && focus.is_none(),
+                "warning qREFs are complete dossiers and accept no further focus"
+            );
+            return self.probe_warning_reference(workspace, &warning);
+        }
         let run = self
             .state
             .search_run(reference)?
@@ -956,6 +1195,267 @@ fn static_probe_query(
     Ok(query)
 }
 
+#[derive(Clone, Copy)]
+struct WarningClassification {
+    category: &'static str,
+    risk: &'static str,
+    mechanical: bool,
+    guidance: &'static str,
+}
+
+#[derive(Debug)]
+struct EnclosingDeclaration {
+    name: String,
+    header: String,
+    public: bool,
+}
+
+fn classify_warning(text: &str) -> WarningClassification {
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("unused") && lower.contains("simp") && lower.contains("argument") {
+        return WarningClassification {
+            category: "unused simp argument",
+            risk: "mechanical",
+            mechanical: true,
+            guidance: "Handled by Lean automation's greedy remove-and-re-elaborate pass.",
+        };
+    }
+    if lower.contains("unnecessary") && lower.contains("simpa") {
+        return WarningClassification {
+            category: "unnecessary simpa",
+            risk: "mechanical",
+            mechanical: true,
+            guidance: "Handled by Lean automation using the linter-indicated rewrite.",
+        };
+    }
+    if (lower.contains("havei") || lower.contains("leti"))
+        && (lower.contains("have") || lower.contains("let"))
+    {
+        return WarningClassification {
+            category: "Prop-only local instance",
+            risk: "mechanical",
+            mechanical: true,
+            guidance: "Handled by Lean automation from the typed tactic-mode hint.",
+        };
+    }
+    if lower.contains("automatically included section variable") {
+        return WarningClassification {
+            category: "implicit section variable",
+            risk: "high",
+            mechanical: false,
+            guidance: "Decide whether to omit the variable, make it explicit, or restructure the section; preserve named-argument and downstream API behavior.",
+        };
+    }
+    if lower.contains("unused variable") || lower.contains("unused argument") {
+        return WarningClassification {
+            category: "unused binder",
+            risk: "high",
+            mechanical: false,
+            guidance: "Inspect whether the binder is public or used by downstream named arguments before removing or renaming it.",
+        };
+    }
+    if lower.contains("duplicate") && lower.contains("instance") {
+        return WarningClassification {
+            category: "duplicate instance",
+            risk: "high",
+            mechanical: false,
+            guidance: "Compare priorities, scopes, and downstream inference before choosing which instance survives.",
+        };
+    }
+    if lower.contains("reducib") || lower.contains("class") && lower.contains("should be") {
+        return WarningClassification {
+            category: "declaration design",
+            risk: "high",
+            mechanical: false,
+            guidance: "Treat this as an API design decision; inspect downstream uses and typeclass inference before changing annotations or declaration kind.",
+        };
+    }
+    if lower.contains("deprecated") {
+        return WarningClassification {
+            category: "deprecation",
+            risk: "medium",
+            mechanical: false,
+            guidance: "Confirm the replacement has the same elaboration behavior in this context and update related uses as one packet.",
+        };
+    }
+    if lower.contains("seqfocus")
+        || lower.contains("seq_focus")
+        || lower.contains("no-op")
+        || lower.contains("unused tactic")
+        || lower.contains("unnecessary 'change'")
+        || lower.contains("unnecessary `change`")
+    {
+        return WarningClassification {
+            category: "local tactic cleanup",
+            risk: "low",
+            mechanical: false,
+            guidance: "Simplify the local proof step, retaining the surrounding proof structure when the suggested replacement is unclear.",
+        };
+    }
+    WarningClassification {
+        category: "warning requiring judgment",
+        risk: "medium",
+        mechanical: false,
+        guidance: "Inspect the declaration and related uses, make the narrowest coherent edit, and verify the file.",
+    }
+}
+
+fn risk_rank(risk: &str) -> u8 {
+    match risk {
+        "low" => 0,
+        "medium" => 1,
+        "high" => 2,
+        _ => 3,
+    }
+}
+
+fn warning_location(text: &str) -> (Option<String>, u64, u64) {
+    static LOCATION: OnceLock<Regex> = OnceLock::new();
+    let location = LOCATION.get_or_init(|| {
+        Regex::new(r"^(?P<path>.+?):(?P<line>[0-9]+)(?::(?P<column>[0-9]+))?(?::|$)")
+            .expect("valid warning location regex")
+    });
+    let Some(captures) = text.lines().next().and_then(|line| location.captures(line)) else {
+        return (None, 1, 1);
+    };
+    (
+        captures.name("path").map(|value| value.as_str().to_owned()),
+        captures
+            .name("line")
+            .and_then(|value| value.as_str().parse().ok())
+            .unwrap_or(1),
+        captures
+            .name("column")
+            .and_then(|value| value.as_str().parse().ok())
+            .unwrap_or(1),
+    )
+}
+
+fn diagnostic_path_matches(reported: &str, target: &str) -> bool {
+    let reported = reported.trim_start_matches("./");
+    let target = target.trim_start_matches("./");
+    let target_module = target
+        .strip_suffix(".lean")
+        .unwrap_or(target)
+        .replace('/', ".");
+    reported == target
+        || reported.ends_with(&format!("/{target}"))
+        || reported == target_module
+        || Path::new(reported).file_name() == Path::new(target).file_name()
+}
+
+fn warning_summary(text: &str) -> String {
+    let first = text.lines().next().unwrap_or(text);
+    let message = warning_location(first)
+        .0
+        .and_then(|_| first.splitn(4, ':').nth(3))
+        .unwrap_or(first)
+        .trim()
+        .trim_start_matches("warning:")
+        .trim();
+    truncate_line(message, 100)
+}
+
+fn enclosing_declaration(source: &str, line: u64) -> Option<EnclosingDeclaration> {
+    let lines = source.lines().collect::<Vec<_>>();
+    let before = line.min(lines.len() as u64) as usize;
+    for index in (0..before).rev() {
+        let original = lines[index];
+        let mut candidate = original.trim_start();
+        let public = !candidate.starts_with("private ");
+        for modifier in ["private ", "protected ", "noncomputable ", "unsafe "] {
+            if let Some(rest) = candidate.strip_prefix(modifier) {
+                candidate = rest.trim_start();
+            }
+        }
+        let Some((keyword, rest)) = [
+            "abbrev ",
+            "class ",
+            "def ",
+            "example ",
+            "inductive ",
+            "instance ",
+            "lemma ",
+            "structure ",
+            "theorem ",
+        ]
+        .into_iter()
+        .find_map(|keyword| candidate.strip_prefix(keyword).map(|rest| (keyword, rest))) else {
+            continue;
+        };
+        let name = rest
+            .split(|character: char| {
+                character.is_whitespace() || matches!(character, '(' | '{' | '[' | ':' | '=')
+            })
+            .next()
+            .unwrap_or_default()
+            .trim();
+        if name.is_empty() || keyword == "example " || keyword == "instance " && name == ":" {
+            return Some(EnclosingDeclaration {
+                name: String::new(),
+                header: original.trim().to_owned(),
+                public: false,
+            });
+        }
+        let end = (index + 6).min(before.max(index + 1)).min(lines.len());
+        return Some(EnclosingDeclaration {
+            name: name.to_owned(),
+            header: lines[index..end]
+                .iter()
+                .map(|line| line.trim_end())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            public,
+        });
+    }
+    None
+}
+
+fn warning_dossier(
+    check_ref: &str,
+    location: (&str, u64, u64),
+    classification: &WarningClassification,
+    diagnostic: &Diagnostic,
+    declaration: Option<&EnclosingDeclaration>,
+    source: &str,
+) -> String {
+    let (path, line, column) = location;
+    let mut detail = format!(
+        "category: {}\nrisk: {}\ncheck: {check_ref}\nlocation: {path}:{line}:{column}\ndiagnostic:\n{}",
+        classification.category, classification.risk, diagnostic.text
+    );
+    if let Some(declaration) = declaration {
+        let exposure = if declaration.public {
+            "public"
+        } else {
+            "local/private"
+        };
+        detail.push_str(&format!(
+            "\nenclosing declaration ({exposure}):\n{}",
+            declaration.header
+        ));
+    }
+    let lines = source.lines().collect::<Vec<_>>();
+    if !lines.is_empty() {
+        let current = line
+            .saturating_sub(1)
+            .min(lines.len().saturating_sub(1) as u64) as usize;
+        let start = current.saturating_sub(2);
+        let end = (current + 3).min(lines.len());
+        detail.push_str("\nsource context:");
+        for (index, source_line) in lines.iter().enumerate().take(end).skip(start) {
+            detail.push_str(&format!(
+                "\n{} {:>4} | {}",
+                if index == current { ">" } else { " " },
+                index + 1,
+                source_line
+            ));
+        }
+    }
+    detail.push_str(&format!("\nassessment: {}", classification.guidance));
+    detail
+}
+
 struct InductiveConstructor {
     name: String,
     signature: String,
@@ -1104,6 +1604,15 @@ mod tests {
                 context: Some(ProbeContext::File("Mathlib/Data/List.lean".into())),
                 subject: Some("Demo.foo".into()),
                 focus: Some("usages".into()),
+                directive: None,
+            }
+        );
+        assert_eq!(
+            ProbeRequest::parse("Mathlib/Data/List.lean warnings").unwrap(),
+            ProbeRequest {
+                context: Some(ProbeContext::File("Mathlib/Data/List.lean".into())),
+                subject: None,
+                focus: Some("warnings".into()),
                 directive: None,
             }
         );
@@ -1290,5 +1799,55 @@ mod tests {
         let usages = render_static_probe_summary(&run, "usages");
         assert!(usages.contains("Demo.first"));
         assert!(!usages.contains("theorem first"));
+    }
+
+    #[test]
+    fn warning_triage_separates_automation_from_judgment() {
+        for warning in [
+            "Demo.lean:1:1: warning: unused argument `h` in simp invocation",
+            "Demo.lean:2:1: warning: unnecessary simpa",
+            "Demo.lean:3:1: warning: use `have` instead of `haveI` when the goal is a proposition",
+        ] {
+            assert!(classify_warning(warning).mechanical, "{warning}");
+        }
+        let binder =
+            classify_warning("Demo.lean:4:1: warning: automatically included section variable `G`");
+        assert_eq!(binder.category, "implicit section variable");
+        assert_eq!(binder.risk, "high");
+        assert!(!binder.mechanical);
+        assert_eq!(
+            warning_location("Mathlib/Demo.lean:42:7: warning: unused variable"),
+            (Some("Mathlib/Demo.lean".into()), 42, 7)
+        );
+        assert_eq!(
+            warning_location("Mathlib.Demo:43:0: warning: unused variable"),
+            (Some("Mathlib.Demo".into()), 43, 0)
+        );
+        assert!(diagnostic_path_matches("Mathlib.Demo", "Mathlib/Demo.lean"));
+    }
+
+    #[test]
+    fn warning_dossiers_capture_declaration_exposure_and_source() {
+        let source =
+            "namespace Demo\n\ntheorem publicResult (unused : Nat) : True := by\n  trivial\n";
+        let declaration = enclosing_declaration(source, 3).unwrap();
+        assert_eq!(declaration.name, "publicResult");
+        assert!(declaration.public);
+        let classification = classify_warning("Demo.lean:3:23: warning: unused variable `unused`");
+        let dossier = warning_dossier(
+            "c7",
+            ("Demo.lean", 3, 23),
+            &classification,
+            &Diagnostic {
+                kind: "linter.unusedVariables".into(),
+                text: "Demo.lean:3:23: warning: unused variable `unused`".into(),
+                context: None,
+            },
+            Some(&declaration),
+            source,
+        );
+        assert!(dossier.contains("risk: high"));
+        assert!(dossier.contains("enclosing declaration (public)"));
+        assert!(dossier.contains(">    3 | theorem publicResult"));
     }
 }

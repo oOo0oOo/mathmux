@@ -62,6 +62,7 @@ FORMS — type one directly; there are no API, LEAN, or other category keywords
   NAME [signature|source|apply|fields|constructors|ext|simp|
         instances|coercions|usages]
   type:LEAN_TYPE [types]
+  FILE warnings
   FILE:LINE [goal] | FILE:LINE TERM [signature]
   PATH NAME usages
   cREF [types|defeq|rewrite|profile]
@@ -71,6 +72,8 @@ FORMS — type one directly; there are no API, LEAN, or other category keywords
   FILE:LINE|cREF|positioned-qREF "by TACTIC"
 
 RESULT
+  FILE warnings returns ranked residual-warning qREFs from its latest current check;
+  probing one returns a source-bound dossier with API/dependency evidence.
   API focuses return one bounded dossier. goal returns the exact local goal;
   TERM/directives return Lean's elaborated answer; by returns solved or subgoals.
   NAME source returns that declaration body; search FILE:LINE/RANGE reads file text.
@@ -80,6 +83,7 @@ RULES
   instances/coercions find declarations in the subject's name family; inspect
   signature for required typeclasses or a theorem result such as Bijective.
   cREF analyses need a matching stored failure; profile needs check --profile.
+  warnings omits mechanical fixes owned by Lean automation and never reruns Lean.
   Context is mandatory for directives and never guessed. FILE uses its imports;
   FILE:LINE uses that exact line—there is no nearby-line fallback. Probe never
   edits or certifies source; use check after editing. Use NAME signature, not
@@ -855,6 +859,7 @@ mod tests {
         for contract in [
             "there are no API, LEAN, or other category keywords",
             "NAME [signature|source|apply",
+            "FILE warnings",
             "FILE:LINE [goal]",
             "cREF [types|defeq|rewrite|profile]",
             "declaration-qREF [signature|source|usages|constructors]",

@@ -178,7 +178,7 @@ pub(super) fn source_regex_result(
     all: bool,
 ) -> Result<SearchResult> {
     let regex = Regex::new(&query.pattern).context("invalid source regex")?;
-    let files = if query.scope.is_file() {
+    let mut files = if query.scope.is_file() {
         vec![query.scope.clone()]
     } else {
         project_lean_files(&query.scope)
@@ -186,6 +186,7 @@ pub(super) fn source_regex_result(
             .map(|path| query.scope.join(path))
             .collect()
     };
+    files.sort();
     let limit = if all { SOURCE_OCCURRENCE_LIMIT } else { 12 };
     let deadline = Instant::now() + SOURCE_FALLBACK_BUDGET;
     let dependency_root = fs::canonicalize(workspace.path.join(".lake/packages")).ok();

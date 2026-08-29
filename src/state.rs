@@ -14,7 +14,7 @@ use display::{render_check_run, render_search_run, render_submission};
 const SEARCH_HISTORY_LIMIT: i64 = 20_000;
 const SEARCH_HISTORY_AGE_MS: i64 = 48 * 60 * 60 * 1000;
 const STORED_PROFILE_LIMIT_BYTES: usize = 512 * 1024;
-const STATE_SCHEMA_VERSION: i64 = 1;
+const STATE_SCHEMA_VERSION: i64 = 2;
 pub(crate) const SEARCH_USAGE_LIMIT: usize = 8;
 
 #[derive(Debug, Clone)]
@@ -49,6 +49,22 @@ pub struct Diagnostic {
     pub text: String,
     #[serde(default)]
     pub context: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WarningProbe {
+    pub reference: String,
+    pub workspace_ref: String,
+    pub check_ref: String,
+    pub path: String,
+    pub line: u64,
+    pub column: u64,
+    pub source_hash: String,
+    pub category: String,
+    pub risk: String,
+    pub subject: Option<String>,
+    pub diagnostic: Diagnostic,
+    pub created_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -358,7 +374,21 @@ impl State {
                 created_at INTEGER NOT NULL
              );
              CREATE INDEX IF NOT EXISTS searches_created
-                ON searches(created_at DESC);",
+                ON searches(created_at DESC);
+             CREATE TABLE IF NOT EXISTS warning_probes (
+                ref TEXT PRIMARY KEY REFERENCES searches(ref) ON DELETE CASCADE,
+                workspace_ref TEXT NOT NULL REFERENCES workspaces(ref),
+                check_ref TEXT NOT NULL REFERENCES check_runs(ref),
+                path TEXT NOT NULL,
+                line INTEGER NOT NULL,
+                column_number INTEGER NOT NULL,
+                source_hash TEXT NOT NULL,
+                category TEXT NOT NULL,
+                risk TEXT NOT NULL,
+                subject TEXT,
+                diagnostic_json TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+             );",
         )?;
         let version = transaction
             .query_row(
@@ -375,6 +405,7 @@ impl State {
         for next in version + 1..=STATE_SCHEMA_VERSION {
             match next {
                 1 => migrate_state_v1(&transaction)?,
+                2 => migrate_state_v2(&transaction)?,
                 _ => unreachable!("all state migrations are enumerated"),
             }
             transaction.execute(
@@ -614,6 +645,58 @@ impl State {
         }
         transaction.commit()?;
         Ok(())
+    }
+
+    pub fn add_warning_probe(&self, probe: &WarningProbe) -> Result<()> {
+        self.open()?.execute(
+            "INSERT INTO warning_probes(
+                ref, workspace_ref, check_ref, path, line, column_number, source_hash,
+                category, risk, subject, diagnostic_json, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                probe.reference,
+                probe.workspace_ref,
+                probe.check_ref,
+                probe.path,
+                probe.line,
+                probe.column,
+                probe.source_hash,
+                probe.category,
+                probe.risk,
+                probe.subject,
+                serde_json::to_string(&probe.diagnostic)?,
+                probe.created_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn warning_probe(&self, reference: &str) -> Result<Option<WarningProbe>> {
+        self.open()?
+            .query_row(
+                "SELECT ref, workspace_ref, check_ref, path, line, column_number, source_hash,
+                        category, risk, subject, diagnostic_json, created_at
+                 FROM warning_probes WHERE ref = ?1",
+                [reference],
+                |row| {
+                    Ok(WarningProbe {
+                        reference: row.get(0)?,
+                        workspace_ref: row.get(1)?,
+                        check_ref: row.get(2)?,
+                        path: row.get(3)?,
+                        line: row.get::<_, i64>(4)?.max(0) as u64,
+                        column: row.get::<_, i64>(5)?.max(0) as u64,
+                        source_hash: row.get(6)?,
+                        category: row.get(7)?,
+                        risk: row.get(8)?,
+                        subject: row.get(9)?,
+                        diagnostic: json_column(row, 10)?,
+                        created_at: row.get(11)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     pub fn check_run(&self, reference: &str) -> Result<Option<CheckRun>> {
@@ -1091,6 +1174,28 @@ fn migrate_state_v1(transaction: &rusqlite::Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
+fn migrate_state_v2(transaction: &rusqlite::Transaction<'_>) -> Result<()> {
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS warning_probes (
+            ref TEXT PRIMARY KEY REFERENCES searches(ref) ON DELETE CASCADE,
+            workspace_ref TEXT NOT NULL REFERENCES workspaces(ref),
+            check_ref TEXT NOT NULL REFERENCES check_runs(ref),
+            path TEXT NOT NULL,
+            line INTEGER NOT NULL,
+            column_number INTEGER NOT NULL,
+            source_hash TEXT NOT NULL,
+            category TEXT NOT NULL,
+            risk TEXT NOT NULL,
+            subject TEXT,
+            diagnostic_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS warning_probes_workspace_path
+            ON warning_probes(workspace_ref, path, created_at DESC);",
+    )?;
+    Ok(())
+}
+
 fn add_column_if_missing(
     connection: &Connection,
     table: &str,
@@ -1306,6 +1411,78 @@ mod tests {
             )
             .unwrap();
         assert!(state.search_run("q1").is_err());
+    }
+
+    #[test]
+    fn warning_probe_metadata_round_trips_with_its_query_reference() {
+        let directory = tempdir().unwrap();
+        let state = State::new(directory.path().join("state.db")).unwrap();
+        state
+            .add_workspace(&Workspace {
+                reference: "w1".into(),
+                name: "agent".into(),
+                path: directory.path().join("agent"),
+                branch: "mathmux/agent".into(),
+                model: None,
+            })
+            .unwrap();
+        state
+            .add_check_run(
+                &CheckRun {
+                    reference: "c1".into(),
+                    workspace_ref: "w1".into(),
+                    status: CheckStatus::Passed,
+                    files: vec!["Demo.lean".into()],
+                    passed: vec!["Demo.lean".into()],
+                    failed: None,
+                    not_checked: Vec::new(),
+                    warnings: Vec::new(),
+                    linters: Vec::new(),
+                    suggestions: Vec::new(),
+                    diagnostics: Vec::new(),
+                    profile: None,
+                    duration_ms: 1,
+                    created_at: 1,
+                },
+                &[],
+            )
+            .unwrap();
+        state
+            .add_search(&SearchRun {
+                reference: "q1".into(),
+                workspace_ref: "w1".into(),
+                query: "c1 warning Demo.lean:4".into(),
+                inference: "probe".into(),
+                hits: Vec::new(),
+                note: None,
+                duration_ms: 0,
+                created_at: 1,
+            })
+            .unwrap();
+        let probe = WarningProbe {
+            reference: "q1".into(),
+            workspace_ref: "w1".into(),
+            check_ref: "c1".into(),
+            path: "Demo.lean".into(),
+            line: 4,
+            column: 7,
+            source_hash: "abc".into(),
+            category: "unused binder".into(),
+            risk: "high".into(),
+            subject: Some("Demo.result".into()),
+            diagnostic: Diagnostic {
+                kind: "linter.unusedVariables".into(),
+                text: "unused variable".into(),
+                context: None,
+            },
+            created_at: 1,
+        };
+        state.add_warning_probe(&probe).unwrap();
+        let stored = state.warning_probe("q1").unwrap().unwrap();
+        assert_eq!(stored.check_ref, "c1");
+        assert_eq!(stored.line, 4);
+        assert_eq!(stored.subject.as_deref(), Some("Demo.result"));
+        assert_eq!(stored.diagnostic, probe.diagnostic);
     }
 
     #[test]

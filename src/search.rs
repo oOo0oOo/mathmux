@@ -21,7 +21,10 @@ use crate::issue::{TelemetryOperation, TelemetryStore};
 use crate::presentation::{SEARCH_PRESENTATION, SOURCE_PREVIEW_LINES};
 use crate::reference::{Reference, ReferenceKind};
 use crate::repo::Repo;
-use crate::state::{SEARCH_USAGE_LIMIT, SearchHit, SearchRun, SearchUsage, State, Workspace};
+use crate::state::{
+    Diagnostic, SEARCH_USAGE_LIMIT, SearchHit, SearchRun, SearchUsage, State, WarningProbe,
+    Workspace,
+};
 use crate::util::{
     clean_line, hash_bytes, now_unix_ms, query_requests_proof_body, single_line, truncate_line,
     truncate_middle,
