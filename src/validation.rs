@@ -173,7 +173,7 @@ fn validate(repo: &Repo, submission: &Submission) -> Result<ValidationReport> {
         Err(error) => {
             return Ok(failed_report(
                 started,
-                format!("axiom audit failed: {error:#}"),
+                axiom_audit_detail(&format!("{error:#}")),
                 build_output,
                 Vec::new(),
             ));
@@ -200,6 +200,14 @@ fn validate(repo: &Repo, submission: &Submission) -> Result<ValidationReport> {
         sorries: audit.sorries,
         duration_ms: started.elapsed().as_millis() as u64,
     })
+}
+
+fn axiom_audit_detail(detail: &str) -> String {
+    if detail.starts_with("axiom audit failed:") {
+        detail.to_owned()
+    } else {
+        format!("axiom audit failed: {detail}")
+    }
 }
 
 fn invalidate_newer_project_artifacts(root: &Path) -> Result<()> {
@@ -492,6 +500,18 @@ mod tests {
         assert!(host_load_brake_for("24.00 20.0 18.0 1/1 1", 24));
         assert!(host_load_brake_for("29.06 20.0 18.0 1/1 1", 24));
         assert!(!host_load_brake_for("unavailable", 24));
+    }
+
+    #[test]
+    fn axiom_audit_errors_are_labeled_once() {
+        assert_eq!(
+            axiom_audit_detail("axiom audit failed: uncaught exception"),
+            "axiom audit failed: uncaught exception"
+        );
+        assert_eq!(
+            axiom_audit_detail("cannot start axiom audit"),
+            "axiom audit failed: cannot start axiom audit"
+        );
     }
     use crate::state::Workspace;
 
