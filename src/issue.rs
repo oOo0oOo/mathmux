@@ -1043,6 +1043,15 @@ fn response_reference(summary: &str) -> Option<String> {
 }
 
 fn error_class(summary: &str) -> String {
+    if summary.contains("malformed search fragment") {
+        return "malformed search fragment".into();
+    }
+    if summary.contains(" no results") || summary.contains("exact declaration not found") {
+        return "no results".into();
+    }
+    if summary.contains("suggestion:") || summary.contains("suggestions") {
+        return "near suggestions".into();
+    }
     let lines = summary
         .lines()
         .map(str::trim)
@@ -1053,6 +1062,9 @@ fn error_class(summary: &str) -> String {
             !(response_reference(reference).as_deref() == Some(reference)
                 && duration.ends_with("ms")
                 && words.next().is_none())
+                && !(reference == "error"
+                    && response_reference(duration).is_some()
+                    && words.next().is_none())
         })
         .collect::<Vec<_>>();
     let value = lines
@@ -1441,6 +1453,15 @@ mod tests {
                 "c5365 900ms\nwarning Demo:2:1: warning: unused variable\nDemo:9:2: error: Tactic `rfl` failed"
             ),
             "Tactic `rfl` failed"
+        );
+        assert_eq!(
+            error_class("error q123\nsuggestion: Demo.target : Nat"),
+            "near suggestions"
+        );
+        assert_eq!(error_class("error q124\nq124 no results"), "no results");
+        assert_eq!(
+            error_class("error q125\nambiguous declaration name: target"),
+            "ambiguous declaration name"
         );
     }
 
