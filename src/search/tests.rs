@@ -1111,6 +1111,38 @@ fn exact_miss_summary_labels_bounded_suggestions() {
 }
 
 #[test]
+fn exact_miss_source_request_stays_bounded_and_focused() {
+    let summary = render_summary(&SearchRun {
+        reference: "q-miss-source".into(),
+        workspace_ref: "w1".into(),
+        query: "Demo.missing source".into(),
+        inference: "exact-miss".into(),
+        hits: (0..4)
+            .map(|index| SearchHit {
+                name: format!("Demo.misgiving{index}"),
+                kind: "def".into(),
+                signature: Some("True".into()),
+                module: "Demo".into(),
+                path: "Demo.lean".into(),
+                line: index + 2,
+                doc: None,
+                source: Some("def misgiving : True := trivial".into()),
+                usages: Vec::new(),
+                applicable: false,
+                required_import: None,
+            })
+            .collect(),
+        note: Some("exact declaration not found: Demo.missing\nsuggestions (not exact):".into()),
+        duration_ms: 1,
+        created_at: 0,
+    });
+    assert_eq!(summary.matches("suggestion:").count(), 3);
+    assert!(!summary.contains("show q-miss-source --all"));
+    assert!(!summary.contains("source:"));
+    assert!(summary.contains("next: mathmux probe Demo.misgiving0 signature"));
+}
+
+#[test]
 fn contextual_exact_resolution_prefers_imported_member() {
     let base = SearchHit {
         name: "ContinuousLinearMap.prodMap_apply".into(),

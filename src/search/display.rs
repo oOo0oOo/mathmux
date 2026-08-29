@@ -18,7 +18,9 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
     if run.hits.is_empty() {
         output.push_str(" no results");
     }
-    let summary_limit = if proof_body_requested && !related_results {
+    let summary_limit = if run.inference == "exact-miss" {
+        run.hits.len().min(3)
+    } else if proof_body_requested && !related_results {
         1
     } else if run.inference == "exact-batch" {
         run.hits.len()
@@ -156,6 +158,9 @@ fn append_next_hint(
     summary_limit: usize,
     proof_body_requested: bool,
 ) {
+    if run.inference == "exact-miss" {
+        return;
+    }
     if proof_body_requested {
         output.push_str(&format!("; show {} --all", run.reference));
     } else if run
