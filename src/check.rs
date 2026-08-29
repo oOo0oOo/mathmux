@@ -28,7 +28,7 @@ mod diagnostics;
 
 use diagnostics::{attach_source_context, deduplicate, partition_diagnostics};
 
-const CHECK_RESULT_VERSION: &[u8] = b"check-result-v2";
+const CHECK_RESULT_VERSION: &[u8] = b"check-result-v3";
 const CHECK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const CHECK_QUEUE_TIMEOUT: Duration = CHECK_TIMEOUT;
 // A cold owner can spend one check budget preparing imports before it reaches
@@ -514,7 +514,7 @@ impl Checker {
                     reference: reference.to_owned(),
                     workspace_ref: workspace.reference.clone(),
                     target: target.to_string_lossy().into_owned(),
-                    fingerprint: self.full_fingerprint(workspace, target, &[])?,
+                    fingerprint: certificate_fingerprint(&workspace.path, target, &[])?,
                     dependencies: Vec::new(),
                     source_version: 1,
                     created_at: now_unix_ms(),
@@ -541,7 +541,7 @@ impl Checker {
         let phase = Instant::now();
         let dependencies = transitive_dependencies(&workspace.path, target)?;
         let dependencies_ms = phase.elapsed().as_millis() as u64;
-        let fingerprint = self.full_fingerprint(workspace, target, &dependencies)?;
+        let fingerprint = certificate_fingerprint(&workspace.path, target, &dependencies)?;
         let check_key = (workspace.reference.clone(), target.to_path_buf());
         if !include_profile
             && let Some(cached) =
@@ -602,7 +602,7 @@ impl Checker {
                     reference: reference.to_owned(),
                     workspace_ref: workspace.reference.clone(),
                     target: target_name.clone(),
-                    fingerprint: self.full_fingerprint(workspace, target, &dependencies)?,
+                    fingerprint: certificate_fingerprint(&workspace.path, target, &dependencies)?,
                     dependencies: dependencies
                         .iter()
                         .map(|path| path.to_string_lossy().into_owned())
@@ -699,10 +699,6 @@ impl Checker {
                 return Ok(result);
             }
         };
-        // Setup preparation can create or refresh artifacts included in the
-        // certificate fingerprint. Certify the environment that Lean actually
-        // uses, not the pre-setup state observed during cache lookup.
-        let fingerprint = self.full_fingerprint(workspace, target, &dependencies)?;
         let setup_ms = phase.elapsed().as_millis() as u64;
         let phase = Instant::now();
         report(&format!("{reference} elaborating {}", target.display()));
@@ -1163,27 +1159,6 @@ impl Checker {
             .then(|| (worker.setup_path.clone(), worker.environment.clone()))
     }
 
-    fn full_fingerprint(
-        &self,
-        workspace: &Workspace,
-        target: &Path,
-        dependencies: &[PathBuf],
-    ) -> Result<String> {
-        let base = certificate_fingerprint(&workspace.path, target, dependencies)?;
-        let setup_path = self.setup_path(workspace, target);
-        if !setup_path.is_file() {
-            return Ok(base);
-        }
-        let immutable_artifact_roots = self.immutable_artifact_roots();
-        Ok(hash_bytes(
-            format!(
-                "{base}{}",
-                setup_artifact_fingerprint(&setup_path, &immutable_artifact_roots)?
-            )
-            .as_bytes(),
-        ))
-    }
-
     fn worker_environment_from_base(
         &self,
         workspace: &Workspace,
@@ -1373,7 +1348,8 @@ impl Checker {
                 continue;
             }
             let dependencies = transitive_dependencies(&workspace.path, &check_target)?;
-            let fingerprint = self.full_fingerprint(workspace, &check_target, &dependencies)?;
+            let fingerprint =
+                certificate_fingerprint(&workspace.path, &check_target, &dependencies)?;
             if check.fingerprint != fingerprint {
                 continue;
             }
@@ -1411,7 +1387,8 @@ impl Checker {
                 continue;
             }
             let dependencies = transitive_dependencies(&workspace.path, target)?;
-            if check.fingerprint != self.full_fingerprint(workspace, target, &dependencies)? {
+            if check.fingerprint != certificate_fingerprint(&workspace.path, target, &dependencies)?
+            {
                 continue;
             }
             let Some(run) = self.state.check_run(&check.reference)? else {
@@ -2234,6 +2211,10 @@ pub fn certificate_fingerprint(
     target: &Path,
     dependencies: &[PathBuf],
 ) -> Result<String> {
+    // A certificate records the Lean source/configuration snapshot that passed.
+    // Build artifacts are mutable execution caches; worker environments track
+    // them separately so rebuilding an equivalent artifact cannot erase proof
+    // coverage or make a stored warning dossier immediately stale.
     let mut entries = BTreeSet::new();
     entries.insert(target.to_path_buf());
     entries.extend(dependencies.iter().cloned());
@@ -2244,10 +2225,6 @@ pub fn certificate_fingerprint(
             material.extend_from_slice(hash_file(&root.join(&path))?.as_bytes());
         } else {
             material.extend_from_slice(b"<absent>");
-        }
-        let artifact = artifact_path(root, &path);
-        if artifact.is_file() {
-            material.extend_from_slice(hash_file(&artifact)?.as_bytes());
         }
     }
     for config in PROJECT_CONFIG_FILES {
@@ -2583,7 +2560,39 @@ mod tests {
     }
 
     #[test]
-    fn setup_artifact_metadata_invalidates_certificates() {
+    fn artifact_rebuilds_do_not_invalidate_certificates() {
+        let directory = tempdir().unwrap();
+        fs::write(directory.path().join("Dependency.lean"), "def value := 1\n").unwrap();
+        fs::write(
+            directory.path().join("Proof.lean"),
+            "import Dependency\ndef proof := value\n",
+        )
+        .unwrap();
+        let artifact = directory
+            .path()
+            .join(".lake/build/lib/lean/Dependency.olean");
+        fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+        fs::write(&artifact, "first build").unwrap();
+        let dependencies = vec![PathBuf::from("Dependency.lean")];
+        let before =
+            certificate_fingerprint(directory.path(), Path::new("Proof.lean"), &dependencies)
+                .unwrap();
+
+        fs::write(&artifact, "different build output").unwrap();
+        let rebuilt =
+            certificate_fingerprint(directory.path(), Path::new("Proof.lean"), &dependencies)
+                .unwrap();
+        assert_eq!(before, rebuilt);
+
+        fs::write(directory.path().join("Dependency.lean"), "def value := 2\n").unwrap();
+        let changed_source =
+            certificate_fingerprint(directory.path(), Path::new("Proof.lean"), &dependencies)
+                .unwrap();
+        assert_ne!(before, changed_source);
+    }
+
+    #[test]
+    fn setup_artifact_metadata_invalidates_worker_environments() {
         let directory = tempdir().unwrap();
         let artifact = directory.path().join("Dependency.olean");
         fs::write(&artifact, "one").unwrap();
