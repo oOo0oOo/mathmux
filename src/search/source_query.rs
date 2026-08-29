@@ -201,6 +201,10 @@ pub(super) fn source_regex_result(
         let source = fs::read_to_string(&path)?;
         let lines = source.lines().collect::<Vec<_>>();
         for (index, line) in lines.iter().enumerate() {
+            if Instant::now() >= deadline {
+                timed_out = true;
+                break;
+            }
             let line_number = index as u64 + 1;
             if line_number < query.first_line || line_number > query.last_line {
                 continue;
