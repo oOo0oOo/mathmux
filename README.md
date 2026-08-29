@@ -37,10 +37,16 @@ mathmux status
 Build mathmux directly from the local checkout:
 
 ```sh
-cargo build --release
+cargo build --release --features development
 ```
 
 The binary is written to `target/release/mathmux`.
+
+To install that development build for the local fleet:
+
+```sh
+cargo install --locked --force --features development --path .
+```
 
 ## Minimal CLI for fast local Lean checks in isolated git worktrees
 
