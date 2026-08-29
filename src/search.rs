@@ -65,7 +65,7 @@ const SOURCE_OCCURRENCE_ALL_LIMIT: usize = 200;
 const OUTLINE_PREVIEW_LINES: usize = 64;
 const OUTLINE_LINE_CHARS: usize = 120;
 const RELATED_RESULT_LIMIT: usize = SEARCH_PRESENTATION.related_result_limit;
-const SEARCH_INDEX_VERSION: i64 = 7;
+const SEARCH_INDEX_VERSION: i64 = 8;
 const SOURCE_INDEX_KIND: &str = "source-v12";
 const DECLARATION_DETAIL_LINES: usize = SEARCH_PRESENTATION.declaration_detail_lines;
 const INDEX_COMMIT_BATCH: usize = 64;
@@ -1690,11 +1690,11 @@ impl Searcher {
                 let artifact = path.to_string_lossy();
                 delete_search_origin(&transaction, owner, artifact.as_ref())?;
                 delete_search_references(&transaction, owner, artifact.as_ref())?;
-                if let Some(declarations) = value.get("decls").and_then(Value::as_object) {
+                {
                     let mut insert = transaction.prepare_cached(
                         "INSERT INTO search_fts(
                             rowid, owner, origin, file, module, line, name, kind, signature, docs, body
-                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'declaration', '', '', '')",
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, '', '', '')",
                     )?;
                     let mut map_origin = transaction.prepare_cached(
                         "INSERT INTO search_origins(rowid, owner, origin)
@@ -1702,13 +1702,36 @@ impl Searcher {
                          ON CONFLICT(rowid) DO UPDATE SET
                             owner = excluded.owner, origin = excluded.origin",
                     )?;
-                    for (name, range) in declarations {
-                        let line = range
-                            .as_array()
-                            .and_then(|range| range.get(4).or_else(|| range.first()))
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0)
-                            + 1;
+                    let mut indexed_names = HashSet::new();
+                    if let Some(declarations) = value.get("decls").and_then(Value::as_object) {
+                        for (name, range) in declarations {
+                            let line = range
+                                .as_array()
+                                .and_then(|range| range.get(4).or_else(|| range.first()))
+                                .and_then(Value::as_u64)
+                                .unwrap_or(0)
+                                + 1;
+                            insert.execute(params![
+                                next_rowid,
+                                owner,
+                                artifact,
+                                source_path,
+                                module,
+                                line,
+                                name,
+                                "declaration"
+                            ])?;
+                            map_origin.execute(params![next_rowid, owner, artifact])?;
+                            indexed_names.insert(name.clone());
+                            next_rowid = next_rowid
+                                .checked_add(1)
+                                .context("search index rowid overflow")?;
+                        }
+                    }
+                    for (name, line) in generated_ilean_declarations(&value) {
+                        if !indexed_names.insert(name.clone()) {
+                            continue;
+                        }
                         insert.execute(params![
                             next_rowid,
                             owner,
@@ -1716,7 +1739,8 @@ impl Searcher {
                             source_path,
                             module,
                             line,
-                            name
+                            name,
+                            "generated"
                         ])?;
                         map_origin.execute(params![next_rowid, owner, artifact])?;
                         next_rowid = next_rowid
@@ -3050,6 +3074,9 @@ impl Searcher {
     }
 
     fn enrich_exact_source(&self, hit: &mut SearchHit, scopes: &HashSet<String>) -> Result<()> {
+        if hit.kind == "generated" {
+            return Ok(());
+        }
         if hit
             .source
             .as_deref()

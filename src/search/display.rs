@@ -223,7 +223,15 @@ fn append_single_result_hint(output: &mut String, run: &SearchRun, proof_body_re
 fn is_probeable_declaration(hit: &SearchHit) -> bool {
     matches!(
         hit.kind.as_str(),
-        "abbrev" | "class" | "def" | "inductive" | "instance" | "lemma" | "structure" | "theorem"
+        "abbrev"
+            | "class"
+            | "def"
+            | "generated"
+            | "inductive"
+            | "instance"
+            | "lemma"
+            | "structure"
+            | "theorem"
     )
 }
 

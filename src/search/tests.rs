@@ -1782,6 +1782,36 @@ fn references_decode_from_ilean_keys() {
 }
 
 #[test]
+fn generated_ilean_declarations_include_aliases_but_not_usages() {
+    let value: Value = serde_json::from_str(
+        r#"{
+            "decls": {
+                "Demo.original": [0, 0, 1, 10, 0, 0, 0, 10]
+            },
+            "references": {
+                "{\"c\":{\"m\":\"Demo\",\"n\":\"Demo.original\"}}": {
+                    "definition": [1, 0, 1, 8, "Demo.original"], "usages": []
+                },
+                "{\"c\":{\"m\":\"Demo\",\"n\":\"Demo.generated\"}}": {
+                    "definition": [8, 0, 8, 8, "Demo.original"], "usages": []
+                },
+                "{\"c\":{\"m\":\"Demo\",\"n\":\"Demo.generated?\"}}": {
+                    "definition": [9, 0, 9, 8, "Demo.original"], "usages": []
+                },
+                "{\"c\":{\"m\":\"Demo\",\"n\":\"Demo.usage\"}}": {
+                    "definition": null, "usages": [[12, 0, 12, 8]]
+                }
+            }
+        }"#,
+    )
+    .unwrap();
+    assert_eq!(
+        generated_ilean_declarations(&value),
+        vec![("Demo.generated".into(), 9)]
+    );
+}
+
+#[test]
 fn batched_usages_preserve_scope_order_and_per_target_limit() {
     let directory = tempfile::tempdir().unwrap();
     let workspace = Workspace {

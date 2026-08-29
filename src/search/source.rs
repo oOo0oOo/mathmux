@@ -676,6 +676,43 @@ pub(super) fn reference_name(encoded: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+pub(super) fn generated_ilean_declarations(value: &Value) -> Vec<(String, u64)> {
+    // Generated aliases (notably `to_additive` names) have no entry in `decls`;
+    // their reference record still carries the declaration range.
+    let declarations = value.get("decls").and_then(Value::as_object);
+    let Some(references) = value.get("references").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let mut names = HashSet::new();
+    let mut generated = references
+        .iter()
+        .filter_map(|(encoded, reference)| {
+            let name = reference_name(encoded)?;
+            if declarations.is_some_and(|declarations| declarations.contains_key(&name))
+                || !indexable_declaration_name(&name)
+            {
+                return None;
+            }
+            let line = reference.get("definition")?.as_array()?.first()?.as_u64()? + 1;
+            names.insert(name.clone()).then_some((name, line))
+        })
+        .collect::<Vec<_>>();
+    generated.sort();
+    generated
+}
+
+fn indexable_declaration_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('.')
+        && !name.ends_with('.')
+        && name.split('.').all(|part| {
+            !part.is_empty()
+                && part
+                    .chars()
+                    .all(|character| character.is_alphanumeric() || matches!(character, '_' | '\''))
+        })
+}
+
 pub(super) fn reference_display_path(module: &str, workspace: &Workspace) -> String {
     let relative = PathBuf::from(format!("{}.lean", module.replace('.', "/")));
     if workspace.path.join(&relative).is_file() {
