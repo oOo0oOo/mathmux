@@ -1677,7 +1677,9 @@ fn batched_usages_preserve_scope_order_and_per_target_limit() {
     let foo = usages.get("Demo.foo").unwrap();
     assert_eq!(foo.len(), SEARCH_USAGE_LIMIT);
     assert_eq!(
-        foo.iter().map(|usage| usage.module.as_str()).collect::<Vec<_>>(),
+        foo.iter()
+            .map(|usage| usage.module.as_str())
+            .collect::<Vec<_>>(),
         (0..SEARCH_USAGE_LIMIT)
             .map(|index| format!("Demo.W{index:02}"))
             .collect::<Vec<_>>()
