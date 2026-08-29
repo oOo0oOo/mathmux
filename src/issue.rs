@@ -801,6 +801,7 @@ fn exchange_outcome_class(
         }
         if response.summary.contains(" no results")
             || response.summary.contains("exact declaration not found")
+            || response.summary.contains("not found:")
         {
             return Some("no_result");
         }
@@ -1064,7 +1065,10 @@ fn error_class(summary: &str) -> String {
     if summary.contains("malformed search fragment") {
         return "malformed search fragment".into();
     }
-    if summary.contains(" no results") || summary.contains("exact declaration not found") {
+    if summary.contains(" no results")
+        || summary.contains("exact declaration not found")
+        || summary.contains("not found:")
+    {
         return "no results".into();
     }
     if summary.contains("suggestion:") || summary.contains("suggestions") {
@@ -1478,6 +1482,10 @@ mod tests {
         );
         assert_eq!(error_class("error q124\nq124 no results"), "no results");
         assert_eq!(
+            error_class("q126\n_root_.Demo.target : Nat\nnot found: Demo.missing"),
+            "no results"
+        );
+        assert_eq!(
             error_class("error q125\nambiguous declaration name: target"),
             "ambiguous declaration name"
         );
@@ -1604,6 +1612,14 @@ mod tests {
         store
             .record(&repo, &probe, &Response::ok("q2\nDemo.target : Nat"), 8)
             .unwrap();
+        store
+            .record(
+                &repo,
+                &search,
+                &Response::error("q3\n_root_.Demo.target : Nat\nnot found: Demo.missing"),
+                10,
+            )
+            .unwrap();
 
         let connection = open_db(&store.path).unwrap();
         let row = connection
@@ -1625,13 +1641,27 @@ mod tests {
         assert_eq!(row.1.as_deref(), Some("exact_hit"));
         assert_eq!(row.2.as_deref(), Some("0-1KiB"));
         assert_eq!(row.3.as_deref(), Some("probe"));
+        let partial = connection
+            .query_row(
+                "SELECT outcome_class, error_class FROM telemetry_events WHERE id = 3",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(partial.0.as_deref(), Some("no_result"));
+        assert_eq!(partial.1.as_deref(), Some("no results"));
         assert_eq!(
             connection
                 .query_row("SELECT COUNT(*) FROM telemetry_events", [], |row| {
                     row.get::<_, i64>(0)
                 })
                 .unwrap(),
-            2
+            3
         );
     }
 }
