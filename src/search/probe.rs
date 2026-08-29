@@ -387,14 +387,26 @@ impl Searcher {
             .strip_prefix(&workspace.path)
             .with_context(|| format!("{} is outside the active workspace", path.display()))?;
         let target_name = target.to_string_lossy().into_owned();
-        let run = self
+        let run = match self
             .checker
             .current_check_run_for_target(workspace, target)?
-            .with_context(|| {
-                format!(
-                    "{target_name} has no current successful check; run `mathmux check {target_name}` first"
-                )
-            })?;
+        {
+            Some(run) => run,
+            None => {
+                if let Some(stale) = self
+                    .checker
+                    .latest_successful_check_run_for_target(workspace, target)?
+                {
+                    bail!(
+                        "latest successful check {} is stale because {target_name} or its dependencies changed; run `mathmux check {target_name}` again",
+                        stale.reference
+                    );
+                }
+                bail!(
+                    "{target_name} has no successful check; run `mathmux check {target_name}` first"
+                );
+            }
+        };
         let source =
             fs::read_to_string(&path).with_context(|| format!("cannot read {}", path.display()))?;
         let source_hash = hash_bytes(source.as_bytes());

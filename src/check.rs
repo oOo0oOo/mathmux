@@ -1251,8 +1251,9 @@ impl Checker {
             return Ok(path);
         }
         let output = lake_command(&self.repo, &workspace.path)
+            .current_dir(lake_package_root(&workspace.path, target))
             .arg("setup-file")
-            .arg(target)
+            .arg(lake_package_target(&workspace.path, target))
             .output()
             .with_context(|| {
                 format!(
@@ -1411,6 +1412,26 @@ impl Checker {
             }
             let dependencies = transitive_dependencies(&workspace.path, target)?;
             if check.fingerprint != self.full_fingerprint(workspace, target, &dependencies)? {
+                continue;
+            }
+            let Some(run) = self.state.check_run(&check.reference)? else {
+                continue;
+            };
+            if run.status == CheckStatus::Passed {
+                return Ok(Some(run));
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn latest_successful_check_run_for_target(
+        &self,
+        workspace: &Workspace,
+        target: &Path,
+    ) -> Result<Option<CheckRun>> {
+        let target_name = target.to_string_lossy();
+        for check in self.state.checks_for_workspace(&workspace.reference)? {
+            if check.target != target_name {
                 continue;
             }
             let Some(run) = self.state.check_run(&check.reference)? else {
@@ -1819,9 +1840,9 @@ fn common_prefix_lines(previous: &str, current: &str) -> u64 {
 }
 
 fn fallback_check(repo: &Repo, root: &Path, target: &Path) -> Result<WorkerResponse> {
-    let output = lake_command(repo, root)
+    let output = lake_command(repo, &lake_package_root(root, target))
         .args(["env", "lean"])
-        .arg(target)
+        .arg(lake_package_target(root, target))
         .output()?;
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
@@ -1974,7 +1995,21 @@ pub fn transitive_dependencies(root: &Path, target: &Path) -> Result<Vec<PathBuf
     if !root.join(target).is_file() {
         return Ok(Vec::new());
     }
-    let files = project_lean_files(root);
+    let mut files = project_lean_files(root);
+    let package_root = lake_package_root(root, target);
+    if package_root != root {
+        files.extend(
+            project_lean_files(&package_root)
+                .into_iter()
+                .filter_map(|path| {
+                    package_root
+                        .join(path)
+                        .strip_prefix(root)
+                        .ok()
+                        .map(Path::to_path_buf)
+                }),
+        );
+    }
     let modules: HashMap<String, PathBuf> = files
         .into_iter()
         .map(|path| (project_module_name(root, &path), path))
@@ -2129,18 +2164,39 @@ pub(crate) fn parse_imports(source: &str) -> Vec<String> {
 }
 
 pub fn project_module_name(root: &Path, path: &Path) -> String {
-    let roots = source_roots(root);
+    let absolute = root.join(path);
+    let package_root = lake_package_root(root, path);
+    let package_path = absolute.strip_prefix(&package_root).unwrap_or(path);
+    let roots = source_roots(&package_root);
     let relative = roots
         .iter()
-        .filter_map(|source_root| path.strip_prefix(source_root).ok())
+        .filter_map(|source_root| package_path.strip_prefix(source_root).ok())
         .min_by_key(|path| path.components().count())
-        .unwrap_or(path);
+        .unwrap_or(package_path);
     let mut path = relative.to_path_buf();
     path.set_extension("");
     path.components()
         .filter_map(|component| component.as_os_str().to_str())
         .collect::<Vec<_>>()
         .join(".")
+}
+
+fn lake_package_root(root: &Path, target: &Path) -> PathBuf {
+    let absolute = root.join(target);
+    absolute
+        .ancestors()
+        .skip(1)
+        .take_while(|path| path.starts_with(root))
+        .find(|path| path.join("lakefile.toml").is_file() || path.join("lakefile.lean").is_file())
+        .unwrap_or(root)
+        .to_path_buf()
+}
+
+fn lake_package_target(root: &Path, target: &Path) -> PathBuf {
+    root.join(target)
+        .strip_prefix(lake_package_root(root, target))
+        .unwrap_or(target)
+        .to_path_buf()
 }
 
 fn source_roots(root: &Path) -> Vec<PathBuf> {
@@ -2166,8 +2222,9 @@ fn source_roots(root: &Path) -> Vec<PathBuf> {
 }
 
 fn artifact_path(root: &Path, source: &Path) -> PathBuf {
+    let package_root = lake_package_root(root, source);
     let module = project_module_name(root, source).replace('.', "/");
-    let mut artifact = root.join(".lake/build/lib/lean").join(module);
+    let mut artifact = package_root.join(".lake/build/lib/lean").join(module);
     artifact.set_extension("olean");
     artifact
 }
@@ -2909,5 +2966,37 @@ noncomputable def second : Nat := 2
             Path::new(".lake/build/lib/lean/Proof.olean"),
             target
         ));
+    }
+
+    #[test]
+    fn nested_lake_packages_resolve_sibling_modules_and_artifacts() {
+        let root = tempdir().unwrap();
+        fs::write(root.path().join("lakefile.toml"), "name = \"root\"\n").unwrap();
+        let nested = root.path().join("comparator/example");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("lakefile.toml"), "name = \"example\"\n").unwrap();
+        fs::write(nested.join("Challenge.lean"), "def challenge := 1\n").unwrap();
+        fs::write(
+            nested.join("Review.lean"),
+            "import Challenge\n#check challenge\n",
+        )
+        .unwrap();
+        run_checked("git", ["init", "-b", "main"], root.path()).unwrap();
+        run_checked("git", ["add", "."], root.path()).unwrap();
+        let target = Path::new("comparator/example/Review.lean");
+        assert_eq!(lake_package_root(root.path(), target), nested);
+        assert_eq!(
+            lake_package_target(root.path(), target),
+            Path::new("Review.lean")
+        );
+        assert_eq!(project_module_name(root.path(), target), "Review");
+        assert_eq!(
+            transitive_dependencies(root.path(), target).unwrap(),
+            vec![PathBuf::from("comparator/example/Challenge.lean")]
+        );
+        assert_eq!(
+            artifact_path(root.path(), Path::new("comparator/example/Challenge.lean")),
+            nested.join(".lake/build/lib/lean/Challenge.olean")
+        );
     }
 }

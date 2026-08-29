@@ -2348,6 +2348,14 @@ fn warning_probe_indexes_current_residuals_and_invalidates_changed_source() {
         stale.contains("is stale because Demo.lean changed"),
         "{stale}"
     );
+    let stale_index = searcher
+        .probe(&workspace, &root, "Demo.lean warnings")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        stale_index.contains("latest successful check c1 is stale"),
+        "{stale_index}"
+    );
 }
 
 #[test]
