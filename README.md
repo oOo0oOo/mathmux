@@ -74,6 +74,10 @@ Run `mathmux search --help` and `mathmux probe --help` for the complete compact
 grammar. Probe never guesses an elaboration context, and `check` remains the
 certification step after source edits.
 
+For source-only ranges of 48 lines or fewer, compact output already contains
+the full requested range; use `--all` for longer ranges or broader result
+detail.
+
 ### mathmux won't
 
 - orchestrate or run agents

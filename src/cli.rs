@@ -46,6 +46,8 @@ KIND = abbrev|class|def|inductive|instance|lemma|structure|theorem
 RESULT
   Start compact and inspect the result. Expand only a selected qREF with
   show qREF --all. --limit N (1–200) caps hits and cannot combine with --all.
+  Source-only ranges of 48 lines or fewer are complete in compact mode; --all
+  is needed for longer ranges or broader result detail.
   Exact names include full signatures.
 
 RULES
