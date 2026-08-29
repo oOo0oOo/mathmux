@@ -13,7 +13,7 @@ use crate::repo::Repo;
 #[cfg(test)]
 use crate::state::ValidationStatus;
 use crate::state::{State, Submission, ValidationReport};
-use crate::util::{command_detail, output_text, run_checked, run_output};
+use crate::util::{build_error_diagnostic, command_detail, output_text, run_checked, run_output};
 use anyhow::{Context, Result, bail, ensure};
 
 type ValidationSignal = Arc<(Mutex<bool>, Condvar)>;
@@ -136,7 +136,7 @@ fn validate(repo: &Repo, submission: &Submission) -> Result<ValidationReport> {
     if !output.status.success() {
         return Ok(failed_report(
             started,
-            "build failed",
+            build_failure_detail(&build_output, output.status.code()),
             build_output,
             Vec::new(),
         ));
@@ -199,6 +199,16 @@ fn invalidate_newer_project_artifacts(root: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn build_failure_detail(output: &str, exit_code: Option<i32>) -> String {
+    if let Some(diagnostic) = build_error_diagnostic(output) {
+        return format!("build failed: {diagnostic}");
+    }
+    match exit_code {
+        Some(code) => format!("build failed with exit code {code}; no Lean error diagnostic"),
+        None => "build failed: process terminated by a signal or external interruption; no Lean error diagnostic".into(),
+    }
 }
 
 fn failed_report(
@@ -450,6 +460,27 @@ mod tests {
 
     use super::*;
     use crate::state::Workspace;
+
+    #[test]
+    fn build_failure_detail_prefers_the_concrete_lean_error() {
+        let output = "warning: unrelated\nerror: Demo.lean:12:4: failed to synthesize CompactSpace B\nerror: build failed\n";
+        assert_eq!(
+            build_failure_detail(output, Some(1)),
+            "build failed: Demo.lean:12:4: failed to synthesize CompactSpace B"
+        );
+    }
+
+    #[test]
+    fn build_failure_detail_distinguishes_exit_and_signal_without_diagnostics() {
+        assert_eq!(
+            build_failure_detail("error: build failed\n", Some(137)),
+            "build failed with exit code 137; no Lean error diagnostic"
+        );
+        assert_eq!(
+            build_failure_detail("", None),
+            "build failed: process terminated by a signal or external interruption; no Lean error diagnostic"
+        );
+    }
 
     #[test]
     fn a_new_queue_does_not_recover_an_active_validator() {

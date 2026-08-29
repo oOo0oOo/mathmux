@@ -7,7 +7,8 @@ use crate::presentation::{
     BUILD_OUTPUT_LINES, BUILD_OUTPUT_TAIL_LINES, SOURCE_PREVIEW_LINES, bounded_head_tail,
 };
 use crate::util::{
-    format_duration, query_requests_proof_body, short_hash, single_line, truncate_line,
+    enriched_validation_detail, format_duration, query_requests_proof_body, short_hash,
+    single_line, truncate_line,
 };
 
 impl CheckProfile {
@@ -337,8 +338,10 @@ pub(super) fn render_submission(
             }
         }
     }
-    if let Some(detail) = &submission.validation_detail
-        && !detail.is_empty()
+    if let Some(detail) = enriched_validation_detail(
+        submission.validation_detail.as_deref(),
+        submission.build_output.as_deref(),
+    ) && !detail.is_empty()
     {
         output.push_str(&format!("\n{detail}"));
     }

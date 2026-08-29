@@ -105,6 +105,26 @@ pub fn single_line(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+pub fn build_error_diagnostic(output: &str) -> Option<&str> {
+    output.lines().find_map(|line| {
+        let message = line.trim().strip_prefix("error:")?.trim();
+        (!message.is_empty() && message != "build failed").then_some(message)
+    })
+}
+
+pub fn enriched_validation_detail(
+    detail: Option<&str>,
+    build_output: Option<&str>,
+) -> Option<String> {
+    let detail = detail?;
+    if detail == "build failed"
+        && let Some(diagnostic) = build_output.and_then(build_error_diagnostic)
+    {
+        return Some(format!("build failed: {diagnostic}"));
+    }
+    Some(detail.to_owned())
+}
+
 pub fn truncate_line(value: &str, limit: usize) -> String {
     if value.chars().count() <= limit {
         return value.to_owned();
@@ -177,4 +197,26 @@ pub fn resident_memory_kib() -> Option<u64> {
         .next()?
         .parse()
         .ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_build_failure_details_use_the_stored_diagnostic() {
+        assert_eq!(
+            enriched_validation_detail(
+                Some("build failed"),
+                Some("warning: noise\nerror: Demo.lean:7:2: unknown identifier\n"),
+            )
+            .as_deref(),
+            Some("build failed: Demo.lean:7:2: unknown identifier")
+        );
+        assert_eq!(
+            enriched_validation_detail(Some("build failed"), Some("error: build failed\n"))
+                .as_deref(),
+            Some("build failed")
+        );
+    }
 }

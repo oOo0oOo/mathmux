@@ -12,7 +12,10 @@ use crate::repo::Repo;
 use crate::state::{
     ActivityMetrics, State, Submission, SubmissionInterval, ValidationStatus, Workspace,
 };
-use crate::util::{now_unix_ms, run_checked, run_output, short_hash, single_line, truncate_line};
+use crate::util::{
+    enriched_validation_detail, now_unix_ms, run_checked, run_output, short_hash, single_line,
+    truncate_line,
+};
 
 const HOUR_SECS: i64 = 60 * 60;
 const DAY_SECS: i64 = 24 * HOUR_SECS;
@@ -141,8 +144,15 @@ fn render_validation_status(
                 "\n  latest result {}:failed; show {} --all",
                 submission.reference, submission.reference
             )?;
-            if let Some(detail) = submission.validation_detail.as_deref() {
-                write!(output, "\n    {}", truncate_line(&single_line(detail), 236))?;
+            if let Some(detail) = enriched_validation_detail(
+                submission.validation_detail.as_deref(),
+                submission.build_output.as_deref(),
+            ) {
+                write!(
+                    output,
+                    "\n    {}",
+                    truncate_line(&single_line(&detail), 236)
+                )?;
             }
         }
     } else if let Some(submission) = latest_completed
@@ -153,8 +163,11 @@ fn render_validation_status(
             "\nvalidation {}:failed; show {} --all",
             submission.reference, submission.reference
         )?;
-        if let Some(detail) = submission.validation_detail.as_deref() {
-            write!(output, "\n  {}", truncate_line(&single_line(detail), 240))?;
+        if let Some(detail) = enriched_validation_detail(
+            submission.validation_detail.as_deref(),
+            submission.build_output.as_deref(),
+        ) {
+            write!(output, "\n  {}", truncate_line(&single_line(&detail), 240))?;
         }
     } else {
         output.push_str("\nvalidation idle");
@@ -842,6 +855,17 @@ mod tests {
         assert_eq!(
             output,
             "\nvalidation s11:queued\n  latest result s9:failed; show s9 --all\n    axiom audit failed: conflicting declaration"
+        );
+
+        let mut legacy = submission("s12", "failed", Some("build failed"));
+        legacy.build_output = Some(
+            "warning: noise\nerror: Demo.lean:12:4: failed to synthesize CompactSpace B\n".into(),
+        );
+        let mut output = String::new();
+        render_validation_status(&mut output, &[], Some(&legacy)).unwrap();
+        assert_eq!(
+            output,
+            "\nvalidation s12:failed; show s12 --all\n  build failed: Demo.lean:12:4: failed to synthesize CompactSpace B"
         );
     }
 
