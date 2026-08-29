@@ -59,6 +59,11 @@ impl ProbeRequest {
         let mut parts = query.split_whitespace();
         let first = parts.next().unwrap();
         let context = parse_context(first);
+        if let Some((path, start)) = source_range_context(first) {
+            bail!(
+                "source ranges are a search form, not a probe context; use `mathmux search {first}` for source or `mathmux probe {path}:{start} goal` for Lean context"
+            );
+        }
         let remainder = if context.is_some() {
             query[first.len()..].trim()
         } else {
@@ -211,6 +216,16 @@ fn parse_context(value: &str) -> Option<ProbeContext> {
     value
         .contains('/')
         .then(|| ProbeContext::Scope(value.into()))
+}
+
+fn source_range_context(value: &str) -> Option<(&str, u64)> {
+    let (path, range) = value.rsplit_once(':')?;
+    let (start, _) = parse_source_line_range(range)?;
+    (Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("lean")))
+    .then_some((path, start))
 }
 
 fn parse_directive(value: &str) -> Result<Option<LeanDirective>> {
@@ -1711,6 +1726,12 @@ mod tests {
                 focus: Some("warnings".into()),
                 directive: None,
             }
+        );
+        assert_eq!(
+            ProbeRequest::parse("Demo.lean:42-48 source")
+                .unwrap_err()
+                .to_string(),
+            "source ranges are a search form, not a probe context; use `mathmux search Demo.lean:42-48` for source or `mathmux probe Demo.lean:42 goal` for Lean context"
         );
         assert!(usage_path_matches_scope(
             "Mathlib/Data/List/Basic.lean",
