@@ -1420,9 +1420,10 @@ fn warning_dossier(
     source: &str,
 ) -> String {
     let (path, line, column) = location;
+    let diagnostic_text = warning_diagnostic_for_dossier(&diagnostic.text);
     let mut detail = format!(
         "category: {}\nrisk: {}\ncheck: {check_ref}\nlocation: {path}:{line}:{column}\ndiagnostic:\n{}",
-        classification.category, classification.risk, diagnostic.text
+        classification.category, classification.risk, diagnostic_text
     );
     if let Some(declaration) = declaration {
         let exposure = if declaration.public {
@@ -1454,6 +1455,30 @@ fn warning_dossier(
     }
     detail.push_str(&format!("\nassessment: {}", classification.guidance));
     detail
+}
+
+fn warning_diagnostic_for_dossier(text: &str) -> String {
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("Note: This linter can be disabled with `set_option ")
+            || trimmed.starts_with("This linter can be disabled with `set_option ")
+        {
+            continue;
+        }
+        if trimmed.is_empty()
+            && lines
+                .last()
+                .is_some_and(|previous: &&str| previous.trim().is_empty())
+        {
+            continue;
+        }
+        lines.push(line);
+    }
+    while lines.last().is_some_and(|line| line.trim().is_empty()) {
+        lines.pop();
+    }
+    lines.join("\n")
 }
 
 struct InductiveConstructor {
@@ -1840,7 +1865,7 @@ mod tests {
             &classification,
             &Diagnostic {
                 kind: "linter.unusedVariables".into(),
-                text: "Demo.lean:3:23: warning: unused variable `unused`".into(),
+                text: "Demo.lean:3:23: warning: unused variable `unused`\n\nNote: This linter can be disabled with `set_option linter.unusedVariables false`".into(),
                 context: None,
             },
             Some(&declaration),
@@ -1849,5 +1874,6 @@ mod tests {
         assert!(dossier.contains("risk: high"));
         assert!(dossier.contains("enclosing declaration (public)"));
         assert!(dossier.contains(">    3 | theorem publicResult"));
+        assert!(!dossier.contains("This linter can be disabled"));
     }
 }
