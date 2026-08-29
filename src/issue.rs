@@ -430,6 +430,24 @@ impl TelemetryStore {
         let now = now_unix_ms();
         let mut connection = open_db(&self.path)?;
         let transaction = connection.transaction()?;
+        if let Some(reference) = reference.as_deref()
+            && let Some(id) = transaction
+                .query_row(
+                    "SELECT id FROM telemetry_events
+                     WHERE project = ?1 AND verb = ?2 AND reference = ?3
+                     LIMIT 1",
+                    params![
+                        repo.root.to_string_lossy(),
+                        request.command.verb(),
+                        reference
+                    ],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+        {
+            transaction.commit()?;
+            return Ok(format!("e{id}"));
+        }
         transaction.execute(
             "INSERT INTO telemetry_events(
                 created_at, build, project, workspace, verb, reference, ok, outcome_class,
@@ -1571,6 +1589,12 @@ mod tests {
         store
             .record(&repo, &search, &Response::ok("q1\nDemo.target : Nat"), 12)
             .unwrap();
+        assert_eq!(
+            store
+                .record(&repo, &search, &Response::ok("q1\nDemo.target : Nat"), 12)
+                .unwrap(),
+            "e1"
+        );
         let probe = Request {
             command: Command::Probe {
                 query: "Demo.target signature".into(),
@@ -1601,5 +1625,13 @@ mod tests {
         assert_eq!(row.1.as_deref(), Some("exact_hit"));
         assert_eq!(row.2.as_deref(), Some("0-1KiB"));
         assert_eq!(row.3.as_deref(), Some("probe"));
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM telemetry_events", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            2
+        );
     }
 }

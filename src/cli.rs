@@ -476,14 +476,6 @@ pub fn run() -> Result<u8> {
             handoff_stream = Some(wait_for_replacement(&repo)?);
         }
     };
-    if development {
-        let _ = crate::issue::record_exchange(
-            &repo,
-            &request,
-            &response,
-            client_started.elapsed().as_millis() as u64,
-        );
-    }
     if response.ok {
         output_summary(&response.summary)?;
         Ok(0)

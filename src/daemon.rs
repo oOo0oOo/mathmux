@@ -178,6 +178,7 @@ pub fn run(repo: Repo) -> Result<()> {
 fn serve_client(mut stream: UnixStream, service: &Service) -> Result<()> {
     let started = Instant::now();
     let mut line = String::new();
+    let mut server_request = None;
     BufReader::new(stream.try_clone()?).read_line(&mut line)?;
     let mut response = match serde_json::from_str::<Request>(&line) {
         Ok(request) => {
@@ -195,6 +196,7 @@ fn serve_client(mut stream: UnixStream, service: &Service) -> Result<()> {
                     let _ = stream.write_all(b"\n");
                     let _ = stream.flush();
                 };
+                server_request = service.telemetry.as_ref().map(|_| request.clone());
                 handled_response(service, request, &mut report)
             }
         }
@@ -205,6 +207,14 @@ fn serve_client(mut stream: UnixStream, service: &Service) -> Result<()> {
     serde_json::to_writer(&mut stream, &response)?;
     stream.write_all(b"\n")?;
     stream.flush()?;
+    if let (Some(request), Some(store)) = (server_request, &service.telemetry) {
+        let _ = store.record(
+            &service.repo,
+            &request,
+            &response,
+            started.elapsed().as_millis() as u64,
+        );
+    }
     Ok(())
 }
 
