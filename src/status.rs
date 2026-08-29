@@ -69,6 +69,11 @@ pub fn render(repo: &Repo, state: &State, telemetry: Option<&TelemetryStore>) ->
             .context_events(repo, (now - DAY_SECS - ACTIVE_SECS) * 1000)
             .ok()
     });
+    let activity_label = if activity_events.is_some() {
+        "recorded agent-h"
+    } else {
+        "agent-h"
+    };
 
     let mut output = format!("{project} {}", short_hash(&revision));
     render_agents(&mut output, &agents, now)?;
@@ -95,11 +100,13 @@ pub fn render(repo: &Repo, state: &State, telemetry: Option<&TelemetryStore>) ->
         if agent_hours > 0.0 {
             write!(
                 output,
-                "  {:+.1}/agent-h ({agent_hours:.1} agent-h)",
+                "  {:+.1}/{activity_label} ({agent_hours:.1} {activity_label})",
                 lines as f64 / agent_hours
             )?;
         }
-        if let Some(metrics) = context_per_loc(&context, (now - seconds) * 1000) {
+        if let Some(metrics) =
+            context_per_loc(&context, activity_events.as_deref(), (now - seconds) * 1000)
+        {
             write!(
                 output,
                 "  context/loc {:.2} mux calls + {} output",
@@ -667,19 +674,42 @@ fn submitted_lean_lines(
     Ok(result)
 }
 
-fn context_per_loc(context: &[SubmissionContext], since: i64) -> Option<SubmissionContext> {
-    let metrics = context
+fn context_per_loc(
+    context: &[SubmissionContext],
+    events: Option<&[ContextEvent]>,
+    since: i64,
+) -> Option<SubmissionContext> {
+    let lines = context
         .iter()
         .filter(|metrics| metrics.created_at >= since)
-        .fold(SubmissionContext::default(), |total, metrics| {
-            SubmissionContext {
-                created_at: 0,
-                lines: total.lines + metrics.lines,
-                calls: total.calls + metrics.calls,
-                output_bytes: total.output_bytes + metrics.output_bytes,
-            }
+        .map(|metrics| metrics.lines)
+        .sum();
+    let Some(events) = events else {
+        let metrics = context
+            .iter()
+            .filter(|metrics| metrics.created_at >= since)
+            .fold(SubmissionContext::default(), |total, metrics| {
+                SubmissionContext {
+                    created_at: 0,
+                    lines: total.lines + metrics.lines,
+                    calls: total.calls + metrics.calls,
+                    output_bytes: total.output_bytes + metrics.output_bytes,
+                }
+            });
+        return (metrics.lines > 0).then_some(metrics);
+    };
+    let (calls, output_bytes) = events
+        .iter()
+        .filter(|event| event.created_at >= since)
+        .fold((0_u64, 0_u64), |total, event| {
+            (total.0 + 1, total.1 + event.response_bytes)
         });
-    (metrics.lines > 0).then_some(metrics)
+    (lines > 0).then_some(SubmissionContext {
+        created_at: 0,
+        lines,
+        calls,
+        output_bytes,
+    })
 }
 
 fn format_bytes(bytes: f64) -> String {
@@ -708,29 +738,69 @@ fn agent_hours(
             .sum::<f64>()
             / HOUR_SECS as f64;
     };
-    let active_seconds = agents.iter().fold(0_i64, |total, agent| {
-        let mut intervals = events
-            .iter()
-            .filter(|event| event.workspace == agent.workspace_ref)
-            .map(|event| {
-                let completed = event.created_at / 1000;
-                let duration = event.client_ms.div_ceil(1000) as i64;
-                (completed.saturating_sub(duration), completed + ACTIVE_SECS)
-            })
-            .filter(|(_, end)| *end >= agent.started_at)
-            .collect::<Vec<_>>();
-        intervals.extend([
-            (agent.started_at, agent.started_at + ACTIVE_SECS),
-            (agent.last_active, agent.last_active + ACTIVE_SECS),
-        ]);
-        intervals.sort_unstable();
-        let intervals = intervals.into_iter().filter_map(|(start, end)| {
-            let start = start.max(agent.started_at).max(since);
-            let end = end.min(now);
-            (start < end).then_some((start, end))
-        });
-        let (seconds, _) =
-            intervals.fold(
+    let mut by_workspace = event_intervals(events);
+    for agent in agents {
+        by_workspace
+            .entry(agent.workspace_ref.clone())
+            .or_default()
+            .extend([
+                (
+                    agent.started_at,
+                    agent.started_at.saturating_add(ACTIVE_SECS),
+                ),
+                (
+                    agent.last_active,
+                    agent.last_active.saturating_add(ACTIVE_SECS),
+                ),
+            ]);
+    }
+    let active_seconds = merge_workspace_intervals(by_workspace, since, now);
+    active_seconds as f64 / HOUR_SECS as f64
+}
+
+fn recorded_agent_hours(events: &[ContextEvent]) -> f64 {
+    let Some((since, now)) = events
+        .iter()
+        .map(|event| event.created_at / 1000)
+        .min()
+        .map(|since| (since, i64::MAX / 2))
+    else {
+        return 0.0;
+    };
+    merge_workspace_intervals(event_intervals(events), since, now) as f64 / HOUR_SECS as f64
+}
+
+fn event_intervals(events: &[ContextEvent]) -> HashMap<String, Vec<(i64, i64)>> {
+    let mut by_workspace = HashMap::<String, Vec<(i64, i64)>>::new();
+    for event in events {
+        let completed = event.created_at / 1000;
+        let duration = event.client_ms.div_ceil(1000) as i64;
+        by_workspace
+            .entry(event.workspace.clone())
+            .or_default()
+            .push((
+                completed.saturating_sub(duration),
+                completed.saturating_add(ACTIVE_SECS),
+            ));
+    }
+    by_workspace
+}
+
+fn merge_workspace_intervals(
+    by_workspace: HashMap<String, Vec<(i64, i64)>>,
+    since: i64,
+    now: i64,
+) -> i64 {
+    by_workspace
+        .into_values()
+        .map(|mut intervals| {
+            intervals.sort_unstable();
+            let intervals = intervals.into_iter().filter_map(|(start, end)| {
+                let start = start.max(since);
+                let end = end.min(now);
+                (start < end).then_some((start, end))
+            });
+            let (seconds, _) = intervals.fold(
                 (0_i64, None),
                 |(seconds, end), (start, next_end)| match end {
                     Some(end) if start <= end => (
@@ -740,39 +810,9 @@ fn agent_hours(
                     _ => (seconds + next_end.saturating_sub(start), Some(next_end)),
                 },
             );
-        total + seconds
-    });
-    active_seconds as f64 / HOUR_SECS as f64
-}
-
-fn recorded_agent_hours(events: &[ContextEvent]) -> f64 {
-    let mut by_workspace = HashMap::<&str, Vec<(i64, i64)>>::new();
-    for event in events {
-        let completed = event.created_at / 1000;
-        let duration = event.client_ms.div_ceil(1000) as i64;
-        by_workspace
-            .entry(&event.workspace)
-            .or_default()
-            .push((completed.saturating_sub(duration), completed + ACTIVE_SECS));
-    }
-    let seconds =
-        by_workspace
-            .into_values()
-            .fold(0_i64, |total, mut intervals| {
-                intervals.sort_unstable();
-                let (seconds, _) = intervals.into_iter().fold(
-                    (0_i64, None),
-                    |(seconds, end), (start, next_end)| match end {
-                        Some(end) if start <= end => (
-                            seconds + next_end.saturating_sub(end),
-                            Some(next_end.max(end)),
-                        ),
-                        _ => (seconds + next_end.saturating_sub(start), Some(next_end)),
-                    },
-                );
-                total + seconds
-            });
-    seconds as f64 / HOUR_SECS as f64
+            seconds
+        })
+        .sum()
 }
 
 fn parse_epoch(value: Option<&String>) -> i64 {
@@ -915,6 +955,57 @@ mod tests {
         };
         let events = [event(3_600_000), event(3_780_000), event(4_200_000)];
         assert_eq!(agent_hours(&[agent], Some(&events), 3_600, 7_200), 0.3);
+    }
+
+    #[test]
+    fn agent_hours_include_recorded_workspaces_without_live_agents() {
+        let events = [
+            ContextEvent {
+                created_at: 3_600_000,
+                client_ms: 0,
+                workspace: "formalizer".into(),
+                reference: None,
+                response_bytes: 0,
+            },
+            ContextEvent {
+                created_at: 5_400_000,
+                client_ms: 0,
+                workspace: "orchestrator".into(),
+                reference: None,
+                response_bytes: 0,
+            },
+        ];
+        assert_eq!(agent_hours(&[], Some(&events), 3_600, 7_200), 1.0 / 6.0);
+    }
+
+    #[test]
+    fn context_per_loc_uses_all_recorded_workspace_events() {
+        let context = [SubmissionContext {
+            created_at: 3_600_000,
+            lines: 10,
+            calls: 1,
+            output_bytes: 100,
+        }];
+        let events = [
+            ContextEvent {
+                created_at: 3_600_000,
+                client_ms: 0,
+                workspace: "formalizer".into(),
+                reference: None,
+                response_bytes: 100,
+            },
+            ContextEvent {
+                created_at: 5_400_000,
+                client_ms: 0,
+                workspace: "orchestrator".into(),
+                reference: None,
+                response_bytes: 200,
+            },
+        ];
+        let metrics = context_per_loc(&context, Some(&events), 3_600_000).unwrap();
+        assert_eq!(metrics.lines, 10);
+        assert_eq!(metrics.calls, 2);
+        assert_eq!(metrics.output_bytes, 300);
     }
 
     #[test]
