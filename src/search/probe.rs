@@ -322,7 +322,9 @@ impl Searcher {
                 .retain(|usage| usage_path_matches_scope(&usage.path, scope));
         }
         if result.hits.is_empty() {
-            result.note = Some(format!("declaration not found: {subject}"));
+            result.note = Some(format!(
+                "declaration not found: {subject}; try search {subject}"
+            ));
             result.ok = false;
         } else if result.hits[0].usages.is_empty()
             && !result
@@ -1133,7 +1135,7 @@ fn render_static_probe_summary(run: &SearchRun, focus: &str) -> String {
     {
         run.note = None;
     }
-    render_summary(&run)
+    render_summary_without_hints(&run)
 }
 
 fn is_declaration_header(line: &str) -> bool {

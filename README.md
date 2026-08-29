@@ -61,6 +61,11 @@ cargo install --locked --force --features development --path .
 declaration, exact Lean context, or stored failure. Both return a `qREF`, whose
 full bounded result is available through `show qREF --all`.
 
+Use the compact ladder: `search` -> select a qREF -> `probe` the declaration;
+refine broad results before expanding them. Compact source ranges of 48 lines
+or fewer are complete, and compact results include a next-action hint when one
+is unambiguous.
+
 ```sh
 mathmux search name:Nat.succ
 mathmux search 'type:_ → _' --limit 12

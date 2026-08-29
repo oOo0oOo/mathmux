@@ -1,6 +1,14 @@
 use super::*;
 
 pub(super) fn render_summary(run: &SearchRun) -> String {
+    render_summary_inner(run, true)
+}
+
+pub(super) fn render_summary_without_hints(run: &SearchRun) -> String {
+    render_summary_inner(run, false)
+}
+
+fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
     let mut output = run.reference.clone();
     let proof_body_requested = query_requests_proof_body(&run.query);
     let related_results = run
@@ -75,9 +83,9 @@ pub(super) fn render_summary(run: &SearchRun) -> String {
             }
             if hit.usages.len() > 3 {
                 output.push_str(&format!(
-                    "\n  +{} usages; show {} --all",
+                    "\n  +{} usages; probe {} usages",
                     hit.usages.len() - 3,
-                    run.reference
+                    probe_name(&hit.name)
                 ));
             }
         }
@@ -101,16 +109,94 @@ pub(super) fn render_summary(run: &SearchRun) -> String {
         }
     }
     if run.hits.len() > summary_limit {
-        output.push_str(&format!(
-            "\n+{} results; show {} --all",
-            run.hits.len() - summary_limit,
-            run.reference
-        ));
+        let omitted = run.hits.len() - summary_limit;
+        output.push_str(&format!("\n+{omitted} results"));
+        if include_hints {
+            append_next_hint(&mut output, run, summary_limit, proof_body_requested);
+        } else {
+            output.push_str(&format!("; show {} --all", run.reference));
+        }
+    } else if include_hints {
+        append_complete_range_hint(&mut output, run);
+        append_single_result_hint(&mut output, run, proof_body_requested);
     }
     if let Some(note) = &run.note {
         output.push_str(&format!("\n{note}"));
     }
     output
+}
+
+fn append_next_hint(
+    output: &mut String,
+    run: &SearchRun,
+    summary_limit: usize,
+    proof_body_requested: bool,
+) {
+    if proof_body_requested {
+        output.push_str(&format!("; show {} --all", run.reference));
+    } else if run
+        .note
+        .as_deref()
+        .is_some_and(|note| note.contains("related results"))
+    {
+        output.push_str("; next: refine query");
+    } else if let Some(hit) = run.hits.first().filter(|hit| is_probeable_declaration(hit)) {
+        output.push_str(&format!(
+            "; next: probe {} signature",
+            probe_name(&hit.name)
+        ));
+    } else if run.hits.len() > summary_limit {
+        output.push_str("; next: refine query");
+    }
+}
+
+fn append_complete_range_hint(output: &mut String, run: &SearchRun) {
+    let Some(hit) = run.hits.first() else {
+        return;
+    };
+    if hit.kind == "source-range"
+        && hit
+            .source
+            .as_deref()
+            .is_some_and(|source| source.lines().count() <= SOURCE_RANGE_LIMIT)
+        && run
+            .note
+            .as_deref()
+            .is_none_or(|note| !note.contains("lines omitted"))
+    {
+        output.push_str("\ncomplete range");
+    }
+}
+
+fn append_single_result_hint(output: &mut String, run: &SearchRun, proof_body_requested: bool) {
+    if proof_body_requested
+        || run.hits.len() != 1
+        || run
+            .note
+            .as_deref()
+            .is_some_and(|note| note.contains("related results"))
+    {
+        return;
+    }
+    if let Some(hit) = run.hits.first().filter(|hit| is_probeable_declaration(hit))
+        && matches!(run.inference.as_str(), "hybrid" | "hybrid+applicability")
+    {
+        output.push_str(&format!(
+            "\nnext: probe {} signature",
+            probe_name(&hit.name)
+        ));
+    }
+}
+
+fn is_probeable_declaration(hit: &SearchHit) -> bool {
+    matches!(
+        hit.kind.as_str(),
+        "abbrev" | "class" | "def" | "inductive" | "instance" | "lemma" | "structure" | "theorem"
+    )
+}
+
+fn probe_name(name: &str) -> &str {
+    name.strip_prefix("_root_.").unwrap_or(name)
 }
 
 fn render_source(

@@ -1032,6 +1032,53 @@ fn empty_search_summary_omits_internal_timing() {
 }
 
 #[test]
+fn compact_search_summary_suggests_a_targeted_probe() {
+    let mut hits = (1..=6)
+        .map(|index| search_hit(&format!("Demo.candidate{index}")))
+        .collect::<Vec<_>>();
+    hits[0].signature = Some("α → β".into());
+    let summary = render_summary(&SearchRun {
+        reference: "q1".into(),
+        workspace_ref: "w1".into(),
+        query: "candidate".into(),
+        inference: "hybrid".into(),
+        hits,
+        note: None,
+        duration_ms: 0,
+        created_at: 0,
+    });
+    assert!(summary.contains("+1 results; next: probe Demo.candidate1 signature"));
+    assert!(!summary.contains("show q1 --all"));
+}
+
+#[test]
+fn compact_source_range_marks_complete_context() {
+    let summary = render_summary(&SearchRun {
+        reference: "q1".into(),
+        workspace_ref: "w1".into(),
+        query: "Demo.lean:2-4".into(),
+        inference: "source".into(),
+        hits: vec![SearchHit {
+            name: "source".into(),
+            kind: "source-range".into(),
+            signature: Some("3 lines".into()),
+            module: String::new(),
+            path: "Demo.lean".into(),
+            line: 2,
+            doc: None,
+            source: Some("2\tfirst\n3\tsecond\n4\tthird".into()),
+            usages: Vec::new(),
+            applicable: false,
+            required_import: None,
+        }],
+        note: None,
+        duration_ms: 0,
+        created_at: 0,
+    });
+    assert!(summary.ends_with("complete range"), "{summary}");
+}
+
+#[test]
 fn search_summary_keeps_definition_body_after_ambient_context() {
     let summary = render_summary(&SearchRun {
             reference: "q2".into(),

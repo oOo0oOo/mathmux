@@ -72,7 +72,7 @@ impl SearchRequest {
             let names = names.split('|').map(str::trim).collect::<Vec<_>>();
             ensure!(
                 !names.is_empty() && names.iter().all(|name| declaration_name(name)),
-                "invalid exact-name batch"
+                "invalid exact-name batch; use name:A|B|C (no spaces)"
             );
             SearchExpression::ExactNames(names.into_iter().map(str::to_owned).collect())
         } else if let Some(pattern) = query.strip_prefix("type:") {
@@ -193,5 +193,16 @@ mod tests {
         assert!(SearchRequest::parse("c12 repair", None, false).is_err());
         assert!(SearchRequest::parse("#check Nat", None, false).is_err());
         assert!(SearchRequest::parse("theorem name:foo", None, false).is_err());
+    }
+
+    #[test]
+    fn explains_exact_name_batch_syntax() {
+        let error = SearchRequest::parse("name:A B", None, false).unwrap_err();
+        assert_eq!(error.to_string(), "name: accepts one name or a `|` batch");
+        let error = SearchRequest::parse("name:A|", None, false).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "invalid exact-name batch; use name:A|B|C (no spaces)"
+        );
     }
 }

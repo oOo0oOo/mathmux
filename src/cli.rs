@@ -23,7 +23,8 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 const WORKFLOW_HELP: &str = r#"AGENT CONTRACT
   scope     Use the preassigned workspace; never run ws or enter main/another workspace.
   discover  Search unknown things; probe known API, exact context, or failures.
-            Read their --help. Start compact; expand only a selected qREF with show qREF --all.
+            Start compact -> select qREF -> probe; refine before show qREF --all.
+            Source ranges <=48 lines are complete compact; read search/probe --help once.
   change    Edit intended files -> check -> submit. Use check FILE only to isolate dirty files.
             Run one check at a time; do not launch bulk parallel check processes.
   update    Use sync. Use mathmux only—never substitute git, lean, lake, or other tooling.
@@ -49,6 +50,10 @@ RESULT
   Source-only ranges of 48 lines or fewer are complete in compact mode; --all
   is needed for longer ranges or broader result detail.
   Exact names include full signatures.
+
+NEXT
+  One declaration -> probe NAME signature|source|usages. Many hits -> refine first.
+  Compact output gives one next action when it can do so without another search.
 
 RULES
   name: forces exact lookup; its | batch returns all. Bare A|B|C stops after the
@@ -79,6 +84,9 @@ RESULT
   API focuses return one bounded dossier. goal returns the exact local goal;
   TERM/directives return Lean's elaborated answer; by returns solved or subgoals.
   NAME source returns that declaration body; search FILE:LINE/RANGE reads file text.
+
+NEXT
+  Start with signature; request source/usages only for the selected declaration.
 
 RULES
   fields/constructors target structures/inductives; ext/simp may be empty.
@@ -907,7 +915,7 @@ mod tests {
     fn workflow_help_prefers_direct_workspace_experimentation() {
         let help = command_line().render_help().to_string();
         assert!(help.contains("Edit intended files -> check -> submit"));
-        assert!(help.contains("Start compact; expand only a selected qREF"));
+        assert!(help.contains("Start compact -> select qREF -> probe"));
         assert!(help.contains("Search unknown things; probe known API, exact context"));
     }
 }

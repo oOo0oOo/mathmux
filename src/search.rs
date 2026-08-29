@@ -44,7 +44,9 @@ mod tuning;
 mod type_worker;
 
 use api::*;
-use display::{render_summary, source_has_complete_declaration_header};
+use display::{
+    render_summary, render_summary_without_hints, source_has_complete_declaration_header,
+};
 use plan::*;
 use query::*;
 use source::*;

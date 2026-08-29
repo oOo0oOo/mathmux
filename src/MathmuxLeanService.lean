@@ -194,13 +194,13 @@ def runLocalProbe (snapshot : Language.Lean.InitialSnapshot) (request : Request)
   try
     let detail ← if request.operation == "goal" then
       let some goal := goal?
-        | throw <| IO.userError s!"no tactic context at line {request.line}"
+        | throw <| IO.userError s!"no tactic context at line {request.line}; use search for source context"
       let mvars := goalMVars goal
       let ctx := goalContext goal
       pure (← ctx.ppGoals mvars).pretty
     else if request.operation == "tactic" then
       let some goal := goal?
-        | throw <| IO.userError s!"no tactic context at line {request.line}"
+        | throw <| IO.userError s!"no tactic context at line {request.line}; use search for source context"
       let mvars := goalMVars goal
       let ctx := goalContext goal
       ctx.runMetaM {} do
@@ -215,13 +215,13 @@ def runLocalProbe (snapshot : Language.Lean.InitialSnapshot) (request : Request)
       match goal? with
       | some goal =>
         let some mvar := (goalMVars goal).head?
-          | throw <| IO.userError "probe position has no active goal"
+          | throw <| IO.userError "probe position has no active goal; choose a line inside a proof"
         (goalContext goal).runMetaM {} do
           mvar.withContext do
             (inspectTerm request.operation request.input {}).run' {}
       | none =>
         let some (ctx, lctx) ← contextAtPosition tree fileMap request.line request.column
-          | throw <| IO.userError s!"no elaboration context at line {request.line}"
+          | throw <| IO.userError s!"no elaboration context at line {request.line}; use search for source context"
         ctx.runMetaM lctx do
           Meta.withLocalInstances (lctx.decls.toArray.toList.filterMap id) do
             (inspectTerm request.operation request.input {}).run' {}
