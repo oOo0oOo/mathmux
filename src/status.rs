@@ -793,8 +793,8 @@ fn agent_hours(
                     agent.started_at.saturating_add(ACTIVE_SECS),
                 ),
                 (
+                    agent.last_active.saturating_sub(ACTIVE_SECS),
                     agent.last_active,
-                    agent.last_active.saturating_add(ACTIVE_SECS),
                 ),
             ]);
     }
@@ -1001,6 +1001,22 @@ mod tests {
         };
         let events = [event(3_600_000), event(3_780_000), event(4_200_000)];
         assert_eq!(agent_hours(&[agent], Some(&events), 3_600, 7_200), 0.3);
+    }
+
+    #[test]
+    fn active_agent_activity_counts_the_recent_window_before_last_activity() {
+        let agent = AgentStatus {
+            id: 1,
+            workspace_ref: "w1".into(),
+            workspace: "demo".into(),
+            model: "agent".into(),
+            state: "active".into(),
+            started_at: 7_200,
+            last_active: 7_200,
+            dirty: 0,
+            workspace_fallback: true,
+        };
+        assert_eq!(agent_hours(&[agent], Some(&[]), 6_900, 7_200), 1.0 / 12.0);
     }
 
     #[test]
