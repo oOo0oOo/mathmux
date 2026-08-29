@@ -1605,6 +1605,90 @@ fn references_decode_from_ilean_keys() {
 }
 
 #[test]
+fn batched_usages_preserve_scope_order_and_per_target_limit() {
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = Workspace {
+        reference: "w1".into(),
+        name: "demo".into(),
+        path: directory.path().to_path_buf(),
+        branch: "demo".into(),
+        model: None,
+    };
+    let connection = Connection::open_in_memory().unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE search_reference_files (
+                id INTEGER PRIMARY KEY,
+                owner TEXT NOT NULL,
+                file TEXT NOT NULL,
+                source_module TEXT NOT NULL
+             );
+             CREATE TABLE search_references (
+                file_id INTEGER NOT NULL,
+                target TEXT NOT NULL,
+                line INTEGER NOT NULL,
+                context TEXT
+             );
+             CREATE INDEX search_references_target ON search_references(target);",
+        )
+        .unwrap();
+
+    let add_usage = |owner: &str, module: &str, target: &str, line: i64| {
+        connection
+            .execute(
+                "INSERT INTO search_reference_files(owner, file, source_module)
+                 VALUES (?1, ?2, ?3)",
+                params![owner, format!("{module}.ilean"), module],
+            )
+            .unwrap();
+        let file_id = connection.last_insert_rowid();
+        connection
+            .execute(
+                "INSERT INTO search_references(file_id, target, line, context)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![file_id, target, line, Option::<String>::None],
+            )
+            .unwrap();
+    };
+    for index in 0..=SEARCH_USAGE_LIMIT {
+        add_usage(
+            "workspace:w1",
+            &format!("Demo.W{index:02}"),
+            "Demo.foo",
+            index as i64 + 1,
+        );
+    }
+    add_usage("packages:demo", "Package", "Demo.foo", 99);
+    add_usage("packages:demo", "Package", "Demo.bar", 100);
+    add_usage("ignored", "Ignored", "Demo.foo", 101);
+
+    install_active_scopes(
+        &connection,
+        &HashSet::from(["workspace:w1".into(), "packages:demo".into()]),
+    )
+    .unwrap();
+    let usages = read_usages(
+        &connection,
+        &["Demo.foo".into(), "Demo.bar".into()],
+        &workspace,
+    )
+    .unwrap();
+
+    let foo = usages.get("Demo.foo").unwrap();
+    assert_eq!(foo.len(), SEARCH_USAGE_LIMIT);
+    assert_eq!(
+        foo.iter().map(|usage| usage.module.as_str()).collect::<Vec<_>>(),
+        (0..SEARCH_USAGE_LIMIT)
+            .map(|index| format!("Demo.W{index:02}"))
+            .collect::<Vec<_>>()
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(usages["Demo.bar"][0].path, "<dependency>/Package.lean");
+}
+
+#[test]
 fn colon_attached_source_facets_fail_with_the_documented_form() {
     for facet in ["outline", "declarations", "imports", "dependents"] {
         let query = format!("Demo.lean:{facet}");

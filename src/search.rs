@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
 use regex::Regex;
+use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -2104,13 +2105,7 @@ impl Searcher {
                 self.enrich_exact_source(&mut candidate.hit, scopes)?;
             }
         }
-        for candidate in &mut ranked {
-            if candidate.hit.usages.is_empty()
-                && !matches!(candidate.hit.kind.as_str(), "file" | "imports")
-            {
-                candidate.hit.usages = self.usages(&candidate.hit.name, scopes, workspace)?;
-            }
-        }
+        self.populate_usages(&mut ranked, scopes, workspace)?;
         let no_hits = ranked.is_empty();
         let dependency_sources_missing = dependency_sources_missing(&workspace.path);
         let mut note = match (base_warming, warming, no_hits && dependency_sources_missing) {
@@ -2915,40 +2910,120 @@ impl Searcher {
         let target = name.strip_prefix("_root_.").unwrap_or(name);
         let connection = self.open()?;
         install_active_scopes(&connection, scopes)?;
-        let mut statement = connection.prepare(
-            "SELECT files.owner, files.source_module, refs.line, refs.context
+        Ok(read_usages(&connection, &[target.to_owned()], workspace)?
+            .remove(target)
+            .unwrap_or_default())
+    }
+
+    fn populate_usages(
+        &self,
+        candidates: &mut [Candidate],
+        scopes: &HashSet<String>,
+        workspace: &Workspace,
+    ) -> Result<()> {
+        let mut targets = Vec::new();
+        let mut seen = HashSet::new();
+        for candidate in candidates.iter() {
+            if candidate.hit.usages.is_empty()
+                && !matches!(candidate.hit.kind.as_str(), "file" | "imports")
+            {
+                let target = candidate
+                    .hit
+                    .name
+                    .strip_prefix("_root_.")
+                    .unwrap_or(&candidate.hit.name)
+                    .to_owned();
+                if seen.insert(target.clone()) {
+                    targets.push(target);
+                }
+            }
+        }
+        if targets.is_empty() {
+            return Ok(());
+        }
+        let connection = self.open()?;
+        install_active_scopes(&connection, scopes)?;
+        let usages = read_usages(&connection, &targets, workspace)?;
+        for candidate in candidates.iter_mut() {
+            if candidate.hit.usages.is_empty()
+                && !matches!(candidate.hit.kind.as_str(), "file" | "imports")
+            {
+                let target = candidate
+                    .hit
+                    .name
+                    .strip_prefix("_root_.")
+                    .unwrap_or(&candidate.hit.name);
+                if let Some(found) = usages.get(target) {
+                    candidate.hit.usages = found.clone();
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn read_usages(
+    connection: &Connection,
+    targets: &[String],
+    workspace: &Workspace,
+) -> Result<HashMap<String, Vec<SearchUsage>>> {
+    if targets.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let placeholders = (1..=targets.len())
+        .map(|index| format!("?{index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let workspace_parameter = targets.len() + 1;
+    let limit_parameter = targets.len() + 2;
+    let sql = format!(
+        "WITH ranked AS (
+             SELECT refs.target, files.source_module, refs.line, refs.context,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY refs.target
+                        ORDER BY (files.owner = ?{workspace_parameter}) DESC,
+                                 files.source_module, refs.line
+                    ) AS usage_rank
              FROM search_references refs
              JOIN search_reference_files files ON files.id = refs.file_id
-             WHERE refs.target = ?1
+             WHERE refs.target IN ({placeholders})
                AND files.owner IN (SELECT owner FROM active_search_scopes)
-             ORDER BY (files.owner = ?2) DESC, files.source_module, refs.line
-             LIMIT ?3",
-        )?;
-        let workspace_owner = format!("workspace:{}", workspace.reference);
-        let rows = statement.query_map(
-            params![target, workspace_owner, SEARCH_USAGE_LIMIT as i64],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)? as u64,
-                    row.get::<_, Option<String>>(3)?,
-                ))
-            },
-        )?;
-        let mut usages = Vec::new();
-        for row in rows {
-            let (owner, module, line, context) = row?;
-            debug_assert!(scopes.contains(&owner));
-            usages.push(SearchUsage {
+         )
+         SELECT target, source_module, line, context
+         FROM ranked
+         WHERE usage_rank <= ?{limit_parameter}
+         ORDER BY target, usage_rank"
+    );
+    let mut parameters = targets
+        .iter()
+        .cloned()
+        .map(SqlValue::Text)
+        .collect::<Vec<_>>();
+    parameters.push(SqlValue::Text(format!("workspace:{}", workspace.reference)));
+    parameters.push(SqlValue::Integer(SEARCH_USAGE_LIMIT as i64));
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(params_from_iter(parameters), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)? as u64,
+            row.get::<_, Option<String>>(3)?,
+        ))
+    })?;
+    let mut usages = HashMap::new();
+    for row in rows {
+        let (target, module, line, context) = row?;
+        usages
+            .entry(target)
+            .or_insert_with(Vec::new)
+            .push(SearchUsage {
                 path: reference_display_path(&module, workspace),
                 module,
                 line,
                 context,
             });
-        }
-        Ok(usages)
     }
+    Ok(usages)
 }
 
 fn indexed_unknown_type_identifier(
