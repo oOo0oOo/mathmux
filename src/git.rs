@@ -537,11 +537,19 @@ pub fn lake_command(repo: &Repo, root: &Path) -> Command {
 }
 
 pub fn background_lake_command(repo: &Repo, root: &Path) -> Command {
-    let mut command = Command::new("ionice");
+    let mut command = Command::new("taskset");
     command
+        .args(["--cpu-list", &background_cpu_list(), "ionice"])
         .args(["-c", "2", "-n", "7", "nice", "-n", "10"])
         .arg(lake_executable());
     configure_lake_command(command, repo, root)
+}
+
+fn background_cpu_list() -> String {
+    let cpus = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1);
+    format!("0-{}", cpus.div_ceil(2).saturating_sub(1))
 }
 
 fn configure_lake_command(mut command: Command, repo: &Repo, root: &Path) -> Command {
@@ -612,12 +620,18 @@ mod tests {
         run_checked("git", ["init"], directory.path()).unwrap();
         let repo = Repo::discover(directory.path()).unwrap();
         let command = background_lake_command(&repo, directory.path());
-        assert_eq!(command.get_program(), "ionice");
+        assert_eq!(command.get_program(), "taskset");
         let arguments = command
             .get_args()
             .map(|argument| argument.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
-        assert_eq!(&arguments[..7], ["-c", "2", "-n", "7", "nice", "-n", "10"]);
+        assert_eq!(arguments[0], "--cpu-list");
+        assert_eq!(arguments[1], background_cpu_list());
+        assert_eq!(
+            &arguments[2..9],
+            ["ionice", "-c", "2", "-n", "7", "nice", "-n"]
+        );
+        assert_eq!(arguments[9], "10");
         assert!(
             arguments
                 .last()
