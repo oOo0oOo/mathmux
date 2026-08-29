@@ -2613,6 +2613,22 @@ fn exact_resolution_fails_closed_instead_of_returning_a_different_declaration() 
             .unwrap()
             .is_none()
     );
+    let routed = searcher
+        .execute_text_search(
+            &workspace,
+            "pullbackCompHom source",
+            TextSearchPlan::ExactFirst,
+            TextSearchContext {
+                scopes: &scopes,
+                base_warming: false,
+                import_target: None,
+                show_all: false,
+            },
+        )
+        .unwrap();
+    let routed_note = routed.note.as_deref().unwrap();
+    assert!(routed_note.contains("exact declaration not found: pullbackCompHom"));
+    assert!(!routed_note.contains("exact declaration not found: pullbackCompHom source"));
     let miss = searcher
         .exact_miss_result(&workspace, "pullbackCompHom", &scopes, None, false)
         .unwrap();

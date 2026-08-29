@@ -1964,7 +1964,7 @@ impl Searcher {
             }
             return self.exact_miss_result(
                 workspace,
-                query,
+                &exact_plan.anchor,
                 scopes,
                 import_context.as_ref(),
                 base_warming,
