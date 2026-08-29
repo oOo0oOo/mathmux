@@ -378,6 +378,15 @@ pub(super) fn parse_source_occurrence_query(
         .and_then(|(path, range)| parse_source_line_range(range).map(|range| (path, range)))
         .map_or((target, None), |(path, range)| (path, Some(range)));
     if terms.is_empty() && range.is_none() {
+        if Path::new(target)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            == Some("lean")
+        {
+            bail!(
+                "source file query needs a line, range, or facet: {target}; use {target}:LINE, {target}:START-END, or {target} outline/imports/dependents"
+            );
+        }
         return Ok(None);
     }
     let requested_path = path;

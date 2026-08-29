@@ -1882,6 +1882,24 @@ fn colon_attached_source_facets_fail_with_the_documented_form() {
 }
 
 #[test]
+fn bare_lean_paths_require_explicit_source_context() {
+    let directory = tempfile::tempdir().unwrap();
+    let error = match parse_source_occurrence_query(
+        directory.path(),
+        directory.path(),
+        None,
+        "Demo.lean",
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("bare Lean path unexpectedly accepted"),
+    };
+    assert_eq!(
+        error.to_string(),
+        "source file query needs a line, range, or facet: Demo.lean; use Demo.lean:LINE, Demo.lean:START-END, or Demo.lean outline/imports/dependents"
+    );
+}
+
+#[test]
 fn source_query_regressions() {
     assert_eq!(edit_distance("compp", "comp"), 1);
     assert_eq!(
