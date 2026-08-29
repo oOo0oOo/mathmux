@@ -31,6 +31,7 @@ struct AgentStatus {
     started_at: i64,
     last_active: i64,
     dirty: usize,
+    workspace_fallback: bool,
 }
 
 struct CodeMetrics {
@@ -376,10 +377,14 @@ fn render_agents(output: &mut String, agents: &[AgentStatus], now: i64) -> std::
         agents.len()
     )?;
     for agent in agents {
+        let label = if agent.workspace_fallback {
+            agent.workspace_ref.as_str().to_owned()
+        } else {
+            agent.id.to_string()
+        };
         write!(
             output,
-            "\n{:>3} {:<10} {:<16} {:<7} last {}",
-            agent.id,
+            "\n{label:>3} {:<10} {:<16} {:<7} last {}",
             agent.workspace,
             agent.model,
             agent.state,
@@ -411,18 +416,56 @@ fn project_agents(
     activity: &HashMap<String, i64>,
     now: i64,
 ) -> Vec<AgentStatus> {
-    let Some(state_dir) = agent_state_dir() else {
-        return Vec::new();
-    };
-    let Ok(entries) = fs::read_dir(state_dir) else {
-        return Vec::new();
-    };
-    let mut agents = entries
+    let mut agents = agent_state_dir()
+        .and_then(|state_dir| fs::read_dir(state_dir).ok())
+        .into_iter()
+        .flatten()
         .filter_map(Result::ok)
         .filter_map(|entry| agent_status(&entry.path(), workspaces, activity, now))
         .collect::<Vec<_>>();
+    for workspace in workspaces {
+        if agents
+            .iter()
+            .any(|agent| agent.workspace_ref == workspace.reference)
+        {
+            continue;
+        }
+        if let Some(agent) = workspace_agent_status(workspace, activity, now) {
+            agents.push(agent);
+        }
+    }
     agents.sort_by_key(|agent| agent.id);
     agents
+}
+
+fn workspace_agent_status(
+    workspace: &Workspace,
+    activity: &HashMap<String, i64>,
+    now: i64,
+) -> Option<AgentStatus> {
+    let last_active = activity.get(&workspace.reference).copied()? / 1000;
+    if last_active == 0 || now.saturating_sub(last_active) > ACTIVE_SECS {
+        return None;
+    }
+    let paths = dirty_paths(&workspace.path).unwrap_or_default();
+    Some(AgentStatus {
+        id: workspace
+            .reference
+            .strip_prefix('w')
+            .and_then(|id| id.parse().ok())
+            .unwrap_or_default(),
+        workspace_ref: workspace.reference.clone(),
+        workspace: workspace.name.clone(),
+        model: workspace
+            .model
+            .clone()
+            .unwrap_or_else(|| "workspace".into()),
+        state: "active".into(),
+        started_at: last_active,
+        last_active,
+        dirty: paths.len(),
+        workspace_fallback: true,
+    })
 }
 
 fn agent_status(
@@ -462,6 +505,7 @@ fn agent_status(
         started_at,
         last_active,
         dirty: paths.len(),
+        workspace_fallback: false,
     })
 }
 
@@ -927,6 +971,7 @@ mod tests {
             started_at,
             last_active: 0,
             dirty: 0,
+            workspace_fallback: false,
         };
         assert_eq!(
             agent_hours(&[agent(0), agent(5_400)], None, 3_600, 7_200),
@@ -945,6 +990,7 @@ mod tests {
             started_at: 3_600,
             last_active: 4_800,
             dirty: 0,
+            workspace_fallback: false,
         };
         let event = |created_at| ContextEvent {
             created_at,
@@ -955,6 +1001,23 @@ mod tests {
         };
         let events = [event(3_600_000), event(3_780_000), event(4_200_000)];
         assert_eq!(agent_hours(&[agent], Some(&events), 3_600, 7_200), 0.3);
+    }
+
+    #[test]
+    fn recent_workspace_activity_fills_missing_agent_state() {
+        let workspace = Workspace {
+            reference: "w28".into(),
+            name: "orchestrator".into(),
+            path: PathBuf::from("/tmp/orchestrator"),
+            branch: "orchestrator".into(),
+            model: Some("gpt-test".into()),
+        };
+        let activity = HashMap::from([(String::from("w28"), 900_000)]);
+        let agent = workspace_agent_status(&workspace, &activity, 1_000).unwrap();
+        assert!(agent.workspace_fallback);
+        assert_eq!(agent.workspace_ref, "w28");
+        assert_eq!(agent.state, "active");
+        assert!(workspace_agent_status(&workspace, &activity, 1_201).is_none());
     }
 
     #[test]
