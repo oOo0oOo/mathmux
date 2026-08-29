@@ -14,7 +14,7 @@ use display::{render_check_run, render_search_run, render_submission};
 const SEARCH_HISTORY_LIMIT: i64 = 20_000;
 const SEARCH_HISTORY_AGE_MS: i64 = 48 * 60 * 60 * 1000;
 const STORED_PROFILE_LIMIT_BYTES: usize = 512 * 1024;
-const STATE_SCHEMA_VERSION: i64 = 2;
+const STATE_SCHEMA_VERSION: i64 = 3;
 pub(crate) const SEARCH_USAGE_LIMIT: usize = 8;
 
 #[derive(Debug, Clone)]
@@ -407,6 +407,7 @@ impl State {
             match next {
                 1 => migrate_state_v1(&transaction)?,
                 2 => migrate_state_v2(&transaction)?,
+                3 => migrate_state_v3(&transaction)?,
                 _ => unreachable!("all state migrations are enumerated"),
             }
             transaction.execute(
@@ -825,17 +826,40 @@ impl State {
     }
 
     pub fn latest_audited_submission(&self, main_commit: &str) -> Result<Option<Submission>> {
-        self.open()?
+        let connection = self.open()?;
+        let reference = match connection
+            .query_row(
+                "SELECT ref FROM submissions
+                 WHERE sorry_audit_version = 1 AND main_commit = ?1
+                 ORDER BY created_at DESC, CAST(substr(ref, 2) AS INTEGER) DESC
+                 LIMIT 1",
+                [main_commit],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+        {
+            Some(reference) => Some(reference),
+            None => connection
+                .query_row(
+                    "SELECT ref FROM submissions
+                         WHERE sorry_audit_version = 1
+                         ORDER BY created_at DESC, CAST(substr(ref, 2) AS INTEGER) DESC
+                         LIMIT 1",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?,
+        };
+        let Some(reference) = reference else {
+            return Ok(None);
+        };
+        connection
             .query_row(
                 "SELECT ref, workspace_ref, workspace_commit, main_commit, base_commit, checks_json,
                         validation_status, validation_detail, build_output, axioms_json,
                         sorries_json, validation_duration_ms, validated_by, created_at
-                 FROM submissions
-                 WHERE sorry_audit_version = 1
-                 ORDER BY (main_commit = ?1) DESC, created_at DESC,
-                          CAST(substr(ref, 2) AS INTEGER) DESC
-                 LIMIT 1",
-                [main_commit],
+                 FROM submissions WHERE ref = ?1",
+                [reference],
                 submission_from_row,
             )
             .optional()
@@ -1228,6 +1252,14 @@ fn migrate_state_v2(transaction: &rusqlite::Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
+fn migrate_state_v3(transaction: &rusqlite::Transaction<'_>) -> Result<()> {
+    transaction.execute_batch(
+        "CREATE INDEX IF NOT EXISTS submissions_audited_created
+            ON submissions(sorry_audit_version, created_at DESC);",
+    )?;
+    Ok(())
+}
+
 fn add_column_if_missing(
     connection: &Connection,
     table: &str,
@@ -1416,8 +1448,79 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
+        let audited_index: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master
+                 WHERE type = 'index' AND name = 'submissions_audited_created')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(version, STATE_SCHEMA_VERSION);
         assert!(!legacy_checks);
+        assert!(audited_index);
+    }
+
+    #[test]
+    fn latest_audited_submission_prefers_the_current_main_revision() {
+        let directory = tempdir().unwrap();
+        let state = State::new(directory.path().join("state.db")).unwrap();
+        state
+            .add_workspace(&Workspace {
+                reference: "w1".into(),
+                name: "agent".into(),
+                path: directory.path().join("agent"),
+                branch: "mathmux/agent".into(),
+                model: None,
+            })
+            .unwrap();
+        for (reference, main_commit, created_at) in [
+            ("s1", "main-a", 10),
+            ("s2", "main-b", 40),
+            ("s3", "main-a", 20),
+            ("s4", "main-c", 30),
+        ] {
+            state
+                .add_submission(&Submission {
+                    reference: reference.into(),
+                    workspace_ref: "w1".into(),
+                    workspace_commit: format!("workspace-{reference}"),
+                    main_commit: main_commit.into(),
+                    base_commit: "base".into(),
+                    checks: Vec::new(),
+                    validation_status: ValidationStatus::Passed,
+                    validation_detail: None,
+                    build_output: None,
+                    axioms: Vec::new(),
+                    sorries: Vec::new(),
+                    validation_duration_ms: Some(1),
+                    validated_by: None,
+                    created_at,
+                })
+                .unwrap();
+        }
+        state
+            .open()
+            .unwrap()
+            .execute("UPDATE submissions SET sorry_audit_version = 1", [])
+            .unwrap();
+
+        assert_eq!(
+            state
+                .latest_audited_submission("main-a")
+                .unwrap()
+                .unwrap()
+                .reference,
+            "s3"
+        );
+        assert_eq!(
+            state
+                .latest_audited_submission("missing")
+                .unwrap()
+                .unwrap()
+                .reference,
+            "s2"
+        );
     }
 
     #[test]
