@@ -27,10 +27,25 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
     };
     for (index, hit) in run.hits.iter().take(summary_limit).enumerate() {
         output.push('\n');
+        if run.inference == "exact-miss" {
+            if let Some(provenance) = hit.kind.strip_prefix("unmerged:") {
+                output.push_str(&format!("UNMERGED ({provenance}): "));
+            } else {
+                output.push_str("suggestion: ");
+            }
+        }
         output.push_str(&hit.name);
-        let displayed_source = hit.source.as_deref().filter(|_| {
-            run.inference == "probe"
-                || (!related_results
+        let displayed_source = if run.inference == "exact-miss" {
+            None
+        } else if run.inference == "probe"
+            || (matches!(run.inference.as_str(), "exact" | "exact-batch")
+                && (proof_body_requested || hit.kind == "fields"))
+        {
+            hit.source.as_deref()
+        } else {
+            hit.source.as_deref().filter(|_| {
+                !matches!(run.inference.as_str(), "exact" | "exact-batch")
+                    && !related_results
                     && ((index == 0 && proof_body_requested)
                         || (!proof_body_requested
                             && (declaration_leaf_matches(&hit.name, &run.query)
@@ -49,8 +64,9 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
                                         | "outline"
                                         | "source-occurrences"
                                         | "source-range"
-                                )))))
-        });
+                                ))))
+            })
+        };
         if let Some(signature) = &hit.signature
             && !displayed_source
                 .is_some_and(|source| source_has_complete_declaration_header(hit, source))
@@ -106,6 +122,14 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
                 output.push_str("\nsource:");
             }
             render_source(&mut output, run, hit, source, index, proof_body_requested);
+        }
+        if run.inference == "exact-miss" {
+            let name = probe_name(&hit.name);
+            if hit.kind.starts_with("unmerged:") {
+                output.push_str(&format!("\n  after sync: mathmux probe {name} signature"));
+            } else {
+                output.push_str(&format!("\n  next: mathmux probe {name} signature"));
+            }
         }
     }
     if run.hits.len() > summary_limit {
@@ -179,7 +203,10 @@ fn append_single_result_hint(output: &mut String, run: &SearchRun, proof_body_re
         return;
     }
     if let Some(hit) = run.hits.first().filter(|hit| is_probeable_declaration(hit))
-        && matches!(run.inference.as_str(), "hybrid" | "hybrid+applicability")
+        && matches!(
+            run.inference.as_str(),
+            "exact" | "exact-batch" | "hybrid" | "hybrid+applicability"
+        )
     {
         output.push_str(&format!(
             "\nnext: probe {} signature",

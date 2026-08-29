@@ -58,21 +58,26 @@ cargo install --locked --force --features development --path .
 ### Search and probe
 
 `search` is the discovery and source-reading interface; `probe` inspects a known
-declaration, exact Lean context, or stored failure. Both return a `qREF`, whose
-full bounded result is available through `show qREF --all`.
+declaration, exact Lean context, or stored failure. Both return a `qREF` for
+stored result sets, while exact declaration results point directly to a focused
+probe command.
 
-Use the compact ladder: `search` -> select a qREF -> `probe` the declaration;
-refine broad results before expanding them. Compact source ranges of 48 lines
-or fewer are complete, and compact results include a next-action hint when one
-is unambiguous.
+Identifier-shaped searches resolve exact names first and fail closed on a miss,
+with at most three near-name suggestions. Exact output stays compact: signature,
+path, import availability, and up to three usages. Use `probe NAME source` or
+`probe NAME usages` for focused detail; use `show qREF --all` for genuine
+multi-result or source-range expansion.
 
 ```sh
 mathmux search name:Nat.succ
+mathmux probe Nat.succ signature
+mathmux probe Nat.succ source
 mathmux search 'type:_ → _' --limit 12
 mathmux search Mathlib/Data/Nat/Basic.lean dependents
 mathmux probe Mathlib/Data/Nat/Basic.lean '#check Nat.succ'
 mathmux probe Proof.lean:42 goal
 mathmux probe Proof.lean:42 'by simp'
+mathmux show c123 --wait
 ```
 
 Run `mathmux search --help` and `mathmux probe --help` for the complete compact

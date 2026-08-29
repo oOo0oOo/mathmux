@@ -32,10 +32,12 @@ pub(super) struct RetrievalTuning {
     pub(super) qualified_rows: usize,
     pub(super) exact_rows: usize,
     pub(super) field_rows: usize,
+    #[allow(dead_code)]
     pub(super) context_rows: usize,
     pub(super) module_rows: usize,
     pub(super) module_count: usize,
     pub(super) name_contains_rows: usize,
+    #[allow(dead_code)]
     pub(super) continuation_rows: usize,
     pub(super) dirty_files: usize,
     pub(super) fallback_paths: usize,
@@ -120,6 +122,8 @@ pub(super) struct PromotionTuning {
     pub(super) exact_source_enrichment: usize,
     pub(super) import_available: f64,
     pub(super) import_missing: f64,
+    pub(super) current_context: f64,
+    pub(super) current_source: f64,
 }
 
 pub(super) const SEARCH_TUNING: SearchTuning = SearchTuning {
@@ -208,6 +212,8 @@ pub(super) const SEARCH_TUNING: SearchTuning = SearchTuning {
         exact_source_enrichment: 3,
         import_available: 30.0,
         import_missing: 10.0,
+        current_context: 45.0,
+        current_source: 20.0,
     },
 };
 

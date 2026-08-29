@@ -1072,7 +1072,7 @@ impl State {
 
     pub fn show(&self, reference: &str, all: bool) -> Result<String> {
         let kind = reference.parse::<Reference>().with_context(|| {
-            "show expects a saved reference such as c123 or q456; use search FILE:LINE or FILE:tail for source context, or search --all DECLARATION for a body"
+            "show expects a saved reference such as c123 or q456; use search FILE:LINE or FILE:tail for source context, or probe NAME source for a declaration body"
         })?.kind();
         match kind {
             ReferenceKind::Check => self

@@ -50,6 +50,8 @@ pub enum Command {
     Show {
         reference: String,
         all: bool,
+        #[serde(default)]
+        wait: bool,
     },
 }
 
@@ -179,6 +181,15 @@ mod tests {
             panic!("expected sync command");
         };
         assert!(!push);
+
+        let request: Request = serde_json::from_str(
+            r#"{"cwd":"/project","command":{"verb":"show","reference":"c1","all":false}}"#,
+        )
+        .unwrap();
+        let Command::Show { wait, .. } = request.command else {
+            panic!("expected show command");
+        };
+        assert!(!wait);
     }
 
     #[test]
@@ -194,6 +205,14 @@ mod tests {
             Command::Check {
                 file: None,
                 profile: false
+            }
+            .transport_retry_safe()
+        );
+        assert!(
+            Command::Show {
+                reference: "c1".into(),
+                all: false,
+                wait: true,
             }
             .transport_retry_safe()
         );

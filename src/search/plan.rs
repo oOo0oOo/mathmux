@@ -53,7 +53,10 @@ pub(super) fn text_search_plan(query: &str) -> TextSearchPlan {
     let type_search = type_shaped(query);
     if type_search {
         TextSearchPlan::Type
-    } else if field_inventory_query(query).is_some() || exact_plan(query, false).is_some() {
+    } else if field_inventory_query(query).is_some()
+        || exact_plan(query, false).is_some()
+        || explicit_declaration_name(query).is_some_and(declaration_name_query)
+    {
         TextSearchPlan::ExactFirst
     } else {
         TextSearchPlan::Discovery

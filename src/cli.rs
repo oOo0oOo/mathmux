@@ -23,7 +23,7 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 const WORKFLOW_HELP: &str = r#"AGENT CONTRACT
   scope     Use the preassigned workspace; never run ws or enter main/another workspace.
   discover  Search unknown things; probe known API, exact context, or failures.
-            Start compact -> select qREF -> probe; refine before show qREF --all.
+            Exact declarations go straight to probe NAME; qREFs store result sets.
             Source ranges <=48 lines are complete compact; read search/probe --help once.
   change    Edit intended files -> check -> submit. Use check FILE only to isolate dirty files.
             Run one check at a time; do not launch bulk parallel check processes.
@@ -45,19 +45,22 @@ FORMS — type one directly; declaration/type/source/compose are labels, not key
 KIND = abbrev|class|def|inductive|instance|lemma|structure|theorem
 
 RESULT
-  Start compact and inspect the result. Expand only a selected qREF with
-  show qREF --all. --limit N (1–200) caps hits and cannot combine with --all.
+  Exact declarations show signature, path, imports, and up to three usages.
+  Use probe NAME source|usages for focused detail. qREFs retain stored result sets;
+  show qREF --all expands genuine multi-result or source-range searches.
+  --limit N (1–200) caps hits and cannot combine with --all.
   Source-only ranges of 48 lines or fewer are complete in compact mode; --all
   is needed for longer ranges or broader result detail.
   Exact names include full signatures.
 
 NEXT
-  One declaration -> probe NAME signature|source|usages. Many hits -> refine first.
-  Compact output gives one next action when it can do so without another search.
+  One declaration -> probe NAME signature|source|usages. Exact misses fail closed
+  with at most three near-name suggestions; concept search is a separate follow-up.
+  Many hits -> refine first. Compact output gives one focused next action.
 
 RULES
-  name: forces exact lookup; its | batch returns all. Bare A|B|C stops after the
-  first useful branch. type: matches declaration result types; `_` holes are legal.
+  name: forces exact lookup; its | batch returns all. Bare identifier queries are
+  exact-first. type: matches declaration result types; `_` holes are legal.
   sREF requires TERMS; use show sREF first, then --all only if needed.
   Source facets follow a space, not a colon.
   FILE:LINE reads source only; use probe FILE:LINE for Lean context.
@@ -72,7 +75,7 @@ FORMS — type one directly; there are no API, LEAN, or other category keywords
   FILE warnings
   FILE:LINE [goal] | FILE:LINE TERM [signature]
   PATH NAME usages
-  cREF [types|defeq|rewrite|profile]
+  cREF [goal|types|defeq|rewrite|profile]
   declaration-qREF [signature|source|usages|constructors]
   positioned-qREF [goal] | stored-probe-qREF
   FILE|FILE:LINE|cREF|qREF "#check TERM"|"#synth TYPE"|"#reduce TERM"
@@ -83,7 +86,8 @@ RESULT
   probing one returns a source-bound dossier with API/dependency evidence.
   API focuses return one bounded dossier. goal returns the exact local goal;
   TERM/directives return Lean's elaborated answer; by returns solved or subgoals.
-  NAME source returns that declaration body; search FILE:LINE/RANGE reads file text.
+  NAME source resolves the exact declaration and returns that body; a miss never
+  falls through to another declaration. search FILE:LINE/RANGE reads file text.
 
 NEXT
   Start with signature; request source/usages only for the selected declaration.
@@ -92,7 +96,7 @@ RULES
   fields/constructors target structures/inductives; ext/simp may be empty.
   instances/coercions find declarations in the subject's name family; inspect
   signature for required typeclasses or a theorem result such as Bijective.
-  cREF analyses need a matching stored failure; profile needs check --profile.
+  cREF goal/analyses need a matching stored failure; profile needs check --profile.
   warnings omits mechanical fixes owned by Lean automation and never reruns Lean.
   Context is mandatory for directives and never guessed. FILE uses its imports;
   FILE:LINE uses that exact line—there is no nearby-line fallback. Probe never
@@ -187,13 +191,16 @@ enum TopCommand {
     /// Show stored detail for a short reference.
     ///
     /// Accepts cREF, qREF, sREF, uREF, or wREF. --all expands stored detail while
-    /// keeping raw build logs bounded.
+    /// keeping raw build logs bounded. --wait waits for a running cREF.
     Show {
         /// Stored cREF, qREF, sREF, uREF, or wREF.
         reference: String,
         /// Include expanded stored detail.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "wait")]
         all: bool,
+        /// Wait for a running cREF to finish, with bounded progress updates.
+        #[arg(long, conflicts_with = "all")]
+        wait: bool,
     },
     /// Report mathmux tooling problems (proving agents).
     ///
@@ -388,7 +395,15 @@ pub fn run() -> Result<u8> {
             );
             Command::Submit { message }
         }
-        TopCommand::Show { reference, all } => Command::Show { reference, all },
+        TopCommand::Show {
+            reference,
+            all,
+            wait,
+        } => Command::Show {
+            reference,
+            all,
+            wait,
+        },
         #[cfg(feature = "development")]
         TopCommand::Issue { .. } | TopCommand::Dev { .. } => unreachable!(),
         TopCommand::Daemon { .. } => unreachable!(),
@@ -651,6 +666,7 @@ fn replace_daemon(repo: &Repo, request: &Request) -> Result<UnixStream> {
             command: Command::Show {
                 reference: "q0".into(),
                 all: false,
+                wait: false,
             },
         };
         match exchange(stream, &probe) {
@@ -879,7 +895,7 @@ mod tests {
             "NAME [signature|source|apply",
             "FILE warnings",
             "FILE:LINE [goal]",
-            "cREF [types|defeq|rewrite|profile]",
+            "cREF [goal|types|defeq|rewrite|profile]",
             "declaration-qREF [signature|source|usages|constructors]",
             "Context is mandatory",
             "Use NAME signature, not",
@@ -907,15 +923,15 @@ mod tests {
             .render_help()
             .to_string();
         assert!(short_probe.contains("FILE:LINE [goal]"));
-        assert!(short_probe.contains("NAME source returns that declaration body"));
-        assert!(short_probe.contains("cREF analyses need a matching stored failure"));
+        assert!(short_probe.contains("NAME source resolves the exact declaration"));
+        assert!(short_probe.contains("cREF goal/analyses need a matching stored failure"));
     }
 
     #[test]
     fn workflow_help_prefers_direct_workspace_experimentation() {
         let help = command_line().render_help().to_string();
         assert!(help.contains("Edit intended files -> check -> submit"));
-        assert!(help.contains("Start compact -> select qREF -> probe"));
+        assert!(help.contains("Exact declarations go straight to probe NAME"));
         assert!(help.contains("Search unknown things; probe known API, exact context"));
     }
 }

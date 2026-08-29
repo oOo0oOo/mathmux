@@ -117,11 +117,43 @@ impl ExpandedQuery {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Candidate {
     hit: SearchHit,
     score: f64,
     origins: u8,
+}
+
+fn contextual_exact_candidates(
+    candidates: Vec<Candidate>,
+    query: &str,
+    context: Option<&ImportContext>,
+) -> Option<Vec<Candidate>> {
+    if let Some(exact) = resolved_exact_candidates(candidates.clone(), query) {
+        return Some(exact);
+    }
+    let context = context?;
+    let preferred = candidates
+        .iter()
+        .filter(|candidate| {
+            context
+                .preferred_module
+                .as_deref()
+                .is_some_and(|module| candidate.hit.module.eq_ignore_ascii_case(module))
+                || context.preferred_path.as_deref().is_some_and(|path| {
+                    candidate.hit.path == *path || candidate.hit.path.ends_with(path)
+                })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if let Some(exact) = resolved_exact_candidates(preferred, query) {
+        return Some(exact);
+    }
+    let accessible = candidates
+        .into_iter()
+        .filter(|candidate| context.accessible.contains(&candidate.hit.module))
+        .collect::<Vec<_>>();
+    resolved_exact_candidates(accessible, query)
 }
 
 #[derive(Clone, Copy)]
@@ -135,6 +167,8 @@ enum CandidateOrigin {
 struct ImportContext {
     accessible: HashSet<String>,
     complete: bool,
+    preferred_module: Option<String>,
+    preferred_path: Option<String>,
 }
 
 struct TextSearchContext<'a> {
@@ -196,9 +230,12 @@ impl SearchPipeline {
 
 struct ExactPlan {
     anchor: String,
+    #[allow(dead_code)]
     refinement_tokens: Vec<String>,
     requested_terms: Vec<String>,
+    #[allow(dead_code)]
     recover_continuation: bool,
+    source_requested: bool,
 }
 
 struct ExactMatch {
@@ -577,6 +614,14 @@ impl Searcher {
         let ok = result.ok;
         self.state.add_search(&run)?;
         self.state.touch_workspace(&workspace.reference)?;
+        if request.all
+            && matches!(run.inference.as_str(), "exact" | "exact-batch")
+            && !query_requests_proof_body(&run.query)
+        {
+            bail!(
+                "`--all` is not used for an exact declaration; use `mathmux probe NAME source` or `mathmux probe NAME usages`"
+            );
+        }
         let rendered = if request.all {
             self.state.show(&run.reference, true)
         } else {
@@ -593,6 +638,7 @@ impl Searcher {
     ) -> Result<SearchResult> {
         let mut hits = Vec::new();
         let mut missing = Vec::new();
+        let mut miss_suggestions = Vec::new();
         let mut warming = false;
         for name in names {
             let result = self.planned_text_search(
@@ -607,15 +653,42 @@ impl Searcher {
                 .note
                 .as_deref()
                 .is_some_and(|note| note.contains("warming"));
-            if let Some(hit) = result
-                .hits
-                .into_iter()
-                .find(|hit| qualified_name_matches(&hit.name, name))
-            {
-                hits.push(hit);
+            let mut result_hits = result.hits;
+            if let Some(index) = result_hits.iter().position(|hit| {
+                !hit.kind.starts_with("unmerged:") && qualified_name_matches(&hit.name, name)
+            }) {
+                hits.push(result_hits.remove(index));
             } else {
                 missing.push(name.clone());
+                miss_suggestions.extend(result_hits);
             }
+        }
+        if hits.is_empty() && !missing.is_empty() {
+            let mut seen = HashSet::new();
+            miss_suggestions.retain(|hit| seen.insert((hit.name.clone(), hit.kind.clone())));
+            miss_suggestions.truncate(3);
+            let mut note = format!("exact declaration not found: {}", missing.join(", "));
+            if miss_suggestions
+                .iter()
+                .any(|hit| !hit.kind.starts_with("unmerged:"))
+            {
+                note.push_str("\nsuggestions (not exact):");
+            }
+            if miss_suggestions
+                .iter()
+                .any(|hit| hit.kind.starts_with("unmerged:"))
+            {
+                note.push_str("\nunmerged sibling declarations (not usable locally):");
+            }
+            if warming {
+                note.push_str("\nsource index warming");
+            }
+            return Ok(SearchResult {
+                hits: miss_suggestions,
+                inference: "exact-miss".into(),
+                note: Some(note),
+                ok: false,
+            });
         }
         let note = (!missing.is_empty()).then(|| {
             let missing = format!("not found: {}", missing.join(", "));
@@ -1857,6 +1930,7 @@ impl Searcher {
         let mut pipeline = SearchPipeline::start();
         let field_inventory = field_inventory_query(query);
         let explicit_declaration = explicit_declaration_name(query);
+        let source_requested = query_requests_proof_body(query);
         let query = explicit_declaration.unwrap_or(query);
         let type_search = matches!(plan, TextSearchPlan::Type | TextSearchPlan::ForcedType);
         let strict_type = matches!(plan, TextSearchPlan::ForcedType);
@@ -1875,17 +1949,26 @@ impl Searcher {
         {
             return Ok(result);
         }
-        if !matches!(plan, TextSearchPlan::Discovery)
-            && let Some(plan) = exact_plan(query, type_search)
-            && let Some(result) = self.resolve_exact(
+        if matches!(plan, TextSearchPlan::ExactFirst)
+            && let Some(mut exact_plan) = exact_plan(query, type_search)
+        {
+            exact_plan.source_requested |= source_requested;
+            if let Some(result) = self.resolve_exact(
                 workspace,
                 scopes,
                 import_context.as_ref(),
                 base_warming,
-                &plan,
-            )?
-        {
-            return Ok(result);
+                &exact_plan,
+            )? {
+                return Ok(result);
+            }
+            return self.exact_miss_result(
+                workspace,
+                query,
+                scopes,
+                import_context.as_ref(),
+                base_warming,
+            );
         }
         let candidates_started = Instant::now();
         let mut rows = self.candidates(query, &query_tokens, type_search, scopes)?;
@@ -2224,47 +2307,177 @@ impl Searcher {
         base_warming: bool,
         plan: &ExactPlan,
     ) -> Result<Option<SearchResult>> {
-        let mut names = vec![plan.anchor.clone()];
-        if let Some(base) = declaration_predicate_base(&plan.anchor) {
-            names.push(base);
-        }
-        if plan.recover_continuation {
-            let continuations = self.direct_continuations(&plan.anchor, scopes)?;
-            if let [continuation] = continuations.as_slice() {
-                names.push(continuation.clone());
+        let name = &plan.anchor;
+        let rows = self.exact_candidates(name, scopes)?;
+        let ranked = ranked_exact_candidates(rows, name, workspace);
+        let matched = contextual_exact_candidates(ranked, name, import_context).map(|candidates| {
+            ExactMatch {
+                candidate: merge_exact_candidates(candidates),
+                matched: name.clone(),
+                warming: false,
             }
-        }
-        if let Some(base) = declaration_suffix_base(&plan.anchor) {
-            names.push(base.to_owned());
-        }
-        names.dedup();
-
-        for name in names {
-            let rows = self.exact_candidates(&name, scopes)?;
-            let ranked = ranked_exact_candidates(rows, &name, workspace);
-            let matched = if let Some(candidates) = resolved_exact_candidates(ranked, &name) {
-                Some(ExactMatch {
-                    candidate: merge_exact_candidates(candidates),
-                    matched: name.clone(),
-                    warming: false,
-                })
-            } else {
-                self.generated_exact_match(&name, scopes)?
-            };
-            if let Some(matched) = matched {
-                return self
-                    .finish_exact(
-                        matched,
-                        plan,
-                        workspace,
-                        scopes,
-                        import_context,
-                        base_warming,
-                    )
-                    .map(Some);
-            }
+        });
+        let matched = match matched {
+            Some(matched) => Some(matched),
+            None => self.generated_exact_match(name, scopes)?,
+        };
+        if let Some(matched) = matched {
+            return self
+                .finish_exact(
+                    matched,
+                    plan,
+                    workspace,
+                    scopes,
+                    import_context,
+                    base_warming,
+                )
+                .map(Some);
         }
         Ok(None)
+    }
+
+    fn exact_miss_result(
+        &self,
+        workspace: &Workspace,
+        query: &str,
+        scopes: &HashSet<String>,
+        import_context: Option<&ImportContext>,
+        base_warming: bool,
+    ) -> Result<SearchResult> {
+        let exact_names = self
+            .exact_candidates(query, scopes)?
+            .into_iter()
+            .map(|row| canonical_declaration_name(&row.name).to_ascii_lowercase())
+            .collect::<HashSet<_>>();
+        let ambiguous = exact_names.len() > 1;
+        let mut suggestions = self.near_name_suggestions(query, scopes)?;
+        if let Some(context) = import_context {
+            suggestions
+                .sort_by_key(|candidate| !context.accessible.contains(&candidate.hit.module));
+        }
+        suggestions.truncate(3);
+        let mut note = if ambiguous {
+            format!("ambiguous declaration name: {query}; qualify the name")
+        } else {
+            format!("exact declaration not found: {query}")
+        };
+        if !suggestions.is_empty() {
+            note.push_str("\nsuggestions (not exact):");
+        }
+        let unmerged = self.fleet_exact_suggestions(workspace, query)?;
+        if !unmerged.is_empty() {
+            note.push_str("\nunmerged sibling declarations (not usable locally):");
+        }
+        suggestions.extend(unmerged);
+        if base_warming {
+            note.push_str("\nsource index warming");
+        }
+        if suggestions.is_empty() {
+            note.push_str(&format!(
+                "\nnext: `mathmux search \"concept {query}\"` for broad discovery"
+            ));
+        }
+        Ok(SearchResult {
+            hits: suggestions
+                .into_iter()
+                .map(|candidate| candidate.hit)
+                .collect(),
+            inference: "exact-miss".into(),
+            note: Some(note),
+            ok: false,
+        })
+    }
+
+    fn fleet_exact_suggestions(
+        &self,
+        workspace: &Workspace,
+        query: &str,
+    ) -> Result<Vec<Candidate>> {
+        let now = now_unix_ms();
+        let workspaces = self.state.list_workspaces()?;
+        let activity = self
+            .state
+            .workspace_activity()?
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+        let mut result = Vec::new();
+        for sibling in workspaces.into_iter().filter(|sibling| {
+            sibling.reference != workspace.reference
+                && activity
+                    .get(&sibling.reference)
+                    .is_some_and(|last_active| now.saturating_sub(*last_active) <= 15 * 60 * 1000)
+        }) {
+            let scopes = HashSet::from([
+                format!("workspace:{}", sibling.reference),
+                format!("artifacts:{}", sibling.reference),
+            ]);
+            let rows = self.exact_candidates(query, &scopes)?;
+            let mut seen = HashSet::new();
+            for mut candidate in ranked_exact_candidates(rows, query, &sibling)
+                .into_iter()
+                .filter(|candidate| exact_declaration_name_matches(&candidate.hit.name, query))
+            {
+                if !seen.insert(candidate.hit.name.clone()) {
+                    continue;
+                }
+                let agent = sibling.model.as_deref().unwrap_or("unknown");
+                candidate.hit.kind =
+                    format!("unmerged:{}:{}:{}", sibling.reference, sibling.name, agent);
+                candidate.hit.source = None;
+                candidate.hit.usages.clear();
+                result.push(candidate);
+                if result.len() == 3 {
+                    return Ok(result);
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    fn near_name_suggestions(
+        &self,
+        query: &str,
+        scopes: &HashSet<String>,
+    ) -> Result<Vec<Candidate>> {
+        let leaf = query.rsplit('.').next().unwrap_or(query).to_lowercase();
+        if leaf.len() < 3 {
+            return Ok(Vec::new());
+        }
+        let connection = self.open()?;
+        install_active_scopes(&connection, scopes)?;
+        let rows = name_contains_candidates(&connection, std::slice::from_ref(&leaf))?;
+        let mut suggestions = rows
+            .into_iter()
+            .filter(|row| !matches!(row.kind.as_str(), "file" | "imports"))
+            .map(|row| {
+                let candidate_leaf = row.name.rsplit('.').next().unwrap_or(&row.name);
+                let distance = edit_distance(&leaf, &candidate_leaf.to_lowercase());
+                let same_owner = query
+                    .rsplit_once('.')
+                    .is_some_and(|(owner, _)| row.module.eq_ignore_ascii_case(owner));
+                (
+                    distance,
+                    !same_owner,
+                    row.name.clone(),
+                    compact_ranked_hit(row),
+                )
+            })
+            .filter(|(distance, _, _, _)| *distance <= leaf.len().max(4) / 2)
+            .collect::<Vec<_>>();
+        suggestions.sort_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then_with(|| left.1.cmp(&right.1))
+                .then_with(|| left.2.cmp(&right.2))
+        });
+        let mut seen = HashSet::new();
+        Ok(suggestions
+            .into_iter()
+            .filter_map(|(_, _, _, candidate)| {
+                seen.insert(candidate.hit.name.clone()).then_some(candidate)
+            })
+            .take(3)
+            .collect())
     }
 
     fn finish_exact(
@@ -2276,7 +2489,11 @@ impl Searcher {
         import_context: Option<&ImportContext>,
         base_warming: bool,
     ) -> Result<SearchResult> {
-        self.enrich_exact_source(&mut matched.candidate.hit, scopes)?;
+        if plan.source_requested {
+            self.enrich_exact_source(&mut matched.candidate.hit, scopes)?;
+        } else {
+            matched.candidate.hit.source = None;
+        }
         if matched.candidate.hit.usages.is_empty() {
             matched.candidate.hit.usages =
                 self.usages(&matched.candidate.hit.name, scopes, workspace)?;
@@ -2284,15 +2501,8 @@ impl Searcher {
         if let Some(context) = import_context {
             apply_import_context(&mut matched.candidate, context);
         }
-        let mut hits = vec![matched.candidate.hit];
-        hits.extend(self.context_pack(
-            &hits[0],
-            scopes,
-            workspace,
-            import_context,
-            &plan.refinement_tokens,
-        )?);
-        let mut result = exact_search_result(hits, base_warming || matched.warming);
+        let mut result =
+            exact_search_result(vec![matched.candidate.hit], base_warming || matched.warming);
         annotate_missing_hit_terms(&mut result, &plan.requested_terms);
         if matched.matched != plan.anchor {
             prepend_search_note(
@@ -2392,7 +2602,7 @@ impl Searcher {
         }
         graph.insert(module.clone(), parse_imports(&source));
         let mut accessible = HashSet::from([module.clone()]);
-        let mut pending = vec![module];
+        let mut pending = vec![module.clone()];
         while let Some(module) = pending.pop() {
             for imported in graph.get(&module).into_iter().flatten() {
                 if accessible.insert(imported.clone()) {
@@ -2403,6 +2613,8 @@ impl Searcher {
         Some(ImportContext {
             accessible,
             complete: !base_warming,
+            preferred_module: Some(module),
+            preferred_path: Some(target.to_string_lossy().into_owned()),
         })
     }
 
@@ -2587,10 +2799,15 @@ impl Searcher {
     fn exact_candidates(&self, query: &str, scopes: &HashSet<String>) -> Result<Vec<IndexedRow>> {
         let connection = self.open()?;
         install_active_scopes(&connection, scopes)?;
+        let name_condition = if query.contains('.') {
+            "lower(name) = lower(?2)"
+        } else {
+            "(lower(name) = lower(?2)
+              OR lower(substr(name, -(length(?2) + 1))) = ('.' || lower(?2)))"
+        };
         let sql = indexed_rows_sql(&format!(
             "WHERE search_fts MATCH ?1
-             AND (lower(name) = lower(?2)
-                  OR lower(substr(name, -(length(?2) + 1))) = ('.' || lower(?2)))
+             AND {name_condition}
              AND owner IN (SELECT owner FROM active_search_scopes)
              LIMIT {}",
             SEARCH_TUNING.retrieval.exact_rows,
@@ -2602,7 +2819,7 @@ impl Searcher {
             .collect::<rusqlite::Result<Vec<_>>>()
             .map(|rows| {
                 rows.into_iter()
-                    .filter(|row| qualified_name_matches(&row.name, query))
+                    .filter(|row| exact_declaration_name_matches(&row.name, query))
                     .collect()
             })
             .map_err(anyhow::Error::from)
@@ -2718,6 +2935,7 @@ impl Searcher {
         Ok(Some(exact_search_result(vec![hit], base_warming)))
     }
 
+    #[allow(dead_code)]
     fn direct_continuations(&self, query: &str, scopes: &HashSet<String>) -> Result<Vec<String>> {
         let connection = self.open()?;
         install_active_scopes(&connection, scopes)?;
@@ -2742,6 +2960,7 @@ impl Searcher {
         Ok(names)
     }
 
+    #[allow(dead_code)]
     fn context_pack(
         &self,
         exact: &SearchHit,

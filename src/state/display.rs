@@ -155,7 +155,18 @@ pub(super) fn render_search_run(run: &SearchRun, all: bool) -> String {
     }
     let hit_limit = if all { run.hits.len() } else { 5 };
     for (index, hit) in run.hits.iter().take(hit_limit).enumerate() {
-        output.push_str(&format!("\n{}. {}", index + 1, hit.name));
+        let name = if run.inference == "exact-miss" {
+            hit.kind
+                .strip_prefix("unmerged:")
+                .map(|provenance| format!("UNMERGED ({provenance}): {}", hit.name))
+                .unwrap_or_else(|| format!("suggestion: {}", hit.name))
+        } else {
+            hit.kind
+                .strip_prefix("unmerged:")
+                .map(|provenance| format!("UNMERGED ({provenance}): {}", hit.name))
+                .unwrap_or_else(|| hit.name.clone())
+        };
+        output.push_str(&format!("\n{}. {name}", index + 1));
         if let Some(signature) = &hit.signature {
             let signature = single_line(signature);
             if all || matches!(run.inference.as_str(), "exact" | "exact-batch") {

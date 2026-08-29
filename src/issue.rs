@@ -77,6 +77,9 @@ struct TelemetryEvent {
     reference: Option<String>,
     ok: bool,
     outcome_class: Option<String>,
+    query_class: Option<String>,
+    response_band: Option<String>,
+    follow_up: Option<String>,
     error_class: Option<String>,
     client_ms: u64,
     daemon_ms: u64,
@@ -353,6 +356,9 @@ impl TelemetryStore {
                 reference TEXT,
                 ok INTEGER NOT NULL,
                 outcome_class TEXT,
+                query_class TEXT,
+                response_band TEXT,
+                follow_up TEXT,
                 error_class TEXT,
                 client_ms INTEGER NOT NULL,
                 daemon_ms INTEGER NOT NULL,
@@ -384,6 +390,14 @@ impl TelemetryStore {
                 [],
             )?;
         }
+        for column in ["query_class", "response_band", "follow_up"] {
+            if !table_has_column(&connection, "telemetry_events", column)? {
+                connection.execute(
+                    &format!("ALTER TABLE telemetry_events ADD COLUMN {column} TEXT"),
+                    [],
+                )?;
+            }
+        }
         Ok(())
     }
 
@@ -402,17 +416,27 @@ impl TelemetryStore {
             .ok()
             .map(|workspace| workspace.reference);
         let reference = response_reference(&response.summary);
-        let outcome_class = failure_outcome_class(&state, request, response, reference.as_deref());
+        let query_class = query_class(request);
+        let outcome_class = exchange_outcome_class(
+            &state,
+            request,
+            response,
+            reference.as_deref(),
+            query_class.as_deref(),
+        );
+        let response_band = response_band(response_json.len());
+        let follow_up = follow_up_kind(request);
         let error_class = (!response.ok).then(|| error_class(&response.summary));
         let now = now_unix_ms();
         let mut connection = open_db(&self.path)?;
         let transaction = connection.transaction()?;
         transaction.execute(
             "INSERT INTO telemetry_events(
-                created_at, build, project, workspace, verb, reference, ok, outcome_class, error_class,
+                created_at, build, project, workspace, verb, reference, ok, outcome_class,
+                query_class, response_band, follow_up, error_class,
                 client_ms, daemon_ms, rss_kib, request_bytes, response_bytes,
                 request_json, response_json
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             params![
                 now,
                 response.build,
@@ -422,6 +446,9 @@ impl TelemetryStore {
                 reference,
                 response.ok,
                 outcome_class,
+                query_class,
+                response_band,
+                Option::<String>::None,
                 error_class,
                 client_ms,
                 response.daemon_ms,
@@ -433,6 +460,19 @@ impl TelemetryStore {
             ],
         )?;
         let id = transaction.last_insert_rowid();
+        if let Some(follow_up) = follow_up {
+            transaction.execute(
+                "UPDATE telemetry_events SET follow_up = ?1
+                 WHERE id = (
+                    SELECT id FROM telemetry_events
+                    WHERE project = ?2 AND (?3 IS NULL OR workspace = ?3)
+                      AND id <> ?4
+                      AND query_class IS NOT NULL
+                    ORDER BY created_at DESC, id DESC LIMIT 1
+                 )",
+                params![follow_up, repo.root.to_string_lossy(), workspace, id],
+            )?;
+        }
         prune_telemetry(&transaction, now)?;
         transaction.commit()?;
         Ok(format!("e{id}"))
@@ -560,8 +600,9 @@ impl TelemetryStore {
         let event = open_db(&self.path)?
             .query_row(
                 "SELECT id, created_at, build, project, workspace, verb, reference, ok,
-                        outcome_class, error_class, client_ms, daemon_ms, rss_kib, request_bytes,
-                        response_bytes, request_json, response_json
+                        outcome_class, query_class, response_band, follow_up, error_class,
+                        client_ms, daemon_ms, rss_kib, request_bytes, response_bytes,
+                        request_json, response_json
                  FROM telemetry_events WHERE id = ?1",
                 [id],
                 telemetry_from_row,
@@ -574,8 +615,9 @@ impl TelemetryStore {
     fn events_since(&self, cutoff: i64, verb: Option<&str>) -> Result<Vec<TelemetryEvent>> {
         let connection = open_db(&self.path)?;
         let select = "SELECT id, created_at, build, project, workspace, verb, reference, ok,
-                             outcome_class, error_class, client_ms, daemon_ms, rss_kib, request_bytes,
-                             response_bytes, request_json, response_json
+                             outcome_class, query_class, response_band, follow_up, error_class,
+                             client_ms, daemon_ms, rss_kib, request_bytes, response_bytes,
+                             request_json, response_json
                       FROM telemetry_events";
         let (sql, value) = match verb {
             Some(verb) => (
@@ -600,8 +642,9 @@ impl TelemetryStore {
         let connection = open_db(&self.path)?;
         let mut statement = connection.prepare(
             "SELECT id, created_at, build, project, workspace, verb, reference, ok,
-                    outcome_class, error_class, client_ms, daemon_ms, rss_kib, request_bytes,
-                    response_bytes, request_json, response_json
+                    outcome_class, query_class, response_band, follow_up, error_class,
+                    client_ms, daemon_ms, rss_kib, request_bytes, response_bytes,
+                    request_json, response_json
              FROM telemetry_events
              WHERE project = ?1 AND (?2 IS NULL OR workspace = ?2)
              ORDER BY created_at DESC LIMIT 10",
@@ -654,6 +697,107 @@ pub fn record_exchange(
 ) -> Result<()> {
     TelemetryStore::global()?.record(repo, request, response, client_ms)?;
     Ok(())
+}
+
+fn query_class(request: &Request) -> Option<String> {
+    let query = match &request.command {
+        Command::Search { query, .. } | Command::Probe { query } => query.trim(),
+        _ => return None,
+    };
+    let class = if query.starts_with("type:") || query.contains("⊢") {
+        "type"
+    } else if query.starts_with("re:")
+        || query.starts_with('/')
+        || query.contains(".lean:")
+        || query.ends_with(".lean")
+    {
+        "source"
+    } else if query.starts_with("name:")
+        || query
+            .split_whitespace()
+            .next()
+            .is_some_and(is_identifier_query)
+            && query.split_whitespace().skip(1).all(is_probe_focus)
+    {
+        "exact"
+    } else {
+        "discovery"
+    };
+    Some(class.into())
+}
+
+fn is_identifier_query(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|character| character.is_alphanumeric() || matches!(character, '_' | '.' | '\''))
+}
+
+fn is_probe_focus(value: &str) -> bool {
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "signature"
+            | "source"
+            | "apply"
+            | "fields"
+            | "constructors"
+            | "ext"
+            | "simp"
+            | "instances"
+            | "coercions"
+            | "usages"
+            | "goal"
+            | "types"
+            | "defeq"
+            | "rewrite"
+            | "profile"
+            | "warnings"
+    )
+}
+
+fn response_band(bytes: usize) -> String {
+    match bytes {
+        0..=1024 => "0-1KiB",
+        1025..=8192 => "1-8KiB",
+        _ => "8KiB+",
+    }
+    .into()
+}
+
+fn exchange_outcome_class(
+    state: &State,
+    request: &Request,
+    response: &Response,
+    reference: Option<&str>,
+    query_class: Option<&str>,
+) -> Option<&'static str> {
+    if matches!(
+        &request.command,
+        Command::Search { .. } | Command::Probe { .. }
+    ) {
+        if response.ok && query_class.is_some() {
+            return Some("exact_hit");
+        }
+        if response.summary.contains("suggestion:") || response.summary.contains("suggestions") {
+            return Some("near_suggestions");
+        }
+        if response.summary.contains(" no results")
+            || response.summary.contains("exact declaration not found")
+        {
+            return Some("no_result");
+        }
+        return Some("operational_error");
+    }
+    failure_outcome_class(state, request, response, reference)
+}
+
+fn follow_up_kind(request: &Request) -> Option<&'static str> {
+    match &request.command {
+        Command::Probe { .. } => Some("probe"),
+        Command::Show { .. } => Some("show"),
+        Command::Check { .. } => Some("check"),
+        _ => None,
+    }
 }
 
 pub const fn development_enabled() -> bool {
@@ -741,14 +885,17 @@ fn telemetry_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TelemetryEven
         reference: row.get(6)?,
         ok: row.get(7)?,
         outcome_class: row.get(8)?,
-        error_class: row.get(9)?,
-        client_ms: row.get(10)?,
-        daemon_ms: row.get(11)?,
-        rss_kib: row.get(12)?,
-        request_bytes: row.get(13)?,
-        response_bytes: row.get(14)?,
-        request_json: row.get(15)?,
-        response_json: row.get(16)?,
+        query_class: row.get(9)?,
+        response_band: row.get(10)?,
+        follow_up: row.get(11)?,
+        error_class: row.get(12)?,
+        client_ms: row.get(13)?,
+        daemon_ms: row.get(14)?,
+        rss_kib: row.get(15)?,
+        request_bytes: row.get(16)?,
+        response_bytes: row.get(17)?,
+        request_json: row.get(18)?,
+        response_json: row.get(19)?,
     })
 }
 
@@ -854,6 +1001,15 @@ fn render_event(event: &TelemetryEvent, all: bool) -> String {
         }
         if let Some(rss) = event.rss_kib {
             output.push_str(&format!("\nrss: {}", format_memory(rss)));
+        }
+        if let Some(query_class) = &event.query_class {
+            output.push_str(&format!("\nquery-class: {query_class}"));
+        }
+        if let Some(response_band) = &event.response_band {
+            output.push_str(&format!("\nresponse-band: {response_band}"));
+        }
+        if let Some(follow_up) = &event.follow_up {
+            output.push_str(&format!("\nfollow-up: {follow_up}"));
         }
         output.push_str(&format!(
             "\nrequest: {}\nresponse: {}",
@@ -1348,5 +1504,81 @@ mod tests {
             ),
             Some("operational")
         );
+    }
+
+    #[test]
+    fn search_telemetry_keeps_only_bounded_outcomes_and_follow_up() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("repo");
+        let state_dir = directory.path().join("state");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&state_dir).unwrap();
+        let repo = Repo {
+            root: root.clone(),
+            common_git_dir: directory.path().join("git"),
+            state_dir: state_dir.clone(),
+            socket_path: state_dir.join("daemon.sock"),
+            db_path: state_dir.join("state.sqlite3"),
+            search_db_path: state_dir.join("search.sqlite3"),
+            log_path: state_dir.join("daemon.log"),
+            cache_dir: state_dir.join("cache"),
+            integration_lock: state_dir.join("integration.lock"),
+            validation_lock: state_dir.join("validation.lock"),
+            startup_lock: state_dir.join("startup.lock"),
+        };
+        State::new(&repo.db_path)
+            .unwrap()
+            .add_workspace(&crate::state::Workspace {
+                reference: "w1".into(),
+                name: "worker".into(),
+                path: root.clone(),
+                branch: "worker".into(),
+                model: None,
+            })
+            .unwrap();
+        let store = TelemetryStore::new(directory.path().join("development.db")).unwrap();
+        let search = Request {
+            build: "test".into(),
+            generation: 1,
+            cwd: root.to_string_lossy().into_owned(),
+            command: Command::Search {
+                query: "Demo.target".into(),
+                limit: None,
+                all: false,
+            },
+        };
+        store
+            .record(&repo, &search, &Response::ok("q1\nDemo.target : Nat"), 12)
+            .unwrap();
+        let probe = Request {
+            command: Command::Probe {
+                query: "Demo.target signature".into(),
+            },
+            ..search.clone()
+        };
+        store
+            .record(&repo, &probe, &Response::ok("q2\nDemo.target : Nat"), 8)
+            .unwrap();
+
+        let connection = open_db(&store.path).unwrap();
+        let row = connection
+            .query_row(
+                "SELECT query_class, outcome_class, response_band, follow_up
+                 FROM telemetry_events WHERE id = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(row.0.as_deref(), Some("exact"));
+        assert_eq!(row.1.as_deref(), Some("exact_hit"));
+        assert_eq!(row.2.as_deref(), Some("0-1KiB"));
+        assert_eq!(row.3.as_deref(), Some("probe"));
     }
 }

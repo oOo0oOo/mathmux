@@ -1052,6 +1052,101 @@ fn compact_search_summary_suggests_a_targeted_probe() {
 }
 
 #[test]
+fn exact_search_summary_is_signature_only_and_has_probe_next_action() {
+    let summary = render_summary(&SearchRun {
+        reference: "q-exact".into(),
+        workspace_ref: "w1".into(),
+        query: "Demo.target".into(),
+        inference: "exact".into(),
+        hits: vec![SearchHit {
+            name: "_root_.Demo.target".into(),
+            kind: "def".into(),
+            signature: Some("Nat → Nat".into()),
+            module: "Demo".into(),
+            path: "Demo.lean".into(),
+            line: 4,
+            doc: None,
+            source: Some("def target : Nat → Nat := id".into()),
+            usages: Vec::new(),
+            applicable: false,
+            required_import: None,
+        }],
+        note: None,
+        duration_ms: 1,
+        created_at: 0,
+    });
+    assert!(summary.contains("_root_.Demo.target : Nat → Nat"));
+    assert!(!summary.contains("source:"));
+    assert!(!summary.contains(":= id"));
+    assert!(summary.contains("next: probe Demo.target signature"));
+}
+
+#[test]
+fn exact_miss_summary_labels_bounded_suggestions() {
+    let summary = render_summary(&SearchRun {
+        reference: "q-miss".into(),
+        workspace_ref: "w1".into(),
+        query: "Demo.missing".into(),
+        inference: "exact-miss".into(),
+        hits: vec![SearchHit {
+            name: "Demo.misgiving".into(),
+            kind: "def".into(),
+            signature: Some("True".into()),
+            module: "Demo".into(),
+            path: "Demo.lean".into(),
+            line: 2,
+            doc: None,
+            source: Some("def misgiving : True := trivial".into()),
+            usages: Vec::new(),
+            applicable: false,
+            required_import: None,
+        }],
+        note: Some("exact declaration not found: Demo.missing\nsuggestions (not exact):".into()),
+        duration_ms: 1,
+        created_at: 0,
+    });
+    assert!(summary.contains("suggestion: Demo.misgiving"));
+    assert!(!summary.contains("def misgiving : True := trivial"));
+    assert!(summary.contains("next: mathmux probe Demo.misgiving signature"));
+}
+
+#[test]
+fn contextual_exact_resolution_prefers_imported_member() {
+    let base = SearchHit {
+        name: "ContinuousLinearMap.prodMap_apply".into(),
+        module: "ContinuousLinearMap".into(),
+        ..search_hit("ContinuousLinearMap.prodMap_apply")
+    };
+    let unrelated = SearchHit {
+        name: "AffineMap.prodMap_apply".into(),
+        module: "AffineMap".into(),
+        ..base.clone()
+    };
+    let candidates = vec![
+        Candidate {
+            hit: unrelated,
+            score: 30.0,
+            origins: 0,
+        },
+        Candidate {
+            hit: base,
+            score: 10.0,
+            origins: 0,
+        },
+    ];
+    let context = ImportContext {
+        accessible: HashSet::from(["ContinuousLinearMap".into()]),
+        complete: true,
+        preferred_module: None,
+        preferred_path: None,
+    };
+    let resolved = contextual_exact_candidates(candidates, "prodMap_apply", Some(&context))
+        .expect("import context should disambiguate the leaf");
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].hit.name, "ContinuousLinearMap.prodMap_apply");
+}
+
+#[test]
 fn compact_source_range_marks_complete_context() {
     let summary = render_summary(&SearchRun {
         reference: "q1".into(),
@@ -1205,7 +1300,8 @@ fn structure_summary_points_to_complete_field_inventory() {
         duration_ms: 1,
         created_at: 0,
     });
-    assert!(summary.contains("+5 lines; search Demo.Config fields"));
+    assert!(!summary.contains("field1 : Nat"));
+    assert!(summary.contains("next: probe Demo.Config signature"));
 
     let fields = SearchHit {
         name: "Demo.Config fields".into(),
@@ -1631,6 +1727,8 @@ fn import_context_marks_only_unavailable_results() {
     let context = ImportContext {
         accessible: HashSet::from(["Demo.Available".into()]),
         complete: true,
+        preferred_module: None,
+        preferred_path: None,
     };
     let mut available = hit("Demo.Available");
     apply_import_context(&mut available, &context);
@@ -2381,6 +2479,153 @@ fn source_dependents_include_the_active_workspace_index() {
 }
 
 #[test]
+fn exact_misses_overlay_active_sibling_declarations_as_unmerged() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("root");
+    let state_dir = directory.path().join("state");
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(&state_dir).unwrap();
+    let repo = Repo {
+        root: root.clone(),
+        common_git_dir: directory.path().join("git"),
+        state_dir: state_dir.clone(),
+        socket_path: state_dir.join("daemon.sock"),
+        db_path: state_dir.join("state.sqlite3"),
+        search_db_path: state_dir.join("search.sqlite3"),
+        log_path: state_dir.join("daemon.log"),
+        cache_dir: state_dir.join("cache"),
+        integration_lock: state_dir.join("integration.lock"),
+        validation_lock: state_dir.join("validation.lock"),
+        startup_lock: state_dir.join("startup.lock"),
+    };
+    let state = State::new(repo.db_path.clone()).unwrap();
+    let current = Workspace {
+        reference: "w1".into(),
+        name: "current".into(),
+        path: root.clone(),
+        branch: "current".into(),
+        model: Some("agent-current".into()),
+    };
+    let sibling = Workspace {
+        reference: "w2".into(),
+        name: "sibling".into(),
+        path: directory.path().join("sibling"),
+        branch: "sibling".into(),
+        model: Some("agent-sibling".into()),
+    };
+    state.add_workspace(&current).unwrap();
+    state.add_workspace(&sibling).unwrap();
+    let checker = Arc::new(Checker::new(repo.clone(), state.clone(), None).unwrap());
+    let searcher = Searcher::new(repo.clone(), state, checker, None).unwrap();
+    Connection::open(repo.search_db_path)
+        .unwrap()
+        .execute(
+            "INSERT INTO search_fts(
+                owner, origin, file, module, line, name, kind, signature, docs, body
+             ) VALUES ('workspace:w2', 'sibling/Linear.lean', 'Linear.lean',
+                       'ContinuousLinearMap', 12, 'ContinuousLinearMap.prodMap_apply',
+                       'theorem', 'X → Y', '', '')",
+            [],
+        )
+        .unwrap();
+
+    let scopes = HashSet::from(["workspace:w1".into()]);
+    let result = searcher
+        .exact_miss_result(
+            &current,
+            "ContinuousLinearMap.prodMap_apply",
+            &scopes,
+            None,
+            false,
+        )
+        .unwrap();
+    assert!(!result.ok);
+    assert!(result.note.as_deref().unwrap().contains("unmerged sibling"));
+    assert_eq!(result.hits.len(), 1);
+    assert!(
+        result.hits[0]
+            .kind
+            .starts_with("unmerged:w2:sibling:agent-sibling")
+    );
+    let batch = searcher
+        .exact_name_batch(
+            &current,
+            &["ContinuousLinearMap.prodMap_apply".into()],
+            false,
+        )
+        .unwrap();
+    assert_eq!(batch.inference, "exact-miss");
+    assert_eq!(batch.hits.len(), 1);
+    assert!(
+        batch.hits[0]
+            .kind
+            .starts_with("unmerged:w2:sibling:agent-sibling")
+    );
+}
+
+#[test]
+fn exact_resolution_fails_closed_instead_of_returning_a_different_declaration() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("root");
+    let state_dir = directory.path().join("state");
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(&state_dir).unwrap();
+    let repo = Repo {
+        root: root.clone(),
+        common_git_dir: directory.path().join("git"),
+        state_dir: state_dir.clone(),
+        socket_path: state_dir.join("daemon.sock"),
+        db_path: state_dir.join("state.sqlite3"),
+        search_db_path: state_dir.join("search.sqlite3"),
+        log_path: state_dir.join("daemon.log"),
+        cache_dir: state_dir.join("cache"),
+        integration_lock: state_dir.join("integration.lock"),
+        validation_lock: state_dir.join("validation.lock"),
+        startup_lock: state_dir.join("startup.lock"),
+    };
+    let state = State::new(repo.db_path.clone()).unwrap();
+    let checker = Arc::new(Checker::new(repo.clone(), state.clone(), None).unwrap());
+    let searcher = Searcher::new(repo.clone(), state, checker, None).unwrap();
+    let workspace = Workspace {
+        reference: "w1".into(),
+        name: "demo".into(),
+        path: root,
+        branch: "demo".into(),
+        model: None,
+    };
+    Connection::open(repo.search_db_path)
+        .unwrap()
+        .execute(
+            "INSERT INTO search_fts(
+                owner, origin, file, module, line, name, kind, signature, docs, body
+             ) VALUES ('workspace:w1', 'Demo.lean', 'Demo.lean', 'AlgHom', 4,
+                       'AlgHom.pullbackFst', 'def', ': X → Y', '',
+                       'definitely not pullbackCompHom')",
+            [],
+        )
+        .unwrap();
+
+    let scopes = HashSet::from(["workspace:w1".into()]);
+    let plan = exact_plan("pullbackCompHom source", false).unwrap();
+    assert!(
+        searcher
+            .resolve_exact(&workspace, &scopes, None, false, &plan)
+            .unwrap()
+            .is_none()
+    );
+    let miss = searcher
+        .exact_miss_result(&workspace, "pullbackCompHom", &scopes, None, false)
+        .unwrap();
+    assert!(!miss.ok);
+    assert!(
+        miss.note
+            .as_deref()
+            .is_some_and(|note| note.contains("exact declaration not found"))
+    );
+    assert!(miss.hits.iter().all(|hit| hit.name != "AlgHom.pullbackFst"));
+}
+
+#[test]
 fn warning_probe_indexes_current_residuals_and_invalidates_changed_source() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("root");
@@ -2954,6 +3199,14 @@ fn fallback_connects_conceptual_inner_product_api_terms() {
 fn text_search_plan_classifies_once() {
     assert!(matches!(
         text_search_plan("ContinuousLinearMap.comp_apply"),
+        TextSearchPlan::ExactFirst
+    ));
+    assert!(matches!(
+        text_search_plan("prodMap_apply"),
+        TextSearchPlan::ExactFirst
+    ));
+    assert!(matches!(
+        text_search_plan("foo source"),
         TextSearchPlan::ExactFirst
     ));
     assert!(matches!(

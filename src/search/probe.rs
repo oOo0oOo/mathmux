@@ -67,7 +67,24 @@ impl ProbeRequest {
         if matches!(&context, Some(ProbeContext::Query(_)))
             && matches!(remainder.split_whitespace().next(), Some("show" | "--all"))
         {
-            bail!("expand stored detail with `show {first} --all`, outside probe")
+            bail!(
+                "probe --all is not valid here; use `mathmux show {first} --all` for stored detail"
+            )
+        }
+        if remainder
+            .split_whitespace()
+            .any(|term| term.trim_matches(['\'', '"']) == "--all")
+        {
+            let hint = match &context {
+                Some(ProbeContext::Check(reference)) => {
+                    format!("use `mathmux probe {reference} goal|types|defeq|rewrite|profile`")
+                }
+                Some(ProbeContext::Query(reference)) => {
+                    format!("use `mathmux show {reference} --all` for stored results")
+                }
+                _ => "use `mathmux probe NAME source` or `mathmux probe NAME usages`".into(),
+            };
+            bail!("probe --all is not valid here; {hint}")
         }
         let directive_query = unquote(remainder);
         if let Some(directive) = parse_directive(directive_query)? {
@@ -82,26 +99,25 @@ impl ProbeRequest {
                 directive: Some(directive),
             });
         }
-        if context.is_none() {
-            if remainder
-                .split_whitespace()
-                .skip(1)
-                .map(|term| term.trim_matches(['\'', '"']))
-                .any(|term| term == "by")
-            {
-                bail!("by requires FILE:LINE, cREF, or positioned qREF context");
-            }
-            if let Some(directive) = remainder
-                .split_whitespace()
-                .skip(1)
-                .map(|term| term.trim_matches(['\'', '"']))
-                .find(|term| matches!(*term, "#check" | "#synth" | "#reduce"))
-            {
-                bail!(
-                    "{directive} requires FILE, FILE:LINE, cREF, or qREF context; use NAME signature for a declaration"
-                );
-            }
+        if remainder
+            .split_whitespace()
+            .skip(1)
+            .map(|term| term.trim_matches(['\'', '"']))
+            .any(|term| term == "by")
+        {
+            bail!("by requires FILE:LINE, cREF, or positioned qREF context");
         }
+        if let Some(directive) = remainder
+            .split_whitespace()
+            .skip(1)
+            .map(|term| term.trim_matches(['\'', '"']))
+            .find(|term| matches!(*term, "#check" | "#synth" | "#reduce"))
+        {
+            bail!(
+                "{directive} requires FILE, FILE:LINE, cREF, or qREF context; use NAME signature for a declaration"
+            );
+        }
+        validate_balanced_fragment(remainder)?;
         let mut terms = remainder.split_whitespace().collect::<Vec<_>>();
         let focus = terms
             .last()
@@ -243,7 +259,7 @@ impl Searcher {
                 self.probe_check_reference(workspace, reference, focus)
             }
             (Some(ProbeContext::Check(_)), Some(_), _) => {
-                bail!("cREF accepts only types, defeq, rewrite, or profile focus")
+                bail!("cREF accepts only goal, types, defeq, rewrite, or profile focus")
             }
             (Some(ProbeContext::Position(location)), None, None | Some("goal")) => {
                 self.run_position_probe(workspace, cwd, location, None)
@@ -650,12 +666,29 @@ impl Searcher {
                 ensure!(run.profile.is_some(), "{reference} has no stored profile");
                 self.state.show(reference, true)?
             }
+            Some("goal") => {
+                let diagnostic = diagnostic
+                    .with_context(|| format!("{reference} has no stored failure goal"))?;
+                let goal = diagnostic_goal_detail(text).with_context(|| {
+                    format!(
+                        "{reference} has no stored failure goal; valid analyses: types, defeq, rewrite, profile"
+                    )
+                })?;
+                let context = diagnostic.context.as_deref().unwrap_or_default();
+                [goal, context.to_owned()]
+                    .into_iter()
+                    .filter(|part| !part.trim().is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
             None => {
                 let diagnostic =
                     diagnostic.with_context(|| format!("{reference} has no failure to probe"))?;
                 diagnostic_context(text, diagnostic.context.as_deref())
             }
-            Some(other) => bail!("focus `{other}` is not meaningful for a stored check"),
+            Some(other) => bail!(
+                "focus `{other}` is not valid for a stored check; valid analyses: goal, types, defeq, rewrite, profile"
+            ),
         };
         self.store_probe_result(
             workspace,
@@ -763,6 +796,23 @@ impl Searcher {
         let Some(run) = self.state.search_run(reference)? else {
             return Ok(rendered);
         };
+        if focus == "fields"
+            && run
+                .note
+                .as_deref()
+                .is_some_and(|note| note.contains("not a class or structure"))
+        {
+            let subject = query.split_whitespace().next().unwrap_or("the subject");
+            let kind = run
+                .note
+                .as_deref()
+                .and_then(|note| note.split(" is ").nth(1))
+                .and_then(|detail| detail.split(',').next())
+                .unwrap_or("a declaration");
+            bail!(
+                "{subject} is {kind}, not a class or structure; valid focuses: signature, source, usages, apply"
+            );
+        }
         Ok(render_static_probe_summary(&run, focus))
     }
 
@@ -773,7 +823,8 @@ impl Searcher {
         subject: &str,
     ) -> Result<String> {
         let source_search = || -> Result<(String, Option<SearchRun>)> {
-            let rendered = self.search(workspace, cwd, &format!("name:{subject}"), None, false)?;
+            let rendered =
+                self.search(workspace, cwd, &format!("{subject} source"), None, false)?;
             let run = rendered
                 .split_whitespace()
                 .next()
@@ -851,12 +902,17 @@ impl Searcher {
         hit: &SearchHit,
         focus: &str,
     ) -> Result<String> {
+        let mut hit = hit.clone();
+        if focus == "source" && hit.source.is_none() {
+            let (scopes, _) = self.search_scopes(workspace)?;
+            self.enrich_exact_source(&mut hit, &scopes)?;
+        }
         let run = SearchRun {
             reference: self.state.next_reference(ReferenceKind::Query)?,
             workspace_ref: workspace.reference.clone(),
             query: format!("{reference} {focus}"),
             inference: "probe-refinement".into(),
-            hits: vec![hit.clone()],
+            hits: vec![hit],
             note: None,
             duration_ms: 0,
             created_at: now_unix_ms(),
@@ -1100,6 +1156,7 @@ fn render_static_probe_summary(run: &SearchRun, focus: &str) -> String {
             }
         }
         "source" => {
+            run.inference = "probe".into();
             run.hits.truncate(1);
             for hit in &mut run.hits {
                 hit.usages.clear();
@@ -1198,7 +1255,7 @@ fn static_probe_query(
         "instances" => format!("declaration {subject}.inst*|{subject}.instance*"),
         "ext" => format!("name:{subject}.ext"),
         "simp" => format!("declaration {subject}*"),
-        "apply" => format!("{subject} theorem"),
+        "apply" => format!("declaration {subject}.apply*|{subject}_apply*"),
         "usages" => format!("name:{subject}"),
         "types" if subject.starts_with("type:") => subject.to_owned(),
         "types" => bail!(
@@ -1736,7 +1793,7 @@ mod tests {
             ProbeRequest::parse("q123 show --all")
                 .unwrap_err()
                 .to_string(),
-            "expand stored detail with `show q123 --all`, outside probe"
+            "probe --all is not valid here; use `mathmux show q123 --all` for stored detail"
         );
         assert_eq!(
             ProbeRequest::parse("Demo.foo \"#check Demo.foo\"")
@@ -1773,6 +1830,18 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             "Lean context requires an exact position; use `probe FILE:LINE goal` or `probe FILE:LINE TERM`"
+        );
+        assert_eq!(
+            ProbeRequest::parse("c123 goal").unwrap().focus.as_deref(),
+            Some("goal")
+        );
+        assert_eq!(
+            ProbeRequest::parse("q123 --all").unwrap_err().to_string(),
+            "probe --all is not valid here; use `mathmux show q123 --all` for stored detail"
+        );
+        assert_eq!(
+            ProbeRequest::parse("c123 --all").unwrap_err().to_string(),
+            "probe --all is not valid here; use `mathmux probe c123 goal|types|defeq|rewrite|profile`"
         );
         assert!(is_declaration_header(
             "noncomputable def parameterizedBottThickClutchingCore"

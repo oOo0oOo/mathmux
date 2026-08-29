@@ -87,6 +87,7 @@ impl SearchRequest {
             let regex = query[path.len()..].trim().strip_prefix("re:").unwrap();
             SearchExpression::Regex(canonical_regex(Some(path), regex)?)
         } else {
+            validate_balanced_fragment(query)?;
             SearchExpression::Query(query.to_owned())
         };
         Ok(Self {
@@ -99,10 +100,18 @@ impl SearchRequest {
 }
 
 fn validate_type_pattern(pattern: &str) -> Result<()> {
+    validate_balanced_fragment_with_hint(pattern, "type")
+}
+
+pub(super) fn validate_balanced_fragment(query: &str) -> Result<()> {
+    validate_balanced_fragment_with_hint(query, "search")
+}
+
+fn validate_balanced_fragment_with_hint(fragment: &str, form: &str) -> Result<()> {
     let mut stack = Vec::new();
     let mut quoted = false;
     let mut escaped = false;
-    for ch in pattern.chars() {
+    for ch in fragment.chars() {
         if quoted {
             if escaped {
                 escaped = false;
@@ -125,14 +134,20 @@ fn validate_type_pattern(pattern: &str) -> Result<()> {
                 };
                 ensure!(
                     stack.pop() == Some(expected),
-                    "invalid type: unmatched `{ch}`"
+                    "malformed {form} fragment: unmatched `{ch}`; try `type:{fragment}` for a type fragment or `FILE:LINE`/`FILE:START-END` for source code context"
                 );
             }
             _ => {}
         }
     }
-    ensure!(!quoted, "invalid type: unterminated string literal");
-    ensure!(stack.is_empty(), "invalid type: unmatched delimiter");
+    ensure!(
+        !quoted,
+        "malformed {form} fragment: unterminated string literal; try `type:{fragment}` for a type fragment or `FILE:LINE`/`FILE:START-END` for source code context"
+    );
+    ensure!(
+        stack.is_empty(),
+        "malformed {form} fragment: unmatched delimiter; try `type:{fragment}` for a type fragment or `FILE:LINE`/`FILE:START-END` for source code context"
+    );
     Ok(())
 }
 
@@ -204,5 +219,16 @@ mod tests {
             error.to_string(),
             "invalid exact-name batch; use name:A|B|C (no spaces)"
         );
+    }
+
+    #[test]
+    fn rejects_malformed_pasted_fragments_before_search() {
+        let error = SearchRequest::parse("Fin (n + m)))))", None, false).unwrap_err();
+        assert!(error.to_string().contains("malformed search fragment"));
+        assert!(error.to_string().contains("type:Fin (n + m)))))"));
+        assert!(error.to_string().contains("FILE:LINE"));
+
+        let error = SearchRequest::parse("foo \"bar", None, false).unwrap_err();
+        assert!(error.to_string().contains("unterminated string literal"));
     }
 }

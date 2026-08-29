@@ -137,7 +137,7 @@ pub(super) fn diagnostic_context(diagnostic: &str, source_context: Option<&str>)
     rendered
 }
 
-fn diagnostic_goal_detail(diagnostic: &str) -> Option<String> {
+pub(super) fn diagnostic_goal_detail(diagnostic: &str) -> Option<String> {
     if !diagnostic.contains("unsolved goals") {
         return None;
     }
@@ -342,6 +342,7 @@ pub(super) fn declaration_name_query(query: &str) -> bool {
             .all(|character| character.is_alphanumeric() || matches!(character, '_' | '.' | '\''))
 }
 
+#[allow(dead_code)]
 pub(super) fn declaration_suffix_base(query: &str) -> Option<&str> {
     let (base, suffix) = query.rsplit_once('_')?;
     (!suffix.is_empty()
@@ -354,6 +355,7 @@ pub(super) fn declaration_suffix_base(query: &str) -> Option<&str> {
     .then_some(base)
 }
 
+#[allow(dead_code)]
 pub(super) fn declaration_predicate_base(query: &str) -> Option<String> {
     let (owner, leaf) = query
         .rsplit_once('.')
@@ -515,6 +517,7 @@ pub(super) fn result_limit(exact_name_miss: bool, show_all: bool) -> usize {
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn direct_continuation_name_matches(name: &str, query: &str) -> bool {
     let name = name.to_lowercase();
     let query = query.trim().to_lowercase();
@@ -560,15 +563,48 @@ pub(super) fn resolved_exact_candidates(
     candidates: Vec<Candidate>,
     query: &str,
 ) -> Option<Vec<Candidate>> {
-    let name = unique_qualified_hit_name(candidates.iter().map(|candidate| &candidate.hit), query)?;
+    let query_name = canonical_declaration_name(query);
+    let exact_names = candidates
+        .iter()
+        .filter(|candidate| {
+            canonical_declaration_name(&candidate.hit.name).eq_ignore_ascii_case(query_name)
+        })
+        .map(|candidate| canonical_declaration_name(&candidate.hit.name).to_lowercase())
+        .collect::<HashSet<_>>();
+    let names = if !exact_names.is_empty() {
+        exact_names
+    } else {
+        candidates
+            .iter()
+            .filter(|candidate| exact_declaration_name_matches(&candidate.hit.name, query))
+            .map(|candidate| canonical_declaration_name(&candidate.hit.name).to_lowercase())
+            .collect::<HashSet<_>>()
+    };
+    let names = names.into_iter().collect::<Vec<_>>();
+    let [name] = names.as_slice() else {
+        return None;
+    };
     Some(
         candidates
             .into_iter()
             .filter(|candidate| {
-                canonical_declaration_name(&candidate.hit.name).eq_ignore_ascii_case(&name)
+                canonical_declaration_name(&candidate.hit.name).eq_ignore_ascii_case(name)
             })
             .collect(),
     )
+}
+
+pub(super) fn exact_declaration_name_matches(name: &str, query: &str) -> bool {
+    let name = canonical_declaration_name(name);
+    let query = canonical_declaration_name(query.trim());
+    if query.contains('.') {
+        name.eq_ignore_ascii_case(query)
+    } else {
+        name.eq_ignore_ascii_case(query)
+            || name
+                .strip_suffix(query)
+                .is_some_and(|prefix| prefix.ends_with('.'))
+    }
 }
 
 pub(super) fn merge_exact_candidates(candidates: Vec<Candidate>) -> Candidate {
@@ -755,6 +791,26 @@ pub(super) fn exact_plan(query: &str, type_search: bool) -> Option<ExactPlan> {
             refinement_tokens,
             requested_terms,
             recover_continuation: false,
+            source_requested: query_requests_proof_body(query),
+        });
+    }
+    let terms = query.split_whitespace().collect::<Vec<_>>();
+    if terms.len() > 1
+        && declaration_name_query(terms[0])
+        && query_requests_proof_body(query)
+        && terms[1..].iter().all(|term| {
+            matches!(
+                term.to_ascii_lowercase().as_str(),
+                "body" | "implementation" | "proof" | "source"
+            )
+        })
+    {
+        return Some(ExactPlan {
+            anchor: terms[0].to_owned(),
+            refinement_tokens: Vec::new(),
+            requested_terms: Vec::new(),
+            recover_continuation: false,
+            source_requested: true,
         });
     }
     declaration_name_query(query).then(|| ExactPlan {
@@ -762,6 +818,7 @@ pub(super) fn exact_plan(query: &str, type_search: bool) -> Option<ExactPlan> {
         refinement_tokens: Vec::new(),
         requested_terms: Vec::new(),
         recover_continuation: true,
+        source_requested: false,
     })
 }
 
@@ -788,6 +845,7 @@ pub(super) fn missing_hit_terms(hits: &[SearchHit], terms: &[String]) -> Vec<Str
         .collect()
 }
 
+#[allow(dead_code)]
 pub(super) fn context_refinement_score(hit: &SearchHit, tokens: &[String]) -> usize {
     let searchable = format!(
         "{} {}",
@@ -1506,6 +1564,20 @@ pub(super) fn apply_import_context(candidate: &mut Candidate, context: &ImportCo
     }
     if context.accessible.contains(&candidate.hit.module) {
         candidate.score += SEARCH_TUNING.promotion.import_available;
+        if context
+            .preferred_module
+            .as_deref()
+            .is_some_and(|module| candidate.hit.module.eq_ignore_ascii_case(module))
+        {
+            candidate.score += SEARCH_TUNING.promotion.current_context;
+        }
+        if context
+            .preferred_path
+            .as_deref()
+            .is_some_and(|path| candidate.hit.path == *path || candidate.hit.path.ends_with(path))
+        {
+            candidate.score += SEARCH_TUNING.promotion.current_source;
+        }
         candidate.hit.required_import = None;
     } else if context.complete {
         candidate.score -= SEARCH_TUNING.promotion.import_missing;
@@ -1552,7 +1624,7 @@ pub(super) fn exact_search_result(mut hits: Vec<SearchHit>, base_warming: bool) 
     }
     SearchResult {
         hits,
-        inference: "hybrid".into(),
+        inference: "exact".into(),
         note: base_warming.then(|| "source index warming".into()),
         ok: true,
     }

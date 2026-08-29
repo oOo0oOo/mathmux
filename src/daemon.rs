@@ -18,7 +18,7 @@ use crate::presentation::{
     CHECK_ADDITIONAL_DIAGNOSTIC_CHARS, CHECK_ADDITIONAL_DIAGNOSTICS, CHECK_DIAGNOSTIC_CHARS,
 };
 use crate::protocol::{Command, Progress, Request, Response};
-use crate::reference::ReferenceKind;
+use crate::reference::{Reference, ReferenceKind};
 use crate::repo::Repo;
 use crate::search::Searcher;
 use crate::state::{State, Submission, ValidationStatus};
@@ -403,7 +403,44 @@ impl Service {
                 self.validation.wake();
                 Ok(reference)
             }
-            Command::Show { reference, all } => self.state.show(&reference, all),
+            Command::Show {
+                reference,
+                all,
+                wait,
+            } => self.show_reference(&reference, all, wait, report),
+        }
+    }
+
+    fn show_reference(
+        &self,
+        reference: &str,
+        all: bool,
+        wait: bool,
+        report: &mut dyn FnMut(&str),
+    ) -> Result<String> {
+        if !wait {
+            return self.state.show(reference, all);
+        }
+        ensure!(
+            Reference::is_kind(reference, ReferenceKind::Check),
+            "`--wait` applies only to a running cREF"
+        );
+        let deadline = Instant::now() + Duration::from_secs(10 * 60);
+        loop {
+            let run = self
+                .state
+                .check_run(reference)?
+                .with_context(|| format!("unknown reference {reference}"))?;
+            if run.status != crate::state::CheckStatus::Running {
+                return self.state.show(reference, all);
+            }
+            if Instant::now() >= deadline {
+                bail!(
+                    "check {reference} is still running after 10 minutes; rerun `mathmux show {reference} --wait`"
+                );
+            }
+            report(&format!("waiting for {reference} (running)"));
+            thread::sleep(Duration::from_secs(1));
         }
     }
 }
