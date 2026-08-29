@@ -1065,6 +1065,9 @@ fn error_class(summary: &str) -> String {
     if summary.contains("malformed search fragment") {
         return "malformed search fragment".into();
     }
+    if summary.contains("no tactic context") {
+        return "no tactic context".into();
+    }
     if summary.contains(" no results")
         || summary.contains("exact declaration not found")
         || summary.contains("not found:")
@@ -1081,12 +1084,13 @@ fn error_class(summary: &str) -> String {
             let mut words = line.split_whitespace();
             let reference = words.next().unwrap_or_default();
             let duration = words.next().unwrap_or_default();
-            !(response_reference(reference).as_deref() == Some(reference)
-                && duration.ends_with("ms")
+            let run_header = (response_reference(reference).as_deref() == Some(reference)
+                && (duration.is_empty() || duration.ends_with("ms"))
                 && words.next().is_none())
-                && !(reference == "error"
+                || (reference == "error"
                     && response_reference(duration).is_some()
-                    && words.next().is_none())
+                    && words.next().is_none());
+            !run_header
         })
         .collect::<Vec<_>>();
     let value = lines
@@ -1484,6 +1488,12 @@ mod tests {
         assert_eq!(
             error_class("q126\n_root_.Demo.target : Nat\nnot found: Demo.missing"),
             "no results"
+        );
+        assert_eq!(
+            error_class(
+                "q127\ngoal Demo.lean:45\nno tactic context at line 45; use search for source context"
+            ),
+            "no tactic context"
         );
         assert_eq!(
             error_class("error q125\nambiguous declaration name: target"),
