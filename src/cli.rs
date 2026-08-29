@@ -472,8 +472,12 @@ fn exchange(mut stream: UnixStream, request: &Request) -> Result<Response> {
     serde_json::to_writer(&mut stream, &request)?;
     stream.write_all(b"\n")?;
     stream.flush()?;
-    let report_progress = matches!(request.command, Command::Check { .. });
-    if report_progress {
+    let progress_label = match request.command {
+        Command::Check { .. } => Some("check"),
+        Command::Probe { .. } => Some("probe"),
+        _ => None,
+    };
+    if progress_label.is_some() {
         stream.set_read_timeout(Some(Duration::from_secs(30)))?;
     }
     let started = Instant::now();
@@ -482,7 +486,7 @@ fn exchange(mut stream: UnixStream, request: &Request) -> Result<Response> {
     let mut next_report = Duration::from_secs(10);
     loop {
         let elapsed = started.elapsed();
-        if report_progress {
+        if progress_label.is_some() {
             let timeout = next_report
                 .saturating_sub(elapsed)
                 .max(Duration::from_millis(1));
@@ -501,13 +505,17 @@ fn exchange(mut stream: UnixStream, request: &Request) -> Result<Response> {
                 return serde_json::from_str(&line).context("invalid daemon response");
             }
             Err(error)
-                if report_progress
+                if progress_label.is_some()
                     && matches!(
                         error.kind(),
                         std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
                     ) =>
             {
-                eprintln!("check {progress} {}s", started.elapsed().as_secs());
+                eprintln!(
+                    "{} {progress} {}s",
+                    progress_label.expect("progress label is present"),
+                    started.elapsed().as_secs()
+                );
                 next_report += Duration::from_secs(30);
             }
             Err(error) => return Err(error.into()),

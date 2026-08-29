@@ -31,6 +31,10 @@ use diagnostics::{attach_source_context, deduplicate, partition_diagnostics};
 const CHECK_RESULT_VERSION: &[u8] = b"check-result-v2";
 const CHECK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const CHECK_QUEUE_TIMEOUT: Duration = CHECK_TIMEOUT;
+// A cold owner can spend one check budget preparing imports before it reaches
+// Lean's own check budget. Duplicate target checks should wait for that owner
+// rather than fail shortly before its reusable result becomes available.
+const SHARED_CHECK_TIMEOUT: Duration = Duration::from_secs(2 * 5 * 60);
 const COLD_PROBE_TIMEOUT: Duration = Duration::from_secs(16);
 const SLOW_CHECK_PROFILE_MS: u64 = 5_000;
 const PROFILE_ENTRY_LIMIT: usize = 512;
@@ -273,7 +277,7 @@ impl Checker {
 
         for target in &targets {
             let target_name = target.to_string_lossy().into_owned();
-            report(&format!("checking {target_name}"));
+            report(&format!("{reference} checking {target_name}"));
             match self.check_one(
                 workspace,
                 target,
@@ -460,10 +464,13 @@ impl Checker {
         let _check_guard = match check_lock.try_lock() {
             Ok(guard) => guard,
             Err(TryLockError::WouldBlock) => {
-                report(&format!("waiting for shared check of {}", target.display()));
-                lock_mutex_until(&check_lock, CHECK_QUEUE_TIMEOUT).with_context(|| {
+                report(&format!(
+                    "{reference} waiting for shared check of {}",
+                    target.display()
+                ));
+                lock_mutex_until(&check_lock, SHARED_CHECK_TIMEOUT).with_context(|| {
                     format!(
-                        "shared check of {} is still running after five minutes; retry after it finishes",
+                        "shared check of {} is still running after ten minutes; retry after it finishes",
                         target.display()
                     )
                 })?
@@ -479,10 +486,13 @@ impl Checker {
         )))?;
         if let Err(error) = process_lock.try_lock_exclusive() {
             if error.kind() == std::io::ErrorKind::WouldBlock {
-                report(&format!("waiting for shared check of {}", target.display()));
-                lock_exclusive_until(&process_lock, CHECK_QUEUE_TIMEOUT).with_context(|| {
+                report(&format!(
+                    "{reference} waiting for shared check of {}",
+                    target.display()
+                ));
+                lock_exclusive_until(&process_lock, SHARED_CHECK_TIMEOUT).with_context(|| {
                     format!(
-                        "shared check of {} is still running after five minutes; retry after it finishes",
+                        "shared check of {} is still running after ten minutes; retry after it finishes",
                         target.display()
                     )
                 })?;
@@ -491,7 +501,10 @@ impl Checker {
                     .with_context(|| format!("cannot lock check target {}", target.display()));
             }
         }
-        report(&format!("resolving imports for {}", target.display()));
+        report(&format!(
+            "{reference} resolving imports for {}",
+            target.display()
+        ));
         let queue_ms = file_started.elapsed().as_millis() as u64;
         let target_name = target.to_string_lossy().into_owned();
         let target_absolute = workspace.path.join(target);
@@ -580,7 +593,10 @@ impl Checker {
                 coverage.passed,
             )?
         {
-            report(&format!("certifying imports for {}", target.display()));
+            report(&format!(
+                "{reference} certifying imports for {}",
+                target.display()
+            ));
             return Ok(FileCheck {
                 certificate: CheckRecord {
                     reference: reference.to_owned(),
@@ -614,7 +630,10 @@ impl Checker {
             });
         }
         let phase = Instant::now();
-        report(&format!("preparing imports for {}", target.display()));
+        report(&format!(
+            "{reference} preparing imports for {}",
+            target.display()
+        ));
         let (setup_path, environment) = match self.worker_setup(workspace, target, &dependencies) {
             Ok(setup) => setup,
             Err(error) => {
@@ -686,7 +705,7 @@ impl Checker {
         let fingerprint = self.full_fingerprint(workspace, target, &dependencies)?;
         let setup_ms = phase.elapsed().as_millis() as u64;
         let phase = Instant::now();
-        report(&format!("elaborating {}", target.display()));
+        report(&format!("{reference} elaborating {}", target.display()));
         let (mut response, mode, reused_prefix_lines) = self.run_worker(
             workspace,
             target,
@@ -901,7 +920,13 @@ impl Checker {
                 }
             }
         };
-        let mut worker_guard = worker.lock().expect("Lean worker poisoned");
+        let mut worker_guard = if matches!(run, WorkerRun::Probe { .. }) {
+            lock_mutex_until(&worker, timeout).context(
+                "Lean worker is busy with another request; retry the probe after it finishes",
+            )?
+        } else {
+            worker.lock().expect("Lean worker poisoned")
+        };
         let replace =
             !inserted && (worker_guard.environment != environment || !worker_guard.alive());
         if replace {
@@ -1132,7 +1157,7 @@ impl Checker {
             .expect("worker map poisoned")
             .get(&(workspace.reference.clone(), target.to_path_buf(), false))
             .cloned()?;
-        let mut worker = worker.lock().expect("Lean worker poisoned");
+        let mut worker = worker.try_lock().ok()?;
         worker
             .alive()
             .then(|| (worker.setup_path.clone(), worker.environment.clone()))
@@ -2309,6 +2334,11 @@ mod tests {
 
     use super::*;
     use crate::util::run_checked;
+
+    #[test]
+    fn shared_target_wait_covers_import_and_elaboration_budgets() {
+        assert_eq!(SHARED_CHECK_TIMEOUT, CHECK_QUEUE_TIMEOUT + CHECK_TIMEOUT);
+    }
 
     fn failed_file_check(fingerprint: &str) -> FileCheck {
         FileCheck {
