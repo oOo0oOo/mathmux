@@ -68,6 +68,11 @@ fn validation_loop(
         if retiring.load(Ordering::SeqCst) {
             return;
         }
+        if host_load_brake() {
+            drop(validation_lock);
+            thread::sleep(Duration::from_secs(30));
+            continue;
+        }
         let next = state
             .recover_validation()
             .and_then(|_| state.next_validation());
@@ -114,6 +119,27 @@ fn validation_loop(
             }
         }
     }
+}
+
+fn host_load_brake() -> bool {
+    let Ok(loadavg) = fs::read_to_string("/proc/loadavg") else {
+        return false;
+    };
+    let cpus = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1);
+    host_load_brake_for(&loadavg, cpus)
+}
+
+fn host_load_brake_for(loadavg: &str, cpus: usize) -> bool {
+    let Some(load) = loadavg
+        .split_whitespace()
+        .next()
+        .and_then(|value| value.parse::<f64>().ok())
+    else {
+        return false;
+    };
+    load >= cpus.max(1) as f64
 }
 
 fn acquire_validation_lock(path: &Path) -> Result<fs::File> {
@@ -459,6 +485,14 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[test]
+    fn host_load_brake_matches_cpu_capacity() {
+        assert!(!host_load_brake_for("23.99 20.0 18.0 1/1 1", 24));
+        assert!(host_load_brake_for("24.00 20.0 18.0 1/1 1", 24));
+        assert!(host_load_brake_for("29.06 20.0 18.0 1/1 1", 24));
+        assert!(!host_load_brake_for("unavailable", 24));
+    }
     use crate::state::Workspace;
 
     #[test]
