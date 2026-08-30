@@ -1036,6 +1036,44 @@ fn query_parsing_scoring_and_ranking_regressions() {
 }
 
 #[test]
+fn stored_query_refinements_filter_hits_without_requerying() {
+    let mut first = search_hit("Demo.first");
+    first.doc = Some("compact support".into());
+    let mut second = search_hit("Demo.second");
+    second.doc = Some("proper map".into());
+    assert_eq!(parse_query_reference_selector("q12#2"), Some(("q12", 1)));
+    assert_eq!(parse_query_reference_selector("q12#0"), None);
+    assert_eq!(
+        refined_stored_hits(vec![first.clone(), second.clone()], None, "proper")
+            .into_iter()
+            .map(|hit| hit.name)
+            .collect::<Vec<_>>(),
+        vec!["Demo.second"]
+    );
+    assert_eq!(
+        refined_stored_hits(vec![first, second], Some(0), "")
+            .into_iter()
+            .map(|hit| hit.name)
+            .collect::<Vec<_>>(),
+        vec!["Demo.first"]
+    );
+}
+
+#[test]
+fn exact_repairs_prefer_the_longest_qualified_suffix() {
+    assert!(
+        qualified_suffix_segments(
+            "AtiyahSinger.Bundle.pullbackCompHom",
+            "Other.Bundle.pullbackCompHom"
+        ) > qualified_suffix_segments(
+            "AtiyahSinger.Bundle.pullbackCompHom",
+            "Other.pullbackCompHom"
+        )
+    );
+    assert_eq!(qualified_suffix_segments("Demo.of", "Other.of"), 1);
+}
+
+#[test]
 fn empty_search_summary_omits_internal_timing() {
     let summary = render_summary(&SearchRun {
         reference: "q1".into(),
@@ -1066,7 +1104,7 @@ fn compact_search_summary_suggests_a_targeted_probe() {
         duration_ms: 0,
         created_at: 0,
     });
-    assert!(summary.contains("+1 results\nnext: mathmux probe Demo.candidate1 signature"));
+    assert!(summary.contains("+1 results\nnext: mathmux probe q1#1 outline"));
     assert!(!summary.contains("show q1 --all"));
 }
 
@@ -1097,7 +1135,7 @@ fn exact_search_summary_is_signature_only_and_has_probe_next_action() {
     assert!(summary.contains("_root_.Demo.target : Nat → Nat"));
     assert!(!summary.contains("source:"));
     assert!(!summary.contains(":= id"));
-    assert!(summary.contains("next: mathmux probe Demo.target signature"));
+    assert!(summary.contains("next: mathmux probe Demo.target source"));
 }
 
 #[test]
@@ -1176,7 +1214,7 @@ fn exact_miss_without_suggestions_repairs_from_leaf_name() {
         duration_ms: 1,
         created_at: 0,
     });
-    assert!(summary.contains("next: mathmux search \"missing\""));
+    assert!(summary.contains("next: mathmux search missing"));
     assert!(!summary.contains("concept Demo.Namespace.missing"));
     assert!(summary.ends_with("ref: q-leaf"));
 }
@@ -1405,7 +1443,7 @@ fn structure_summary_points_to_complete_field_inventory() {
         created_at: 0,
     });
     assert!(!summary.contains("field1 : Nat"));
-    assert!(summary.contains("next: mathmux probe Demo.Config signature"));
+    assert!(summary.contains("next: mathmux probe Demo.Config source"));
 
     let fields = SearchHit {
         name: "Demo.Config fields".into(),
@@ -1573,16 +1611,13 @@ fn source_outline_lists_declarations_without_structure_fields() {
         false,
     )
     .unwrap();
-    assert_eq!(result.hits[0].kind, "outline");
-    assert_eq!(
-        result.hits[0].signature.as_deref(),
-        Some("3 declarations, 9 lines")
-    );
-    let outline = result.hits[0].source.as_deref().unwrap();
-    assert!(outline.contains("    3  def Demo.alpha : Nat"));
-    assert!(outline.contains("    5  structure Demo.Config"));
-    assert!(outline.contains("    8  theorem Demo.beta : True"));
-    assert!(!outline.contains("value"));
+    assert_eq!(result.inference, "source-outline");
+    assert_eq!(result.hits.len(), 3);
+    assert_eq!(result.hits[0].kind, "def");
+    assert_eq!(result.hits[0].name, "Demo.alpha");
+    assert_eq!(result.hits[1].name, "Demo.Config");
+    assert_eq!(result.hits[2].name, "Demo.beta");
+    assert!(result.hits.iter().all(|hit| hit.source.is_none()));
     let summary = render_summary(&SearchRun {
         reference: "q-outline".into(),
         workspace_ref: "w1".into(),
@@ -1593,7 +1628,9 @@ fn source_outline_lists_declarations_without_structure_fields() {
         duration_ms: 1,
         created_at: 0,
     });
-    assert!(summary.contains("outline : 3 declarations, 9 lines  Outline.lean:3"));
+    assert!(summary.contains("Demo.alpha : Nat  Outline.lean:3"));
+    assert!(summary.contains("Demo.Config  Outline.lean:5"));
+    assert!(summary.contains("3 declarations across 9 lines"));
     assert!(!summary.contains("source:"));
     let imports = parse_source_occurrence_query(
         directory.path(),
@@ -1653,6 +1690,65 @@ fn source_outline_lists_declarations_without_structure_fields() {
         imports.hits[0].signature.as_deref(),
         Some("1 for imports Demo.Beta")
     );
+}
+
+#[test]
+fn source_ranges_report_crossed_declarations_truthfully() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(
+        directory.path().join("Range.lean"),
+        "namespace Demo\ndef first : Nat := 1\n\ndef second : Nat := 2\nend Demo\n",
+    )
+    .unwrap();
+    let query =
+        parse_source_occurrence_query(directory.path(), directory.path(), None, "Range.lean:2-4")
+            .unwrap()
+            .unwrap();
+    let result = source_occurrence_result(
+        &Workspace {
+            reference: "w1".into(),
+            name: "demo".into(),
+            path: directory.path().to_path_buf(),
+            branch: "demo".into(),
+            model: None,
+        },
+        query,
+        false,
+    )
+    .unwrap();
+    assert!(
+        result.hits[0]
+            .signature
+            .as_deref()
+            .is_some_and(|signature| signature.contains("crosses 2 declarations"))
+    );
+}
+
+#[test]
+fn source_matches_rank_declarations_before_imports_and_comments() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(
+        directory.path().join("Rank.lean"),
+        "import Needle.Package\n-- Needle appears in commentary\nnamespace Demo\ndef Needle : Nat := 1\nend Demo\n",
+    )
+    .unwrap();
+    let query =
+        parse_source_occurrence_query(directory.path(), directory.path(), None, "Rank.lean Needle")
+            .unwrap()
+            .unwrap();
+    let result = source_occurrence_result(
+        &Workspace {
+            reference: "w1".into(),
+            name: "demo".into(),
+            path: directory.path().to_path_buf(),
+            branch: "demo".into(),
+            model: None,
+        },
+        query,
+        false,
+    )
+    .unwrap();
+    assert_eq!(result.hits[0].name, "Demo.Needle");
 }
 
 #[test]
@@ -2013,17 +2109,22 @@ fn batched_usages_preserve_scope_order_and_per_target_limit() {
 }
 
 #[test]
-fn colon_attached_source_facets_fail_with_the_documented_form() {
+fn colon_attached_source_facets_normalize_to_the_documented_form() {
     for facet in ["outline", "declarations", "imports", "dependents"] {
         let query = format!("Demo.lean:{facet}");
-        let error = reject_colon_attached_source_facet(&query).unwrap_err();
         assert_eq!(
-            error.to_string(),
-            format!("source facets use a space: Demo.lean {facet}")
+            normalize_colon_attached_source_facet(&query),
+            format!("Demo.lean {facet}")
         );
     }
-    reject_colon_attached_source_facet("Demo.lean:42").unwrap();
-    reject_colon_attached_source_facet("Demo.lean:tail").unwrap();
+    assert_eq!(
+        normalize_colon_attached_source_facet("Demo.lean:42"),
+        "Demo.lean:42"
+    );
+    assert_eq!(
+        normalize_colon_attached_source_facet("Demo.lean:tail"),
+        "Demo.lean:tail"
+    );
 }
 
 #[test]
@@ -2752,7 +2853,7 @@ fn exact_misses_overlay_active_sibling_declarations_as_unmerged() {
     assert!(
         result.hits[0]
             .kind
-            .starts_with("unmerged:w2:sibling:agent-sibling")
+            .starts_with("unmerged:w2/sibling/agent-sibling")
     );
     let batch = searcher
         .exact_name_batch(
@@ -2766,7 +2867,7 @@ fn exact_misses_overlay_active_sibling_declarations_as_unmerged() {
     assert!(
         batch.hits[0]
             .kind
-            .starts_with("unmerged:w2:sibling:agent-sibling")
+            .starts_with("unmerged:w2/sibling/agent-sibling")
     );
 
     for suffix in ["a", "b", "c"] {
@@ -2897,9 +2998,12 @@ fn exact_resolution_fails_closed_instead_of_returning_a_different_declaration() 
         .unwrap();
     assert_eq!(batch.inference, "exact-miss");
     assert!(batch.hits.is_empty());
-    assert!(batch.note.as_deref().is_some_and(|note| {
-        note.contains("next: `mathmux search \"concept pullbackCompHom\"` for broad discovery")
-    }));
+    assert!(
+        batch
+            .note
+            .as_deref()
+            .is_some_and(|note| note.starts_with("exact declaration not found: pullbackCompHom"))
+    );
 }
 
 #[test]
