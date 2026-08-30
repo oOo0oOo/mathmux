@@ -2,6 +2,7 @@ use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Instant;
 
 use anyhow::{Context, Result, bail, ensure};
 use walkdir::WalkDir;
@@ -236,6 +237,45 @@ pub fn project_lean_files(root: &Path) -> Vec<PathBuf> {
         })
         .filter_map(|path| path.strip_prefix(root).ok().map(Path::to_path_buf))
         .collect()
+}
+
+/// Enumerate project Lean files without allowing a slow directory walk to
+/// exceed a caller's work budget.
+pub fn project_lean_files_until(root: &Path, deadline: Instant) -> (Vec<PathBuf>, bool) {
+    let mut files = Vec::new();
+    let mut timed_out = false;
+    let mut walker = WalkDir::new(root).into_iter();
+    while let Some(entry) = walker.next() {
+        if Instant::now() >= deadline {
+            timed_out = true;
+            break;
+        }
+        let Ok(entry) = entry else {
+            continue;
+        };
+        if entry.file_type().is_dir() {
+            let path = entry.path();
+            let name = path.file_name().and_then(|name| name.to_str());
+            if matches!(name, Some(".git" | ".lake" | "target"))
+                || (path != root && is_lake_project_root(path))
+            {
+                walker.skip_current_dir();
+            }
+            continue;
+        }
+        if entry
+            .path()
+            .extension()
+            .is_some_and(|extension| extension == "lean")
+            && entry
+                .path()
+                .file_name()
+                .is_none_or(|name| name != "lakefile.lean")
+        {
+            files.push(entry.into_path());
+        }
+    }
+    (files, timed_out)
 }
 
 fn belongs_to_nested_lake_project(root: &Path, path: &Path) -> bool {
@@ -605,6 +645,7 @@ fn validate_name(name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::time::Duration;
 
     use tempfile::tempdir;
 
@@ -626,6 +667,18 @@ mod tests {
         assert_eq!(clamp_workspace_limit(MAX_MANAGED_WORKSPACES), 100);
         assert_eq!(clamp_workspace_limit(MAX_MANAGED_WORKSPACES + 1), 100);
         assert_eq!(clamp_workspace_limit(usize::MAX), 100);
+    }
+
+    #[test]
+    fn budgeted_project_file_walk_stops_before_an_expired_deadline() {
+        let directory = tempdir().unwrap();
+        fs::write(directory.path().join("Proof.lean"), "def value := 0\n").unwrap();
+
+        let (files, timed_out) =
+            project_lean_files_until(directory.path(), Instant::now() - Duration::from_secs(1));
+
+        assert!(files.is_empty());
+        assert!(timed_out);
     }
 
     #[test]

@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::git::project_lean_files_until;
+
 impl Searcher {
     pub(super) fn source_location_search(
         &self,
@@ -188,21 +190,18 @@ pub(super) fn source_regex_result(
     all: bool,
 ) -> Result<SearchResult> {
     let regex = Regex::new(&query.pattern).context("invalid source regex")?;
-    let mut files = if query.scope.is_file() {
-        vec![query.scope.clone()]
+    let deadline = Instant::now() + SOURCE_FALLBACK_BUDGET;
+    let (mut files, mut timed_out) = if query.scope.is_file() {
+        (vec![query.scope.clone()], false)
     } else {
-        project_lean_files(&query.scope)
-            .into_iter()
-            .map(|path| query.scope.join(path))
-            .collect()
+        let (files, timed_out) = project_lean_files_until(&query.scope, deadline);
+        (files, timed_out)
     };
     files.sort();
     let limit = if all { SOURCE_OCCURRENCE_LIMIT } else { 12 };
-    let deadline = Instant::now() + SOURCE_FALLBACK_BUDGET;
     let dependency_root = fs::canonicalize(workspace.path.join(".lake/packages")).ok();
     let mut groups = Vec::new();
     let mut total = 0usize;
-    let mut timed_out = false;
     for path in files {
         if Instant::now() >= deadline {
             timed_out = true;
