@@ -1323,11 +1323,19 @@ fn error_class(summary: &str) -> String {
         .iter()
         .copied()
         .find(|line| {
+            let lower = line.to_ascii_lowercase();
             line.contains("error(")
                 || line.contains(": error: ")
                 || line.starts_with("error: ")
-                || line.starts_with("failed to synthesize")
-                || line.starts_with("internal exception")
+                || lower.starts_with("application type mismatch")
+                || lower.starts_with("type mismatch")
+                || lower.starts_with("unsolved goals")
+                || lower.starts_with("failed to synthesize")
+                || lower.starts_with("unknown identifier")
+                || lower.starts_with("no goals to be solved")
+                || lower.starts_with("fields missing")
+                || lower.starts_with("internal exception")
+                || lower.starts_with("ambiguous declaration name")
                 || line.contains("expected end of input")
         })
         .or_else(|| lines.first().copied())
@@ -1786,6 +1794,10 @@ mod tests {
                 "#check requires FILE, FILE:LINE, cREF, or qREF context; use NAME signature for a declaration"
             ),
             "#check requires FILE, FILE:LINE, cREF, or qREF context; use NAME signature for a declaration"
+        );
+        assert_eq!(
+            error_class("probe result\ntactic  Demo.lean:40\nType mismatch: expected Nat"),
+            "type mismatch"
         );
         assert_eq!(
             error_class("source file is on managed main; run mathmux sync"),
