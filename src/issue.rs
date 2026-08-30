@@ -373,7 +373,9 @@ impl TelemetryStore {
              CREATE INDEX IF NOT EXISTS telemetry_verb_created
                 ON telemetry_events(verb, created_at DESC);
              CREATE INDEX IF NOT EXISTS telemetry_project_created
-                ON telemetry_events(project, created_at DESC);",
+                ON telemetry_events(project, created_at DESC);
+             CREATE INDEX IF NOT EXISTS telemetry_project_workspace_id
+                ON telemetry_events(project, workspace, id DESC);",
         )?;
         if !table_has_column(&connection, "telemetry_events", "outcome_class")? {
             connection.execute(
