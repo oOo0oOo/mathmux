@@ -1202,7 +1202,7 @@ impl Searcher {
 fn render_static_probe_summary(run: &SearchRun, focus: &str) -> String {
     let mut run = run.clone();
     match focus {
-        "signature" | "ext" => {
+        "signature" | "ext" | "apply" | "coercions" | "instances" => {
             run.inference = "exact".into();
             for hit in &mut run.hits {
                 hit.source = None;
@@ -1228,6 +1228,9 @@ fn render_static_probe_summary(run: &SearchRun, focus: &str) -> String {
                     .is_some_and(|note| note.contains("warming"))
             {
                 run.note = Some("no indexed @[simp] declaration in this name family".into());
+            }
+            for hit in &mut run.hits {
+                hit.source = None;
             }
         }
         "usages" => {
@@ -2006,6 +2009,11 @@ mod tests {
         let simp = render_static_probe_summary(&run, "simp");
         assert!(simp.contains("Demo.second"));
         assert!(!simp.contains("Demo.first"));
+        assert!(!simp.contains(":= by"));
+
+        let apply = render_static_probe_summary(&run, "apply");
+        assert!(apply.contains("Demo.first"));
+        assert!(!apply.contains(":= by"));
 
         let usages = render_static_probe_summary(&run, "usages");
         assert!(usages.contains("Demo.first"));
