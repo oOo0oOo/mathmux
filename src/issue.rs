@@ -806,7 +806,10 @@ fn exchange_outcome_class(
         {
             return Some("no_result");
         }
-        if response.summary.contains("suggestion:") || response.summary.contains("suggestions") {
+        if response.summary.contains("suggestion:")
+            || response.summary.contains("suggestions")
+            || response.summary.contains("UNMERGED (")
+        {
             return Some("near_suggestions");
         }
         if response.ok && query_class.is_some() {
@@ -1081,7 +1084,10 @@ fn error_class(summary: &str) -> String {
     {
         return "no results".into();
     }
-    if summary.contains("suggestion:") || summary.contains("suggestions") {
+    if summary.contains("suggestion:")
+        || summary.contains("suggestions")
+        || summary.contains("UNMERGED (")
+    {
         return "near suggestions".into();
     }
     let lines = summary
@@ -1493,6 +1499,10 @@ mod tests {
         );
         assert_eq!(error_class("error q124\nq124 no results"), "no results");
         assert_eq!(
+            error_class("q128\nUNMERGED (w1:sibling:agent): Demo.target"),
+            "near suggestions"
+        );
+        assert_eq!(
             error_class("q126\n_root_.Demo.target : Nat\nnot found: Demo.missing"),
             "no results"
         );
@@ -1669,6 +1679,25 @@ mod tests {
                 8,
             )
             .unwrap();
+        let unmerged_miss = Request {
+            command: Command::Search {
+                query: "CompactlySupportedKZero subtype equiv".into(),
+                limit: None,
+                all: false,
+            },
+            ..search.clone()
+        };
+        store
+            .record(
+                &repo,
+                &unmerged_miss,
+                &Response::error(
+                    "q6\nUNMERGED (w2:sibling:agent): Demo.target\n".to_owned()
+                        + "unmerged sibling declarations (not usable locally):",
+                ),
+                8,
+            )
+            .unwrap();
 
         let connection = open_db(&store.path).unwrap();
         let row = connection
@@ -1718,13 +1747,27 @@ mod tests {
             source_outcomes,
             vec![Some("no_result".into()), Some("operational_error".into())]
         );
+        let unmerged_outcome = connection
+            .query_row(
+                "SELECT outcome_class, error_class FROM telemetry_events WHERE id = 6",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(unmerged_outcome.0.as_deref(), Some("near_suggestions"));
+        assert_eq!(unmerged_outcome.1.as_deref(), Some("near suggestions"));
         assert_eq!(
             connection
                 .query_row("SELECT COUNT(*) FROM telemetry_events", [], |row| {
                     row.get::<_, i64>(0)
                 })
                 .unwrap(),
-            5
+            6
         );
     }
 
