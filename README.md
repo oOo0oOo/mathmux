@@ -109,15 +109,15 @@ stored result sets, while exact declaration results point directly to a focused
 probe command.
 
 Identifier-shaped searches resolve exact names first and fail closed on a miss,
-with at most three near-name suggestions. `name:` is exact-only; use the explicit
-`declaration NAME*` form for wildcard name discovery. Exact output stays compact:
+with at most three near-name suggestions. Use the explicit `declaration NAME*`
+form for wildcard name discovery. Exact output stays compact:
 signature, path, import availability, and a usage count. Use `probe NAME source`,
 `probe NAME outline`, or `probe NAME usages` for focused detail. Regex and literal
 source matches group by enclosing declaration, and the reusable `qREF` is printed
 last. Refine grouped searches before using `show qREF --all`.
 
 ```sh
-mathmux search name:Nat.succ
+mathmux search Nat.succ
 mathmux probe Nat.succ signature
 mathmux probe Nat.succ source
 mathmux probe Nat.succ outline
