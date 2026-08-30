@@ -278,6 +278,38 @@ fn indexed_row_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexedRow>
     })
 }
 
+fn exact_candidates_from_connection(
+    connection: &Connection,
+    query: &str,
+    scopes: &HashSet<String>,
+    limit: usize,
+) -> Result<Vec<IndexedRow>> {
+    install_active_scopes(connection, scopes)?;
+    let name_condition = if query.contains('.') {
+        "lower(name) = lower(?2)"
+    } else {
+        "(lower(name) = lower(?2)
+          OR lower(substr(name, -(length(?2) + 1))) = ('.' || lower(?2)))"
+    };
+    let sql = indexed_rows_sql(&format!(
+        "WHERE search_fts MATCH ?1
+         AND {name_condition}
+         AND owner IN (SELECT owner FROM active_search_scopes)
+         LIMIT {limit}"
+    ));
+    let mut statement = connection.prepare(&sql)?;
+    let exact = format!("name : \"{}\"", query.replace('"', "\"\""));
+    statement
+        .query_map(params![exact, query], indexed_row_from_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map(|rows| {
+            rows.into_iter()
+                .filter(|row| exact_declaration_name_matches(&row.name, query))
+                .collect()
+        })
+        .map_err(anyhow::Error::from)
+}
+
 fn compact_ranked_hit(row: IndexedRow) -> Candidate {
     Candidate {
         hit: SearchHit {
@@ -2437,18 +2469,56 @@ impl Searcher {
             .workspace_activity()?
             .into_iter()
             .collect::<HashMap<_, _>>();
+        let siblings = workspaces
+            .into_iter()
+            .filter(|sibling| {
+                sibling.reference != workspace.reference
+                    && activity.get(&sibling.reference).is_some_and(|last_active| {
+                        now.saturating_sub(*last_active) <= 15 * 60 * 1000
+                    })
+            })
+            .collect::<Vec<_>>();
+        if siblings.is_empty() {
+            return Ok(Vec::new());
+        }
+        let scopes = siblings
+            .iter()
+            .flat_map(|sibling| {
+                [
+                    format!("workspace:{}", sibling.reference),
+                    format!("artifacts:{}", sibling.reference),
+                ]
+            })
+            .collect::<HashSet<_>>();
+        let connection = self.open()?;
+        let rows = exact_candidates_from_connection(
+            &connection,
+            query,
+            &scopes,
+            SEARCH_TUNING
+                .retrieval
+                .exact_rows
+                .saturating_mul(siblings.len()),
+        )?;
+        let mut rows_by_sibling = HashMap::<String, Vec<IndexedRow>>::new();
+        for row in rows {
+            let Some(reference) = row
+                .owner
+                .strip_prefix("workspace:")
+                .or_else(|| row.owner.strip_prefix("artifacts:"))
+            else {
+                continue;
+            };
+            rows_by_sibling
+                .entry(reference.to_owned())
+                .or_default()
+                .push(row);
+        }
         let mut result = Vec::new();
-        for sibling in workspaces.into_iter().filter(|sibling| {
-            sibling.reference != workspace.reference
-                && activity
-                    .get(&sibling.reference)
-                    .is_some_and(|last_active| now.saturating_sub(*last_active) <= 15 * 60 * 1000)
-        }) {
-            let scopes = HashSet::from([
-                format!("workspace:{}", sibling.reference),
-                format!("artifacts:{}", sibling.reference),
-            ]);
-            let rows = self.exact_candidates(query, &scopes)?;
+        for sibling in siblings {
+            let rows = rows_by_sibling
+                .remove(&sibling.reference)
+                .unwrap_or_default();
             let mut seen = HashSet::new();
             for mut candidate in ranked_exact_candidates(rows, query, &sibling)
                 .into_iter()
@@ -2835,31 +2905,12 @@ impl Searcher {
 
     fn exact_candidates(&self, query: &str, scopes: &HashSet<String>) -> Result<Vec<IndexedRow>> {
         let connection = self.open()?;
-        install_active_scopes(&connection, scopes)?;
-        let name_condition = if query.contains('.') {
-            "lower(name) = lower(?2)"
-        } else {
-            "(lower(name) = lower(?2)
-              OR lower(substr(name, -(length(?2) + 1))) = ('.' || lower(?2)))"
-        };
-        let sql = indexed_rows_sql(&format!(
-            "WHERE search_fts MATCH ?1
-             AND {name_condition}
-             AND owner IN (SELECT owner FROM active_search_scopes)
-             LIMIT {}",
+        exact_candidates_from_connection(
+            &connection,
+            query,
+            scopes,
             SEARCH_TUNING.retrieval.exact_rows,
-        ));
-        let mut statement = connection.prepare(&sql)?;
-        let exact = format!("name : \"{}\"", query.replace('"', "\"\""));
-        statement
-            .query_map(params![exact, query], indexed_row_from_row)?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map(|rows| {
-                rows.into_iter()
-                    .filter(|row| exact_declaration_name_matches(&row.name, query))
-                    .collect()
-            })
-            .map_err(anyhow::Error::from)
+        )
     }
 
     fn field_inventory_result(
