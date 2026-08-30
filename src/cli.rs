@@ -36,13 +36,12 @@ const WORKFLOW_HELP: &str = r#"AGENT CONTRACT
 const SEARCH_HELP: &str = r#"SEARCH — find or read unknown things; returns qREF
 FORMS — type one directly; declaration/type/source/compose are labels, not keywords
   declaration  NAME | NAME* | KIND NAME [source|body|proof]
-               name:NAME | name:A|B|C  (exact only; use declaration NAME* for wildcards)
   type/concept TYPE_OR_CONCEPT_TERMS | type:LEAN_TYPE
   source       FILE:LINE | FILE:START-END | FILE:tail
                FILE[:RANGE] TERMS
                FILE outline|declarations|imports|dependents
                /REGEX/ | PATH /REGEX/ | re:/REGEX/ | PATH re:/REGEX/
-  compose      A|B|C | qREF TERMS | sREF TERMS
+  compose      A|B|C | sREF TERMS
 
 KIND = abbrev|class|def|inductive|instance|lemma|structure|theorem
 
@@ -62,8 +61,8 @@ NEXT
   Many hits -> refine first. Compact output gives one focused next action.
 
 RULES
-  name: forces exact lookup; its | batch returns all. Bare identifier queries are
-  exact-first. type: matches declaration result types; `_` holes are legal.
+  Bare identifier queries are exact-first. type: matches declaration result types;
+  `_` holes are legal. Probe qREFs; do not compose them into new searches.
   sREF requires TERMS; use show sREF first, then --all only if needed.
   Source facets accept a space or FILE.lean:outline shorthand.
   FILE:LINE reads source only; use probe FILE:LINE for Lean context.
@@ -72,16 +71,14 @@ RULES
 
 const PROBE_HELP: &str = r##"PROBE — inspect something known; returns qREF
 FORMS — type one directly; there are no API, LEAN, or other category keywords
-  NAME [signature|source|outline|neighborhood|dependencies|apply|fields|
-        constructors|ext|simp|instances|coercions|usages]
+  NAME [signature|source|outline|apply|fields|constructors|ext|simp|usages]
   NAME find TERM
   type:LEAN_TYPE [types]
   FILE warnings
   FILE:LINE [goal] | FILE:LINE TERM [signature]
   PATH NAME usages
   cREF [goal|types|defeq|rewrite|profile]
-  declaration-qREF[#N] [signature|source|outline|neighborhood|dependencies|
-                        find TERM|usages|constructors]
+  declaration-qREF[#N] [signature|source|outline|find TERM|usages|constructors]
   positioned-qREF [goal] | stored-probe-qREF
   FILE|FILE:LINE|cREF|qREF "#check TERM"|"#synth TYPE"|"#reduce TERM"
   FILE:LINE|cREF|positioned-qREF "by TACTIC"
@@ -92,8 +89,7 @@ RESULT
   API focuses return one bounded dossier. goal returns the exact local goal;
   TERM/directives return Lean's elaborated answer; by returns solved or subgoals.
   NAME source resolves the exact declaration and returns that body; outline is
-  kind-aware, neighborhood shows ambient setup, dependencies lists qualified
-  references, and find searches only that declaration. A miss never
+  kind-aware, and find searches only that declaration. A miss never
   falls through to another declaration. search FILE:LINE/RANGE reads file text.
 
 NEXT
@@ -101,8 +97,6 @@ NEXT
 
 RULES
   fields/constructors target structures/inductives; ext/simp may be empty.
-  instances/coercions find declarations in the subject's name family; inspect
-  signature for required typeclasses or a theorem result such as Bijective.
   cREF goal/analyses need a matching stored failure; for a running check, use
   mathmux show cREF --wait first; profile needs check --profile.
   warnings omits mechanical fixes owned by Lean automation and never reruns Lean.
@@ -899,12 +893,10 @@ mod tests {
             .to_string();
         assert!(help.contains("--limit N (1–200) caps hits and cannot combine with --all"));
         for form in [
-            "name:NAME",
             "type:LEAN_TYPE",
             "FILE:LINE",
             "outline|declarations|imports|dependents",
             "PATH /REGEX/",
-            "name:A|B|C",
             "source/compose are labels, not keywords",
             "sREF requires TERMS",
             "Source facets accept a space or FILE.lean:outline shorthand.",
@@ -913,6 +905,8 @@ mod tests {
             assert!(help.contains(form), "missing search form {form}");
         }
         assert!(!help.contains("cREF repair"));
+        assert!(!help.contains("name:NAME"));
+        assert!(!help.contains("name:A|B|C"));
         let probe_help = command
             .find_subcommand_mut("probe")
             .unwrap()
@@ -920,12 +914,12 @@ mod tests {
             .to_string();
         for contract in [
             "there are no API, LEAN, or other category keywords",
-            "NAME [signature|source|outline|neighborhood|dependencies|apply",
+            "NAME [signature|source|outline|apply|fields|constructors|ext|simp|usages]",
             "NAME find TERM",
             "FILE warnings",
             "FILE:LINE [goal]",
             "cREF [goal|types|defeq|rewrite|profile]",
-            "declaration-qREF[#N] [signature|source|outline|neighborhood|dependencies|",
+            "declaration-qREF[#N] [signature|source|outline|find TERM|usages|constructors]",
             "Context is mandatory",
             "Use NAME signature, not",
             "no nearby-line fallback",
@@ -937,6 +931,9 @@ mod tests {
         }
         assert!(!probe_help.contains("API       NAME"));
         assert!(!probe_help.contains("LEAN      FILE"));
+        for removed in ["neighborhood", "dependencies", "instances", "coercions"] {
+            assert!(!probe_help.contains(removed));
+        }
         assert!(!help.contains("diagnostics, and goals"));
 
         let mut short_command = command_line();
@@ -945,7 +942,7 @@ mod tests {
             .unwrap()
             .render_help()
             .to_string();
-        assert!(short_search.contains("name:A|B|C"));
+        assert!(!short_search.contains("name:A|B|C"));
         let short_probe = short_command
             .find_subcommand_mut("probe")
             .unwrap()

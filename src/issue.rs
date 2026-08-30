@@ -78,6 +78,10 @@ struct TelemetryEvent {
     ok: bool,
     outcome_class: Option<String>,
     query_class: Option<String>,
+    search_form: Option<String>,
+    probe_facet: Option<String>,
+    candidate_count: Option<u64>,
+    concept_coverage: Option<String>,
     response_band: Option<String>,
     follow_up: Option<String>,
     error_class: Option<String>,
@@ -380,6 +384,10 @@ impl TelemetryStore {
                 ok INTEGER NOT NULL,
                 outcome_class TEXT,
                 query_class TEXT,
+                search_form TEXT,
+                probe_facet TEXT,
+                candidate_count INTEGER,
+                concept_coverage TEXT,
                 response_band TEXT,
                 follow_up TEXT,
                 error_class TEXT,
@@ -415,13 +423,26 @@ impl TelemetryStore {
                 [],
             )?;
         }
-        for column in ["query_class", "response_band", "follow_up"] {
+        for column in [
+            "query_class",
+            "response_band",
+            "follow_up",
+            "search_form",
+            "probe_facet",
+            "concept_coverage",
+        ] {
             if !table_has_column(&connection, "telemetry_events", column)? {
                 connection.execute(
                     &format!("ALTER TABLE telemetry_events ADD COLUMN {column} TEXT"),
                     [],
                 )?;
             }
+        }
+        if !table_has_column(&connection, "telemetry_events", "candidate_count")? {
+            connection.execute(
+                "ALTER TABLE telemetry_events ADD COLUMN candidate_count INTEGER",
+                [],
+            )?;
         }
         Ok(())
     }
@@ -450,6 +471,10 @@ impl TelemetryStore {
             query_class.as_deref(),
         );
         let response_band = response_band(response_json.len());
+        let search_form = inferred_search_form(request);
+        let probe_facet = probe_facet(request);
+        let candidate_count = response_candidate_count(request, &response.summary);
+        let concept_coverage = response_concept_coverage(&response.summary);
         let follow_up = follow_up_kind(request);
         let error_class = (!response.ok).then(|| error_class(&response.summary));
         let now = now_unix_ms();
@@ -476,10 +501,11 @@ impl TelemetryStore {
         transaction.execute(
             "INSERT INTO telemetry_events(
                 created_at, build, project, workspace, verb, reference, ok, outcome_class,
-                query_class, response_band, follow_up, error_class,
+                query_class, search_form, probe_facet, candidate_count, concept_coverage,
+                response_band, follow_up, error_class,
                 client_ms, daemon_ms, rss_kib, request_bytes, response_bytes,
                 request_json, response_json
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
             params![
                 now,
                 response.build,
@@ -490,6 +516,10 @@ impl TelemetryStore {
                 response.ok,
                 outcome_class,
                 query_class,
+                search_form,
+                probe_facet,
+                candidate_count,
+                concept_coverage,
                 response_band,
                 Option::<String>::None,
                 error_class,
@@ -642,7 +672,8 @@ impl TelemetryStore {
         let event = open_db(&self.path)?
             .query_row(
                 "SELECT id, created_at, build, project, workspace, verb, reference, ok,
-                        outcome_class, query_class, response_band, follow_up, error_class,
+                        outcome_class, query_class, search_form, probe_facet, candidate_count,
+                        concept_coverage, response_band, follow_up, error_class,
                         client_ms, daemon_ms, rss_kib, request_bytes, response_bytes,
                         request_json, response_json
                  FROM telemetry_events WHERE id = ?1",
@@ -657,7 +688,8 @@ impl TelemetryStore {
     fn events_since(&self, cutoff: i64, verb: Option<&str>) -> Result<Vec<TelemetryEvent>> {
         let connection = open_db(&self.path)?;
         let select = "SELECT id, created_at, build, project, workspace, verb, reference, ok,
-                             outcome_class, query_class, response_band, follow_up, error_class,
+                             outcome_class, query_class, search_form, probe_facet, candidate_count,
+                             concept_coverage, response_band, follow_up, error_class,
                              client_ms, daemon_ms, rss_kib, request_bytes, response_bytes,
                              request_json, response_json
                       FROM telemetry_events";
@@ -684,7 +716,8 @@ impl TelemetryStore {
         let connection = open_db(&self.path)?;
         let mut statement = connection.prepare(
             "SELECT id, created_at, build, project, workspace, verb, reference, ok,
-                    outcome_class, query_class, response_band, follow_up, error_class,
+                    outcome_class, query_class, search_form, probe_facet, candidate_count,
+                    concept_coverage, response_band, follow_up, error_class,
                     client_ms, daemon_ms, rss_kib, request_bytes, response_bytes,
                     request_json, response_json
              FROM telemetry_events
@@ -754,8 +787,7 @@ fn query_class(request: &Request) -> Option<String> {
         || query.ends_with(".lean")
     {
         "source"
-    } else if query.starts_with("name:")
-        || crate::search::is_exact_first_query(query)
+    } else if crate::search::is_exact_first_query(query)
         || query
             .split_whitespace()
             .next()
@@ -767,6 +799,97 @@ fn query_class(request: &Request) -> Option<String> {
         "discovery"
     };
     Some(class.into())
+}
+
+fn inferred_search_form(request: &Request) -> Option<String> {
+    let Command::Search { query, .. } = &request.command else {
+        return None;
+    };
+    let query = query.trim();
+    Some(
+        if query.starts_with("type:") || query.contains('⊢') {
+            "type"
+        } else if query.starts_with("re:") || query.starts_with('/') || query.contains(" re:/") {
+            "source-regex"
+        } else if query.contains(".lean:") || query.ends_with(".lean") {
+            "source-location"
+        } else if crate::search::is_exact_first_query(query) {
+            "inferred-exact"
+        } else {
+            "discovery"
+        }
+        .into(),
+    )
+}
+
+fn probe_facet(request: &Request) -> Option<String> {
+    let Command::Probe { query } = &request.command else {
+        return None;
+    };
+    let query = query.trim_matches([' ', '\'', '"']);
+    for (directive, facet) in [
+        ("#check", "check"),
+        ("#synth", "synth"),
+        ("#reduce", "reduce"),
+        (" by ", "tactic"),
+    ] {
+        if query.contains(directive) {
+            return Some(facet.into());
+        }
+    }
+    let last = query.split_whitespace().last().unwrap_or("signature");
+    Some(
+        if is_probe_focus(last) {
+            last
+        } else {
+            "signature"
+        }
+        .into(),
+    )
+}
+
+fn response_candidate_count(request: &Request, summary: &str) -> Option<u64> {
+    if !matches!(
+        request.command,
+        Command::Search { .. } | Command::Probe { .. }
+    ) {
+        return None;
+    }
+    let numbered = summary
+        .lines()
+        .filter(|line| {
+            line.split_whitespace()
+                .next()
+                .is_some_and(|token| token.starts_with('q') && token.contains('#'))
+        })
+        .count() as u64;
+    if numbered > 0 {
+        let omitted = summary
+            .lines()
+            .find_map(|line| line.trim().strip_prefix('+'))
+            .and_then(|tail| tail.split_whitespace().next())
+            .and_then(|count| count.parse::<u64>().ok())
+            .unwrap_or(0);
+        return Some(numbered + omitted);
+    }
+    let no_result = summary.contains("no results")
+        || summary.contains("not found")
+        || summary.contains("no regex source matches");
+    Some(u64::from(
+        !no_result && response_reference(summary).is_some(),
+    ))
+}
+
+fn response_concept_coverage(summary: &str) -> Option<String> {
+    let marker = "weak coverage: ";
+    let tail = summary.split_once(marker)?.1;
+    Some(
+        tail.split([';', '\n'])
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_owned(),
+    )
 }
 
 fn is_identifier_query(value: &str) -> bool {
@@ -788,8 +911,6 @@ fn is_probe_focus(value: &str) -> bool {
             | "constructors"
             | "ext"
             | "simp"
-            | "instances"
-            | "coercions"
             | "usages"
             | "goal"
             | "types"
@@ -939,16 +1060,22 @@ fn telemetry_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TelemetryEven
         ok: row.get(7)?,
         outcome_class: row.get(8)?,
         query_class: row.get(9)?,
-        response_band: row.get(10)?,
-        follow_up: row.get(11)?,
-        error_class: row.get(12)?,
-        client_ms: row.get(13)?,
-        daemon_ms: row.get(14)?,
-        rss_kib: row.get(15)?,
-        request_bytes: row.get(16)?,
-        response_bytes: row.get(17)?,
-        request_json: row.get(18)?,
-        response_json: row.get(19)?,
+        search_form: row.get(10)?,
+        probe_facet: row.get(11)?,
+        candidate_count: row
+            .get::<_, Option<i64>>(12)?
+            .map(|value| value.max(0) as u64),
+        concept_coverage: row.get(13)?,
+        response_band: row.get(14)?,
+        follow_up: row.get(15)?,
+        error_class: row.get(16)?,
+        client_ms: row.get(17)?,
+        daemon_ms: row.get(18)?,
+        rss_kib: row.get(19)?,
+        request_bytes: row.get(20)?,
+        response_bytes: row.get(21)?,
+        request_json: row.get(22)?,
+        response_json: row.get(23)?,
     })
 }
 
@@ -1057,6 +1184,18 @@ fn render_event(event: &TelemetryEvent, all: bool) -> String {
         }
         if let Some(query_class) = &event.query_class {
             output.push_str(&format!("\nquery-class: {query_class}"));
+        }
+        if let Some(search_form) = &event.search_form {
+            output.push_str(&format!("\nsearch-form: {search_form}"));
+        }
+        if let Some(probe_facet) = &event.probe_facet {
+            output.push_str(&format!("\nprobe-facet: {probe_facet}"));
+        }
+        if let Some(candidate_count) = event.candidate_count {
+            output.push_str(&format!("\ncandidates: {candidate_count}"));
+        }
+        if let Some(concept_coverage) = &event.concept_coverage {
+            output.push_str(&format!("\nconcept-coverage: {concept_coverage}"));
         }
         if let Some(response_band) = &event.response_band {
             output.push_str(&format!("\nresponse-band: {response_band}"));

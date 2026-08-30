@@ -419,6 +419,9 @@ unsafe def runServer (setup : ModuleSetup) (profile : Bool) : IO Unit := do
       else if request.line > 0 then
         runLocalProbe snapshot request
       else if request.operation ∈ ["term", "synth", "reduce"] then
+        let baseline ← processSnapshot snapshot request.version false
+        let baselineKeys := baseline.diagnostics.foldl (init := ({} : Std.HashSet String)) fun keys diagnostic =>
+          keys.insert (diagnostic.severity ++ "\u0000" ++ diagnostic.kind ++ "\u0000" ++ diagnostic.text)
         let directive := match request.operation with
           | "synth" => s!"#synth {request.input}"
           | "reduce" => s!"#reduce {request.input}"
@@ -426,8 +429,11 @@ unsafe def runServer (setup : ModuleSetup) (profile : Bool) : IO Unit := do
         let source := request.source ++ "\n" ++ directive ++ "\n"
         let probeSnapshot ← processor (Parser.mkInputContext source fileName)
         let response ← processSnapshot probeSnapshot request.version false
-        let detail := "\n".intercalate (response.diagnostics.toList.map (·.text))
-        pure {response with detail}
+        let diagnostics := response.diagnostics.filter fun diagnostic =>
+          !baselineKeys.contains (diagnostic.severity ++ "\u0000" ++ diagnostic.kind ++ "\u0000" ++ diagnostic.text)
+        let detail := "\n".intercalate (diagnostics.toList.map (·.text))
+        let ok := !diagnostics.any (·.severity == "error")
+        pure {response with ok, diagnostics, detail}
       else
         pure (probeFailure "this probe requires FILE:LINE context" request.version)
       if profile then Lean.displayCumulativeProfilingTimes

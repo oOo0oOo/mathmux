@@ -834,9 +834,9 @@ fn query_parsing_scoring_and_ranking_regressions() {
         false,
     );
     assert_eq!(exact.hits[0].name, "_root_.Demo.Structure");
-    assert_eq!(result_limit(true, false), RELATED_RESULT_LIMIT);
+    assert_eq!(result_limit(true, false), 3);
     assert_eq!(result_limit(true, true), RESULT_LIMIT);
-    assert_eq!(result_limit(false, false), RESULT_LIMIT);
+    assert_eq!(result_limit(false, false), 8);
     assert!(direct_continuation_name_matches(
         "AtiyahSinger.Topology.VectorBundle.MatrixGL.circleResolventFunction_commutes_on_sphere",
         "circleResolventFunction_commutes"
@@ -1036,27 +1036,9 @@ fn query_parsing_scoring_and_ranking_regressions() {
 }
 
 #[test]
-fn stored_query_refinements_filter_hits_without_requerying() {
-    let mut first = search_hit("Demo.first");
-    first.doc = Some("compact support".into());
-    let mut second = search_hit("Demo.second");
-    second.doc = Some("proper map".into());
+fn query_reference_selectors_are_one_based() {
     assert_eq!(parse_query_reference_selector("q12#2"), Some(("q12", 1)));
     assert_eq!(parse_query_reference_selector("q12#0"), None);
-    assert_eq!(
-        refined_stored_hits(vec![first.clone(), second.clone()], None, "proper")
-            .into_iter()
-            .map(|hit| hit.name)
-            .collect::<Vec<_>>(),
-        vec!["Demo.second"]
-    );
-    assert_eq!(
-        refined_stored_hits(vec![first, second], Some(0), "")
-            .into_iter()
-            .map(|hit| hit.name)
-            .collect::<Vec<_>>(),
-        vec!["Demo.first"]
-    );
 }
 
 #[test]
@@ -1104,7 +1086,7 @@ fn compact_search_summary_suggests_a_targeted_probe() {
         duration_ms: 0,
         created_at: 0,
     });
-    assert!(summary.contains("+1 results\nnext: mathmux probe q1#1 outline"));
+    assert!(summary.contains("+1 results\nnext: mathmux probe q1#1 usages"));
     assert!(!summary.contains("show q1 --all"));
 }
 
@@ -1443,7 +1425,7 @@ fn structure_summary_points_to_complete_field_inventory() {
         created_at: 0,
     });
     assert!(!summary.contains("field1 : Nat"));
-    assert!(summary.contains("next: mathmux probe Demo.Config source"));
+    assert!(summary.contains("next: mathmux probe Demo.Config fields"));
 
     let fields = SearchHit {
         name: "Demo.Config fields".into(),
@@ -2192,14 +2174,9 @@ fn bare_lean_paths_require_explicit_source_context() {
 fn source_query_regressions() {
     assert_eq!(edit_distance("compp", "comp"), 1);
     assert_eq!(
-        refined_search_query("Homeomorph", "constructors"),
-        "Homeomorph.mk"
+        regex_recovery_terms(r"AtiyahSinger\..*pullbackCompHom"),
+        vec!["AtiyahSinger", "pullbackCompHom"]
     );
-    assert_eq!(
-        refined_search_query("Homeomorph", "fields"),
-        "Homeomorph fields"
-    );
-    assert_eq!(refined_search_query("Homeomorph", "usages"), "Homeomorph");
     assert_eq!(
         field_inventory_query("Homeomorph fields"),
         Some("Homeomorph")
@@ -2898,21 +2875,6 @@ fn exact_misses_overlay_active_sibling_declarations_as_unmerged() {
             .kind
             .starts_with("unmerged:w2/sibling/agent-sibling")
     );
-    let batch = searcher
-        .exact_name_batch(
-            &current,
-            &["ContinuousLinearMap.prodMap_apply".into()],
-            false,
-        )
-        .unwrap();
-    assert_eq!(batch.inference, "exact-miss");
-    assert_eq!(batch.hits.len(), 1);
-    assert!(
-        batch.hits[0]
-            .kind
-            .starts_with("unmerged:w2/sibling/agent-sibling")
-    );
-
     for suffix in ["a", "b", "c"] {
         connection
             .execute(
@@ -3035,18 +2997,6 @@ fn exact_resolution_fails_closed_instead_of_returning_a_different_declaration() 
             .is_some_and(|note| note.contains("exact declaration not found"))
     );
     assert!(miss.hits.iter().all(|hit| hit.name != "AlgHom.pullbackFst"));
-
-    let batch = searcher
-        .exact_name_batch(&workspace, &["pullbackCompHom".into()], false)
-        .unwrap();
-    assert_eq!(batch.inference, "exact-miss");
-    assert!(batch.hits.is_empty());
-    assert!(
-        batch
-            .note
-            .as_deref()
-            .is_some_and(|note| note.starts_with("exact declaration not found: pullbackCompHom"))
-    );
 }
 
 #[test]

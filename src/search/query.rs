@@ -1,30 +1,5 @@
 use super::*;
 
-pub(super) fn refined_search_query(base: &str, refinement: &str) -> String {
-    let refinement = refinement.trim();
-    let facet = refinement.to_ascii_lowercase();
-    if matches!(
-        facet.as_str(),
-        "field" | "fields" | "projection" | "projections"
-    ) {
-        return format!("{base} fields");
-    }
-    if matches!(facet.as_str(), "constructor" | "constructors") {
-        return format!("{base}.mk");
-    }
-    let refinement = match facet.as_str() {
-        "usage" | "usages" | "references" => "",
-        "coercion" | "coercions" => "coe",
-        "lemma" | "lemmas" => "theorem",
-        _ => refinement,
-    };
-    [base, refinement]
-        .into_iter()
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 pub(super) fn field_inventory_query(query: &str) -> Option<&str> {
     let terms = query.split_whitespace().collect::<Vec<_>>();
     let (name, facet) = match terms.as_slice() {
@@ -42,25 +17,6 @@ pub(super) fn field_inventory_query(query: &str) -> Option<&str> {
             "field" | "fields" | "projection" | "projections"
         ))
     .then_some(name)
-}
-
-pub(super) fn search_refinement_facet(refinement: &str) -> bool {
-    matches!(
-        refinement.trim().to_ascii_lowercase().as_str(),
-        "usage"
-            | "usages"
-            | "references"
-            | "field"
-            | "fields"
-            | "projection"
-            | "projections"
-            | "constructor"
-            | "constructors"
-            | "coercion"
-            | "coercions"
-            | "lemma"
-            | "lemmas"
-    )
 }
 
 pub(super) fn require_submission_refinement(reference: &str, refinement: &str) -> Result<()> {
@@ -510,10 +466,12 @@ pub(super) fn canonical_declaration_name(name: &str) -> &str {
 }
 
 pub(super) fn result_limit(exact_name_miss: bool, show_all: bool) -> usize {
-    if exact_name_miss && !show_all {
-        RELATED_RESULT_LIMIT
-    } else {
+    if show_all {
         RESULT_LIMIT
+    } else if exact_name_miss {
+        RELATED_RESULT_LIMIT.min(3)
+    } else {
+        8
     }
 }
 
@@ -1381,6 +1339,67 @@ pub(super) fn hit_query_coverage(
             (count + 1, weight + token.chars().count())
         });
     (matched.0, matched.1, name_matched.0, name_matched.1)
+}
+
+pub(super) fn promote_bridge_candidate(
+    ranked: &mut Vec<Candidate>,
+    tokens: &[String],
+) -> Option<String> {
+    let anchor = ranked.first()?;
+    let anchor_coverage = hit_query_coverage(&anchor.hit, tokens).0;
+    let anchor_name = anchor.hit.name.to_ascii_lowercase();
+    let anchor_leaf = anchor_name.rsplit('.').next().unwrap_or(&anchor_name);
+    let mut best = None;
+    for (index, candidate) in ranked.iter().enumerate().skip(1) {
+        let candidate_name = candidate.hit.name.to_ascii_lowercase();
+        let candidate_leaf = candidate_name.rsplit('.').next().unwrap_or(&candidate_name);
+        let shared_consumer = anchor.hit.usages.iter().any(|left| {
+            candidate
+                .hit
+                .usages
+                .iter()
+                .any(|right| left.path == right.path && left.context == right.context)
+        });
+        let usage_edge = anchor.hit.usages.iter().any(|usage| {
+            usage
+                .context
+                .as_deref()
+                .is_some_and(|context| context.to_ascii_lowercase().contains(candidate_leaf))
+        }) || candidate.hit.usages.iter().any(|usage| {
+            usage
+                .context
+                .as_deref()
+                .is_some_and(|context| context.to_ascii_lowercase().contains(anchor_leaf))
+        });
+        let union_coverage = tokens
+            .iter()
+            .filter(|token| {
+                hit_matches_token(&anchor.hit, token) || hit_matches_token(&candidate.hit, token)
+            })
+            .count();
+        if union_coverage <= anchor_coverage {
+            continue;
+        }
+        let relation = usage_edge || shared_consumer;
+        let score = union_coverage * 10 + usize::from(relation) * 5;
+        if best
+            .as_ref()
+            .is_none_or(|(_, best_score, _, _)| score > *best_score)
+        {
+            best = Some((index, score, union_coverage, relation));
+        }
+    }
+    let (index, _, coverage, related) = best?;
+    let bridge = ranked.remove(index);
+    let bridge_name = bridge.hit.name.clone();
+    ranked.insert(1, bridge);
+    Some(format!(
+        "bridge pair (inferred{}): {} ↔ {} covers {coverage}/{} concepts",
+        if related { ", shared consumer" } else { "" },
+        ranked[0].hit.name,
+        bridge_name,
+        tokens.len()
+    ))
 }
 
 pub(super) fn text_matches_token(text: &str, token: &str) -> bool {

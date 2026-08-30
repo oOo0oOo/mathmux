@@ -109,11 +109,7 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
                 }
             }
             if hit.usages.len() > 3 {
-                output.push_str(&format!(
-                    "\n  +{} usages; probe {} usages",
-                    hit.usages.len() - 3,
-                    shell_argument(probe_name(&hit.name))
-                ));
+                output.push_str(&format!("\n  +{} indexed usages", hit.usages.len() - 3));
             }
         } else if !hit.usages.is_empty() {
             output.push_str(&format!(
@@ -323,12 +319,11 @@ fn append_single_result_hint(output: &mut String, run: &SearchRun, proof_body_re
 }
 
 fn next_probe_focus(hit: &SearchHit) -> &'static str {
-    if !hit.usages.is_empty() {
-        "usages"
-    } else if matches!(hit.kind.as_str(), "lemma" | "theorem") {
-        "outline"
-    } else {
-        "source"
+    match hit.kind.as_str() {
+        "lemma" | "theorem" | "generated" => "usages",
+        "class" | "structure" => "fields",
+        "inductive" => "constructors",
+        _ => "source",
     }
 }
 

@@ -1,20 +1,8 @@
 use crate::reference::{Reference, ReferenceKind};
-use anyhow::{Result, bail, ensure};
-
-const KINDS: &[&str] = &[
-    "abbrev",
-    "class",
-    "def",
-    "inductive",
-    "instance",
-    "lemma",
-    "structure",
-    "theorem",
-];
+use anyhow::{Result, ensure};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum SearchExpression {
-    ExactNames(Vec<String>),
     Type(String),
     Regex(String),
     Query(String),
@@ -59,39 +47,15 @@ impl SearchRequest {
             "Lean directives belong to `mathmux probe CONTEXT \"#check TERM\"`"
         );
 
+        ensure!(
+            !query.starts_with("name:")
+                && !query
+                    .split_whitespace()
+                    .any(|term| term.starts_with("name:")),
+            "name: search was removed; use a bare exact declaration name or `declaration PATTERN`"
+        );
         let terms = query.split_whitespace().collect::<Vec<_>>();
-        if terms.len() > 1 && KINDS.contains(&terms[0]) && terms[1].starts_with("name:") {
-            bail!("KIND and name: are separate search forms and cannot be combined");
-        }
-
-        let expression = if let Some(names) = query.strip_prefix("name:") {
-            ensure!(
-                !names.chars().any(char::is_whitespace),
-                "name: accepts one name or a `|` batch"
-            );
-            let names = names.split('|').map(str::trim).collect::<Vec<_>>();
-            let names = names
-                .into_iter()
-                .enumerate()
-                .map(|(index, name)| {
-                    if index > 0 {
-                        name.strip_prefix("name:").unwrap_or(name)
-                    } else {
-                        name
-                    }
-                })
-                .collect::<Vec<_>>();
-            if names.is_empty() || !names.iter().all(|name| declaration_name(name)) {
-                if names.iter().any(|name| name.contains('*')) {
-                    let pattern = names.join("|");
-                    bail!(
-                        "name: is exact-only; use `mathmux search 'declaration {pattern}'` for wildcard discovery or name:A|B|C for an exact batch"
-                    );
-                }
-                bail!("invalid exact-name batch; use name:A|B|C (no spaces)");
-            }
-            SearchExpression::ExactNames(names.into_iter().map(str::to_owned).collect())
-        } else if let Some(pattern) = query.strip_prefix("type:") {
+        let expression = if let Some(pattern) = query.strip_prefix("type:") {
             let pattern = pattern.trim();
             ensure!(!pattern.is_empty(), "type: requires a Lean type pattern");
             validate_type_pattern(pattern)?;
@@ -179,30 +143,12 @@ fn canonical_regex(path: Option<&str>, regex: &str) -> Result<String> {
     })
 }
 
-fn declaration_name(name: &str) -> bool {
-    !name.is_empty()
-        && !name.starts_with('.')
-        && !name.ends_with('.')
-        && name.split('.').all(|part| {
-            !part.is_empty()
-                && part
-                    .chars()
-                    .all(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '\''))
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn parses_forced_query_classes_without_fallback() {
-        assert_eq!(
-            SearchRequest::parse("name:A.B|C.D", None, false)
-                .unwrap()
-                .expression,
-            SearchExpression::ExactNames(vec!["A.B".into(), "C.D".into()])
-        );
         assert_eq!(
             SearchRequest::parse("type:_ ≃L[ℂ] F", None, false)
                 .unwrap()
@@ -224,29 +170,16 @@ mod tests {
         assert!(SearchRequest::parse("c12 repair", None, false).is_err());
         assert!(SearchRequest::parse("#check Nat", None, false).is_err());
         assert!(SearchRequest::parse("theorem name:foo", None, false).is_err());
+        assert!(SearchRequest::parse("name:A.B", None, false).is_err());
     }
 
     #[test]
-    fn explains_exact_name_batch_syntax() {
-        let error = SearchRequest::parse("name:A B", None, false).unwrap_err();
-        assert_eq!(error.to_string(), "name: accepts one name or a `|` batch");
-        let error = SearchRequest::parse("name:A|", None, false).unwrap_err();
+    fn explains_removed_exact_name_syntax() {
+        let error = SearchRequest::parse("name:A", None, false).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "invalid exact-name batch; use name:A|B|C (no spaces)"
+            "name: search was removed; use a bare exact declaration name or `declaration PATTERN`"
         );
-        let error = SearchRequest::parse("name:*FinalCriterion*", None, false).unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "name: is exact-only; use `mathmux search 'declaration *FinalCriterion*'` for wildcard discovery or name:A|B|C for an exact batch"
-        );
-        assert_eq!(
-            SearchRequest::parse("name:A|name:B", None, false)
-                .unwrap()
-                .expression,
-            SearchExpression::ExactNames(vec!["A".into(), "B".into()])
-        );
-        assert!(SearchRequest::parse("name:A|name:name:B", None, false).is_err());
     }
 
     #[test]

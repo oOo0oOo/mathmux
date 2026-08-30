@@ -258,22 +258,6 @@ fn exact_refinement_score(hit: &SearchHit, tokens: &[String]) -> usize {
         .count()
 }
 
-fn refined_stored_hits(
-    hits: Vec<SearchHit>,
-    selected_hit: Option<usize>,
-    refinement: &str,
-) -> Vec<SearchHit> {
-    let tokens = meaningful_query_tokens(refinement);
-    hits.into_iter()
-        .enumerate()
-        .filter(|(index, hit)| {
-            selected_hit.is_none_or(|selected| selected == *index)
-                && (tokens.is_empty() || exact_refinement_score(hit, &tokens) == tokens.len())
-        })
-        .map(|(_, hit)| hit)
-        .collect()
-}
-
 fn qualified_suffix_segments(left: &str, right: &str) -> usize {
     left.split('.')
         .rev()
@@ -683,17 +667,10 @@ impl Searcher {
         let request = SearchRequest::parse(&query, limit, all)?;
         let started = Instant::now();
         let requested_query = request.displayed_query.clone();
-        let (query, forced_plan, exact_names) = match &request.expression {
-            SearchExpression::ExactNames(names) => (
-                names[0].clone(),
-                Some(TextSearchPlan::ExactFirst),
-                Some(names),
-            ),
-            SearchExpression::Type(pattern) => {
-                (pattern.clone(), Some(TextSearchPlan::ForcedType), None)
-            }
+        let (query, forced_plan) = match &request.expression {
+            SearchExpression::Type(pattern) => (pattern.clone(), Some(TextSearchPlan::ForcedType)),
             SearchExpression::Regex(query) | SearchExpression::Query(query) => {
-                (query.clone(), None, None)
+                (query.clone(), None)
             }
         };
         let expanded = self.expand_reference_query(&query)?;
@@ -707,40 +684,53 @@ impl Searcher {
         let source_show_all = request.all;
         let query = planned.query.as_str();
         let reference = self.state.next_reference(ReferenceKind::Query)?;
-        let result = if let Some(names) = exact_names {
-            self.exact_name_batch(workspace, names, request.all)?
-        } else {
-            match planned.plan {
-                SearchPlan::StoredContext => SearchResult {
-                    hits: Vec::new(),
-                    inference: "stored-context".into(),
-                    note: Some("stored context only; declaration search skipped".into()),
-                    ok: true,
-                },
-                SearchPlan::Location(mut location) => {
-                    location.expanded = request.all;
-                    self.source_location_search(workspace, location)?
-                }
-                SearchPlan::SourceRegex(source) => {
-                    source_regex_result(workspace, source, source_show_all)?
-                }
-                SearchPlan::Source(source) => {
-                    if source.terms.len() == 1 && source.terms[0].eq_ignore_ascii_case("dependents")
-                    {
-                        self.source_dependents(workspace, &source)?
-                    } else {
-                        source_occurrence_result(workspace, source, source_show_all)?
-                    }
-                }
-                SearchPlan::Text(text_plan) => self.planned_text_search(
-                    workspace,
-                    query,
-                    forced_plan.unwrap_or(text_plan),
-                    expanded.import_target.as_deref(),
-                    expanded.auxiliary_query.as_deref(),
-                    request.all,
-                )?,
+        let result = match planned.plan {
+            SearchPlan::StoredContext => SearchResult {
+                hits: Vec::new(),
+                inference: "stored-context".into(),
+                note: Some("stored context only; declaration search skipped".into()),
+                ok: true,
+            },
+            SearchPlan::Location(mut location) => {
+                location.expanded = request.all;
+                self.source_location_search(workspace, location)?
             }
+            SearchPlan::SourceRegex(source) => {
+                let recovery = regex_recovery_terms(&source.pattern);
+                let mut result = source_regex_result(workspace, source, source_show_all)?;
+                if result.hits.is_empty() && !recovery.is_empty() {
+                    let recovery_query = recovery.join(" ");
+                    let recovered = self.planned_text_search(
+                        workspace,
+                        &recovery_query,
+                        TextSearchPlan::Discovery,
+                        None,
+                        None,
+                        false,
+                    )?;
+                    result.hits = recovered.hits.into_iter().take(3).collect();
+                    result.inference = "source-regex-recovery".into();
+                    result.note = Some(format!(
+                        "no regex source matches; closest declarations for literals: {recovery_query}"
+                    ));
+                }
+                result
+            }
+            SearchPlan::Source(source) => {
+                if source.terms.len() == 1 && source.terms[0].eq_ignore_ascii_case("dependents") {
+                    self.source_dependents(workspace, &source)?
+                } else {
+                    source_occurrence_result(workspace, source, source_show_all)?
+                }
+            }
+            SearchPlan::Text(text_plan) => self.planned_text_search(
+                workspace,
+                query,
+                forced_plan.unwrap_or(text_plan),
+                expanded.import_target.as_deref(),
+                expanded.auxiliary_query.as_deref(),
+                request.all,
+            )?,
         };
         let mut result = result;
         if !expanded.context.is_empty() && requested_query.split_whitespace().count() == 1 {
@@ -776,82 +766,6 @@ impl Searcher {
             Ok(render_summary(&run))
         }?;
         if ok { Ok(rendered) } else { bail!(rendered) }
-    }
-
-    fn exact_name_batch(
-        &self,
-        workspace: &Workspace,
-        names: &[String],
-        all: bool,
-    ) -> Result<SearchResult> {
-        let mut hits = Vec::new();
-        let mut missing = Vec::new();
-        let mut miss_suggestions = Vec::new();
-        let mut warming = false;
-        for name in names {
-            let result = self.planned_text_search(
-                workspace,
-                name,
-                TextSearchPlan::ExactFirst,
-                None,
-                None,
-                all,
-            )?;
-            warming |= result
-                .note
-                .as_deref()
-                .is_some_and(|note| note.contains("warming"));
-            let mut result_hits = result.hits;
-            if let Some(index) = result_hits.iter().position(|hit| {
-                !hit.kind.starts_with("unmerged:") && qualified_name_matches(&hit.name, name)
-            }) {
-                hits.push(result_hits.remove(index));
-            } else {
-                missing.push(name.clone());
-                miss_suggestions.extend(result_hits);
-            }
-        }
-        if hits.is_empty() && !missing.is_empty() {
-            let mut seen = HashSet::new();
-            miss_suggestions.retain(|hit| seen.insert((hit.name.clone(), hit.kind.clone())));
-            miss_suggestions.truncate(3);
-            let mut note = format!("exact declaration not found: {}", missing.join(", "));
-            if miss_suggestions
-                .iter()
-                .any(|hit| !hit.kind.starts_with("unmerged:"))
-            {
-                note.push_str("\nsuggestions (not exact):");
-            }
-            if miss_suggestions
-                .iter()
-                .any(|hit| hit.kind.starts_with("unmerged:"))
-            {
-                note.push_str("\nunmerged sibling declarations (not usable locally):");
-            }
-            if warming {
-                note.push_str("\nsource index warming");
-            }
-            return Ok(SearchResult {
-                hits: miss_suggestions,
-                inference: "exact-miss".into(),
-                note: Some(note),
-                ok: false,
-            });
-        }
-        let note = (!missing.is_empty()).then(|| {
-            let missing = format!("not found: {}", missing.join(", "));
-            if warming {
-                format!("{missing}; search indexes warming")
-            } else {
-                missing
-            }
-        });
-        Ok(SearchResult {
-            hits,
-            inference: "exact-batch".into(),
-            note,
-            ok: missing.is_empty(),
-        })
     }
 
     fn source_dependents(
@@ -935,25 +849,12 @@ impl Searcher {
             });
         }
         if Reference::is_kind(reference, ReferenceKind::Query) {
-            let prior = self
-                .state
-                .search_run(reference)?
-                .with_context(|| format!("unknown search reference {reference}"))?;
-            if !search_refinement_facet(refinement) {
-                let context = refined_stored_hits(prior.hits, selected_hit, refinement);
-                return Ok(ExpandedQuery {
-                    query: String::new(),
-                    context,
-                    import_target: None,
-                    auxiliary_query: None,
-                });
-            }
-            let base = selected_hit
-                .and_then(|index| prior.hits.get(index))
-                .or_else(|| prior.hits.first())
-                .map(|hit| hit.name.as_str())
-                .unwrap_or(&prior.query);
-            return Ok(ExpandedQuery::plain(refined_search_query(base, refinement)));
+            let selector = selected_hit
+                .map(|index| format!("#{}", index + 1))
+                .unwrap_or_default();
+            bail!(
+                "qREF search composition was removed; use `mathmux probe {reference}{selector}` for one result or `mathmux show {reference} --all`"
+            );
         }
         Ok(ExpandedQuery::plain(query))
     }
@@ -2144,14 +2045,16 @@ impl Searcher {
             if let Some(result) = resolution.result {
                 return Ok(result);
             }
-            return self.exact_miss_result(
-                workspace,
-                &exact_plan.anchor,
-                scopes,
-                import_context.as_ref(),
-                base_warming,
-                resolution.ambiguous,
-            );
+            if exact_plan.refinement_tokens.is_empty() {
+                return self.exact_miss_result(
+                    workspace,
+                    &exact_plan.anchor,
+                    scopes,
+                    import_context.as_ref(),
+                    base_warming,
+                    resolution.ambiguous,
+                );
+            }
         }
         let candidates_started = Instant::now();
         let mut rows = self.candidates(query, &query_tokens, type_search, scopes)?;
@@ -2353,6 +2256,10 @@ impl Searcher {
                 !matches!(candidate.hit.kind.as_str(), "file" | "imports")
                     && qualified_name_matches(&candidate.hit.name, query)
             });
+        let weak_coverage = query_tokens.len() >= 3
+            && ranked.first().is_some_and(|candidate| {
+                hit_query_coverage(&candidate.hit, &query_tokens).0 < query_tokens.len()
+            });
         ranked.truncate(result_limit(exact_name_miss, show_all));
         let fallback_top = ranked
             .iter()
@@ -2374,6 +2281,12 @@ impl Searcher {
             }
         }
         self.populate_usages(&mut ranked, scopes, workspace)?;
+        let bridge_note = (!type_search && !exact_name_miss)
+            .then(|| promote_bridge_candidate(&mut ranked, &query_tokens))
+            .flatten();
+        if weak_coverage && !show_all {
+            ranked.truncate(3);
+        }
         let no_hits = ranked.is_empty();
         let dependency_sources_missing = dependency_sources_missing(&workspace.path);
         let mut note = match (base_warming, warming, no_hits && dependency_sources_missing) {
@@ -2390,6 +2303,31 @@ impl Searcher {
         }
         if exact_name_miss {
             prepend_search_note(&mut note, "related results (no exact match)".into());
+        }
+        if let Some(bridge) = bridge_note {
+            prepend_search_note(&mut note, bridge);
+        }
+        if weak_coverage {
+            let hits = ranked
+                .iter()
+                .map(|candidate| candidate.hit.clone())
+                .collect::<Vec<_>>();
+            let covered = query_tokens
+                .len()
+                .saturating_sub(missing_hit_terms(&hits, &query_tokens).len());
+            let missing = missing_hit_terms(&hits, &query_tokens);
+            prepend_search_note(
+                &mut note,
+                format!(
+                    "weak coverage: {covered}/{} concepts{}",
+                    query_tokens.len(),
+                    if missing.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; missing {}", missing.join(", "))
+                    }
+                ),
+            );
         }
         if let Some(fallback) = structural_type_fallback {
             prepend_search_note(&mut note, fallback.into());
@@ -3443,6 +3381,21 @@ impl Searcher {
         }
         Ok(())
     }
+}
+
+fn regex_recovery_terms(pattern: &str) -> Vec<String> {
+    let mut terms = pattern
+        .split(|character: char| {
+            !character.is_alphanumeric() && character != '_' && character != '.'
+        })
+        .filter(|term| term.chars().count() >= 3)
+        .filter(|term| !matches!(*term, "lean" | "theorem" | "lemma" | "def"))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    terms.sort();
+    terms.dedup();
+    terms.truncate(4);
+    terms
 }
 
 fn parse_query_reference_selector(value: &str) -> Option<(&str, usize)> {
