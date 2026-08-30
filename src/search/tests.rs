@@ -2659,8 +2659,8 @@ fn exact_misses_overlay_active_sibling_declarations_as_unmerged() {
     state.add_workspace(&sibling).unwrap();
     let checker = Arc::new(Checker::new(repo.clone(), state.clone(), None).unwrap());
     let searcher = Searcher::new(repo.clone(), state, checker, None).unwrap();
-    Connection::open(repo.search_db_path)
-        .unwrap()
+    let connection = Connection::open(repo.search_db_path).unwrap();
+    connection
         .execute(
             "INSERT INTO search_fts(
                 owner, origin, file, module, line, name, kind, signature, docs, body
@@ -2704,6 +2704,50 @@ fn exact_misses_overlay_active_sibling_declarations_as_unmerged() {
             .kind
             .starts_with("unmerged:w2:sibling:agent-sibling")
     );
+
+    for suffix in ["a", "b", "c"] {
+        connection
+            .execute(
+                "INSERT INTO search_fts(
+                    owner, origin, file, module, line, name, kind, signature, docs, body
+                 ) VALUES ('workspace:w1', 'current/Linear.lean', 'Linear.lean',
+                           'ContinuousLinearMap', 12, ?1, 'theorem', 'X → Y', '', '')",
+                params![format!("ContinuousLinearMap.prodMap_apply_{suffix}")],
+            )
+            .unwrap();
+    }
+    let mixed = searcher
+        .exact_miss_result(
+            &current,
+            "ContinuousLinearMap.prodMap_apply",
+            &scopes,
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+    assert_eq!(mixed.hits.len(), 3);
+    assert_eq!(
+        mixed
+            .hits
+            .iter()
+            .filter(|hit| hit.kind.starts_with("unmerged:"))
+            .count(),
+        1
+    );
+    let summary = render_summary(&SearchRun {
+        reference: "q-mixed-miss".into(),
+        workspace_ref: current.reference.clone(),
+        query: "ContinuousLinearMap.prodMap_apply".into(),
+        inference: mixed.inference,
+        hits: mixed.hits,
+        note: mixed.note,
+        duration_ms: 1,
+        created_at: 0,
+    });
+    assert_eq!(summary.matches("suggestion:").count(), 2);
+    assert_eq!(summary.matches("UNMERGED (").count(), 1);
+    assert!(summary.contains("unmerged sibling declarations (not usable locally):"));
 }
 
 #[test]

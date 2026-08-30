@@ -2473,24 +2473,34 @@ impl Searcher {
         } else {
             format!("exact declaration not found: {query}")
         };
-        if !suggestions.is_empty() {
+        let unmerged = self.fleet_exact_suggestions(workspace, query)?;
+        let has_local_suggestions = !suggestions.is_empty();
+        let has_unmerged_suggestions = !unmerged.is_empty();
+        let mut bounded_suggestions = Vec::with_capacity(3);
+        if has_unmerged_suggestions {
+            // Keep at least one fleet result visible when local near-name results
+            // would otherwise fill the compact exact-miss preview.
+            bounded_suggestions.extend(suggestions.into_iter().take(2));
+            bounded_suggestions.extend(unmerged.into_iter().take(3 - bounded_suggestions.len()));
+        } else {
+            bounded_suggestions.extend(suggestions.into_iter().take(3));
+        }
+        if has_local_suggestions {
             note.push_str("\nsuggestions (not exact):");
         }
-        let unmerged = self.fleet_exact_suggestions(workspace, query)?;
-        if !unmerged.is_empty() {
+        if has_unmerged_suggestions {
             note.push_str("\nunmerged sibling declarations (not usable locally):");
         }
-        suggestions.extend(unmerged);
         if base_warming {
             note.push_str("\nsource index warming");
         }
-        if suggestions.is_empty() {
+        if bounded_suggestions.is_empty() {
             note.push_str(&format!(
                 "\nnext: `mathmux search \"concept {query}\"` for broad discovery"
             ));
         }
         Ok(SearchResult {
-            hits: suggestions
+            hits: bounded_suggestions
                 .into_iter()
                 .map(|candidate| candidate.hit)
                 .collect(),
