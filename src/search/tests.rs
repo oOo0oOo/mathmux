@@ -3090,6 +3090,23 @@ fn source_regex_queries_scan_a_bounded_scope_with_context() {
         error.to_string(),
         "source is a help label, not a keyword; use /REGEX/ or PATH /REGEX/ directly"
     );
+    for (query, expected) in [
+        (
+            "/alpha_apply/ --limit 100",
+            "source regex options must be outside the query; use `mathmux search '/REGEX/' --limit N`",
+        ),
+        (
+            "/alpha_apply/ --all",
+            "source regex options must be outside the query; use `mathmux search '/REGEX/' --all`",
+        ),
+    ] {
+        let error = match parse_source_regex_query(directory.path(), directory.path(), None, query)
+        {
+            Err(error) => error,
+            Ok(_) => panic!("embedded source option unexpectedly parsed"),
+        };
+        assert_eq!(error.to_string(), expected);
+    }
     fs::write(
         directory.path().join("Nested/Two.lean"),
         "theorem beta_apply := by trivial\n",

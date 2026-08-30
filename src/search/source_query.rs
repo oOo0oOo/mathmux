@@ -90,6 +90,16 @@ pub(super) fn parse_source_regex_query(
         .strip_prefix('[')
         .and_then(|scope| scope.strip_suffix(']'))
         .unwrap_or(scope);
+    if let Some(option) = scope.split_whitespace().next()
+        && matches!(option, "--all" | "--limit")
+    {
+        let hint = if option == "--all" {
+            "`mathmux search '/REGEX/' --all`"
+        } else {
+            "`mathmux search '/REGEX/' --limit N`"
+        };
+        bail!("source regex options must be outside the query; use {hint}");
+    }
     if scope
         .split_whitespace()
         .next()
