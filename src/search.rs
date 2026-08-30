@@ -244,6 +244,11 @@ struct ExactMatch {
     warming: bool,
 }
 
+struct ExactResolution {
+    result: Option<SearchResult>,
+    ambiguous: bool,
+}
+
 #[derive(Debug)]
 struct IndexedRow {
     owner: String,
@@ -1977,13 +1982,14 @@ impl Searcher {
             && let Some(mut exact_plan) = exact_plan(query, type_search)
         {
             exact_plan.source_requested |= source_requested;
-            if let Some(result) = self.resolve_exact(
+            let resolution = self.resolve_exact(
                 workspace,
                 scopes,
                 import_context.as_ref(),
                 base_warming,
                 &exact_plan,
-            )? {
+            )?;
+            if let Some(result) = resolution.result {
                 return Ok(result);
             }
             return self.exact_miss_result(
@@ -1992,6 +1998,7 @@ impl Searcher {
                 scopes,
                 import_context.as_ref(),
                 base_warming,
+                resolution.ambiguous,
             );
         }
         let candidates_started = Instant::now();
@@ -2330,9 +2337,15 @@ impl Searcher {
         import_context: Option<&ImportContext>,
         base_warming: bool,
         plan: &ExactPlan,
-    ) -> Result<Option<SearchResult>> {
+    ) -> Result<ExactResolution> {
         let name = &plan.anchor;
         let rows = self.exact_candidates(name, scopes)?;
+        let ambiguous = rows
+            .iter()
+            .map(|row| canonical_declaration_name(&row.name).to_ascii_lowercase())
+            .collect::<HashSet<_>>()
+            .len()
+            > 1;
         let ranked = ranked_exact_candidates(rows, name, workspace);
         let matched = contextual_exact_candidates(ranked, name, import_context).map(|candidates| {
             ExactMatch {
@@ -2346,18 +2359,23 @@ impl Searcher {
             None => self.generated_exact_match(name, scopes)?,
         };
         if let Some(matched) = matched {
-            return self
-                .finish_exact(
-                    matched,
-                    plan,
-                    workspace,
-                    scopes,
-                    import_context,
-                    base_warming,
-                )
-                .map(Some);
+            let result = self.finish_exact(
+                matched,
+                plan,
+                workspace,
+                scopes,
+                import_context,
+                base_warming,
+            )?;
+            return Ok(ExactResolution {
+                result: Some(result),
+                ambiguous,
+            });
         }
-        Ok(None)
+        Ok(ExactResolution {
+            result: None,
+            ambiguous,
+        })
     }
 
     fn exact_miss_result(
@@ -2367,13 +2385,8 @@ impl Searcher {
         scopes: &HashSet<String>,
         import_context: Option<&ImportContext>,
         base_warming: bool,
+        ambiguous: bool,
     ) -> Result<SearchResult> {
-        let exact_names = self
-            .exact_candidates(query, scopes)?
-            .into_iter()
-            .map(|row| canonical_declaration_name(&row.name).to_ascii_lowercase())
-            .collect::<HashSet<_>>();
-        let ambiguous = exact_names.len() > 1;
         let mut suggestions = self.near_name_suggestions(query, scopes)?;
         if let Some(context) = import_context {
             suggestions

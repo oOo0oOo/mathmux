@@ -2617,6 +2617,7 @@ fn exact_misses_overlay_active_sibling_declarations_as_unmerged() {
             &scopes,
             None,
             false,
+            false,
         )
         .unwrap();
     assert!(!result.ok);
@@ -2691,6 +2692,7 @@ fn exact_resolution_fails_closed_instead_of_returning_a_different_declaration() 
         searcher
             .resolve_exact(&workspace, &scopes, None, false, &plan)
             .unwrap()
+            .result
             .is_none()
     );
     let routed = searcher
@@ -2710,7 +2712,7 @@ fn exact_resolution_fails_closed_instead_of_returning_a_different_declaration() 
     assert!(routed_note.contains("exact declaration not found: pullbackCompHom"));
     assert!(!routed_note.contains("exact declaration not found: pullbackCompHom source"));
     let miss = searcher
-        .exact_miss_result(&workspace, "pullbackCompHom", &scopes, None, false)
+        .exact_miss_result(&workspace, "pullbackCompHom", &scopes, None, false, false)
         .unwrap();
     assert!(!miss.ok);
     assert!(
