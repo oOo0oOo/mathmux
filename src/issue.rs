@@ -732,6 +732,7 @@ fn query_class(request: &Request) -> Option<String> {
     {
         "source"
     } else if query.starts_with("name:")
+        || crate::search::is_exact_first_query(query)
         || query
             .split_whitespace()
             .next()
@@ -1785,6 +1786,14 @@ mod tests {
         };
 
         assert_eq!(query_class(&request("Demo.target")), Some("exact".into()));
+        assert_eq!(
+            query_class(&request("Demo.target usages")),
+            Some("exact".into())
+        );
+        assert_eq!(
+            query_class(&request("CompactlySupportedKZero Sum")),
+            Some("exact".into())
+        );
         assert_eq!(query_class(&request("MatrixGL.")), Some("discovery".into()));
         assert_eq!(query_class(&request(".MatrixGL")), Some("discovery".into()));
     }

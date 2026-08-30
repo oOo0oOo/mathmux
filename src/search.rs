@@ -73,6 +73,10 @@ const SEARCH_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_m
 const SOURCE_SCAN_BUDGET: Duration = Duration::from_millis(300);
 const SOURCE_FALLBACK_BUDGET: Duration = Duration::from_millis(750);
 
+pub(crate) fn is_exact_first_query(query: &str) -> bool {
+    matches!(text_search_plan(query.trim()), TextSearchPlan::ExactFirst)
+}
+
 pub struct Searcher {
     repo: Repo,
     state: State,
