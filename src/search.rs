@@ -2321,22 +2321,9 @@ impl Searcher {
                 .iter()
                 .map(|candidate| candidate.hit.clone())
                 .collect::<Vec<_>>();
-            let covered = query_tokens
-                .len()
-                .saturating_sub(missing_hit_terms(&hits, &query_tokens).len());
-            let missing = missing_hit_terms(&hits, &query_tokens);
-            prepend_search_note(
-                &mut note,
-                format!(
-                    "weak coverage: {covered}/{} concepts{}",
-                    query_tokens.len(),
-                    if missing.is_empty() {
-                        String::new()
-                    } else {
-                        format!("; missing {}", missing.join(", "))
-                    }
-                ),
-            );
+            if let Some(coverage) = weak_coverage_note(&hits, &query_tokens) {
+                prepend_search_note(&mut note, coverage);
+            }
         }
         if let Some(fallback) = structural_type_fallback {
             prepend_search_note(&mut note, fallback.into());

@@ -779,7 +779,7 @@ pub(super) fn exact_plan(query: &str, type_search: bool) -> Option<ExactPlan> {
     })
 }
 
-pub(super) fn missing_hit_terms(hits: &[SearchHit], terms: &[String]) -> Vec<String> {
+fn uncovered_hit_terms(hits: &[SearchHit], terms: &[String]) -> Vec<String> {
     let searchable = hits
         .iter()
         .map(|hit| {
@@ -797,9 +797,32 @@ pub(super) fn missing_hit_terms(hits: &[SearchHit], terms: &[String]) -> Vec<Str
     terms
         .iter()
         .filter(|term| !searchable.contains(term.as_str()))
-        .take(SEARCH_TUNING.promotion.missing_term_limit)
         .cloned()
         .collect()
+}
+
+pub(super) fn missing_hit_terms(hits: &[SearchHit], terms: &[String]) -> Vec<String> {
+    uncovered_hit_terms(hits, terms)
+        .into_iter()
+        .take(SEARCH_TUNING.promotion.missing_term_limit)
+        .collect()
+}
+
+pub(super) fn weak_coverage_note(hits: &[SearchHit], terms: &[String]) -> Option<String> {
+    let missing = uncovered_hit_terms(hits, terms);
+    if missing.is_empty() {
+        return None;
+    }
+    let covered = terms.len().saturating_sub(missing.len());
+    let shown = missing
+        .into_iter()
+        .take(SEARCH_TUNING.promotion.missing_term_limit)
+        .collect::<Vec<_>>();
+    Some(format!(
+        "weak coverage: {covered}/{} concepts; missing {}",
+        terms.len(),
+        shown.join(", ")
+    ))
 }
 
 #[allow(dead_code)]
@@ -1393,8 +1416,12 @@ pub(super) fn promote_bridge_candidate(
     let bridge_name = bridge.hit.name.clone();
     ranked.insert(1, bridge);
     Some(format!(
-        "bridge pair (inferred{}): {} ↔ {} covers {coverage}/{} concepts",
-        if related { ", shared consumer" } else { "" },
+        "{}: {} ↔ {} covers {coverage}/{} concepts",
+        if related {
+            "bridge pair (usage-linked)"
+        } else {
+            "coverage complement (lexical)"
+        },
         ranked[0].hit.name,
         bridge_name,
         tokens.len()

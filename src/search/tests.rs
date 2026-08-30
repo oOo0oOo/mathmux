@@ -16,6 +16,40 @@ fn search_hit(name: &str) -> SearchHit {
     }
 }
 
+#[test]
+fn coverage_notes_do_not_call_complete_result_sets_weak() {
+    let hits = vec![search_hit("Demo.alpha"), search_hit("Demo.beta_gamma")];
+    let terms = vec!["alpha".into(), "beta".into(), "gamma".into()];
+    assert_eq!(weak_coverage_note(&hits, &terms), None);
+
+    let missing = vec!["alpha".into(), "beta".into(), "gamma".into()];
+    assert_eq!(
+        weak_coverage_note(&[search_hit("Demo.alpha")], &missing).as_deref(),
+        Some("weak coverage: 1/3 concepts; missing beta, gamma")
+    );
+}
+
+#[test]
+fn lexical_coverage_complements_do_not_claim_a_bridge() {
+    let mut ranked = vec![
+        Candidate {
+            hit: search_hit("Demo.alpha"),
+            score: 20.0,
+            origins: 0,
+        },
+        Candidate {
+            hit: search_hit("Unrelated.beta"),
+            score: 10.0,
+            origins: 0,
+        },
+    ];
+    let terms = vec!["alpha".into(), "beta".into()];
+    assert_eq!(
+        promote_bridge_candidate(&mut ranked, &terms).as_deref(),
+        Some("coverage complement (lexical): Demo.alpha ↔ Unrelated.beta covers 2/2 concepts")
+    );
+}
+
 fn indexed_row(name: &str) -> IndexedRow {
     IndexedRow {
         owner: "workspace:w1".into(),
