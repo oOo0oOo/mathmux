@@ -11,6 +11,12 @@ pub(super) fn render_summary_without_hints(run: &SearchRun) -> String {
 fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
     let (verdict, trailing_note) = split_verdict_and_note(run);
     let mut output = verdict;
+    if run.inference == "exact-miss"
+        && let Some(note) = trailing_note
+    {
+        output.push('\n');
+        output.push_str(note);
+    }
     let proof_body_requested = query_requests_proof_body(&run.query);
     let related_results = run
         .note
@@ -27,6 +33,9 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
     };
     for (index, hit) in run.hits.iter().take(summary_limit).enumerate() {
         output.push('\n');
+        if run.hits.len() > 1 {
+            output.push_str(&format!("{}#{} ", run.reference, index + 1));
+        }
         if run.inference == "exact-miss" {
             if let Some(provenance) = hit.kind.strip_prefix("unmerged:") {
                 output.push_str(&format!("UNMERGED ({provenance}): "));
@@ -75,7 +84,7 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
         {
             output.push_str(" : ");
             if matches!(run.inference.as_str(), "exact" | "exact-batch") {
-                output.push_str(&single_line(signature));
+                output.push_str(&compact_signature_preview(signature));
             } else {
                 output.push_str(&truncate_line(&single_line(signature), 240));
             }
@@ -103,7 +112,7 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
                 output.push_str(&format!(
                     "\n  +{} usages; probe {} usages",
                     hit.usages.len() - 3,
-                    probe_name(&hit.name)
+                    shell_argument(probe_name(&hit.name))
                 ));
             }
         } else if !hit.usages.is_empty() {
@@ -124,6 +133,10 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
                         | "location-expanded"
                         | "outline"
                         | "proof-outline"
+                        | "declaration-outline"
+                        | "declaration-neighborhood"
+                        | "declaration-dependencies"
+                        | "declaration-find"
                         | "source-group"
                         | "source-occurrences"
                         | "source-range"
@@ -140,7 +153,9 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
     } else {
         append_complete_range_hint(&mut output, run);
     }
-    if let Some(note) = trailing_note {
+    if run.inference != "exact-miss"
+        && let Some(note) = trailing_note
+    {
         output.push('\n');
         output.push_str(note);
     }
@@ -173,7 +188,9 @@ fn split_verdict_and_note(run: &SearchRun) -> (String, Option<&str>) {
         match run.inference.as_str() {
             "exact" | "exact-batch" => "exact declaration".to_owned(),
             "probe" | "usages" => "probe result".to_owned(),
-            "source" | "source-only" | "source-regex" => "source result".to_owned(),
+            "source" | "source-only" | "source-regex" | "source-outline" => {
+                "source result".to_owned()
+            }
             _ => format!(
                 "{} ranked result{}",
                 run.hits.len(),
@@ -189,7 +206,7 @@ fn append_exact_miss_hint(output: &mut String, run: &SearchRun) {
         return;
     }
     if let Some(hit) = run.hits.first() {
-        let name = probe_name(&hit.name);
+        let name = shell_argument(probe_name(&hit.name));
         if hit.kind.starts_with("unmerged:") {
             output.push_str(&format!(
                 "\nnext: sync, then mathmux probe {name} signature"
@@ -209,7 +226,7 @@ fn append_exact_miss_hint(output: &mut String, run: &SearchRun) {
             .rsplit('.')
             .next()
             .unwrap_or(query);
-        output.push_str(&format!("\nnext: mathmux search \"{leaf}\""));
+        output.push_str(&format!("\nnext: mathmux search {}", shell_argument(leaf)));
     }
 }
 
@@ -231,14 +248,20 @@ fn append_next_hint(
     {
         output.push_str("\nnext: refine query");
     } else if let Some(hit) = run.hits.first().filter(|hit| is_probeable_declaration(hit)) {
-        let focus = if hit.usages.is_empty() {
-            "signature"
-        } else {
-            "usages"
-        };
+        let focus = next_probe_focus(hit);
         output.push_str(&format!(
-            "\nnext: mathmux probe {} {focus}",
-            probe_name(&hit.name),
+            "\nnext: mathmux probe {}#1 {focus}",
+            run.reference,
+        ));
+    } else if let Some(hit) = run.hits.first()
+        && matches!(
+            hit.kind.as_str(),
+            "source-group" | "location" | "location-expanded"
+        )
+    {
+        output.push_str(&format!(
+            "\nnext: mathmux probe {}#1 outline",
+            run.reference
         ));
     } else if run.hits.len() > summary_limit {
         output.push_str("\nnext: refine query");
@@ -279,27 +302,64 @@ fn append_single_result_hint(output: &mut String, run: &SearchRun, proof_body_re
             "exact" | "exact-batch" | "hybrid" | "hybrid+applicability"
         )
     {
-        let focus = if hit.usages.is_empty() {
-            "signature"
-        } else {
-            "usages"
-        };
+        let focus = next_probe_focus(hit);
         output.push_str(&format!(
             "\nnext: mathmux probe {} {focus}",
-            probe_name(&hit.name),
+            shell_argument(probe_name(&hit.name)),
         ));
     } else if let Some(hit) = run.hits.first() {
         match hit.kind.as_str() {
             "source-group" | "location" | "location-expanded" => output.push_str(&format!(
                 "\nnext: mathmux probe {} outline",
-                probe_name(&hit.name)
+                shell_argument(probe_name(&hit.name))
             )),
-            "proof-outline" => output.push_str(&format!(
+            "proof-outline" | "declaration-outline" => output.push_str(&format!(
                 "\nnext: mathmux probe {} source",
-                probe_name(&hit.name)
+                shell_argument(probe_name(&hit.name))
             )),
             _ => {}
         }
+    }
+}
+
+fn next_probe_focus(hit: &SearchHit) -> &'static str {
+    if !hit.usages.is_empty() {
+        "usages"
+    } else if matches!(hit.kind.as_str(), "lemma" | "theorem") {
+        "outline"
+    } else {
+        "source"
+    }
+}
+
+fn compact_signature_preview(signature: &str) -> String {
+    let signature = single_line(signature);
+    let mut output = String::new();
+    let mut context_binders = 0;
+    let mut depth = 0usize;
+    let mut opening = None;
+    for character in signature.chars() {
+        match character {
+            '{' | '[' if depth == 0 => {
+                depth = 1;
+                opening = Some(character);
+                context_binders += 1;
+            }
+            '{' | '[' if depth > 0 => depth += 1,
+            '}' if depth > 0 && opening == Some('{') => depth -= 1,
+            ']' if depth > 0 && opening == Some('[') => depth -= 1,
+            _ if depth == 0 => output.push(character),
+            _ => {}
+        }
+        if depth == 0 {
+            opening = None;
+        }
+    }
+    let output = output.split_whitespace().collect::<Vec<_>>().join(" ");
+    if context_binders == 0 {
+        output
+    } else {
+        format!("{output} [context: {context_binders} implicit/typeclass]")
     }
 }
 
@@ -343,7 +403,8 @@ fn render_source(
             "source-range" => SOURCE_RANGE_ALL_LIMIT,
             "source-occurrences" => SOURCE_OCCURRENCE_LIMIT,
             "source-group" => 3,
-            "proof-outline" => 80,
+            "proof-outline" | "declaration-outline" => 80,
+            "declaration-neighborhood" | "declaration-dependencies" | "declaration-find" => 24,
             _ => SOURCE_PREVIEW_LINES,
         }
     };
@@ -401,4 +462,29 @@ pub(super) fn source_has_complete_declaration_header(hit: &SearchHit, source: &s
             hit.kind.as_str(),
             "class" | "inductive" | "instance" | "structure"
         ) && header.split_whitespace().any(|word| word == "where")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_previews_bucket_implicit_context() {
+        assert_eq!(
+            compact_signature_preview(
+                "{X : Type u} [TopologicalSpace X] (f : X → X) : Continuous f"
+            ),
+            "(f : X → X) : Continuous f [context: 2 implicit/typeclass]"
+        );
+        assert_eq!(compact_signature_preview("Nat → Nat"), "Nat → Nat");
+    }
+
+    #[test]
+    fn generated_commands_quote_lean_names_with_apostrophes() {
+        assert_eq!(
+            shell_argument("Demo.changeModelTrivialization'"),
+            "\"Demo.changeModelTrivialization'\""
+        );
+        assert_eq!(shell_argument("Demo.safe_name"), "Demo.safe_name");
+    }
 }

@@ -995,7 +995,7 @@ impl Checker {
             }
         };
         let mut worker_guard = if matches!(run, WorkerRun::Probe { .. }) {
-            lock_mutex_until(&worker, timeout).context(
+            lock_mutex_until(&worker, timeout.max(COLD_PROBE_TIMEOUT)).context(
                 "Lean worker is busy with another request; retry the probe after it finishes",
             )?
         } else {

@@ -63,21 +63,23 @@ RULES
   name: forces exact lookup; its | batch returns all. Bare identifier queries are
   exact-first. type: matches declaration result types; `_` holes are legal.
   sREF requires TERMS; use show sREF first, then --all only if needed.
-  Source facets follow a space, not a colon.
+  Source facets accept a space or FILE.lean:outline shorthand.
   FILE:LINE reads source only; use probe FILE:LINE for Lean context.
   Quote queries containing shell characters such as |, *, or #.
   Sigil what you know; leave inference for what you do not."#;
 
 const PROBE_HELP: &str = r##"PROBE — inspect something known; returns qREF
 FORMS — type one directly; there are no API, LEAN, or other category keywords
-  NAME [signature|source|outline|apply|fields|constructors|ext|simp|
-        instances|coercions|usages]
+  NAME [signature|source|outline|neighborhood|dependencies|apply|fields|
+        constructors|ext|simp|instances|coercions|usages]
+  NAME find TERM
   type:LEAN_TYPE [types]
   FILE warnings
   FILE:LINE [goal] | FILE:LINE TERM [signature]
   PATH NAME usages
   cREF [goal|types|defeq|rewrite|profile]
-  declaration-qREF [signature|source|outline|usages|constructors]
+  declaration-qREF[#N] [signature|source|outline|neighborhood|dependencies|
+                        find TERM|usages|constructors]
   positioned-qREF [goal] | stored-probe-qREF
   FILE|FILE:LINE|cREF|qREF "#check TERM"|"#synth TYPE"|"#reduce TERM"
   FILE:LINE|cREF|positioned-qREF "by TACTIC"
@@ -87,8 +89,9 @@ RESULT
   probing one returns a source-bound dossier with API/dependency evidence.
   API focuses return one bounded dossier. goal returns the exact local goal;
   TERM/directives return Lean's elaborated answer; by returns solved or subgoals.
-  NAME source resolves the exact declaration and returns that body; NAME outline
-  returns its proof skeleton. A miss never
+  NAME source resolves the exact declaration and returns that body; outline is
+  kind-aware, neighborhood shows ambient setup, dependencies lists qualified
+  references, and find searches only that declaration. A miss never
   falls through to another declaration. search FILE:LINE/RANGE reads file text.
 
 NEXT
@@ -873,7 +876,7 @@ mod tests {
             "name:A|B|C",
             "source/compose are labels, not keywords",
             "sREF requires TERMS",
-            "Source facets follow a space, not a colon.",
+            "Source facets accept a space or FILE.lean:outline shorthand.",
             "--limit",
         ] {
             assert!(help.contains(form), "missing search form {form}");
@@ -886,11 +889,12 @@ mod tests {
             .to_string();
         for contract in [
             "there are no API, LEAN, or other category keywords",
-            "NAME [signature|source|outline|apply",
+            "NAME [signature|source|outline|neighborhood|dependencies|apply",
+            "NAME find TERM",
             "FILE warnings",
             "FILE:LINE [goal]",
             "cREF [goal|types|defeq|rewrite|profile]",
-            "declaration-qREF [signature|source|outline|usages|constructors]",
+            "declaration-qREF[#N] [signature|source|outline|neighborhood|dependencies|",
             "Context is mandatory",
             "Use NAME signature, not",
             "no nearby-line fallback",

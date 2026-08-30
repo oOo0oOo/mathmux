@@ -262,6 +262,7 @@ struct SourceMatchGroup {
     start: u64,
     end: u64,
     count: usize,
+    priority: u8,
     matches: Vec<String>,
 }
 
@@ -302,6 +303,18 @@ fn add_source_match_group(
     line: &str,
 ) {
     let span = enclosing_declaration_span(spans, line_number);
+    let trimmed = line.trim_start();
+    let priority = if span.is_some_and(|span| span.start == line_number) {
+        0
+    } else if span.is_some() {
+        1
+    } else if trimmed.starts_with("import ") || trimmed.starts_with("public import ") {
+        4
+    } else if trimmed.starts_with("--") || trimmed.starts_with("/-") || trimmed.starts_with('*') {
+        3
+    } else {
+        2
+    };
     let (name, kind, signature, start, end) = span.map_or_else(
         || {
             (
@@ -336,12 +349,14 @@ fn add_source_match_group(
                 start,
                 end,
                 count: 0,
+                priority,
                 matches: Vec::new(),
             });
             groups.last_mut().expect("source match group")
         }
     };
     group.count += 1;
+    group.priority = group.priority.min(priority);
     if group.matches.len() < 3 {
         group
             .matches
@@ -529,24 +544,31 @@ pub(super) fn parse_source_line_range(range: &str) -> Option<(u64, u64)> {
     (first > 0 && first <= last).then_some((first, last))
 }
 
-pub(super) fn reject_colon_attached_source_facet(query: &str) -> Result<()> {
-    for token in query.split_whitespace() {
-        let Some((path, facet)) = token.rsplit_once(':') else {
-            continue;
-        };
-        if Path::new(path)
-            .extension()
-            .and_then(|extension| extension.to_str())
-            == Some("lean")
-            && matches!(
-                facet.to_ascii_lowercase().as_str(),
-                "outline" | "declarations" | "imports" | "dependents"
+pub(super) fn normalize_colon_attached_source_facet(query: &str) -> String {
+    query
+        .split_whitespace()
+        .map(|token| {
+            token.rsplit_once(':').map_or_else(
+                || token.to_owned(),
+                |(path, facet)| {
+                    if Path::new(path)
+                        .extension()
+                        .and_then(|extension| extension.to_str())
+                        == Some("lean")
+                        && matches!(
+                            facet.to_ascii_lowercase().as_str(),
+                            "outline" | "declarations" | "imports" | "dependents"
+                        )
+                    {
+                        format!("{path} {facet}")
+                    } else {
+                        token.to_owned()
+                    }
+                },
             )
-        {
-            bail!("source facets use a space: {path} {facet}");
-        }
-    }
-    Ok(())
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub(super) fn source_occurrence_result(
@@ -642,6 +664,14 @@ pub(super) fn source_occurrence_result(
             .collect::<Vec<_>>()
             .join("\n");
         let spans = declaration_spans(&source, &project_module_name(&workspace.path, &query.path));
+        let covering = spans
+            .iter()
+            .filter(|span| {
+                matches
+                    .iter()
+                    .any(|(line, _)| *line >= span.start && *line <= span.end)
+            })
+            .collect::<Vec<_>>();
         let enclosing = matches
             .first()
             .and_then(|(line, _)| enclosing_declaration_span(&spans, *line));
@@ -654,13 +684,22 @@ pub(super) fn source_occurrence_result(
                 }
             },
             |span| {
-                format!(
-                    "{} lines; inside {} lines {}-{}",
-                    matches.len(),
-                    span.name,
-                    span.start,
-                    span.end
-                )
+                if covering.len() > 1 {
+                    format!(
+                        "{} lines; crosses {} declarations; starts in {}",
+                        matches.len(),
+                        covering.len(),
+                        span.name
+                    )
+                } else {
+                    format!(
+                        "{} lines; inside {} lines {}-{}",
+                        matches.len(),
+                        span.name,
+                        span.start,
+                        span.end
+                    )
+                }
             },
         );
         let hits = (!matches.is_empty())
@@ -688,6 +727,7 @@ pub(super) fn source_occurrence_result(
         for (line, source) in &matches {
             add_source_match_group(&mut groups, &relative, &spans, *line, source);
         }
+        groups.sort_by_key(|group| (group.priority, group.start));
         let group_limit = if all { SOURCE_OCCURRENCE_LIMIT } else { 12 };
         let omitted_groups = groups.len().saturating_sub(group_limit);
         groups.truncate(group_limit);
@@ -726,8 +766,11 @@ pub(super) fn source_occurrence_result(
                         |(line, _)| *line,
                     );
                     format!(
-                        "+{omitted} lines omitted; next: mathmux search {continuation_path}:{next_line}-{}",
-                        query.last_line
+                        "+{omitted} lines omitted; next: mathmux search {}",
+                        super::shell_argument(&format!(
+                            "{continuation_path}:{next_line}-{}",
+                            query.last_line
+                        )),
                     )
                 }
             } else {
@@ -755,22 +798,6 @@ fn source_outline_result(
     entries.sort_by_key(|entry| entry.line);
     let total = entries.len();
     let source_lines = source.lines().count();
-    let outline = entries
-        .iter()
-        .take(SOURCE_OCCURRENCE_ALL_LIMIT)
-        .map(|entry| {
-            let prefix = format!("{:>5}  {} {}", entry.line, entry.kind, entry.name);
-            if entry.signature.is_empty() || prefix.chars().count() >= OUTLINE_LINE_CHARS {
-                prefix
-            } else {
-                truncate_line(
-                    &format!("{prefix} : {}", entry.signature),
-                    OUTLINE_LINE_CHARS,
-                )
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
     let relative = query.display_path.clone().unwrap_or_else(|| {
         query
             .path
@@ -779,34 +806,35 @@ fn source_outline_result(
             .to_string_lossy()
             .into_owned()
     });
-    let hits = (!entries.is_empty())
-        .then(|| SearchHit {
-            name: "outline".into(),
-            kind: "outline".into(),
-            signature: Some(format!("{total} declarations, {source_lines} lines")),
-            module,
-            path: relative,
-            line: entries.first().map_or(1, |entry| entry.line),
+    let hits = entries
+        .iter()
+        .take(SOURCE_OCCURRENCE_ALL_LIMIT)
+        .map(|entry| SearchHit {
+            name: entry.name.clone(),
+            kind: entry.kind.clone(),
+            signature: nonempty(truncate_line(&entry.signature, OUTLINE_LINE_CHARS)),
+            module: module.clone(),
+            path: relative.clone(),
+            line: entry.line,
             doc: None,
-            source: Some(outline),
+            source: None,
             usages: Vec::new(),
             applicable: false,
             required_import: None,
         })
-        .into_iter()
         .collect();
     SearchResult {
         hits,
-        inference: "source".into(),
+        inference: "source-outline".into(),
         note: if entries.is_empty() {
             Some("no declarations in source file".into())
         } else if total > SOURCE_OCCURRENCE_ALL_LIMIT {
             Some(format!(
-                "+{} declarations omitted",
-                total - SOURCE_OCCURRENCE_ALL_LIMIT
+                "{total} declarations across {source_lines} lines; +{} omitted",
+                total - SOURCE_OCCURRENCE_ALL_LIMIT,
             ))
         } else {
-            None
+            Some(format!("{total} declarations across {source_lines} lines"))
         },
         ok: true,
     }

@@ -242,6 +242,64 @@ struct ExactPlan {
     source_requested: bool,
 }
 
+fn exact_refinement_score(hit: &SearchHit, tokens: &[String]) -> usize {
+    let haystack = [
+        hit.name.as_str(),
+        hit.signature.as_deref().unwrap_or_default(),
+        hit.doc.as_deref().unwrap_or_default(),
+        hit.source.as_deref().unwrap_or_default(),
+        hit.path.as_str(),
+    ]
+    .join(" ")
+    .to_ascii_lowercase();
+    tokens
+        .iter()
+        .filter(|token| haystack.contains(&token.to_ascii_lowercase()))
+        .count()
+}
+
+fn refined_stored_hits(
+    hits: Vec<SearchHit>,
+    selected_hit: Option<usize>,
+    refinement: &str,
+) -> Vec<SearchHit> {
+    let tokens = meaningful_query_tokens(refinement);
+    hits.into_iter()
+        .enumerate()
+        .filter(|(index, hit)| {
+            selected_hit.is_none_or(|selected| selected == *index)
+                && (tokens.is_empty() || exact_refinement_score(hit, &tokens) == tokens.len())
+        })
+        .map(|(_, hit)| hit)
+        .collect()
+}
+
+fn qualified_suffix_segments(left: &str, right: &str) -> usize {
+    left.split('.')
+        .rev()
+        .zip(right.split('.').rev())
+        .take_while(|(left, right)| left.eq_ignore_ascii_case(right))
+        .count()
+}
+
+pub(super) fn shell_argument(value: &str) -> String {
+    if !value.is_empty()
+        && value.chars().all(|ch| {
+            ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | ':' | '@' | '#')
+        })
+    {
+        return value.to_owned();
+    }
+    format!(
+        "\"{}\"",
+        value
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('$', "\\$")
+            .replace('`', "\\`")
+    )
+}
+
 struct ExactMatch {
     candidate: Candidate,
     matched: String,
@@ -602,8 +660,8 @@ impl Searcher {
         limit: Option<usize>,
         all: bool,
     ) -> Result<String> {
-        reject_colon_attached_source_facet(query)?;
-        let request = SearchRequest::parse(query, limit, all)?;
+        let query = normalize_colon_attached_source_facet(query);
+        let request = SearchRequest::parse(&query, limit, all)?;
         let started = Instant::now();
         let requested_query = request.displayed_query.clone();
         let (query, forced_plan, exact_names) = match &request.expression {
@@ -692,15 +750,8 @@ impl Searcher {
         let ok = result.ok;
         self.state.add_search(&run)?;
         self.state.touch_workspace(&workspace.reference)?;
-        if request.all
-            && matches!(run.inference.as_str(), "exact" | "exact-batch")
-            && !query_requests_proof_body(&run.query)
+        let rendered = if request.all && !matches!(run.inference.as_str(), "exact" | "exact-batch")
         {
-            bail!(
-                "`--all` is not used for an exact declaration; use `mathmux probe NAME source` or `mathmux probe NAME usages`"
-            );
-        }
-        let rendered = if request.all {
             self.state.show(&run.reference, true)
         } else {
             Ok(render_summary(&run))
@@ -760,12 +811,6 @@ impl Searcher {
             }
             if warming {
                 note.push_str("\nsource index warming");
-            }
-            if miss_suggestions.is_empty() {
-                note.push_str(&format!(
-                    "\nnext: `mathmux search \"concept {}\"` for broad discovery",
-                    missing.join(" ")
-                ));
             }
             return Ok(SearchResult {
                 hits: miss_suggestions,
@@ -846,8 +891,12 @@ impl Searcher {
 
     fn expand_reference_query(&self, query: &str) -> Result<ExpandedQuery> {
         let mut parts = query.splitn(2, char::is_whitespace);
-        let reference = parts.next().unwrap_or_default();
+        let reference_token = parts.next().unwrap_or_default();
         let refinement = parts.next().unwrap_or_default().trim();
+        let (reference, selected_hit) = parse_query_reference_selector(reference_token)
+            .map_or((reference_token, None), |(reference, index)| {
+                (reference, Some(index))
+            });
         if Reference::is_kind(reference, ReferenceKind::Submission) {
             let submission = self
                 .state
@@ -871,15 +920,20 @@ impl Searcher {
                 .state
                 .search_run(reference)?
                 .with_context(|| format!("unknown search reference {reference}"))?;
-            let base = if search_refinement_facet(refinement) {
-                prior
-                    .hits
-                    .first()
-                    .map(|hit| hit.name.as_str())
-                    .unwrap_or(&prior.query)
-            } else {
-                &prior.query
-            };
+            if !search_refinement_facet(refinement) {
+                let context = refined_stored_hits(prior.hits, selected_hit, refinement);
+                return Ok(ExpandedQuery {
+                    query: String::new(),
+                    context,
+                    import_target: None,
+                    auxiliary_query: None,
+                });
+            }
+            let base = selected_hit
+                .and_then(|index| prior.hits.get(index))
+                .or_else(|| prior.hits.first())
+                .map(|hit| hit.name.as_str())
+                .unwrap_or(&prior.query);
             return Ok(ExpandedQuery::plain(refined_search_query(base, refinement)));
         }
         Ok(ExpandedQuery::plain(query))
@@ -2425,7 +2479,25 @@ impl Searcher {
             .collect::<HashSet<_>>()
             .len()
             > 1;
-        let ranked = ranked_exact_candidates(rows, name, workspace);
+        let mut ranked = ranked_exact_candidates(rows, name, workspace);
+        if !plan.refinement_tokens.is_empty() {
+            ranked.sort_by(|left, right| {
+                exact_refinement_score(&right.hit, &plan.refinement_tokens)
+                    .cmp(&exact_refinement_score(&left.hit, &plan.refinement_tokens))
+                    .then_with(|| right.score.total_cmp(&left.score))
+            });
+            let best = ranked
+                .first()
+                .map(|candidate| exact_refinement_score(&candidate.hit, &plan.refinement_tokens))
+                .unwrap_or(0);
+            if best > 0
+                && ranked.get(1).is_none_or(|candidate| {
+                    exact_refinement_score(&candidate.hit, &plan.refinement_tokens) < best
+                })
+            {
+                ranked.truncate(1);
+            }
+        }
         let matched = contextual_exact_candidates(ranked, name, import_context).map(|candidates| {
             ExactMatch {
                 candidate: merge_exact_candidates(candidates),
@@ -2566,7 +2638,7 @@ impl Searcher {
                 .or_default()
                 .push(row);
         }
-        let mut result = Vec::new();
+        let mut grouped = Vec::<(Candidate, Vec<String>)>::new();
         for sibling in siblings {
             let rows = rows_by_sibling
                 .remove(&sibling.reference)
@@ -2580,17 +2652,36 @@ impl Searcher {
                     continue;
                 }
                 let agent = sibling.model.as_deref().unwrap_or("unknown");
-                candidate.hit.kind =
-                    format!("unmerged:{}:{}:{}", sibling.reference, sibling.name, agent);
+                let provenance = format!("{}/{}/{}", sibling.reference, sibling.name, agent);
                 candidate.hit.source = None;
                 candidate.hit.usages.clear();
-                result.push(candidate);
-                if result.len() == 3 {
-                    return Ok(result);
+                if let Some((_, provenances)) = grouped.iter_mut().find(|(existing, _)| {
+                    existing.hit.name == candidate.hit.name
+                        && existing.hit.signature == candidate.hit.signature
+                        && existing.hit.path == candidate.hit.path
+                }) {
+                    provenances.push(provenance);
+                } else {
+                    grouped.push((candidate, vec![provenance]));
                 }
             }
         }
-        Ok(result)
+        Ok(grouped
+            .into_iter()
+            .map(|(mut candidate, provenances)| {
+                candidate.hit.kind = if provenances.len() == 1 {
+                    format!("unmerged:{}", provenances[0])
+                } else {
+                    format!(
+                        "unmerged:{} siblings: {}",
+                        provenances.len(),
+                        provenances.join(", ")
+                    )
+                };
+                candidate
+            })
+            .take(3)
+            .collect())
     }
 
     fn near_name_suggestions(
@@ -2599,7 +2690,7 @@ impl Searcher {
         scopes: &HashSet<String>,
     ) -> Result<Vec<Candidate>> {
         let leaf = query.rsplit('.').next().unwrap_or(query).to_lowercase();
-        if leaf.len() < 3 {
+        if leaf.len() < 3 && !query.contains('.') {
             return Ok(Vec::new());
         }
         let connection = self.open()?;
@@ -2617,24 +2708,26 @@ impl Searcher {
                     .rsplit_once('.')
                     .is_some_and(|(owner, _)| row.module.eq_ignore_ascii_case(owner));
                 (
+                    std::cmp::Reverse(qualified_suffix_segments(query, &row.name)),
                     distance,
                     !same_owner,
                     row.name.clone(),
                     compact_ranked_hit(row),
                 )
             })
-            .filter(|(distance, _, _, _)| *distance <= leaf.len().max(4) / 2)
+            .filter(|(_, distance, _, _, _)| *distance <= leaf.len().max(4) / 2)
             .collect::<Vec<_>>();
         suggestions.sort_by(|left, right| {
             left.0
                 .cmp(&right.0)
                 .then_with(|| left.1.cmp(&right.1))
                 .then_with(|| left.2.cmp(&right.2))
+                .then_with(|| left.3.cmp(&right.3))
         });
         let mut seen = HashSet::new();
         Ok(suggestions
             .into_iter()
-            .filter_map(|(_, _, _, candidate)| {
+            .filter_map(|(_, _, _, _, candidate)| {
                 seen.insert(candidate.hit.name.clone()).then_some(candidate)
             })
             .take(3)
@@ -3336,6 +3429,13 @@ impl Searcher {
         }
         Ok(())
     }
+}
+
+fn parse_query_reference_selector(value: &str) -> Option<(&str, usize)> {
+    let (reference, index) = value.split_once('#')?;
+    let index = index.parse::<usize>().ok()?;
+    (index > 0 && Reference::is_kind(reference, ReferenceKind::Query))
+        .then(|| (reference, index - 1))
 }
 
 fn read_usages(
