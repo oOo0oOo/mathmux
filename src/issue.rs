@@ -1327,6 +1327,7 @@ fn error_class(summary: &str) -> String {
                 || line.contains(": error: ")
                 || line.starts_with("error: ")
                 || line.starts_with("failed to synthesize")
+                || line.starts_with("internal exception")
         })
         .or_else(|| lines.first().copied())
         .unwrap_or("error");
@@ -1351,6 +1352,7 @@ fn error_class(summary: &str) -> String {
         ("unknown identifier", "unknown identifier"),
         ("no goals to be solved", "no goals to be solved"),
         ("fields missing", "fields missing"),
+        ("internal exception", "internal exception"),
     ] {
         if lower.starts_with(prefix) {
             return class.into();
@@ -1748,6 +1750,10 @@ mod tests {
                 "c5361 421ms\nDemo:9:2: error(lean.synthInstanceFailed): failed to synthesize instance"
             ),
             "lean.synthInstanceFailed"
+        );
+        assert_eq!(
+            error_class("probe result\ntactic  Demo.lean:40\ninternal exception abortTactic"),
+            "internal exception"
         );
         assert_eq!(
             error_class("source file is on managed main; run mathmux sync"),
