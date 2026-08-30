@@ -9,15 +9,13 @@ pub(super) fn render_summary_without_hints(run: &SearchRun) -> String {
 }
 
 fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
-    let mut output = run.reference.clone();
+    let (verdict, trailing_note) = split_verdict_and_note(run);
+    let mut output = verdict;
     let proof_body_requested = query_requests_proof_body(&run.query);
     let related_results = run
         .note
         .as_deref()
         .is_some_and(|note| note.contains("related results"));
-    if run.hits.is_empty() {
-        output.push_str(" no results");
-    }
     let summary_limit = if run.inference == "exact-miss" {
         run.hits.len().min(3)
     } else if proof_body_requested && !related_results {
@@ -64,6 +62,8 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
                                         | "location"
                                         | "location-expanded"
                                         | "outline"
+                                        | "proof-outline"
+                                        | "source-group"
                                         | "source-occurrences"
                                         | "source-range"
                                 ))))
@@ -92,7 +92,7 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
         if let Some(module) = &hit.required_import {
             output.push_str(&format!("\n  import {module}"));
         }
-        if !(proof_body_requested && index == 0) {
+        if run.inference == "usages" && !(proof_body_requested && index == 0) {
             for usage in hit.usages.iter().take(3) {
                 output.push_str(&format!("\n  used: {}:{}", usage.path, usage.line));
                 if let Some(context) = &usage.context {
@@ -106,6 +106,12 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
                     probe_name(&hit.name)
                 ));
             }
+        } else if !hit.usages.is_empty() {
+            output.push_str(&format!(
+                "\n  used in {} place{}",
+                hit.usages.len(),
+                if hit.usages.len() == 1 { "" } else { "s" }
+            ));
         }
         if let Some(source) = displayed_source {
             if run.inference != "probe"
@@ -117,6 +123,8 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
                         | "location"
                         | "location-expanded"
                         | "outline"
+                        | "proof-outline"
+                        | "source-group"
                         | "source-occurrences"
                         | "source-range"
                 )
@@ -125,31 +133,84 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
             }
             render_source(&mut output, run, hit, source, index, proof_body_requested);
         }
-        if run.inference == "exact-miss" {
-            let name = probe_name(&hit.name);
-            if hit.kind.starts_with("unmerged:") {
-                output.push_str(&format!("\n  after sync: mathmux probe {name} signature"));
-            } else {
-                output.push_str(&format!("\n  next: mathmux probe {name} signature"));
-            }
-        }
     }
     if run.hits.len() > summary_limit {
         let omitted = run.hits.len() - summary_limit;
         output.push_str(&format!("\n+{omitted} results"));
+    } else {
+        append_complete_range_hint(&mut output, run);
+    }
+    if let Some(note) = trailing_note {
+        output.push('\n');
+        output.push_str(note);
+    }
+    if run.inference == "exact-miss" {
+        append_exact_miss_hint(&mut output, run);
+    } else if run.hits.len() > summary_limit {
         if include_hints {
             append_next_hint(&mut output, run, summary_limit, proof_body_requested);
         } else {
-            output.push_str(&format!("; show {} --all", run.reference));
+            output.push_str(&format!("\nnext: mathmux show {} --all", run.reference));
         }
     } else if include_hints {
-        append_complete_range_hint(&mut output, run);
         append_single_result_hint(&mut output, run, proof_body_requested);
     }
-    if let Some(note) = &run.note {
-        output.push_str(&format!("\n{note}"));
-    }
+    output.push_str(&format!("\nref: {}", run.reference));
     output
+}
+
+fn split_verdict_and_note(run: &SearchRun) -> (String, Option<&str>) {
+    if run.inference == "exact-miss" {
+        let note = run.note.as_deref().unwrap_or("exact declaration not found");
+        return note.split_once('\n').map_or_else(
+            || (note.to_owned(), None),
+            |(head, tail)| (head.to_owned(), Some(tail)),
+        );
+    }
+    let verdict = if run.hits.is_empty() {
+        "no results".to_owned()
+    } else {
+        match run.inference.as_str() {
+            "exact" | "exact-batch" => "exact declaration".to_owned(),
+            "probe" | "usages" => "probe result".to_owned(),
+            "source" | "source-only" | "source-regex" => "source result".to_owned(),
+            _ => format!(
+                "{} ranked result{}",
+                run.hits.len(),
+                if run.hits.len() == 1 { "" } else { "s" }
+            ),
+        }
+    };
+    (verdict, run.note.as_deref())
+}
+
+fn append_exact_miss_hint(output: &mut String, run: &SearchRun) {
+    if run.inference != "exact-miss" {
+        return;
+    }
+    if let Some(hit) = run.hits.first() {
+        let name = probe_name(&hit.name);
+        if hit.kind.starts_with("unmerged:") {
+            output.push_str(&format!(
+                "\nnext: sync, then mathmux probe {name} signature"
+            ));
+        } else {
+            output.push_str(&format!("\nnext: mathmux probe {name} signature"));
+        }
+    } else {
+        let query = run
+            .query
+            .split_whitespace()
+            .next()
+            .unwrap_or(run.query.as_str());
+        let query = query.strip_prefix("name:").unwrap_or(query);
+        let leaf = query
+            .trim_start_matches('@')
+            .rsplit('.')
+            .next()
+            .unwrap_or(query);
+        output.push_str(&format!("\nnext: mathmux search \"{leaf}\""));
+    }
 }
 
 fn append_next_hint(
@@ -162,20 +223,25 @@ fn append_next_hint(
         return;
     }
     if proof_body_requested {
-        output.push_str(&format!("; show {} --all", run.reference));
+        output.push_str(&format!("\nnext: mathmux show {} --all", run.reference));
     } else if run
         .note
         .as_deref()
         .is_some_and(|note| note.contains("related results"))
     {
-        output.push_str("; next: refine query");
+        output.push_str("\nnext: refine query");
     } else if let Some(hit) = run.hits.first().filter(|hit| is_probeable_declaration(hit)) {
+        let focus = if hit.usages.is_empty() {
+            "signature"
+        } else {
+            "usages"
+        };
         output.push_str(&format!(
-            "; next: probe {} signature",
-            probe_name(&hit.name)
+            "\nnext: mathmux probe {} {focus}",
+            probe_name(&hit.name),
         ));
     } else if run.hits.len() > summary_limit {
-        output.push_str("; next: refine query");
+        output.push_str("\nnext: refine query");
     }
 }
 
@@ -213,10 +279,27 @@ fn append_single_result_hint(output: &mut String, run: &SearchRun, proof_body_re
             "exact" | "exact-batch" | "hybrid" | "hybrid+applicability"
         )
     {
+        let focus = if hit.usages.is_empty() {
+            "signature"
+        } else {
+            "usages"
+        };
         output.push_str(&format!(
-            "\nnext: probe {} signature",
-            probe_name(&hit.name)
+            "\nnext: mathmux probe {} {focus}",
+            probe_name(&hit.name),
         ));
+    } else if let Some(hit) = run.hits.first() {
+        match hit.kind.as_str() {
+            "source-group" | "location" | "location-expanded" => output.push_str(&format!(
+                "\nnext: mathmux probe {} outline",
+                probe_name(&hit.name)
+            )),
+            "proof-outline" => output.push_str(&format!(
+                "\nnext: mathmux probe {} source",
+                probe_name(&hit.name)
+            )),
+            _ => {}
+        }
     }
 }
 
@@ -259,6 +342,8 @@ fn render_source(
             "location-expanded" => LOCATION_EXPANDED_LINES,
             "source-range" => SOURCE_RANGE_ALL_LIMIT,
             "source-occurrences" => SOURCE_OCCURRENCE_LIMIT,
+            "source-group" => 3,
+            "proof-outline" => 80,
             _ => SOURCE_PREVIEW_LINES,
         }
     };

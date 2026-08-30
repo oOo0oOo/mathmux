@@ -16,6 +16,7 @@ const FOCUSES: &[&str] = &[
     "coercions",
     "usages",
     "source",
+    "outline",
     "goal",
     "types",
     "defeq",
@@ -162,6 +163,11 @@ impl ProbeRequest {
             .map(|term| term.to_ascii_lowercase());
         if focus.is_some() {
             terms.pop();
+        }
+        if let Some(first) = terms.first_mut()
+            && let Some(stripped) = first.strip_prefix('@')
+        {
+            *first = stripped;
         }
         if context.is_none()
             && !terms.first().is_some_and(|term| term.starts_with("type:"))
@@ -716,17 +722,7 @@ impl Searcher {
             Some("goal") => {
                 let diagnostic = diagnostic
                     .with_context(|| format!("{reference} has no stored failure goal"))?;
-                let goal = diagnostic_goal_detail(text).with_context(|| {
-                    format!(
-                        "{reference} has no stored failure goal; valid analyses: types, defeq, rewrite, profile"
-                    )
-                })?;
-                let context = diagnostic.context.as_deref().unwrap_or_default();
-                [goal, context.to_owned()]
-                    .into_iter()
-                    .filter(|part| !part.trim().is_empty())
-                    .collect::<Vec<_>>()
-                    .join("\n")
+                stored_goal_detail(text, diagnostic.context.as_deref())
             }
             None => {
                 let diagnostic =
@@ -802,12 +798,15 @@ impl Searcher {
         {
             let focus = focus.unwrap();
             bail!(
-                "focus `{focus}` is not valid for a declaration qREF; use a declaration focus such as signature, source, or usages, or probe a cREF failure"
+                "focus `{focus}` is not valid for a declaration qREF; use signature, source, outline, or usages, or probe a cREF failure"
             )
         }
         if run.inference != "probe"
             && subject.is_none()
-            && matches!(focus, None | Some("signature" | "source" | "usages"))
+            && matches!(
+                focus,
+                None | Some("signature" | "source" | "outline" | "usages")
+            )
         {
             return self.store_query_hit_refinement(
                 workspace,
@@ -833,14 +832,10 @@ impl Searcher {
         focus: &str,
     ) -> Result<String> {
         let rendered = self.search(workspace, cwd, query, None, false)?;
-        let Some(reference) = rendered
-            .split_whitespace()
-            .next()
-            .filter(|term| Reference::is_kind(term, ReferenceKind::Query))
-        else {
+        let Some(reference) = rendered_search_reference(&rendered) else {
             return Ok(rendered);
         };
-        let Some(run) = self.state.search_run(reference)? else {
+        let Some(run) = self.state.search_run(&reference)? else {
             return Ok(rendered);
         };
         if focus == "fields"
@@ -874,11 +869,8 @@ impl Searcher {
         let source_search = || -> Result<(String, Option<SearchRun>)> {
             let rendered =
                 self.search(workspace, cwd, &format!("{subject} source"), None, false)?;
-            let run = rendered
-                .split_whitespace()
-                .next()
-                .filter(|term| Reference::is_kind(term, ReferenceKind::Query))
-                .map(|reference| self.state.search_run(reference))
+            let run = rendered_search_reference(&rendered)
+                .map(|reference| self.state.search_run(&reference))
                 .transpose()?
                 .flatten();
             Ok((rendered, run))
@@ -1215,6 +1207,19 @@ fn render_static_probe_summary(run: &SearchRun, focus: &str) -> String {
                 hit.usages.clear();
             }
         }
+        "outline" => {
+            run.inference = "probe".into();
+            run.hits.truncate(1);
+            for hit in &mut run.hits {
+                hit.usages.clear();
+                hit.kind = "proof-outline".into();
+                hit.signature = Some(format!("proof outline from line {}", hit.line));
+                hit.source = hit
+                    .source
+                    .as_deref()
+                    .map(|source| declaration_outline_from_hit(source, hit.line));
+            }
+        }
         "simp" => {
             run.hits.retain(|hit| {
                 hit.source
@@ -1234,13 +1239,14 @@ fn render_static_probe_summary(run: &SearchRun, focus: &str) -> String {
             }
         }
         "usages" => {
+            run.inference = "usages".into();
             for hit in &mut run.hits {
                 hit.source = None;
             }
         }
         _ => {}
     }
-    if matches!(focus, "signature" | "source" | "ext")
+    if matches!(focus, "signature" | "source" | "outline" | "ext")
         && matches!(
             run.note.as_deref(),
             Some("search indexes warming" | "source index warming")
@@ -1249,6 +1255,52 @@ fn render_static_probe_summary(run: &SearchRun, focus: &str) -> String {
         run.note = None;
     }
     render_summary_without_hints(&run)
+}
+
+fn declaration_outline_from_hit(source: &str, declaration_line: u64) -> String {
+    let lines = source.lines().collect::<Vec<_>>();
+    let header = lines
+        .iter()
+        .position(|line| is_declaration_header(line))
+        .unwrap_or(0);
+    let steps = [
+        "let ",
+        "letI ",
+        "have ",
+        "suffices ",
+        "show ",
+        "refine ",
+        "exact ",
+        "apply ",
+        "simpa ",
+        "rw ",
+        "constructor",
+        "cases ",
+        "rcases ",
+        "intro ",
+        "case ",
+        "calc",
+    ];
+    lines
+        .iter()
+        .enumerate()
+        .skip(header)
+        .filter_map(|(index, line)| {
+            let trimmed = line.trim_start();
+            let indent = line.len().saturating_sub(trimmed.len());
+            let structural = index == header
+                || indent <= 8 && steps.iter().any(|step| trimmed.starts_with(step));
+            structural.then(|| {
+                format!(
+                    "{:>5}  {}",
+                    declaration_line + index.saturating_sub(header) as u64,
+                    truncate_line(line.trim_end(), 180)
+                )
+            })
+        })
+        .take(80)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn is_declaration_header(line: &str) -> bool {
@@ -1303,6 +1355,7 @@ fn static_probe_query(
     let query = match focus.unwrap_or(default_focus) {
         "signature" => format!("name:{subject}"),
         "source" => format!("{subject} source"),
+        "outline" => format!("{subject} source"),
         "fields" => format!("{subject} fields"),
         "constructors" => format!("name:{subject}.mk"),
         "coercions" => format!(
@@ -1323,7 +1376,31 @@ fn static_probe_query(
 }
 
 fn invalid_declaration_focus_message(subject: &str, kind: &str, required: &str) -> String {
-    format!("{subject} is {kind}, not {required}; valid focuses: signature, source, usages, apply")
+    format!(
+        "{subject} is {kind}, not {required}; valid focuses: signature, source, outline, usages, apply"
+    )
+}
+
+fn rendered_search_reference(rendered: &str) -> Option<String> {
+    rendered.lines().rev().find_map(|line| {
+        line.strip_prefix("ref: ")
+            .filter(|reference| Reference::is_kind(reference, ReferenceKind::Query))
+            .map(str::to_owned)
+    })
+}
+
+fn stored_goal_detail(diagnostic: &str, source_context: Option<&str>) -> String {
+    let primary = diagnostic_goal_detail(diagnostic).unwrap_or_else(|| {
+        format!(
+            "primary diagnostic\n{}",
+            diagnostic_context(diagnostic, None)
+        )
+    });
+    [primary, source_context.unwrap_or_default().to_owned()]
+        .into_iter()
+        .filter(|part| !part.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[derive(Clone, Copy)]
@@ -1859,6 +1936,10 @@ mod tests {
             "ContinuousMap source"
         );
         assert_eq!(
+            static_probe_query(None, "ContinuousMap", Some("outline")).unwrap(),
+            "ContinuousMap source"
+        );
+        assert_eq!(
             static_probe_query(None, "ContinuousMap", Some("coercions")).unwrap(),
             "declaration ContinuousMap.instCoe*|ContinuousMap.instFunLike*|ContinuousMap.instCoeFun*|ContinuousMap.hasCoe*|ContinuousMap.toFun*"
         );
@@ -1935,8 +2016,17 @@ mod tests {
                 "def",
                 "a structure, class, or inductive declaration"
             ),
-            "Demo.value is def, not a structure, class, or inductive declaration; valid focuses: signature, source, usages, apply"
+            "Demo.value is def, not a structure, class, or inductive declaration; valid focuses: signature, source, outline, usages, apply"
         );
+        let explicit = ProbeRequest::parse("@Demo.foo outline").unwrap();
+        assert_eq!(explicit.subject.as_deref(), Some("Demo.foo"));
+        assert_eq!(explicit.focus.as_deref(), Some("outline"));
+        let stored = stored_goal_detail(
+            "Demo.lean:7:2: error: type mismatch\n  x\nhas type\n  Nat",
+            Some(">    7 | exact x"),
+        );
+        assert!(stored.starts_with("primary diagnostic\n"));
+        assert!(stored.contains(">    7 | exact x"));
         assert_eq!(
             ProbeRequest::parse("c123 goal").unwrap().focus.as_deref(),
             Some("goal")
@@ -2005,6 +2095,10 @@ mod tests {
         let source = render_static_probe_summary(&run, "source");
         assert!(source.contains("theorem first"));
         assert!(!source.contains("Demo.second"));
+
+        let outline = render_static_probe_summary(&run, "outline");
+        assert!(outline.contains("theorem first"));
+        assert!(outline.contains("ref: q1"));
 
         let simp = render_static_probe_summary(&run, "simp");
         assert!(simp.contains("Demo.second"));

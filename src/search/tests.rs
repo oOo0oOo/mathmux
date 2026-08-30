@@ -1047,7 +1047,7 @@ fn empty_search_summary_omits_internal_timing() {
         duration_ms: 123,
         created_at: 0,
     });
-    assert_eq!(summary, "q1 no results");
+    assert_eq!(summary, "no results\nref: q1");
 }
 
 #[test]
@@ -1066,7 +1066,7 @@ fn compact_search_summary_suggests_a_targeted_probe() {
         duration_ms: 0,
         created_at: 0,
     });
-    assert!(summary.contains("+1 results; next: probe Demo.candidate1 signature"));
+    assert!(summary.contains("+1 results\nnext: mathmux probe Demo.candidate1 signature"));
     assert!(!summary.contains("show q1 --all"));
 }
 
@@ -1097,7 +1097,42 @@ fn exact_search_summary_is_signature_only_and_has_probe_next_action() {
     assert!(summary.contains("_root_.Demo.target : Nat → Nat"));
     assert!(!summary.contains("source:"));
     assert!(!summary.contains(":= id"));
-    assert!(summary.contains("next: probe Demo.target signature"));
+    assert!(summary.contains("next: mathmux probe Demo.target signature"));
+}
+
+#[test]
+fn exact_summary_counts_usages_without_printing_examples() {
+    let mut hit = search_hit("Demo.target");
+    hit.signature = Some("Nat".into());
+    hit.usages = vec![
+        SearchUsage {
+            module: "Demo.One".into(),
+            path: "Demo/One.lean".into(),
+            line: 10,
+            context: Some("one".into()),
+        },
+        SearchUsage {
+            module: "Demo.Two".into(),
+            path: "Demo/Two.lean".into(),
+            line: 20,
+            context: Some("two".into()),
+        },
+    ];
+    let summary = render_summary(&SearchRun {
+        reference: "q-usage".into(),
+        workspace_ref: "w1".into(),
+        query: "Demo.target".into(),
+        inference: "exact".into(),
+        hits: vec![hit],
+        note: None,
+        duration_ms: 1,
+        created_at: 0,
+    });
+    assert!(summary.starts_with("exact declaration\n"));
+    assert!(summary.contains("used in 2 places"));
+    assert!(!summary.contains("Demo/One.lean"));
+    assert!(summary.contains("next: mathmux probe Demo.target usages"));
+    assert!(summary.ends_with("ref: q-usage"));
 }
 
 #[test]
@@ -1127,6 +1162,23 @@ fn exact_miss_summary_labels_bounded_suggestions() {
     assert!(summary.contains("suggestion: Demo.misgiving"));
     assert!(!summary.contains("def misgiving : True := trivial"));
     assert!(summary.contains("next: mathmux probe Demo.misgiving signature"));
+}
+
+#[test]
+fn exact_miss_without_suggestions_repairs_from_leaf_name() {
+    let summary = render_summary(&SearchRun {
+        reference: "q-leaf".into(),
+        workspace_ref: "w1".into(),
+        query: "name:Demo.Namespace.missing".into(),
+        inference: "exact-miss".into(),
+        hits: Vec::new(),
+        note: Some("exact declaration not found: Demo.Namespace.missing".into()),
+        duration_ms: 1,
+        created_at: 0,
+    });
+    assert!(summary.contains("next: mathmux search \"missing\""));
+    assert!(!summary.contains("concept Demo.Namespace.missing"));
+    assert!(summary.ends_with("ref: q-leaf"));
 }
 
 #[test]
@@ -1221,7 +1273,8 @@ fn compact_source_range_marks_complete_context() {
         duration_ms: 0,
         created_at: 0,
     });
-    assert!(summary.ends_with("complete range"), "{summary}");
+    assert!(summary.contains("complete range"), "{summary}");
+    assert!(summary.ends_with("ref: q1"), "{summary}");
 }
 
 #[test]
@@ -1288,7 +1341,7 @@ fn probe_summary_keeps_the_decisive_tail() {
     assert!(summary.contains("context line 1"));
     assert!(!summary.contains("context line 12"));
     assert!(summary.contains("… 9 lines omitted; show q2 --all"));
-    assert!(summary.ends_with("⊢ target"));
+    assert!(summary.contains("⊢ target\nref: q2"));
 }
 
 #[test]
@@ -1352,7 +1405,7 @@ fn structure_summary_points_to_complete_field_inventory() {
         created_at: 0,
     });
     assert!(!summary.contains("field1 : Nat"));
-    assert!(summary.contains("next: probe Demo.Config signature"));
+    assert!(summary.contains("next: mathmux probe Demo.Config signature"));
 
     let fields = SearchHit {
         name: "Demo.Config fields".into(),
@@ -1701,7 +1754,7 @@ fn explicit_body_query_keeps_alternatives_compact() {
     assert!(summary.contains("Demo.proof : True"));
     assert!(!summary.contains("Other.proof : True"));
     assert!(!summary.contains("alternative body"));
-    assert!(summary.contains("+1 results; show q3 --all"));
+    assert!(summary.contains("+1 results\nnext: mathmux show q3 --all"));
 
     let related = render_summary(&SearchRun {
         reference: "q-related".into(),
@@ -2073,7 +2126,7 @@ fn source_query_regressions() {
         .join("\n");
     let excerpt = location_source_excerpt(&source, 15, LOCATION_PREVIEW_LINES);
     assert!(excerpt.contains("   15  line 15"));
-    assert_eq!(excerpt.lines().count(), 30);
+    assert_eq!(excerpt.lines().count(), LOCATION_PREVIEW_LINES);
 
     let directory = tempfile::tempdir().unwrap();
     fs::write(directory.path().join("Demo.lean"), &source).unwrap();
@@ -2251,11 +2304,16 @@ fn source_query_regressions() {
         false,
     )
     .unwrap();
-    assert_eq!(result.hits.len(), 1);
-    let matches = result.hits[0].source.as_deref().unwrap();
-    assert!(matches.contains("    2  /- open"));
-    assert!(matches.contains("    3  inside /-! doc"));
-    assert!(matches.contains("    4  -/ close"));
+    assert_eq!(result.hits.len(), 3);
+    let matches = result
+        .hits
+        .iter()
+        .filter_map(|hit| hit.source.as_deref())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(matches.contains(">    2 | /- open"));
+    assert!(matches.contains(">    3 | inside /-! doc"));
+    assert!(matches.contains(">    4 | -/ close"));
     let range =
         parse_source_occurrence_query(directory.path(), directory.path(), None, "Markers.lean:2-4")
             .unwrap()
@@ -2341,8 +2399,8 @@ fn source_query_regressions() {
         long_range.note.as_deref(),
         Some(
             format!(
-                "+{} lines omitted; rerun search --all",
-                250 - SOURCE_RANGE_LIMIT
+                "+{} lines omitted; next: mathmux search Long.lean:49-250",
+                250 - SOURCE_RANGE_LIMIT,
             )
             .as_str()
         )
@@ -2365,10 +2423,11 @@ fn source_query_regressions() {
         SOURCE_RANGE_LIMIT + 1,
         SOURCE_RANGE_LIMIT + 1
     )));
-    assert!(long_summary.ends_with(&format!(
-        "+{} lines omitted; rerun search --all",
-        250 - SOURCE_RANGE_LIMIT
+    assert!(long_summary.contains(&format!(
+        "+{} lines omitted; next: mathmux search Long.lean:49-250",
+        250 - SOURCE_RANGE_LIMIT,
     )));
+    assert!(long_summary.ends_with("ref: q-range"));
     let long_range =
         parse_source_occurrence_query(directory.path(), directory.path(), None, "Long.lean:1-250")
             .unwrap()
@@ -2571,6 +2630,11 @@ fn source_only_location_results_are_successful() {
     assert!(result.ok);
     assert_eq!(result.inference, "source-only");
     assert_eq!(result.note.as_deref(), Some("source only"));
+    assert_eq!(result.hits[0].name, "target");
+    assert_eq!(
+        result.hits[0].signature.as_deref(),
+        Some("inside def lines 2-2; showing 1-2")
+    );
 }
 
 #[test]
@@ -3134,7 +3198,7 @@ fn source_regex_queries_scan_a_bounded_scope_with_context() {
     .unwrap();
     assert_eq!(result.inference, "source-regex");
     assert_eq!(result.hits.len(), 2);
-    assert_eq!(result.hits[1].name, "theorem beta_apply := by trivial");
+    assert_eq!(result.hits[1].name, "beta_apply");
     assert!(
         result.hits[0]
             .source
@@ -3143,6 +3207,41 @@ fn source_regex_queries_scan_a_bounded_scope_with_context() {
             .contains(">    2 | theorem alpha_apply")
     );
     assert!(result.hits[1].path.ends_with("Nested/Two.lean"));
+
+    fs::write(
+        directory.path().join("Nested/Grouped.lean"),
+        "theorem grouped : True := by\n  have alpha_apply : True := trivial\n  exact alpha_apply\n",
+    )
+    .unwrap();
+    let grouped = parse_source_regex_query(
+        directory.path(),
+        directory.path(),
+        None,
+        "Nested/Grouped.lean /alpha_apply/",
+    )
+    .unwrap()
+    .unwrap();
+    let grouped = source_regex_result(
+        &Workspace {
+            reference: "w1".into(),
+            name: "demo".into(),
+            path: directory.path().to_path_buf(),
+            branch: "demo".into(),
+            model: None,
+        },
+        grouped,
+        false,
+    )
+    .unwrap();
+    assert_eq!(grouped.hits.len(), 1);
+    assert_eq!(grouped.hits[0].name, "grouped");
+    assert!(
+        grouped.hits[0]
+            .signature
+            .as_deref()
+            .unwrap()
+            .starts_with("2 matches; lines 1-3")
+    );
 
     let bracketed = parse_source_regex_query(
         directory.path(),
