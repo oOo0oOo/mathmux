@@ -478,16 +478,15 @@ impl TelemetryStore {
             ],
         )?;
         let id = transaction.last_insert_rowid();
-        if let Some(follow_up) = follow_up {
+        if let (Some(follow_up), Some(workspace)) = (follow_up, workspace.as_deref()) {
             transaction.execute(
                 "UPDATE telemetry_events SET follow_up = ?1
                  WHERE id = (
                     SELECT id FROM telemetry_events
-                    WHERE project = ?2 AND (?3 IS NULL OR workspace = ?3)
-                      AND id <> ?4
-                      AND query_class IS NOT NULL
-                    ORDER BY created_at DESC, id DESC LIMIT 1
-                 )",
+                    WHERE project = ?2 AND workspace = ?3 AND id < ?4
+                    ORDER BY id DESC LIMIT 1
+                 )
+                 AND query_class IS NOT NULL",
                 params![follow_up, repo.root.to_string_lossy(), workspace, id],
             )?;
         }
@@ -1673,5 +1672,102 @@ mod tests {
                 .unwrap(),
             3
         );
+    }
+
+    #[test]
+    fn follow_up_requires_the_immediate_action_in_the_same_workspace() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("repo");
+        let unmapped = directory.path().join("unmapped");
+        let state_dir = directory.path().join("state");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&unmapped).unwrap();
+        fs::create_dir_all(&state_dir).unwrap();
+        let repo = Repo {
+            root: root.clone(),
+            common_git_dir: directory.path().join("git"),
+            state_dir: state_dir.clone(),
+            socket_path: state_dir.join("daemon.sock"),
+            db_path: state_dir.join("state.sqlite3"),
+            search_db_path: state_dir.join("search.sqlite3"),
+            log_path: state_dir.join("daemon.log"),
+            cache_dir: state_dir.join("cache"),
+            integration_lock: state_dir.join("integration.lock"),
+            validation_lock: state_dir.join("validation.lock"),
+            startup_lock: state_dir.join("startup.lock"),
+        };
+        State::new(&repo.db_path)
+            .unwrap()
+            .add_workspace(&crate::state::Workspace {
+                reference: "w1".into(),
+                name: "worker".into(),
+                path: root.clone(),
+                branch: "worker".into(),
+                model: None,
+            })
+            .unwrap();
+        let store = TelemetryStore::new(directory.path().join("development.db")).unwrap();
+
+        let search = Request {
+            build: "test".into(),
+            generation: 1,
+            cwd: root.to_string_lossy().into_owned(),
+            command: Command::Search {
+                query: "Demo.first".into(),
+                limit: None,
+                all: false,
+            },
+        };
+        store
+            .record(&repo, &search, &Response::ok("q1\nDemo.first : Nat"), 12)
+            .unwrap();
+        let check = Request {
+            command: Command::Check {
+                file: None,
+                profile: false,
+            },
+            ..search.clone()
+        };
+        store
+            .record(&repo, &check, &Response::ok("c1\nok"), 8)
+            .unwrap();
+        let probe = Request {
+            command: Command::Probe {
+                query: "Demo.first signature".into(),
+            },
+            ..search.clone()
+        };
+        store
+            .record(&repo, &probe, &Response::ok("q2\nDemo.first : Nat"), 8)
+            .unwrap();
+
+        let unmapped_probe = Request {
+            cwd: unmapped.to_string_lossy().into_owned(),
+            command: Command::Probe {
+                query: "Demo.first signature".into(),
+            },
+            ..search
+        };
+        store
+            .record(
+                &repo,
+                &unmapped_probe,
+                &Response::ok("q3\nDemo.first : Nat"),
+                8,
+            )
+            .unwrap();
+
+        let connection = open_db(&store.path).unwrap();
+        let follow_up = |reference: &str| {
+            connection
+                .query_row(
+                    "SELECT follow_up FROM telemetry_events WHERE reference = ?1",
+                    [reference],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(follow_up("q1").as_deref(), Some("check"));
+        assert_eq!(follow_up("q2"), None);
     }
 }
