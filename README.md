@@ -63,7 +63,8 @@ stored result sets, while exact declaration results point directly to a focused
 probe command.
 
 Identifier-shaped searches resolve exact names first and fail closed on a miss,
-with at most three near-name suggestions. Exact output stays compact: signature,
+with at most three near-name suggestions. `name:` is exact-only; use the explicit
+`declaration NAME*` form for wildcard name discovery. Exact output stays compact: signature,
 path, import availability, and up to three usages. Use `probe NAME source` or
 `probe NAME usages` for focused detail; use `show qREF --all` for genuine
 multi-result or source-range expansion.

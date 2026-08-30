@@ -70,10 +70,15 @@ impl SearchRequest {
                 "name: accepts one name or a `|` batch"
             );
             let names = names.split('|').map(str::trim).collect::<Vec<_>>();
-            ensure!(
-                !names.is_empty() && names.iter().all(|name| declaration_name(name)),
-                "invalid exact-name batch; use name:A|B|C (no spaces)"
-            );
+            if names.is_empty() || !names.iter().all(|name| declaration_name(name)) {
+                if names.iter().any(|name| name.contains('*')) {
+                    let pattern = names.join("|");
+                    bail!(
+                        "name: is exact-only; use `mathmux search 'declaration {pattern}'` for wildcard discovery or name:A|B|C for an exact batch"
+                    );
+                }
+                bail!("invalid exact-name batch; use name:A|B|C (no spaces)");
+            }
             SearchExpression::ExactNames(names.into_iter().map(str::to_owned).collect())
         } else if let Some(pattern) = query.strip_prefix("type:") {
             let pattern = pattern.trim();
@@ -218,6 +223,11 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "invalid exact-name batch; use name:A|B|C (no spaces)"
+        );
+        let error = SearchRequest::parse("name:*FinalCriterion*", None, false).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "name: is exact-only; use `mathmux search 'declaration *FinalCriterion*'` for wildcard discovery or name:A|B|C for an exact batch"
         );
     }
 

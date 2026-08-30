@@ -34,7 +34,7 @@ const WORKFLOW_HELP: &str = r#"AGENT CONTRACT
 const SEARCH_HELP: &str = r#"SEARCH — find or read unknown things; returns qREF
 FORMS — type one directly; declaration/type/source/compose are labels, not keywords
   declaration  NAME | NAME* | KIND NAME [source|body|proof]
-               name:NAME | name:A|B|C
+               name:NAME | name:A|B|C  (exact only; use declaration NAME* for wildcards)
   type/concept TYPE_OR_CONCEPT_TERMS | type:LEAN_TYPE
   source       FILE:LINE | FILE:START-END | FILE:tail
                FILE[:RANGE] TERMS
