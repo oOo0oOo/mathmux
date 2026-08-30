@@ -116,15 +116,11 @@ impl IssueStore {
         let path = match override_path {
             Some(path) => PathBuf::from(path),
             None => {
-                let base = std::env::var_os("XDG_STATE_HOME")
+                let data_home = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from);
+                let home = std::env::var_os("HOME")
                     .map(PathBuf::from)
-                    .or_else(|| {
-                        std::env::var_os("HOME")
-                            .map(PathBuf::from)
-                            .map(|path| path.join(".local/state"))
-                    })
-                    .context("cannot locate the local state directory")?;
-                base.join("mathmux/development.sqlite3")
+                    .map(|path| path.join(".local/share"));
+                default_issue_path(data_home.as_deref().or(home.as_deref()))?
             }
         };
         if managed && let Some(parent) = path.parent() {
@@ -322,6 +318,11 @@ impl IssueStore {
             .with_context(|| format!("unknown reference {reference}"))?;
         Ok(render_issue(&issue, all))
     }
+}
+
+fn default_issue_path(data_home: Option<&Path>) -> Result<PathBuf> {
+    let base = data_home.context("cannot locate the local data directory")?;
+    Ok(base.join("mathmux/development.sqlite3"))
 }
 
 impl TelemetryStore {
@@ -1384,6 +1385,15 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[test]
+    fn global_issue_path_uses_persistent_data_home() {
+        assert_eq!(
+            default_issue_path(Some(Path::new("/persistent/data"))).unwrap(),
+            PathBuf::from("/persistent/data/mathmux/development.sqlite3")
+        );
+        assert!(default_issue_path(None).is_err());
+    }
 
     #[test]
     fn issues_deduplicate_while_open_and_close_with_a_disposition() {
