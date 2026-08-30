@@ -405,4 +405,15 @@ mod tests {
         fs::write(daemon.join("cmdline"), b"init\0").unwrap();
         assert!(!has_daemon_parent(&worker));
     }
+
+    #[test]
+    fn source_context_failures_keep_a_copy_ready_search_hint() {
+        assert!(SERVICE_SOURCE.contains(
+            "s!\"`mathmux search {request.file_name}:{request.line}` for source context\""
+        ));
+        assert_eq!(
+            SERVICE_SOURCE.matches("sourceContextHint request").count(),
+            3
+        );
+    }
 }

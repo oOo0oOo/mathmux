@@ -187,6 +187,9 @@ def probeFailure (detail : String) (version : Nat) : Response :=
     detail,
     version }
 
+def sourceContextHint (request : Request) : String :=
+  s!"`mathmux search {request.file_name}:{request.line}` for source context"
+
 def runLocalProbe (snapshot : Language.Lean.InitialSnapshot) (request : Request) : IO Response := do
   let tree := Language.toSnapshotTree snapshot
   let fileMap := snapshot.ictx.fileMap
@@ -194,13 +197,13 @@ def runLocalProbe (snapshot : Language.Lean.InitialSnapshot) (request : Request)
   try
     let detail ← if request.operation == "goal" then
       let some goal := goal?
-        | throw <| IO.userError s!"no tactic context at line {request.line}; use search for source context"
+        | throw <| IO.userError s!"no tactic context at {request.file_name}:{request.line}; use {sourceContextHint request}"
       let mvars := goalMVars goal
       let ctx := goalContext goal
       pure (← ctx.ppGoals mvars).pretty
     else if request.operation == "tactic" then
       let some goal := goal?
-        | throw <| IO.userError s!"no tactic context at line {request.line}; use search for source context"
+        | throw <| IO.userError s!"no tactic context at {request.file_name}:{request.line}; use {sourceContextHint request}"
       let mvars := goalMVars goal
       let ctx := goalContext goal
       ctx.runMetaM {} do
@@ -221,7 +224,7 @@ def runLocalProbe (snapshot : Language.Lean.InitialSnapshot) (request : Request)
             (inspectTerm request.operation request.input {}).run' {}
       | none =>
         let some (ctx, lctx) ← contextAtPosition tree fileMap request.line request.column
-          | throw <| IO.userError s!"no elaboration context at line {request.line}; use search for source context"
+          | throw <| IO.userError s!"no elaboration context at {request.file_name}:{request.line}; use {sourceContextHint request}"
         ctx.runMetaM lctx do
           Meta.withLocalInstances (lctx.decls.toArray.toList.filterMap id) do
             (inspectTerm request.operation request.input {}).run' {}
