@@ -452,6 +452,10 @@ fn name_contains_candidates(connection: &Connection, tokens: &[String]) -> Resul
         .map_err(Into::into)
 }
 
+fn allow_name_contains_fallback(query: &str) -> bool {
+    symbolic_source_term(query).is_none()
+}
+
 fn name_prefix_candidates(connection: &Connection, token: &str) -> Result<Vec<IndexedRow>> {
     let sql = indexed_rows_sql(&format!(
         "WHERE search_fts MATCH ?1
@@ -2875,7 +2879,15 @@ impl Searcher {
                 contains_tokens.push(token.clone());
             }
         }
-        rows.extend(name_contains_candidates(&connection, &contains_tokens)?);
+        // Punctuation-only discovery queries (for example source-style
+        // alternatives containing `.*` and `|`) already use the source
+        // fallback below.  Do not also run the leading-wildcard name scan:
+        // on the full index it adds a measurable unbounded pass for a query
+        // whose long identifier tokens are unlikely to be useful name
+        // substrings.
+        if allow_name_contains_fallback(query) {
+            rows.extend(name_contains_candidates(&connection, &contains_tokens)?);
+        }
         if !name_query && !include_all_signatures {
             rows.extend(module_context_candidates(
                 &connection,

@@ -645,6 +645,10 @@ fn query_parsing_scoring_and_ranking_regressions() {
     assert_eq!(symbolic_source_term("ordinary"), None);
     assert_eq!(symbolic_source_term("Demo.ordinary_name"), None);
     assert_eq!(symbolic_source_term("A *ᵥ x"), None);
+    assert!(!allow_name_contains_fallback(
+        "projectionRange.*trivial|isomorphic"
+    ));
+    assert!(allow_name_contains_fallback("orthogonal complement"));
     assert!(declaration_glob_query("FiberBundle.*equiv"));
     assert!(declaration_glob_query(
         "CircleClutching.*homotopy|TransitionHomotopy"
