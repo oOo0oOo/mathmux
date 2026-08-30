@@ -452,6 +452,25 @@ fn name_contains_candidates(connection: &Connection, tokens: &[String]) -> Resul
         .map_err(Into::into)
 }
 
+fn name_prefix_candidates(connection: &Connection, token: &str) -> Result<Vec<IndexedRow>> {
+    let sql = indexed_rows_sql(&format!(
+        "WHERE search_fts MATCH ?1
+         AND owner IN (SELECT owner FROM active_search_scopes)
+         ORDER BY CASE
+           WHEN owner LIKE 'workspace:%' OR owner LIKE 'artifacts:%' THEN 0
+           ELSE 1
+         END
+         LIMIT {}",
+        SEARCH_TUNING.retrieval.name_contains_rows,
+    ));
+    let query = format!("name : \"{}\"*", token.replace('"', "\"\""));
+    let mut statement = connection.prepare(&sql)?;
+    statement
+        .query_map(params![query], indexed_row_from_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
 fn module_context_candidates(
     connection: &Connection,
     query: &str,
@@ -2552,7 +2571,9 @@ impl Searcher {
         }
         let connection = self.open()?;
         install_active_scopes(&connection, scopes)?;
-        let rows = name_contains_candidates(&connection, std::slice::from_ref(&leaf))?;
+        // Exact misses must stay bounded: FTS prefix retrieval avoids scanning every
+        // indexed declaration just to find a few typo/near-name candidates.
+        let rows = name_prefix_candidates(&connection, &leaf)?;
         let mut suggestions = rows
             .into_iter()
             .filter(|row| !matches!(row.kind.as_str(), "file" | "imports"))

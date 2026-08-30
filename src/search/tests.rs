@@ -1738,6 +1738,49 @@ fn name_contains_fallback_batches_tokens_and_respects_scopes() {
 }
 
 #[test]
+fn name_prefix_candidates_use_fts_and_respect_scopes() {
+    let connection = Connection::open_in_memory().unwrap();
+    connection
+        .execute_batch(
+            "CREATE VIRTUAL TABLE search_fts USING fts5(
+                    owner UNINDEXED, origin UNINDEXED, file UNINDEXED,
+                    module UNINDEXED, line UNINDEXED, name, kind UNINDEXED,
+                    signature, docs, body
+                 );",
+        )
+        .unwrap();
+    for (owner, name) in [
+        ("workspace:w1", "Demo.prefixAlphaSuffix"),
+        ("packages:demo", "Demo.prefixBetaSuffix"),
+        ("workspace:w2", "Demo.prefixGammaSuffix"),
+    ] {
+        connection
+            .execute(
+                "INSERT INTO search_fts(
+                        owner, origin, file, module, line, name, kind, signature, docs, body
+                     ) VALUES (?1, '', 'Demo.lean', 'Demo', 1, ?2, 'def', '', '', '')",
+                params![owner, name],
+            )
+            .unwrap();
+    }
+    install_active_scopes(
+        &connection,
+        &HashSet::from(["workspace:w1".into(), "packages:demo".into()]),
+    )
+    .unwrap();
+    let hits = name_prefix_candidates(&connection, "prefixAlpha").unwrap();
+    assert_eq!(
+        hits.into_iter().map(|hit| hit.name).collect::<Vec<_>>(),
+        ["Demo.prefixAlphaSuffix"]
+    );
+    let hits = name_prefix_candidates(&connection, "prefix").unwrap();
+    assert_eq!(
+        hits.into_iter().map(|hit| hit.name).collect::<Vec<_>>(),
+        ["Demo.prefixAlphaSuffix", "Demo.prefixBetaSuffix"]
+    );
+}
+
+#[test]
 fn import_context_marks_only_unavailable_results() {
     let hit = |module: &str| Candidate {
         hit: SearchHit {
