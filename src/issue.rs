@@ -747,6 +747,8 @@ fn query_class(request: &Request) -> Option<String> {
 
 fn is_identifier_query(value: &str) -> bool {
     !value.is_empty()
+        && !value.starts_with('.')
+        && !value.ends_with('.')
         && value
             .chars()
             .all(|character| character.is_alphanumeric() || matches!(character, '_' | '.' | '\''))
@@ -1674,6 +1676,24 @@ mod tests {
                 .unwrap(),
             3
         );
+    }
+
+    #[test]
+    fn telemetry_query_class_matches_identifier_boundaries() {
+        let request = |query: &str| Request {
+            build: String::new(),
+            generation: 0,
+            cwd: String::new(),
+            command: Command::Search {
+                query: query.into(),
+                limit: None,
+                all: false,
+            },
+        };
+
+        assert_eq!(query_class(&request("Demo.target")), Some("exact".into()));
+        assert_eq!(query_class(&request("MatrixGL.")), Some("discovery".into()));
+        assert_eq!(query_class(&request(".MatrixGL")), Some("discovery".into()));
     }
 
     #[test]
