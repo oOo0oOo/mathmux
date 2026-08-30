@@ -122,10 +122,14 @@ pub struct CheckProfileEntry {
 pub struct ActivityMetrics {
     pub checks: u64,
     pub failed_checks: u64,
-    pub average_check_ms: Option<f64>,
+    pub operational_failed_checks: u64,
+    pub check_p50_ms: Option<u64>,
+    pub check_p95_ms: Option<u64>,
     pub submissions: u64,
+    pub accepted_submissions: u64,
     pub builds: u64,
-    pub average_build_ms: Option<f64>,
+    pub build_p50_ms: Option<u64>,
+    pub build_p95_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -573,40 +577,80 @@ impl State {
 
     pub fn activity_metrics(&self, since: i64) -> Result<ActivityMetrics> {
         let connection = self.open()?;
-        let (checks, failed_checks, average_check_ms) = connection.query_row(
-            "SELECT COUNT(*),
-                    COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
-                    AVG(duration_ms)
+        let mut statement = connection.prepare(
+            "SELECT status, duration_ms, diagnostics_json
              FROM check_runs WHERE created_at >= ?1 AND status != 'running'",
-            [since],
-            |row| {
-                Ok((
-                    row.get::<_, i64>(0)?.max(0) as u64,
-                    row.get::<_, i64>(1)?.max(0) as u64,
-                    row.get::<_, Option<f64>>(2)?,
-                ))
-            },
         )?;
-        let (submissions, builds, average_build_ms) = connection.query_row(
-            "SELECT COUNT(*), COUNT(validation_duration_ms), AVG(validation_duration_ms)
+        let rows = statement.query_map([since], |row| {
+            Ok((
+                row.get::<_, CheckStatus>(0)?,
+                row.get::<_, i64>(1)?.max(0) as u64,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut check_durations = Vec::new();
+        let mut failed_checks = 0_u64;
+        let mut operational_failed_checks = 0_u64;
+        for row in rows {
+            let (status, duration, diagnostics) = row?;
+            check_durations.push(duration);
+            if status == CheckStatus::Failed {
+                failed_checks += 1;
+                if diagnostics.contains("\"kind\":\"mathmux\"")
+                    || diagnostics.contains("\"kind\":\"lean.dependency\"")
+                {
+                    operational_failed_checks += 1;
+                }
+            }
+        }
+        let (submissions, accepted_submissions) = connection.query_row(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(CASE WHEN validation_status = 'passed' THEN 1 ELSE 0 END), 0)
              FROM submissions WHERE created_at >= ?1",
             [since],
             |row| {
                 Ok((
                     row.get::<_, i64>(0)?.max(0) as u64,
                     row.get::<_, i64>(1)?.max(0) as u64,
-                    row.get::<_, Option<f64>>(2)?,
                 ))
             },
         )?;
+        let mut statement = connection.prepare(
+            "SELECT validation_duration_ms FROM submissions
+             WHERE created_at >= ?1 AND validation_duration_ms IS NOT NULL",
+        )?;
+        let mut build_durations = statement
+            .query_map([since], |row| Ok(row.get::<_, i64>(0)?.max(0) as u64))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        check_durations.sort_unstable();
+        build_durations.sort_unstable();
         Ok(ActivityMetrics {
-            checks,
+            checks: check_durations.len() as u64,
             failed_checks,
-            average_check_ms,
+            operational_failed_checks,
+            check_p50_ms: percentile_duration(&check_durations, 50),
+            check_p95_ms: percentile_duration(&check_durations, 95),
             submissions,
-            builds,
-            average_build_ms,
+            accepted_submissions,
+            builds: build_durations.len() as u64,
+            build_p50_ms: percentile_duration(&build_durations, 50),
+            build_p95_ms: percentile_duration(&build_durations, 95),
         })
+    }
+
+    pub fn latest_check_for_workspace(&self, workspace_ref: &str) -> Result<Option<CheckRun>> {
+        self.open()?
+            .query_row(
+                "SELECT ref, workspace_ref, status, files_json, passed_json, failed,
+                        not_checked_json, warnings_json, linters_json, diagnostics_json,
+                        suggestions_json, profile_json, duration_ms, created_at
+                 FROM check_runs WHERE workspace_ref = ?1
+                 ORDER BY created_at DESC, CAST(substr(ref, 2) AS INTEGER) DESC LIMIT 1",
+                [workspace_ref],
+                check_run_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     pub fn submission_intervals(&self, since: i64) -> Result<Vec<SubmissionInterval>> {
@@ -1360,6 +1404,15 @@ fn check_run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CheckRun> {
         duration_ms: row.get(12)?,
         created_at: row.get(13)?,
     })
+}
+
+fn percentile_duration(sorted: &[u64], percentile: usize) -> Option<u64> {
+    let index = sorted
+        .len()
+        .saturating_mul(percentile)
+        .div_ceil(100)
+        .saturating_sub(1);
+    sorted.get(index).copied()
 }
 
 fn json_column<T: serde::de::DeserializeOwned>(
