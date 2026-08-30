@@ -425,6 +425,25 @@ fn indexed_candidate(
     }
 }
 
+fn declaration_glob_candidates_from_connection(
+    connection: &Connection,
+    query: &str,
+) -> Result<Option<Vec<IndexedRow>>> {
+    let Some(glob_query) = declaration_glob_fts_query(query) else {
+        return Ok(None);
+    };
+    let sql = ranked_rows_sql(&format!(
+        "WHERE search_fts MATCH ?1
+         AND owner IN (SELECT owner FROM active_search_scopes) LIMIT {}",
+        SEARCH_TUNING.retrieval.discovery_rows
+    ));
+    let rows = connection
+        .prepare(&sql)?
+        .query_map([glob_query], indexed_row_from_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(Some(rows))
+}
+
 fn install_active_scopes(connection: &Connection, scopes: &HashSet<String>) -> Result<()> {
     connection.execute_batch(
         "CREATE TEMP TABLE active_search_scopes (owner TEXT PRIMARY KEY) WITHOUT ROWID",
@@ -2896,6 +2915,14 @@ impl Searcher {
     ) -> Result<Vec<IndexedRow>> {
         let connection = self.open()?;
         install_active_scopes(&connection, scopes)?;
+        // Declaration globs already have an authoritative name-only FTS
+        // query. Avoid generic token/prefix retrieval that would be filtered
+        // out later and is expensive on the full project index.
+        if !include_all_signatures
+            && let Some(rows) = declaration_glob_candidates_from_connection(&connection, query)?
+        {
+            return Ok(rows);
+        }
         let fts_query = fts_query(&tokens.join(" "));
         let name_query = declaration_name_query(query);
         let sql = if fts_query.is_empty() && include_all_signatures {
@@ -2932,19 +2959,6 @@ impl Searcher {
                 .map_err(anyhow::Error::from)?
         };
         drop(statement);
-        if let Some(glob_query) = declaration_glob_fts_query(query) {
-            let sql = ranked_rows_sql(&format!(
-                "WHERE search_fts MATCH ?1
-                 AND owner IN (SELECT owner FROM active_search_scopes) LIMIT {}",
-                SEARCH_TUNING.retrieval.discovery_rows
-            ));
-            rows.extend(
-                connection
-                    .prepare(&sql)?
-                    .query_map([glob_query], indexed_row_from_row)?
-                    .collect::<rusqlite::Result<Vec<_>>>()?,
-            );
-        }
         let named_sql = ranked_rows_sql(&format!(
             "WHERE search_fts MATCH ?1
              AND owner IN (SELECT owner FROM active_search_scopes)

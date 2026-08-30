@@ -1949,6 +1949,49 @@ fn name_prefix_candidates_use_fts_and_respect_scopes() {
 }
 
 #[test]
+fn declaration_glob_candidates_are_name_scoped_and_skip_generic_matches() {
+    let connection = Connection::open_in_memory().unwrap();
+    connection
+        .execute_batch(
+            "CREATE VIRTUAL TABLE search_fts USING fts5(
+                    owner UNINDEXED, origin UNINDEXED, file UNINDEXED,
+                    module UNINDEXED, line UNINDEXED, name, kind UNINDEXED,
+                    signature, docs, body
+                 );",
+        )
+        .unwrap();
+    for (owner, name, signature, body) in [
+        ("workspace:w1", "Demo.FiberBundle.local_equiv", "X → Y", ""),
+        (
+            "workspace:w1",
+            "Demo.unrelated",
+            "FiberBundle equiv",
+            "FiberBundle equiv",
+        ),
+        ("workspace:w2", "Demo.FiberBundle.other_equiv", "X → Y", ""),
+    ] {
+        connection
+            .execute(
+                "INSERT INTO search_fts(
+                        owner, origin, file, module, line, name, kind, signature, docs, body
+                     ) VALUES (?1, '', 'Demo.lean', 'Demo', 1, ?2, 'def', ?3, '', ?4)",
+                params![owner, name, signature, body],
+            )
+            .unwrap();
+    }
+    install_active_scopes(&connection, &HashSet::from(["workspace:w1".into()])).unwrap();
+
+    let rows = declaration_glob_candidates_from_connection(&connection, "FiberBundle.*equiv")
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        rows.into_iter().map(|row| row.name).collect::<Vec<_>>(),
+        ["Demo.FiberBundle.local_equiv"]
+    );
+}
+
+#[test]
 fn import_context_marks_only_unavailable_results() {
     let hit = |module: &str| Candidate {
         hit: SearchHit {
