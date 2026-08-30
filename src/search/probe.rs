@@ -104,6 +104,20 @@ impl ProbeRequest {
                 directive: Some(directive),
             });
         }
+        if let Some(ProbeContext::File(file)) = &context {
+            let mut facet_terms = remainder.split_whitespace();
+            if let (Some(facet), None) = (facet_terms.next(), facet_terms.next()) {
+                let facet = facet.trim_matches(['\'', '"']);
+                if matches!(
+                    facet.to_ascii_lowercase().as_str(),
+                    "outline" | "declarations" | "imports" | "dependents"
+                ) {
+                    bail!(
+                        "`{facet}` is a source-search facet, not a probe subject; use `mathmux search {file} {facet}`"
+                    )
+                }
+            }
+        }
         if remainder
             .split_whitespace()
             .skip(1)
@@ -1737,6 +1751,16 @@ mod tests {
                 directive: None,
             }
         );
+        for facet in ["outline", "declarations", "imports", "dependents"] {
+            assert_eq!(
+                ProbeRequest::parse(&format!("Demo.lean {facet}"))
+                    .unwrap_err()
+                    .to_string(),
+                format!(
+                    "`{facet}` is a source-search facet, not a probe subject; use `mathmux search Demo.lean {facet}`"
+                )
+            );
+        }
         assert_eq!(
             ProbeRequest::parse("Demo.lean:42-48 source")
                 .unwrap_err()
