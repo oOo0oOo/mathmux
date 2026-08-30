@@ -45,17 +45,18 @@ FORMS — type one directly; declaration/type/source/compose are labels, not key
 KIND = abbrev|class|def|inductive|instance|lemma|structure|theorem
 
 RESULT
-  Exact declarations show signature, path, imports, and up to three usages.
-  Use probe NAME source|usages for focused detail. qREFs retain stored result sets;
+  Exact declarations show signature, path, imports, and a usage count.
+  Regex and source-term matches group by enclosing declaration. qREF metadata is last.
+  Use probe NAME source|outline|usages for focused detail. qREFs retain stored result sets;
   show qREF --all expands genuine multi-result or source-range searches.
   --limit N (1–200) caps hits and cannot combine with --all.
-  Source-only ranges of 48 lines or fewer are complete in compact mode; --all
-  is needed for longer ranges or broader result detail.
+  Source-only ranges of 48 lines or fewer are complete in compact mode; longer
+  ranges name the next non-overlapping range. Refine grouped searches before --all.
   Exact names include full signatures.
 
 NEXT
-  One declaration -> probe NAME signature|source|usages. Exact misses fail closed
-  with at most three near-name suggestions; concept search is a separate follow-up.
+  One declaration -> probe NAME signature|source|outline|usages. Exact misses fail
+  closed with at most three near-name suggestions, then repair from the leaf name.
   Many hits -> refine first. Compact output gives one focused next action.
 
 RULES
@@ -69,14 +70,14 @@ RULES
 
 const PROBE_HELP: &str = r##"PROBE — inspect something known; returns qREF
 FORMS — type one directly; there are no API, LEAN, or other category keywords
-  NAME [signature|source|apply|fields|constructors|ext|simp|
+  NAME [signature|source|outline|apply|fields|constructors|ext|simp|
         instances|coercions|usages]
   type:LEAN_TYPE [types]
   FILE warnings
   FILE:LINE [goal] | FILE:LINE TERM [signature]
   PATH NAME usages
   cREF [goal|types|defeq|rewrite|profile]
-  declaration-qREF [signature|source|usages|constructors]
+  declaration-qREF [signature|source|outline|usages|constructors]
   positioned-qREF [goal] | stored-probe-qREF
   FILE|FILE:LINE|cREF|qREF "#check TERM"|"#synth TYPE"|"#reduce TERM"
   FILE:LINE|cREF|positioned-qREF "by TACTIC"
@@ -86,7 +87,8 @@ RESULT
   probing one returns a source-bound dossier with API/dependency evidence.
   API focuses return one bounded dossier. goal returns the exact local goal;
   TERM/directives return Lean's elaborated answer; by returns solved or subgoals.
-  NAME source resolves the exact declaration and returns that body; a miss never
+  NAME source resolves the exact declaration and returns that body; NAME outline
+  returns its proof skeleton. A miss never
   falls through to another declaration. search FILE:LINE/RANGE reads file text.
 
 NEXT
@@ -884,11 +886,11 @@ mod tests {
             .to_string();
         for contract in [
             "there are no API, LEAN, or other category keywords",
-            "NAME [signature|source|apply",
+            "NAME [signature|source|outline|apply",
             "FILE warnings",
             "FILE:LINE [goal]",
             "cREF [goal|types|defeq|rewrite|profile]",
-            "declaration-qREF [signature|source|usages|constructors]",
+            "declaration-qREF [signature|source|outline|usages|constructors]",
             "Context is mandatory",
             "Use NAME signature, not",
             "no nearby-line fallback",

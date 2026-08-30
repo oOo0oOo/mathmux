@@ -200,7 +200,7 @@ pub(super) fn source_regex_result(
     let limit = if all { SOURCE_OCCURRENCE_LIMIT } else { 12 };
     let deadline = Instant::now() + SOURCE_FALLBACK_BUDGET;
     let dependency_root = fs::canonicalize(workspace.path.join(".lake/packages")).ok();
-    let mut hits = Vec::new();
+    let mut groups = Vec::new();
     let mut total = 0usize;
     let mut timed_out = false;
     for path in files {
@@ -210,6 +210,9 @@ pub(super) fn source_regex_result(
         }
         let source = fs::read_to_string(&path)?;
         let lines = source.lines().collect::<Vec<_>>();
+        let module = project_module_name(&workspace.path, &path);
+        let spans = declaration_spans(&source, &module);
+        let relative = source_display_path(workspace, dependency_root.as_deref(), &path);
         for (index, line) in lines.iter().enumerate() {
             if Instant::now() >= deadline {
                 timed_out = true;
@@ -223,38 +226,15 @@ pub(super) fn source_regex_result(
                 continue;
             }
             total += 1;
-            if hits.len() >= limit {
-                continue;
-            }
-            let first = index.saturating_sub(2);
-            let last = (index + 3).min(lines.len());
-            let excerpt = lines[first..last]
-                .iter()
-                .enumerate()
-                .map(|(offset, source)| {
-                    let number = first + offset + 1;
-                    let marker = if number == index + 1 { '>' } else { ' ' };
-                    format!("{marker}{number:>5} | {source}")
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            let relative = source_display_path(workspace, dependency_root.as_deref(), &path);
-            hits.push(SearchHit {
-                name: truncate_line(line.trim(), 200),
-                kind: "source-regex".into(),
-                signature: None,
-                module: String::new(),
-                path: relative,
-                line: line_number,
-                doc: None,
-                source: Some(excerpt),
-                usages: Vec::new(),
-                applicable: false,
-                required_import: None,
-            });
+            add_source_match_group(&mut groups, &relative, &spans, line_number, line);
         }
     }
-    let omitted = total.saturating_sub(hits.len());
+    let total_groups = groups.len();
+    let omitted_groups = total_groups.saturating_sub(limit);
+    groups.truncate(limit);
+    let displayed_matches = groups.iter().map(|group| group.count).sum::<usize>();
+    let omitted_matches = total.saturating_sub(displayed_matches);
+    let hits = groups.into_iter().map(SourceMatchGroup::into_hit).collect();
     Ok(SearchResult {
         hits,
         inference: "source-regex".into(),
@@ -262,17 +242,111 @@ pub(super) fn source_regex_result(
             Some("source regex scan timed out; narrow the scope".into())
         } else if total == 0 {
             Some("no regex source matches".into())
-        } else if omitted > 0 {
-            Some(if all {
-                format!("+{omitted} matches omitted; narrow the scope")
-            } else {
-                format!("+{omitted} matches omitted; use --all")
-            })
+        } else if omitted_groups > 0 {
+            Some(format!(
+                "+{omitted_matches} matches in {omitted_groups} declarations omitted; narrow the scope"
+            ))
         } else {
             None
         },
         ok: true,
     })
+}
+
+#[derive(Debug)]
+struct SourceMatchGroup {
+    name: String,
+    kind: String,
+    signature: String,
+    path: String,
+    start: u64,
+    end: u64,
+    count: usize,
+    matches: Vec<String>,
+}
+
+impl SourceMatchGroup {
+    fn into_hit(self) -> SearchHit {
+        SearchHit {
+            name: self.name,
+            kind: self.kind,
+            signature: Some(format!(
+                "{} match{}; lines {}-{}{}",
+                self.count,
+                if self.count == 1 { "" } else { "es" },
+                self.start,
+                self.end,
+                if self.signature.is_empty() {
+                    String::new()
+                } else {
+                    format!("; {}", truncate_line(&self.signature, 160))
+                }
+            )),
+            module: String::new(),
+            path: self.path,
+            line: self.start,
+            doc: None,
+            source: Some(self.matches.join("\n")),
+            usages: Vec::new(),
+            applicable: false,
+            required_import: None,
+        }
+    }
+}
+
+fn add_source_match_group(
+    groups: &mut Vec<SourceMatchGroup>,
+    path: &str,
+    spans: &[DeclarationSpan],
+    line_number: u64,
+    line: &str,
+) {
+    let span = enclosing_declaration_span(spans, line_number);
+    let (name, kind, signature, start, end) = span.map_or_else(
+        || {
+            (
+                format!("source match at {path}:{line_number}"),
+                "source-group".to_owned(),
+                String::new(),
+                line_number,
+                line_number,
+            )
+        },
+        |span| {
+            (
+                span.name.clone(),
+                "source-group".to_owned(),
+                span.signature.clone(),
+                span.start,
+                span.end,
+            )
+        },
+    );
+    let index = groups
+        .iter()
+        .position(|group| group.path == path && group.start == start && group.name == name);
+    let group = match index {
+        Some(index) => &mut groups[index],
+        None => {
+            groups.push(SourceMatchGroup {
+                name,
+                kind,
+                signature,
+                path: path.to_owned(),
+                start,
+                end,
+                count: 0,
+                matches: Vec::new(),
+            });
+            groups.last_mut().expect("source match group")
+        }
+    };
+    group.count += 1;
+    if group.matches.len() < 3 {
+        group
+            .matches
+            .push(format!(">{line_number:>5} | {}", line.trim_end()));
+    }
 }
 
 fn source_display_path(
@@ -531,18 +605,6 @@ pub(super) fn source_occurrence_result(
     } else {
         SOURCE_OCCURRENCE_LIMIT
     };
-    let excerpt = matches
-        .iter()
-        .take(limit)
-        .map(|(line, source)| {
-            if query.terms.is_empty() {
-                format!("{line}\t{source}")
-            } else {
-                format!("{line:>5}  {source}")
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
     let relative = query.display_path.unwrap_or_else(|| {
         query
             .path
@@ -551,7 +613,7 @@ pub(super) fn source_occurrence_result(
             .to_string_lossy()
             .into_owned()
     });
-    let omitted = matches.len().saturating_sub(limit);
+    let continuation_path = relative.clone();
     let terms_label = if import_query {
         let filters = match_terms
             .iter()
@@ -566,34 +628,77 @@ pub(super) fn source_occurrence_result(
     } else {
         query.terms.join(" | ")
     };
-    let hits = (!matches.is_empty())
-        .then(|| SearchHit {
-            name: if query.terms.is_empty() {
-                "source".into()
-            } else {
-                "matches".into()
+    let (hits, omitted, omitted_groups) = if query.terms.is_empty() || import_query {
+        let excerpt = matches
+            .iter()
+            .take(limit)
+            .map(|(line, source)| {
+                if query.terms.is_empty() {
+                    format!("{line}\t{source}")
+                } else {
+                    format!("{line:>5}  {source}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let spans = declaration_spans(&source, &project_module_name(&workspace.path, &query.path));
+        let enclosing = matches
+            .first()
+            .and_then(|(line, _)| enclosing_declaration_span(&spans, *line));
+        let signature = enclosing.map_or_else(
+            || {
+                if import_query {
+                    format!("{} for {terms_label}", matches.len())
+                } else {
+                    format!("{} lines", matches.len())
+                }
             },
-            kind: if query.terms.is_empty() {
-                "source-range".into()
-            } else {
-                "source-occurrences".into()
+            |span| {
+                format!(
+                    "{} lines; inside {} lines {}-{}",
+                    matches.len(),
+                    span.name,
+                    span.start,
+                    span.end
+                )
             },
-            signature: Some(if query.terms.is_empty() {
-                format!("{} lines", matches.len())
-            } else {
-                format!("{} for {}", matches.len(), terms_label)
-            }),
-            module: String::new(),
-            path: relative,
-            line: matches.first().map_or(query.first_line, |(line, _)| *line),
-            doc: None,
-            source: Some(excerpt),
-            usages: Vec::new(),
-            applicable: false,
-            required_import: None,
-        })
-        .into_iter()
-        .collect();
+        );
+        let hits = (!matches.is_empty())
+            .then(|| SearchHit {
+                name: enclosing
+                    .map_or("source", |span| span.name.as_str())
+                    .to_owned(),
+                kind: "source-range".into(),
+                signature: Some(signature),
+                module: String::new(),
+                path: relative,
+                line: matches.first().map_or(query.first_line, |(line, _)| *line),
+                doc: None,
+                source: Some(excerpt),
+                usages: Vec::new(),
+                applicable: false,
+                required_import: None,
+            })
+            .into_iter()
+            .collect();
+        (hits, matches.len().saturating_sub(limit), 0)
+    } else {
+        let spans = declaration_spans(&source, &project_module_name(&workspace.path, &query.path));
+        let mut groups = Vec::new();
+        for (line, source) in &matches {
+            add_source_match_group(&mut groups, &relative, &spans, *line, source);
+        }
+        let group_limit = if all { SOURCE_OCCURRENCE_LIMIT } else { 12 };
+        let omitted_groups = groups.len().saturating_sub(group_limit);
+        groups.truncate(group_limit);
+        let displayed = groups.iter().map(|group| group.count).sum::<usize>();
+        let omitted = matches.len().saturating_sub(displayed);
+        (
+            groups.into_iter().map(SourceMatchGroup::into_hit).collect(),
+            omitted,
+            omitted_groups,
+        )
+    };
     Ok(SearchResult {
         hits,
         inference: "source".into(),
@@ -616,12 +721,19 @@ pub(super) fn source_occurrence_result(
                 if all {
                     format!("+{omitted} lines omitted; narrow the range")
                 } else {
-                    format!("+{omitted} lines omitted; rerun search --all")
+                    let next_line = matches.get(limit).map_or(
+                        query.first_line.saturating_add(limit as u64),
+                        |(line, _)| *line,
+                    );
+                    format!(
+                        "+{omitted} lines omitted; next: mathmux search {continuation_path}:{next_line}-{}",
+                        query.last_line
+                    )
                 }
-            } else if all {
-                format!("+{omitted} matches omitted; narrow the query")
             } else {
-                format!("+{omitted} matches omitted; use --all")
+                format!(
+                    "+{omitted} matches in {omitted_groups} declarations omitted; narrow the query"
+                )
             })
         } else {
             None
@@ -1099,31 +1211,42 @@ pub(super) fn source_location_result(
             .to_string_lossy()
             .into_owned()
     });
+    let module = project_module_name(&workspace.path, &location.path);
+    let spans = declaration_spans(source, &module);
+    let enclosing = enclosing_declaration_span(&spans, location.line);
+    let line_limit = if location.expanded {
+        LOCATION_EXPANDED_LINES
+    } else if location.tail {
+        SOURCE_PREVIEW_LINES
+    } else {
+        LOCATION_PREVIEW_LINES
+    };
+    let (shown_start, shown_end) = location_excerpt_bounds(source, location.line, line_limit);
     SearchResult {
         hits: vec![SearchHit {
-            name: "source".into(),
+            name: enclosing
+                .map_or("source", |span| span.name.as_str())
+                .to_owned(),
             kind: if location.expanded {
                 "location-expanded"
             } else {
                 "location"
             }
             .into(),
-            signature: None,
+            signature: Some(enclosing.map_or_else(
+                || format!("showing lines {shown_start}-{shown_end}"),
+                |span| {
+                    format!(
+                        "inside {} lines {}-{}; showing {}-{}",
+                        span.kind, span.start, span.end, shown_start, shown_end
+                    )
+                },
+            )),
             module: String::new(),
             path: relative,
             line: location.line,
             doc: None,
-            source: nonempty(location_source_excerpt(
-                source,
-                location.line,
-                if location.expanded {
-                    LOCATION_EXPANDED_LINES
-                } else if location.tail {
-                    SOURCE_PREVIEW_LINES
-                } else {
-                    LOCATION_PREVIEW_LINES
-                },
-            )),
+            source: nonempty(location_source_excerpt(source, location.line, line_limit)),
             usages: Vec::new(),
             applicable: false,
             required_import: None,
@@ -1132,6 +1255,21 @@ pub(super) fn source_location_result(
         note: note.map(Into::into),
         ok: true,
     }
+}
+
+fn location_excerpt_bounds(source: &str, requested_line: u64, line_limit: usize) -> (u64, u64) {
+    let line_count = source.lines().count();
+    if line_count == 0 {
+        return (0, 0);
+    }
+    let target = requested_line
+        .saturating_sub(1)
+        .min(line_count.saturating_sub(1) as u64) as usize;
+    let start = target
+        .saturating_sub(6)
+        .min(line_count.saturating_sub(line_limit));
+    let end = line_count.min(start + line_limit);
+    (start as u64 + 1, end as u64)
 }
 
 pub(super) fn location_source_excerpt(

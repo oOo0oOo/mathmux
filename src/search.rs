@@ -56,8 +56,8 @@ use type_worker::{TypeSearchHit, TypeSearchResult, TypeSearchState, TypeSearchWo
 
 const RESULT_LIMIT: usize = SEARCH_PRESENTATION.result_limit;
 const SUMMARY_LIMIT: usize = SEARCH_PRESENTATION.summary_limit;
-const LOCATION_PREVIEW_LINES: usize = 32;
-const LOCATION_EXPANDED_LINES: usize = 96;
+const LOCATION_PREVIEW_LINES: usize = 12;
+const LOCATION_EXPANDED_LINES: usize = 48;
 const SOURCE_OCCURRENCE_LIMIT: usize = 64;
 const SOURCE_RANGE_LIMIT: usize = 48;
 const SOURCE_RANGE_ALL_LIMIT: usize = SEARCH_PRESENTATION.source_range_all_lines;
@@ -2497,11 +2497,6 @@ impl Searcher {
         }
         if base_warming {
             note.push_str("\nsource index warming");
-        }
-        if bounded_suggestions.is_empty() {
-            note.push_str(&format!(
-                "\nnext: `mathmux search \"concept {query}\"` for broad discovery"
-            ));
         }
         Ok(SearchResult {
             hits: bounded_suggestions

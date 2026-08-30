@@ -64,15 +64,17 @@ probe command.
 
 Identifier-shaped searches resolve exact names first and fail closed on a miss,
 with at most three near-name suggestions. `name:` is exact-only; use the explicit
-`declaration NAME*` form for wildcard name discovery. Exact output stays compact: signature,
-path, import availability, and up to three usages. Use `probe NAME source` or
-`probe NAME usages` for focused detail; use `show qREF --all` for genuine
-multi-result or source-range expansion.
+`declaration NAME*` form for wildcard name discovery. Exact output stays compact:
+signature, path, import availability, and a usage count. Use `probe NAME source`,
+`probe NAME outline`, or `probe NAME usages` for focused detail. Regex and literal
+source matches group by enclosing declaration, and the reusable `qREF` is printed
+last. Refine grouped searches before using `show qREF --all`.
 
 ```sh
 mathmux search name:Nat.succ
 mathmux probe Nat.succ signature
 mathmux probe Nat.succ source
+mathmux probe Nat.succ outline
 mathmux search 'type:_ → _' --limit 12
 mathmux search Mathlib/Data/Nat/Basic.lean dependents
 mathmux probe Mathlib/Data/Nat/Basic.lean '#check Nat.succ'
@@ -86,8 +88,7 @@ grammar. Probe never guesses an elaboration context, and `check` remains the
 certification step after source edits.
 
 For source-only ranges of 48 lines or fewer, compact output already contains
-the full requested range; use `--all` for longer ranges or broader result
-detail.
+the full requested range. Longer ranges name the next non-overlapping range.
 
 ### mathmux won't
 

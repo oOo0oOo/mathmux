@@ -9,6 +9,62 @@ pub(super) struct SourceEntry {
     pub(super) body: String,
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct DeclarationSpan {
+    pub(super) start: u64,
+    pub(super) end: u64,
+    pub(super) name: String,
+    pub(super) kind: String,
+    pub(super) signature: String,
+}
+
+pub(super) fn declaration_spans(source: &str, module: &str) -> Vec<DeclarationSpan> {
+    let last_line = source.lines().count().max(1) as u64;
+    let mut entries = parse_source(source, module)
+        .into_iter()
+        .filter(|entry| {
+            !matches!(
+                entry.kind.as_str(),
+                "field"
+                    | "file"
+                    | "imports"
+                    | "notation"
+                    | "infix"
+                    | "infixl"
+                    | "infixr"
+                    | "prefix"
+                    | "postfix"
+            )
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| entry.line);
+    entries.dedup_by(|left, right| left.line == right.line && left.name == right.name);
+    entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| DeclarationSpan {
+            start: entry.line,
+            end: entries
+                .get(index + 1)
+                .map_or(last_line, |next| next.line.saturating_sub(1))
+                .max(entry.line),
+            name: entry.name.clone(),
+            kind: entry.kind.clone(),
+            signature: entry.signature.clone(),
+        })
+        .collect()
+}
+
+pub(super) fn enclosing_declaration_span(
+    spans: &[DeclarationSpan],
+    line: u64,
+) -> Option<&DeclarationSpan> {
+    spans
+        .iter()
+        .rev()
+        .find(|span| line >= span.start && line <= span.end)
+}
+
 pub(super) fn source_entry_is_private(entry: &SourceEntry) -> bool {
     entry.body.lines().any(|line| {
         let line = line.trim_start();
