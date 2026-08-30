@@ -192,6 +192,7 @@ pub fn render_formalization_yaml(
     state: &State,
     telemetry: Option<&TelemetryStore>,
 ) -> Result<String> {
+    let now = now_unix_ms() / 1000;
     let project = repo
         .root
         .file_name()
@@ -205,10 +206,7 @@ pub fn render_formalization_yaml(
         .filter_map(|workspace| workspace.model)
         .filter(|model| publication_model(model))
         .collect::<std::collections::BTreeSet<_>>();
-    let agent_hours = telemetry
-        .and_then(|store| store.context_events(repo, 0).ok())
-        .map(|events| recorded_agent_hours(&events))
-        .filter(|hours| *hours > 0.0);
+    let agent_hours = publication_agent_hours(repo, state, telemetry, now)?;
     let license = detected_license(&repo.root);
     Ok(publication_yaml(
         project,
@@ -217,6 +215,33 @@ pub fn render_formalization_yaml(
         &models,
         agent_hours,
     ))
+}
+
+fn publication_agent_hours(
+    repo: &Repo,
+    state: &State,
+    telemetry: Option<&TelemetryStore>,
+    now: i64,
+) -> Result<Option<f64>> {
+    let workspaces = state.list_workspaces()?;
+    let activity = state
+        .workspace_activity()?
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+    let creation_times = state
+        .workspace_creation_times()?
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+    let agents = project_agents(&workspaces, &activity, &creation_times, now);
+    let since = now.saturating_sub(DAY_SECS);
+    let events = telemetry.and_then(|store| store.context_events(repo, 0).ok());
+    let live_hours = agent_hours(&agents, events.as_deref(), since, now);
+    let recorded_hours = events
+        .as_deref()
+        .map(recorded_agent_hours)
+        .unwrap_or_default();
+    let hours = live_hours.max(recorded_hours);
+    Ok((hours > 0.0).then_some(hours))
 }
 
 fn publication_yaml(
