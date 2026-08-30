@@ -126,6 +126,16 @@ impl ProbeRequest {
                 }
             }
         }
+        if let Some(ProbeContext::Position(location)) = &context {
+            let mut focus_terms = remainder.split_whitespace();
+            if let (Some(focus), None) = (focus_terms.next(), focus_terms.next())
+                && focus.trim_matches(['\'', '"']) == "source"
+            {
+                bail!(
+                    "source is a search form at FILE:LINE; use `mathmux search {location}` for source or `mathmux probe {location} goal` for Lean context"
+                )
+            }
+        }
         if remainder
             .split_whitespace()
             .skip(1)
@@ -1780,6 +1790,12 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             "source ranges are a search form, not a probe context; use `mathmux search Demo.lean:42-48` for source or `mathmux probe Demo.lean:42 goal` for Lean context"
+        );
+        assert_eq!(
+            ProbeRequest::parse("Demo.lean:42 source")
+                .unwrap_err()
+                .to_string(),
+            "source is a search form at FILE:LINE; use `mathmux search Demo.lean:42` for source or `mathmux probe Demo.lean:42 goal` for Lean context"
         );
         assert_eq!(
             ProbeRequest::parse("c42 --wait").unwrap_err().to_string(),
