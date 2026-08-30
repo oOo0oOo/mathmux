@@ -590,7 +590,7 @@ fn wait_for_replacement(repo: &Repo) -> Result<UnixStream> {
 
 #[cfg(feature = "development")]
 fn run_issue_report(command: &IssueCommand, cwd: &Path) -> Result<u8> {
-    let store = IssueStore::global()?;
+    let store = issue_store(cwd)?;
     let summary = match command {
         IssueCommand::Report { summary, reference } => {
             store.create(cwd, summary, reference.as_deref())?
@@ -604,7 +604,7 @@ fn run_issue_report(command: &IssueCommand, cwd: &Path) -> Result<u8> {
 fn run_dev(command: &DevCommand, cwd: &Path) -> Result<u8> {
     let summary = match command {
         DevCommand::Issue { command } => {
-            let store = IssueStore::global()?;
+            let store = issue_store(cwd)?;
             match command {
                 DevIssueCommand::List { status } => store.list(status.as_str())?,
                 DevIssueCommand::Resolve {
@@ -616,13 +616,13 @@ fn run_dev(command: &DevCommand, cwd: &Path) -> Result<u8> {
             }
         }
         DevCommand::Telemetry { since, verb, slow } => {
-            TelemetryStore::global()?.summary(since, verb.as_deref(), *slow)?
+            telemetry_store(cwd)?.summary(since, verb.as_deref(), *slow)?
         }
         DevCommand::Show { reference, all } => {
             if reference.starts_with('i') {
-                IssueStore::global()?.show(reference, *all)?
+                issue_store(cwd)?.show(reference, *all)?
             } else if reference.starts_with('e') {
-                TelemetryStore::global()?.show(reference, *all)?
+                telemetry_store(cwd)?.show(reference, *all)?
             } else {
                 bail!("dev show expects iREF or eREF")
             }
@@ -640,6 +640,22 @@ fn run_dev(command: &DevCommand, cwd: &Path) -> Result<u8> {
     };
     output_summary(&summary)?;
     Ok(0)
+}
+
+#[cfg(feature = "development")]
+fn issue_store(cwd: &Path) -> Result<IssueStore> {
+    match Repo::discover(cwd) {
+        Ok(repo) => IssueStore::global_for_repo(&repo),
+        Err(_) => IssueStore::global(),
+    }
+}
+
+#[cfg(feature = "development")]
+fn telemetry_store(cwd: &Path) -> Result<TelemetryStore> {
+    match Repo::discover(cwd) {
+        Ok(repo) => TelemetryStore::global_for_repo(&repo),
+        Err(_) => TelemetryStore::global(),
+    }
 }
 
 fn output_summary(summary: &str) -> Result<()> {

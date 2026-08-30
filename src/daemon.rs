@@ -47,7 +47,7 @@ pub fn run(repo: Repo) -> Result<()> {
     let state = State::new(&repo.db_path)?;
     let state_ms = phase.elapsed().as_millis() as u64;
     let telemetry = development_enabled()
-        .then(TelemetryStore::global)
+        .then(|| TelemetryStore::global_for_repo(&repo))
         .and_then(Result::ok)
         .map(Arc::new);
     let checker = Arc::new(Checker::new(

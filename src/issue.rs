@@ -4,6 +4,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
+use rusqlite::ffi::ErrorCode;
 use rusqlite::types::Type;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -115,23 +116,25 @@ struct Issue {
 
 impl IssueStore {
     pub fn global() -> Result<Self> {
+        Self::global_with_fallback(None)
+    }
+
+    pub fn global_for_repo(repo: &Repo) -> Result<Self> {
+        let fallback = fallback_issue_path(&repo.common_git_dir);
+        Self::global_with_fallback(Some(&fallback))
+    }
+
+    fn global_with_fallback(fallback: Option<&Path>) -> Result<Self> {
         let override_path = std::env::var_os("MATHMUX_ISSUE_DB");
-        let managed = override_path.is_none();
-        let path = match override_path {
-            Some(path) => PathBuf::from(path),
-            None => {
-                let data_home = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from);
-                let home = std::env::var_os("HOME")
-                    .map(PathBuf::from)
-                    .map(|path| path.join(".local/share"));
-                default_issue_path(data_home.as_deref().or(home.as_deref()))?
-            }
-        };
-        if managed && let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-            fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+        if let Some(path) = override_path {
+            return Self::new(path);
         }
-        Self::new(path)
+        let data_home = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from);
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|path| path.join(".local/share"));
+        let preferred = default_issue_path(data_home.as_deref().or(home.as_deref()))?;
+        managed_with_fallback(&preferred, fallback)
     }
 
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
@@ -332,6 +335,11 @@ fn default_issue_path(data_home: Option<&Path>) -> Result<PathBuf> {
 impl TelemetryStore {
     pub fn global() -> Result<Self> {
         let issues = IssueStore::global()?;
+        Self::new(issues.path)
+    }
+
+    pub fn global_for_repo(repo: &Repo) -> Result<Self> {
+        let issues = IssueStore::global_for_repo(repo)?;
         Self::new(issues.path)
     }
 
@@ -770,7 +778,7 @@ pub fn record_exchange(
     response: &Response,
     client_ms: u64,
 ) -> Result<()> {
-    TelemetryStore::global()?.record(repo, request, response, client_ms)?;
+    TelemetryStore::global_for_repo(repo)?.record(repo, request, response, client_ms)?;
     Ok(())
 }
 
@@ -1012,6 +1020,48 @@ fn open_db(path: &Path) -> Result<Connection> {
     let connection = Connection::open(path)?;
     connection.busy_timeout(std::time::Duration::from_secs(10))?;
     Ok(connection)
+}
+
+fn managed(path: &Path) -> Result<&Path> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(path)
+}
+
+fn managed_with_fallback(preferred: &Path, fallback: Option<&Path>) -> Result<IssueStore> {
+    match managed(preferred).and_then(IssueStore::new) {
+        Ok(store) => Ok(store),
+        Err(error) if fallback.is_some() && unwritable_storage(&error) => {
+            let fallback = fallback.expect("checked above");
+            managed(fallback).and_then(IssueStore::new)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn fallback_issue_path(common_git_dir: &Path) -> PathBuf {
+    common_git_dir.join("mathmux/global/development.sqlite3")
+}
+
+fn unwritable_storage(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause.downcast_ref::<std::io::Error>().is_some_and(|error| {
+            matches!(
+                error.kind(),
+                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
+            )
+        }) || cause
+            .downcast_ref::<rusqlite::Error>()
+            .is_some_and(|error| {
+                matches!(
+                    error,
+                    rusqlite::Error::SqliteFailure(sqlite, _)
+                        if sqlite.code == ErrorCode::ReadOnly
+                )
+            })
+    })
 }
 
 fn prune_telemetry(transaction: &rusqlite::Transaction<'_>, now: i64) -> Result<()> {
@@ -1341,7 +1391,7 @@ fn capture_context(cwd: &Path, related_ref: Option<&str>) -> Result<IssueContext
     if let Some(reference) = related_ref {
         context.related_detail = Some(state.show(reference, true)?);
     }
-    if let Ok(store) = TelemetryStore::global() {
+    if let Ok(store) = TelemetryStore::global_for_repo(&repo) {
         context.exchange = store
             .latest_exchange(&repo.root, context.workspace.as_deref())
             .ok()
@@ -1532,6 +1582,40 @@ mod tests {
             PathBuf::from("/persistent/data/mathmux/development.sqlite3")
         );
         assert!(default_issue_path(None).is_err());
+    }
+
+    #[test]
+    fn repository_fallback_is_mathmux_owned_state() {
+        assert_eq!(
+            fallback_issue_path(Path::new("/repo/.git")),
+            PathBuf::from("/repo/.git/mathmux/global/development.sqlite3")
+        );
+    }
+
+    #[test]
+    fn managed_storage_falls_back_and_survives_reopen() {
+        let directory = tempdir().unwrap();
+        let preferred = Path::new("/sys/mathmux/development.sqlite3");
+        let fallback = directory
+            .path()
+            .join("repo/.git/mathmux/global/development.sqlite3");
+        let store = managed_with_fallback(preferred, Some(&fallback)).unwrap();
+        assert_eq!(store.path, fallback);
+        assert_eq!(
+            store
+                .create(directory.path(), "sandbox storage", None)
+                .unwrap(),
+            "i1"
+        );
+        drop(store);
+
+        let reopened = IssueStore::new(&fallback).unwrap();
+        assert!(
+            reopened
+                .list("open")
+                .unwrap()
+                .contains("i1 open sandbox storage")
+        );
     }
 
     #[test]

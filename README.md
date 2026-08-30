@@ -25,6 +25,23 @@
 
 Repeat step 2 for each parallel workspace.
 
+## Development issue and telemetry storage
+
+Development issue reports and telemetry use one SQLite database. An explicit
+`MATHMUX_ISSUE_DB` path always wins. Otherwise MathMux uses
+`$XDG_DATA_HOME/mathmux/development.sqlite3` (or `$HOME/.local/share` when
+`XDG_DATA_HOME` is unset). If that managed path is unavailable because the
+filesystem is read-only or denies access, repository commands fall back to
+`<common-git-dir>/mathmux/global/development.sqlite3`. The fallback is
+MathMux-owned repository state and survives daemon restarts; it is not an Oli
+storage path. Commands run outside a repository still require a writable
+default path or an explicit `MATHMUX_ISSUE_DB`.
+
+Deployments that sandbox agents must expose the repository's `.git/mathmux`
+directory as a writable persistent path, or set `MATHMUX_ISSUE_DB` to another
+writable MathMux-owned location. Do not point this variable at Oli's state or
+data directories.
+
 Inspect the managed main revision, validation queue, workspace changes, latest
 checks, and recent submissions at any time:
 

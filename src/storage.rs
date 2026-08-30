@@ -106,7 +106,7 @@ pub(crate) fn run_gc(repo: &Repo, state: &State, dry_run: bool) -> Result<String
         (0, 0)
     } else {
         let search_rows = state.prune_search_history()?;
-        let telemetry = TelemetryStore::global()?;
+        let telemetry = TelemetryStore::global_for_repo(repo)?;
         let telemetry_rows = telemetry.prune_history()?;
         checkpoint(&repo.db_path)?;
         checkpoint(&repo.search_db_path)?;
