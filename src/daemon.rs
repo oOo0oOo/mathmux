@@ -309,7 +309,7 @@ impl Service {
                         self.telemetry.as_deref(),
                     )
                 } else {
-                    status::render(&self.repo, &self.state, self.telemetry.as_deref())
+                    status::render(&self.repo, &self.state, self.telemetry.as_deref(), &cwd)
                 }
             }
             Command::WsDelete { name } => {

@@ -10,7 +10,8 @@ use crate::git::{dirty_paths, head};
 use crate::issue::{ContextEvent, TelemetryStore};
 use crate::repo::Repo;
 use crate::state::{
-    ActivityMetrics, State, Submission, SubmissionInterval, ValidationStatus, Workspace,
+    ActivityMetrics, CheckRun, CheckStatus, State, Submission, SubmissionInterval,
+    ValidationStatus, Workspace,
 };
 use crate::util::{
     enriched_validation_detail, now_unix_ms, run_checked, run_output, short_hash, single_line,
@@ -20,6 +21,8 @@ use crate::util::{
 const HOUR_SECS: i64 = 60 * 60;
 const DAY_SECS: i64 = 24 * HOUR_SECS;
 const ACTIVE_SECS: i64 = 5 * 60;
+const STALLED_SECS: i64 = 10 * 60;
+const MIN_EFFICIENCY_LINES: u64 = 50;
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 struct AgentStatus {
@@ -31,6 +34,7 @@ struct AgentStatus {
     started_at: i64,
     last_active: i64,
     dirty: usize,
+    latest_dirty_at: i64,
     workspace_fallback: bool,
 }
 
@@ -47,7 +51,12 @@ struct SubmissionContext {
     output_bytes: u64,
 }
 
-pub fn render(repo: &Repo, state: &State, telemetry: Option<&TelemetryStore>) -> Result<String> {
+pub fn render(
+    repo: &Repo,
+    state: &State,
+    telemetry: Option<&TelemetryStore>,
+    cwd: &Path,
+) -> Result<String> {
     let now = now_unix_ms() / 1000;
     let project = repo
         .root
@@ -81,6 +90,8 @@ pub fn render(repo: &Repo, state: &State, telemetry: Option<&TelemetryStore>) ->
     };
 
     let mut output = format!("{project} {}", short_hash(&revision));
+    render_caller(&mut output, repo, state, cwd, &revision, now)?;
+    render_attention(&mut output, state, &agents, &workspaces, now)?;
     render_agents(&mut output, &agents, now)?;
     write!(
         output,
@@ -92,29 +103,38 @@ pub fn render(repo: &Repo, state: &State, telemetry: Option<&TelemetryStore>) ->
         None => output.push_str("unknown"),
     }
 
-    output.push_str("\nmerged progress");
+    output.push_str("\nefficiency (net merged Lean LOC proxy)");
     for (label, seconds) in [("1h", HOUR_SECS), ("24h", DAY_SECS)] {
         let lines = net_lean_lines(&repo.root, now - seconds)?;
         let wall_hours = seconds as f64 / HOUR_SECS as f64;
         let agent_hours = agent_hours(&agents, activity_events.as_deref(), now - seconds, now);
+        let metrics = state.activity_metrics((now - seconds) * 1000)?;
         write!(
             output,
-            "\n{label:>3} {lines:+} lines  {:+.1}/h",
+            "\n{label:>3} {lines:+} LOC  {:+.1}/h",
             lines as f64 / wall_hours
         )?;
         if agent_hours > 0.0 {
             write!(
                 output,
-                "  {:+.1}/{activity_label} ({agent_hours:.1} {activity_label})",
+                "  {:+.1}/{activity_label}",
                 lines as f64 / agent_hours
             )?;
+            if metrics.accepted_submissions > 0 {
+                write!(
+                    output,
+                    "  {:.2} accepted/{activity_label}",
+                    metrics.accepted_submissions as f64 / agent_hours
+                )?;
+            }
         }
         if let Some(metrics) =
             context_per_loc(&context, activity_events.as_deref(), (now - seconds) * 1000)
+                .filter(|metrics| metrics.lines >= MIN_EFFICIENCY_LINES)
         {
             write!(
                 output,
-                "  context/loc {:.2} mux calls + {} output",
+                "  {:.2} calls/LOC  {}/LOC",
                 metrics.calls as f64 / metrics.lines as f64,
                 format_bytes(metrics.output_bytes as f64 / metrics.lines as f64)
             )?;
@@ -130,22 +150,219 @@ pub fn render(repo: &Repo, state: &State, telemetry: Option<&TelemetryStore>) ->
 
     let pending = state.pending_submissions()?;
     let latest_completed = state.latest_completed_validation()?;
-    render_validation_status(&mut output, &pending, latest_completed.as_ref())?;
+    render_validation_status(&mut output, &pending, latest_completed.as_ref(), now)?;
     Ok(output)
+}
+
+fn render_caller(
+    output: &mut String,
+    repo: &Repo,
+    state: &State,
+    cwd: &Path,
+    revision: &str,
+    now: i64,
+) -> Result<()> {
+    let Ok(workspace) = state.workspace_for_path(cwd) else {
+        return Ok(());
+    };
+    let dirty = dirty_paths(&workspace.path).unwrap_or_default();
+    let dirty_at = dirty
+        .iter()
+        .map(|path| {
+            let changed = modified_at(&workspace.path.join(path));
+            if changed == 0 { now } else { changed }
+        })
+        .max()
+        .unwrap_or_default();
+    let workspace_head = head(&workspace.path)?;
+    let behind = run_checked(
+        "git",
+        [
+            "rev-list",
+            "--count",
+            &format!("{workspace_head}..{revision}"),
+        ],
+        &repo.root,
+    )?
+    .trim()
+    .parse::<u64>()
+    .unwrap_or_default();
+    let latest = state.latest_check_for_workspace(&workspace.reference)?;
+    write!(
+        output,
+        "\nyou {} {}  {}",
+        workspace.reference,
+        workspace.name,
+        if dirty.is_empty() {
+            "clean".into()
+        } else {
+            format!("dirty:{}", dirty.len())
+        }
+    )?;
+    if behind > 0 {
+        write!(output, "  main +{behind}")?;
+    }
+    if let Some(check) = &latest {
+        write!(
+            output,
+            "  check {} {}",
+            match check.status {
+                CheckStatus::Passed => "✓",
+                CheckStatus::Failed => "✗",
+                CheckStatus::Running => "…",
+            },
+            format_age(now.saturating_sub(check.created_at / 1000))
+        )?;
+    }
+    let action = if latest
+        .as_ref()
+        .is_some_and(|check| check.status == CheckStatus::Failed)
+    {
+        latest
+            .as_ref()
+            .map(|check| format!("mathmux show {}", check.reference))
+    } else if !dirty.is_empty()
+        && latest.as_ref().is_some_and(|check| {
+            check.status == CheckStatus::Passed
+                && dirty_at <= check.created_at / 1000
+                && check_covers_dirty(check, &dirty)
+        })
+    {
+        Some("mathmux submit".into())
+    } else if latest
+        .as_ref()
+        .is_some_and(|check| check.status == CheckStatus::Running)
+    {
+        None
+    } else if let Some(path) = dirty
+        .iter()
+        .find(|path| path.extension().is_some_and(|ext| ext == "lean"))
+    {
+        Some(format!("mathmux check {}", path.display()))
+    } else if dirty.is_empty() && behind > 0 {
+        Some("mathmux sync".into())
+    } else {
+        None
+    };
+    if let Some(action) = action {
+        write!(output, "\nnext: {action}")?;
+    }
+    Ok(())
+}
+
+fn render_attention(
+    output: &mut String,
+    state: &State,
+    agents: &[AgentStatus],
+    workspaces: &[Workspace],
+    now: i64,
+) -> Result<()> {
+    let mut items = Vec::new();
+    for agent in agents {
+        let Some(workspace) = workspaces
+            .iter()
+            .find(|workspace| workspace.reference == agent.workspace_ref)
+        else {
+            continue;
+        };
+        if agent.dirty > 0 && now.saturating_sub(agent.last_active) >= STALLED_SECS {
+            items.push(format!(
+                "{} stalled? dirty:{} last {}",
+                agent.workspace,
+                agent.dirty,
+                format_age(now.saturating_sub(agent.last_active))
+            ));
+            continue;
+        }
+        let latest = state.latest_check_for_workspace(&workspace.reference)?;
+        if let Some(check) = &latest
+            && check.status == CheckStatus::Failed
+        {
+            let failures = state.recent_failed_checks(&workspace.reference, 3)?;
+            if failures.len() == 3
+                && now.saturating_sub(failures[2].created_at / 1000) >= ACTIVE_SECS
+                && failures
+                    .iter()
+                    .filter_map(primary_check_failure)
+                    .map(single_line)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()
+                    == 1
+            {
+                items.push(format!(
+                    "{} blocked? same check failure 3x; show {}",
+                    agent.workspace, check.reference
+                ));
+                continue;
+            }
+        }
+        if agent.dirty > 0
+            && latest.as_ref().is_some_and(|check| {
+                check.status == CheckStatus::Passed
+                    && agent.latest_dirty_at <= check.created_at / 1000
+                    && dirty_paths(&workspace.path)
+                        .ok()
+                        .is_some_and(|paths| check_covers_dirty(check, &paths))
+            })
+        {
+            items.push(format!("{} ready; mathmux submit", agent.workspace));
+        }
+    }
+    if !items.is_empty() {
+        output.push_str("\nattention");
+        for item in items.into_iter().take(5) {
+            write!(output, "\n  {item}")?;
+        }
+    }
+    Ok(())
+}
+
+fn primary_check_failure(check: &CheckRun) -> Option<&str> {
+    check
+        .diagnostics
+        .first()
+        .map(|diagnostic| diagnostic.text.as_str())
+        .or(check.failed.as_deref())
+}
+
+fn check_covers_dirty(check: &CheckRun, dirty: &[PathBuf]) -> bool {
+    let dirty_lean = dirty.iter().filter(|path| {
+        path.extension()
+            .is_some_and(|extension| extension == "lean")
+    });
+    dirty_lean
+        .map(|path| path.to_string_lossy())
+        .all(|path| check.passed.iter().any(|passed| passed == path.as_ref()))
 }
 
 fn render_validation_status(
     output: &mut String,
     pending: &[Submission],
     latest_completed: Option<&Submission>,
+    now: i64,
 ) -> std::fmt::Result {
     if !pending.is_empty() {
+        let running = pending
+            .iter()
+            .find(|submission| submission.validation_status == ValidationStatus::Running);
         output.push_str("\nvalidation");
-        for submission in pending {
+        if let Some(submission) = running {
             write!(
                 output,
-                " {}:{}",
-                submission.reference, submission.validation_status
+                " {}:running {}",
+                submission.reference,
+                format_age(now.saturating_sub(submission.created_at / 1000))
+            )?;
+        }
+        let queued = pending
+            .iter()
+            .filter(|submission| submission.validation_status == ValidationStatus::Queued)
+            .count();
+        if queued > 0 {
+            write!(
+                output,
+                "{}queue:{queued}",
+                if running.is_some() { "  " } else { " " }
             )?;
         }
         if let Some(submission) = latest_completed
@@ -181,8 +398,16 @@ fn render_validation_status(
         ) {
             write!(output, "\n  {}", truncate_line(&single_line(&detail), 240))?;
         }
+    } else if let Some(submission) = latest_completed {
+        write!(
+            output,
+            "\nvalidation idle; last {}:{} {}",
+            submission.reference,
+            submission.validation_status,
+            format_age(now.saturating_sub(submission.created_at / 1000))
+        )?;
     } else {
-        output.push_str("\nvalidation idle");
+        output.push_str("\nvalidation idle; no completed validation");
     }
     Ok(())
 }
@@ -428,15 +653,21 @@ fn render_agents(output: &mut String, agents: &[AgentStatus], now: i64) -> std::
 
 fn render_tooling(output: &mut String, metrics: &ActivityMetrics) -> std::fmt::Result {
     let passed = metrics.checks.saturating_sub(metrics.failed_checks);
+    let proof_failures = metrics
+        .failed_checks
+        .saturating_sub(metrics.operational_failed_checks);
     write!(
         output,
-        "checks {} ({passed} ok/{} err) avg {}  builds {} avg {}  submits {}",
+        "checks {} ({passed} ok/{proof_failures} proof/{} op) p50/p95 {}/{}  validations {} p50/p95 {}/{}  submits {} accepted:{}",
         metrics.checks,
-        metrics.failed_checks,
-        format_average(metrics.average_check_ms),
+        metrics.operational_failed_checks,
+        format_duration(metrics.check_p50_ms),
+        format_duration(metrics.check_p95_ms),
         metrics.builds,
-        format_average(metrics.average_build_ms),
-        metrics.submissions
+        format_duration(metrics.build_p50_ms),
+        format_duration(metrics.build_p95_ms),
+        metrics.submissions,
+        metrics.accepted_submissions,
     )
 }
 
@@ -505,6 +736,14 @@ fn workspace_agent_status(
         started_at,
         last_active,
         dirty: paths.len(),
+        latest_dirty_at: paths
+            .iter()
+            .map(|path| {
+                let changed = modified_at(&workspace.path.join(path));
+                if changed == 0 { now } else { changed }
+            })
+            .max()
+            .unwrap_or_default(),
         workspace_fallback: true,
     })
 }
@@ -546,6 +785,14 @@ fn agent_status(
         started_at,
         last_active,
         dirty: paths.len(),
+        latest_dirty_at: paths
+            .iter()
+            .map(|path| {
+                let changed = modified_at(&workspace.path.join(path));
+                if changed == 0 { now } else { changed }
+            })
+            .max()
+            .unwrap_or_default(),
         workspace_fallback: false,
     })
 }
@@ -937,18 +1184,18 @@ fn modified_at(path: &Path) -> i64 {
 
 fn format_age(seconds: i64) -> String {
     match seconds.max(0) {
-        0..=59 => format!("{}s", seconds.max(0)),
+        0..=59 => "<1m".into(),
         60..=3599 => format!("{}m", seconds / 60),
         3600..=86_399 => format!("{}h", seconds / 3600),
         _ => format!("{}d", seconds / 86_400),
     }
 }
 
-fn format_average(milliseconds: Option<f64>) -> String {
+fn format_duration(milliseconds: Option<u64>) -> String {
     match milliseconds {
         None => "-".into(),
-        Some(milliseconds) if milliseconds < 1000.0 => format!("{milliseconds:.0}ms"),
-        Some(milliseconds) => format!("{:.1}s", milliseconds / 1000.0),
+        Some(milliseconds) if milliseconds < 1000 => format!("{milliseconds}ms"),
+        Some(milliseconds) => format!("{:.1}s", milliseconds as f64 / 1000.0),
     }
 }
 
@@ -983,7 +1230,7 @@ mod tests {
             Some("axiom audit failed:\nconflicting declaration"),
         );
         let mut output = String::new();
-        render_validation_status(&mut output, &[], Some(&failed)).unwrap();
+        render_validation_status(&mut output, &[], Some(&failed), 0).unwrap();
         assert_eq!(
             output,
             "\nvalidation s9:failed; show s9 --all\n  axiom audit failed: conflicting declaration"
@@ -991,15 +1238,15 @@ mod tests {
 
         let passed = submission("s10", "passed", Some("build passed"));
         let mut output = String::new();
-        render_validation_status(&mut output, &[], Some(&passed)).unwrap();
-        assert_eq!(output, "\nvalidation idle");
+        render_validation_status(&mut output, &[], Some(&passed), 0).unwrap();
+        assert_eq!(output, "\nvalidation idle; last s10:passed <1m");
 
         let queued = submission("s11", "queued", None);
         let mut output = String::new();
-        render_validation_status(&mut output, &[queued], Some(&failed)).unwrap();
+        render_validation_status(&mut output, &[queued], Some(&failed), 0).unwrap();
         assert_eq!(
             output,
-            "\nvalidation s11:queued\n  latest result s9:failed; show s9 --all\n    axiom audit failed: conflicting declaration"
+            "\nvalidation queue:1\n  latest result s9:failed; show s9 --all\n    axiom audit failed: conflicting declaration"
         );
 
         let mut legacy = submission("s12", "failed", Some("build failed"));
@@ -1007,11 +1254,59 @@ mod tests {
             "warning: noise\nerror: Demo.lean:12:4: failed to synthesize CompactSpace B\n".into(),
         );
         let mut output = String::new();
-        render_validation_status(&mut output, &[], Some(&legacy)).unwrap();
+        render_validation_status(&mut output, &[], Some(&legacy), 0).unwrap();
         assert_eq!(
             output,
             "\nvalidation s12:failed; show s12 --all\n  build failed: Demo.lean:12:4: failed to synthesize CompactSpace B"
         );
+    }
+
+    #[test]
+    fn tooling_separates_proof_and_operational_failures() {
+        let metrics = ActivityMetrics {
+            checks: 10,
+            failed_checks: 4,
+            operational_failed_checks: 1,
+            check_p50_ms: Some(800),
+            check_p95_ms: Some(4_200),
+            submissions: 3,
+            accepted_submissions: 2,
+            builds: 2,
+            build_p50_ms: Some(2_000),
+            build_p95_ms: Some(5_000),
+        };
+        let mut output = String::new();
+        render_tooling(&mut output, &metrics).unwrap();
+        assert_eq!(
+            output,
+            "checks 10 (6 ok/3 proof/1 op) p50/p95 800ms/4.2s  validations 2 p50/p95 2.0s/5.0s  submits 3 accepted:2"
+        );
+    }
+
+    #[test]
+    fn ready_requires_every_dirty_lean_file_to_have_passed() {
+        let mut check = crate::state::CheckRun {
+            reference: "c1".into(),
+            workspace_ref: "w1".into(),
+            status: CheckStatus::Passed,
+            files: vec!["A.lean".into()],
+            passed: vec!["A.lean".into()],
+            failed: None,
+            not_checked: Vec::new(),
+            warnings: Vec::new(),
+            linters: Vec::new(),
+            suggestions: Vec::new(),
+            diagnostics: Vec::new(),
+            profile: None,
+            duration_ms: 1,
+            created_at: 0,
+        };
+        assert!(check_covers_dirty(
+            &check,
+            &[PathBuf::from("A.lean"), PathBuf::from("notes.md")]
+        ));
+        check.passed.clear();
+        assert!(!check_covers_dirty(&check, &[PathBuf::from("A.lean")]));
     }
 
     #[test]
@@ -1032,6 +1327,7 @@ mod tests {
             started_at,
             last_active: 0,
             dirty: 0,
+            latest_dirty_at: 0,
             workspace_fallback: false,
         };
         assert_eq!(
@@ -1051,6 +1347,7 @@ mod tests {
             started_at: 3_600,
             last_active: 4_800,
             dirty: 0,
+            latest_dirty_at: 0,
             workspace_fallback: false,
         };
         let event = |created_at| ContextEvent {
@@ -1075,6 +1372,7 @@ mod tests {
             started_at: 6_900,
             last_active: 7_200,
             dirty: 0,
+            latest_dirty_at: 0,
             workspace_fallback: true,
         };
         assert_eq!(agent_hours(&[agent], Some(&[]), 6_900, 7_200), 1.0 / 12.0);
@@ -1091,6 +1389,7 @@ mod tests {
             started_at: 6_900,
             last_active: 7_200,
             dirty: 0,
+            latest_dirty_at: 0,
             workspace_fallback: true,
         };
         assert_eq!(agent_hours(&[agent], None, 6_900, 7_200), 1.0 / 12.0);
@@ -1108,6 +1407,7 @@ mod tests {
                 started_at: 1_000,
                 last_active: 65_800,
                 dirty: 0,
+                latest_dirty_at: 0,
                 workspace_fallback: true,
             })
             .collect::<Vec<_>>();
@@ -1125,6 +1425,7 @@ mod tests {
             started_at: 100,
             last_active: 400,
             dirty: 0,
+            latest_dirty_at: 0,
             workspace_fallback: false,
         };
         assert_eq!(agent_hours(&[agent], None, 0, 1_000), 1.0 / 12.0);
