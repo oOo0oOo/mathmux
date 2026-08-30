@@ -397,6 +397,18 @@ struct AxiomAudit {
     sorries: Vec<String>,
 }
 
+const AXIOM_AUDIT_MAX_REC_DEPTH: usize = 100_000;
+
+fn axiom_audit_command_args() -> Vec<String> {
+    vec![
+        "env".into(),
+        "lean".into(),
+        "-D".into(),
+        format!("maxRecDepth={AXIOM_AUDIT_MAX_REC_DEPTH}"),
+        "--run".into(),
+    ]
+}
+
 fn run_axiom_audit(
     repo: &Repo,
     root: &Path,
@@ -460,7 +472,7 @@ unsafe def main : IO UInt32 := do
     let path = repo.state_dir.join("MathmuxAxiomAudit.lean");
     fs::write(&path, source)?;
     let output = lake_command(repo, root)
-        .args(["env", "lean", "--run"])
+        .args(axiom_audit_command_args())
         .arg(&path)
         .output()
         .context("cannot start axiom audit")?;
@@ -511,6 +523,14 @@ mod tests {
         assert_eq!(
             axiom_audit_detail("cannot start axiom audit"),
             "axiom audit failed: cannot start axiom audit"
+        );
+    }
+
+    #[test]
+    fn axiom_audit_raises_recursion_limit_for_large_generated_inputs() {
+        assert_eq!(
+            axiom_audit_command_args(),
+            ["env", "lean", "-D", "maxRecDepth=100000", "--run"]
         );
     }
     use crate::state::Workspace;
