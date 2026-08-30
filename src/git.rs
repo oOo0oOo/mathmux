@@ -12,12 +12,14 @@ use crate::repo::Repo;
 use crate::state::{State, Workspace};
 use crate::util::{canonical, command_detail, run_checked, run_output};
 
+const MAX_MANAGED_WORKSPACES: usize = 100;
+
 pub fn workspace_limit() -> usize {
     if let Some(limit) = std::env::var("MATHMUX_MAX_WORKSPACES")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
     {
-        return limit.clamp(1, 64);
+        return clamp_workspace_limit(limit);
     }
     let gib = fs::read_to_string("/proc/meminfo")
         .ok()
@@ -30,7 +32,11 @@ pub fn workspace_limit() -> usize {
                 .map(|kib| kib / 1024 / 1024)
         })
         .unwrap_or(32);
-    (((gib.saturating_sub(8)) / 6) as usize).clamp(1, 12)
+    clamp_workspace_limit(((gib.saturating_sub(8)) / 6) as usize)
+}
+
+fn clamp_workspace_limit(limit: usize) -> usize {
+    limit.clamp(1, MAX_MANAGED_WORKSPACES)
 }
 
 pub fn create_workspace(
@@ -611,7 +617,15 @@ mod tests {
         assert!(validate_name("proof_2-a").is_ok());
         assert!(validate_name("-bad").is_err());
         assert!(validate_name("a/b").is_err());
-        assert!((1..=12).contains(&workspace_limit()));
+        assert!((1..=MAX_MANAGED_WORKSPACES).contains(&workspace_limit()));
+    }
+
+    #[test]
+    fn workspace_limit_has_a_single_100_workspace_ceiling() {
+        assert_eq!(clamp_workspace_limit(0), 1);
+        assert_eq!(clamp_workspace_limit(MAX_MANAGED_WORKSPACES), 100);
+        assert_eq!(clamp_workspace_limit(MAX_MANAGED_WORKSPACES + 1), 100);
+        assert_eq!(clamp_workspace_limit(usize::MAX), 100);
     }
 
     #[test]
