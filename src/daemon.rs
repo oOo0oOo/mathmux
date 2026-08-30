@@ -147,13 +147,16 @@ pub fn run(repo: Repo) -> Result<()> {
             // active checks and validation work.
             let _ = fs::remove_file(&repo.socket_path);
         }
+        // Type search owns a large, opt-in Lean process. Evict it based on its
+        // own idle time even while unrelated clients keep the daemon alive;
+        // checker workers retain the existing no-client safety gate.
+        let has_search_worker = service
+            .searcher
+            .evict_idle_worker(Duration::from_secs(5 * 60));
         let has_workers = if active_clients == 0 {
             let has_check_workers = service
                 .checker
                 .evict_idle_workers(Duration::from_secs(5 * 60));
-            let has_search_worker = service
-                .searcher
-                .evict_idle_worker(Duration::from_secs(5 * 60));
             has_check_workers || has_search_worker
         } else {
             true
