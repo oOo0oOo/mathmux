@@ -121,7 +121,7 @@ mathmux search Nat.succ
 mathmux probe Nat.succ signature
 mathmux probe Nat.succ source
 mathmux probe Nat.succ outline
-mathmux probe q123#2 neighborhood
+mathmux probe q123#2 outline
 mathmux probe q123#2 find simp
 mathmux search 'type:_ → _' --limit 12
 mathmux search Mathlib/Data/Nat/Basic.lean dependents
