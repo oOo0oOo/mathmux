@@ -456,6 +456,16 @@ fn allow_name_contains_fallback(query: &str) -> bool {
     symbolic_source_term(query).is_none()
 }
 
+fn should_use_name_contains_fallback(
+    query: &str,
+    indexed_candidate_count: usize,
+    contains_tokens: &[String],
+) -> bool {
+    !contains_tokens.is_empty()
+        && indexed_candidate_count < 16
+        && allow_name_contains_fallback(query)
+}
+
 fn name_prefix_candidates(connection: &Connection, token: &str) -> Result<Vec<IndexedRow>> {
     let sql = indexed_rows_sql(&format!(
         "WHERE search_fts MATCH ?1
@@ -2885,7 +2895,7 @@ impl Searcher {
         // on the full index it adds a measurable unbounded pass for a query
         // whose long identifier tokens are unlikely to be useful name
         // substrings.
-        if allow_name_contains_fallback(query) {
+        if should_use_name_contains_fallback(query, rows.len(), &contains_tokens) {
             rows.extend(name_contains_candidates(&connection, &contains_tokens)?);
         }
         if !name_query && !include_all_signatures {

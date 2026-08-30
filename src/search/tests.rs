@@ -649,6 +649,16 @@ fn query_parsing_scoring_and_ranking_regressions() {
         "projectionRange.*trivial|isomorphic"
     ));
     assert!(allow_name_contains_fallback("orthogonal complement"));
+    assert!(should_use_name_contains_fallback(
+        "orthogonal complement",
+        0,
+        &["alphasuffix".into()]
+    ));
+    assert!(!should_use_name_contains_fallback(
+        "orthogonal complement",
+        16,
+        &["alphasuffix".into()]
+    ));
     assert!(declaration_glob_query("FiberBundle.*equiv"));
     assert!(declaration_glob_query(
         "CircleClutching.*homotopy|TransitionHomotopy"
