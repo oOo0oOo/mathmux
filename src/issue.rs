@@ -796,17 +796,21 @@ fn exchange_outcome_class(
         &request.command,
         Command::Search { .. } | Command::Probe { .. }
     ) {
-        if response.ok && query_class.is_some() {
-            return Some("exact_hit");
+        if response.summary.contains("source regex scan timed out") {
+            return Some("operational_error");
         }
-        if response.summary.contains("suggestion:") || response.summary.contains("suggestions") {
-            return Some("near_suggestions");
-        }
-        if response.summary.contains(" no results")
+        if response.summary.contains("no regex source matches")
+            || response.summary.contains(" no results")
             || response.summary.contains("exact declaration not found")
             || response.summary.contains("not found:")
         {
             return Some("no_result");
+        }
+        if response.summary.contains("suggestion:") || response.summary.contains("suggestions") {
+            return Some("near_suggestions");
+        }
+        if response.ok && query_class.is_some() {
+            return Some("exact_hit");
         }
         return Some("operational_error");
     }
@@ -1633,6 +1637,38 @@ mod tests {
                 10,
             )
             .unwrap();
+        let source_no_match = Request {
+            command: Command::Search {
+                query: "re:never_matches".into(),
+                limit: None,
+                all: false,
+            },
+            ..search.clone()
+        };
+        store
+            .record(
+                &repo,
+                &source_no_match,
+                &Response::ok("q4\nno regex source matches"),
+                8,
+            )
+            .unwrap();
+        let source_timeout = Request {
+            command: Command::Search {
+                query: "re:slow".into(),
+                limit: None,
+                all: false,
+            },
+            ..search.clone()
+        };
+        store
+            .record(
+                &repo,
+                &source_timeout,
+                &Response::ok("q5\nsource regex scan timed out; narrow the scope"),
+                8,
+            )
+            .unwrap();
 
         let connection = open_db(&store.path).unwrap();
         let row = connection
@@ -1668,13 +1704,27 @@ mod tests {
             .unwrap();
         assert_eq!(partial.0.as_deref(), Some("no_result"));
         assert_eq!(partial.1.as_deref(), Some("no results"));
+        let source_outcomes = connection
+            .prepare(
+                "SELECT outcome_class FROM telemetry_events
+                 WHERE id IN (4, 5) ORDER BY id",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, Option<String>>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            source_outcomes,
+            vec![Some("no_result".into()), Some("operational_error".into())]
+        );
         assert_eq!(
             connection
                 .query_row("SELECT COUNT(*) FROM telemetry_events", [], |row| {
                     row.get::<_, i64>(0)
                 })
                 .unwrap(),
-            3
+            5
         );
     }
 
