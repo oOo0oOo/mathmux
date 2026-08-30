@@ -466,6 +466,10 @@ fn should_use_name_contains_fallback(
         && allow_name_contains_fallback(query)
 }
 
+fn should_query_exact_leaf(name_query: bool, include_all_signatures: bool) -> bool {
+    name_query || include_all_signatures
+}
+
 fn name_prefix_candidates(connection: &Connection, token: &str) -> Result<Vec<IndexedRow>> {
     let sql = indexed_rows_sql(&format!(
         "WHERE search_fts MATCH ?1
@@ -2871,12 +2875,14 @@ impl Searcher {
             .iter()
             .filter(|token| token.len() >= 4 && token.as_str() != "_")
         {
-            let exact_query = format!("name : \"{}\"", token.replace('"', "\"\""));
-            rows.extend(
-                exact_leaf
-                    .query_map(params![exact_query, token], indexed_row_from_row)?
-                    .collect::<rusqlite::Result<Vec<_>>>()?,
-            );
+            if should_query_exact_leaf(name_query, include_all_signatures) {
+                let exact_query = format!("name : \"{}\"", token.replace('"', "\"\""));
+                rows.extend(
+                    exact_leaf
+                        .query_map(params![exact_query, token], indexed_row_from_row)?
+                        .collect::<rusqlite::Result<Vec<_>>>()?,
+                );
+            }
             let name_query = format!("name : \"{}\"*", token.replace('"', "\"\""));
             let named_rows = named
                 .query_map([name_query], indexed_row_from_row)?

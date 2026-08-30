@@ -651,6 +651,9 @@ fn query_parsing_scoring_and_ranking_regressions() {
     assert!(allow_name_contains_fallback("orthogonal complement"));
     let concept_tokens = meaningful_query_tokens("concept projectionRange restriction");
     assert!(!concept_tokens.iter().any(|token| token == "concept"));
+    assert!(!should_query_exact_leaf(false, false));
+    assert!(should_query_exact_leaf(true, false));
+    assert!(should_query_exact_leaf(false, true));
     assert!(should_use_name_contains_fallback(
         "orthogonal complement",
         0,
