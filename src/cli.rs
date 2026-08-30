@@ -204,6 +204,11 @@ enum TopCommand {
         #[arg(long, conflicts_with = "all")]
         wait: bool,
     },
+    /// Restart only the MathMux daemon for this repository.
+    ///
+    /// This drains active validation safely and starts a fresh per-repository
+    /// daemon. It does not restart Oli or any agent-control service.
+    Restart,
     /// Report mathmux tooling problems (proving agents).
     ///
     /// Available only in development builds. Report missing or inefficient tooling;
@@ -414,6 +419,7 @@ pub fn run() -> Result<u8> {
             all,
             wait,
         },
+        TopCommand::Restart => Command::Restart,
         #[cfg(feature = "development")]
         TopCommand::Issue { .. } | TopCommand::Dev { .. } => unreachable!(),
         TopCommand::Daemon { .. } => unreachable!(),
@@ -424,6 +430,9 @@ pub fn run() -> Result<u8> {
         cwd: cwd.to_string_lossy().into_owned(),
         command,
     };
+    if matches!(request.command, Command::Restart) {
+        return restart_daemon(&repo, &request);
+    }
     let client_started = Instant::now();
     if matches!(&request.command, Command::Sync { push: true }) {
         let response = match crate::git::push_main(&repo) {
@@ -681,6 +690,29 @@ fn connect_or_start(repo: &Repo) -> Result<UnixStream> {
     let startup_lock = startup_lock(repo)?;
     lock_exclusive(&startup_lock)?;
     connect_or_start_locked(repo)
+}
+
+fn restart_daemon(repo: &Repo, request: &Request) -> Result<u8> {
+    let stream = connect_or_start(repo)?;
+    let mut response = exchange(stream, request)?;
+    if response.retry {
+        let stream = if request.generation > response.generation {
+            replace_daemon(repo, request)?
+        } else {
+            wait_for_replacement(repo)?
+        };
+        response = exchange(stream, request)?;
+    }
+    ensure!(
+        response.ok,
+        "daemon restart request failed: {}",
+        response.summary
+    );
+    wait_for_daemon_exit(repo)?;
+    let stream = connect_or_start(repo)?;
+    drop(stream);
+    output_summary("restarted mathmux daemon")?;
+    Ok(0)
 }
 
 fn replace_daemon(repo: &Repo, request: &Request) -> Result<UnixStream> {

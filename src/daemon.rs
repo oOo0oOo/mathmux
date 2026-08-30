@@ -421,6 +421,10 @@ impl Service {
                 all,
                 wait,
             } => self.show_reference(&reference, all, wait, report),
+            Command::Restart => {
+                self.retiring.store(true, Ordering::SeqCst);
+                Ok("restarting mathmux daemon".into())
+            }
         }
     }
 

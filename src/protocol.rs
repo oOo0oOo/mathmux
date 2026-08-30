@@ -53,6 +53,7 @@ pub enum Command {
         #[serde(default)]
         wait: bool,
     },
+    Restart,
 }
 
 impl Command {
@@ -68,6 +69,7 @@ impl Command {
             Self::Sync { .. } => "sync",
             Self::Submit { .. } => "submit",
             Self::Show { .. } => "show",
+            Self::Restart => "restart",
         }
     }
 
@@ -81,6 +83,7 @@ impl Command {
                 | Self::Probe { .. }
                 | Self::Sync { .. }
                 | Self::Show { .. }
+                | Self::Restart
         )
     }
 }
@@ -190,6 +193,10 @@ mod tests {
             panic!("expected show command");
         };
         assert!(!wait);
+
+        let request: Request =
+            serde_json::from_str(r#"{"cwd":"/project","command":{"verb":"restart"}}"#).unwrap();
+        assert!(matches!(request.command, Command::Restart));
     }
 
     #[test]
@@ -222,6 +229,7 @@ mod tests {
             }
             .transport_retry_safe()
         );
+        assert!(Command::Restart.transport_retry_safe());
         assert!(!Command::Submit { message: None }.transport_retry_safe());
         assert!(
             !Command::WsCreate {

@@ -65,6 +65,17 @@ To install that development build for the local fleet:
 cargo install --locked --force --features development --path .
 ```
 
+After installing a new binary, any normal MathMux command can replace an older
+per-repository daemon automatically. To explicitly restart only that daemon,
+run this from an assigned workspace:
+
+```sh
+mathmux restart
+```
+
+This drains active MathMux work and starts a fresh repository-local daemon. It
+does not restart `oli-dev.service`, reset Oli setup, or drop agent sessions.
+
 Inspect and manually reclaim MathMux-owned generated storage from any managed
 workspace:
 
