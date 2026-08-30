@@ -1336,6 +1336,7 @@ fn error_class(summary: &str) -> String {
                 || lower.starts_with("fields missing")
                 || lower.starts_with("internal exception")
                 || lower.starts_with("ambiguous declaration name")
+                || lower.contains(" tactic failed")
                 || line.contains("expected end of input")
         })
         .or_else(|| lines.first().copied())
@@ -1353,6 +1354,9 @@ fn error_class(summary: &str) -> String {
     let lower = value.to_ascii_lowercase();
     if lower.contains("expected end of input") {
         return "parse error".into();
+    }
+    if lower.contains(" tactic failed") {
+        return "tactic failure".into();
     }
     for (prefix, class) in [
         ("application type mismatch", "application type mismatch"),
@@ -1798,6 +1802,10 @@ mod tests {
         assert_eq!(
             error_class("probe result\ntactic  Demo.lean:40\nType mismatch: expected Nat"),
             "type mismatch"
+        );
+        assert_eq!(
+            error_class("probe result\ntactic  Demo.lean:40\n'change' tactic failed, pattern"),
+            "tactic failure"
         );
         assert_eq!(
             error_class("source file is on managed main; run mathmux sync"),
