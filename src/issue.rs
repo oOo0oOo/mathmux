@@ -1323,7 +1323,10 @@ fn error_class(summary: &str) -> String {
         .iter()
         .copied()
         .find(|line| {
-            line.contains("error(") || line.contains(": error: ") || line.starts_with("error: ")
+            line.contains("error(")
+                || line.contains(": error: ")
+                || line.starts_with("error: ")
+                || line.starts_with("failed to synthesize")
         })
         .or_else(|| lines.first().copied())
         .unwrap_or("error");
@@ -1343,6 +1346,7 @@ fn error_class(summary: &str) -> String {
         ("type mismatch", "type mismatch"),
         ("unsolved goals", "unsolved goals"),
         ("failed to synthesize instance", "instance synthesis"),
+        ("failed to synthesize", "instance synthesis"),
         ("typeclass instance problem", "instance synthesis"),
         ("unknown identifier", "unknown identifier"),
         ("no goals to be solved", "no goals to be solved"),
@@ -1732,6 +1736,12 @@ mod tests {
         assert_eq!(
             error_class("c5364 27639ms\nDemo:12:3: error: No goals to be solved\n  12 | exact h"),
             "no goals to be solved"
+        );
+        assert_eq!(
+            error_class(
+                "probe result\nsynth\nfailed to synthesize\n  TopologicalSpace.PseudoMetrizableSpace X"
+            ),
+            "instance synthesis"
         );
         assert_eq!(
             error_class(
