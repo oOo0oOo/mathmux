@@ -1328,6 +1328,7 @@ fn error_class(summary: &str) -> String {
                 || line.starts_with("error: ")
                 || line.starts_with("failed to synthesize")
                 || line.starts_with("internal exception")
+                || line.contains("expected end of input")
         })
         .or_else(|| lines.first().copied())
         .unwrap_or("error");
@@ -1342,6 +1343,9 @@ fn error_class(summary: &str) -> String {
         .or_else(|| value.strip_prefix("error: "))
         .unwrap_or(value);
     let lower = value.to_ascii_lowercase();
+    if lower.contains("expected end of input") {
+        return "parse error".into();
+    }
     for (prefix, class) in [
         ("application type mismatch", "application type mismatch"),
         ("type mismatch", "type mismatch"),
@@ -1754,6 +1758,10 @@ mod tests {
         assert_eq!(
             error_class("probe result\ntactic  Demo.lean:40\ninternal exception abortTactic"),
             "internal exception"
+        );
+        assert_eq!(
+            error_class("probe result\ntactic  Demo.lean:40\n<input>:1:441: expected end of input"),
+            "parse error"
         );
         assert_eq!(
             error_class("source file is on managed main; run mathmux sync"),
