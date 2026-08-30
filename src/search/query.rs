@@ -565,10 +565,9 @@ pub(super) fn exact_declaration_name_matches(name: &str, query: &str) -> bool {
     }
 }
 
-pub(super) fn merge_exact_candidates(candidates: Vec<Candidate>) -> Candidate {
+pub(super) fn merge_exact_candidates(candidates: Vec<Candidate>) -> Option<Candidate> {
     let mut candidates = sort_and_merge_candidates(candidates);
-    debug_assert_eq!(candidates.len(), 1);
-    candidates.remove(0)
+    (candidates.len() == 1).then(|| candidates.remove(0))
 }
 
 fn sort_and_merge_candidates(mut candidates: Vec<Candidate>) -> Vec<Candidate> {

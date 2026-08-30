@@ -817,6 +817,27 @@ fn query_parsing_scoring_and_ranking_regressions() {
     )
     .unwrap();
     assert_eq!(root_aliases.len(), 2);
+    assert!(
+        merge_exact_candidates(vec![
+            Candidate {
+                hit: SearchHit {
+                    name: "Demo.First".into(),
+                    ..contextual_hit.clone()
+                },
+                score: 20.0,
+                origins: 0,
+            },
+            Candidate {
+                hit: SearchHit {
+                    name: "Demo.Second".into(),
+                    ..contextual_hit.clone()
+                },
+                score: 10.0,
+                origins: 0,
+            },
+        ])
+        .is_none()
+    );
     let (root_aliases, _) = rank_discovery_candidates(
         root_aliases,
         "Demo.Structure",

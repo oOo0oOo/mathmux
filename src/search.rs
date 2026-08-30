@@ -2200,12 +2200,21 @@ impl Searcher {
                 query,
             )
         {
-            let candidate = merge_exact_candidates(
+            let Some(candidate) = merge_exact_candidates(
                 ranked
                     .into_iter()
                     .filter(|candidate| candidate.hit.name.to_lowercase() == exact_name)
                     .collect(),
-            );
+            ) else {
+                return self.exact_miss_result(
+                    workspace,
+                    query,
+                    scopes,
+                    import_context.as_ref(),
+                    base_warming,
+                    false,
+                );
+            };
             return self.finish_exact(
                 ExactMatch {
                     candidate,
@@ -2455,13 +2464,14 @@ impl Searcher {
                 ranked.truncate(1);
             }
         }
-        let matched = contextual_exact_candidates(ranked, name, import_context).map(|candidates| {
-            ExactMatch {
-                candidate: merge_exact_candidates(candidates),
-                matched: name.clone(),
-                warming: false,
-            }
-        });
+        let matched =
+            contextual_exact_candidates(ranked, name, import_context).and_then(|candidates| {
+                merge_exact_candidates(candidates).map(|candidate| ExactMatch {
+                    candidate,
+                    matched: name.clone(),
+                    warming: false,
+                })
+            });
         let matched = match matched {
             Some(matched) => Some(matched),
             None => self.generated_exact_match(name, scopes)?,
@@ -3063,7 +3073,11 @@ impl Searcher {
                 "{resolved_name} is {resolved_kind}, not a class or structure"
             ))));
         }
-        let mut parent = merge_exact_candidates(structural);
+        let Some(mut parent) = merge_exact_candidates(structural) else {
+            return Ok(Some(miss(format!(
+                "{resolved_name} has multiple matching declarations; qualify the name"
+            ))));
+        };
         if let Some(context) = import_context {
             apply_import_context(&mut parent, context);
         }
@@ -3219,7 +3233,9 @@ impl Searcher {
             let Some(candidates) = resolved_exact_candidates(candidates, &name) else {
                 continue;
             };
-            let mut candidate = merge_exact_candidates(candidates);
+            let Some(mut candidate) = merge_exact_candidates(candidates) else {
+                continue;
+            };
             candidate.hit.source = None;
             candidate.hit.usages.clear();
             ranked.push((2, candidate));
