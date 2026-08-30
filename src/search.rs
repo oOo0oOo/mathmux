@@ -466,16 +466,6 @@ fn should_use_name_contains_fallback(
         && allow_name_contains_fallback(query)
 }
 
-fn should_expand_name_candidates(
-    name_query: bool,
-    include_all_signatures: bool,
-    indexed_candidate_count: usize,
-) -> bool {
-    name_query
-        || include_all_signatures
-        || indexed_candidate_count < SEARCH_TUNING.retrieval.name_query_rows
-}
-
 fn name_prefix_candidates(connection: &Connection, token: &str) -> Result<Vec<IndexedRow>> {
     let sql = indexed_rows_sql(&format!(
         "WHERE search_fts MATCH ?1
@@ -2861,55 +2851,52 @@ impl Searcher {
             SEARCH_TUNING.retrieval.qualified_rows,
         ));
         let mut qualified = connection.prepare(&qualified_sql)?;
+        let exact_leaf_sql = indexed_rows_sql(&format!(
+            "WHERE search_fts MATCH ?1
+             AND (lower(name) = lower(?2)
+                  OR lower(substr(name, -(length(?2) + 1))) = ('.' || lower(?2)))
+             AND owner IN (SELECT owner FROM active_search_scopes)
+             ORDER BY CASE WHEN kind = 'file' THEN 1 ELSE 0 END,
+                      length(name),
+                      CASE
+                        WHEN owner LIKE 'workspace:%' OR owner LIKE 'artifacts:%' THEN 0
+                        ELSE 1
+                      END
+             LIMIT {}",
+            SEARCH_TUNING.retrieval.exact_rows,
+        ));
+        let mut exact_leaf = connection.prepare(&exact_leaf_sql)?;
         let mut contains_tokens = Vec::new();
-        if should_expand_name_candidates(name_query, include_all_signatures, rows.len()) {
-            let exact_leaf_sql = indexed_rows_sql(&format!(
-                "WHERE search_fts MATCH ?1
-                 AND (lower(name) = lower(?2)
-                      OR lower(substr(name, -(length(?2) + 1))) = ('.' || lower(?2)))
-                 AND owner IN (SELECT owner FROM active_search_scopes)
-                 ORDER BY CASE WHEN kind = 'file' THEN 1 ELSE 0 END,
-                          length(name),
-                          CASE
-                            WHEN owner LIKE 'workspace:%' OR owner LIKE 'artifacts:%' THEN 0
-                            ELSE 1
-                          END
-                 LIMIT {}",
-                SEARCH_TUNING.retrieval.exact_rows,
-            ));
-            let mut exact_leaf = connection.prepare(&exact_leaf_sql)?;
-            for token in tokens
-                .iter()
-                .filter(|token| token.len() >= 4 && token.as_str() != "_")
-            {
-                let exact_query = format!("name : \"{}\"", token.replace('"', "\"\""));
-                rows.extend(
-                    exact_leaf
-                        .query_map(params![exact_query, token], indexed_row_from_row)?
-                        .collect::<rusqlite::Result<Vec<_>>>()?,
-                );
-                let name_query = format!("name : \"{}\"*", token.replace('"', "\"\""));
-                let named_rows = named
-                    .query_map([name_query], indexed_row_from_row)?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                let found = !named_rows.is_empty();
-                rows.extend(named_rows);
-                let compound_query =
-                    token.eq_ignore_ascii_case(query) && identifier_query_parts(query).len() >= 2;
-                if !found && !compound_query && (token.len() >= 8 || token.contains(['.', '_'])) {
-                    contains_tokens.push(token.clone());
-                }
+        for token in tokens
+            .iter()
+            .filter(|token| token.len() >= 4 && token.as_str() != "_")
+        {
+            let exact_query = format!("name : \"{}\"", token.replace('"', "\"\""));
+            rows.extend(
+                exact_leaf
+                    .query_map(params![exact_query, token], indexed_row_from_row)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?,
+            );
+            let name_query = format!("name : \"{}\"*", token.replace('"', "\"\""));
+            let named_rows = named
+                .query_map([name_query], indexed_row_from_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let found = !named_rows.is_empty();
+            rows.extend(named_rows);
+            let compound_query =
+                token.eq_ignore_ascii_case(query) && identifier_query_parts(query).len() >= 2;
+            if !found && !compound_query && (token.len() >= 8 || token.contains(['.', '_'])) {
+                contains_tokens.push(token.clone());
             }
-            // Punctuation-only discovery queries (for example source-style
-            // alternatives containing `.*` and `|`) already use the source
-            // fallback below.  Do not also run the leading-wildcard name scan:
-            // on the full index it adds a measurable unbounded pass for a query
-            // whose long identifier tokens are unlikely to be useful name
-            // substrings.  A populated FTS page likewise has enough candidates
-            // for name ranking, so reserve this fallback for sparse retrieval.
-            if should_use_name_contains_fallback(query, rows.len(), &contains_tokens) {
-                rows.extend(name_contains_candidates(&connection, &contains_tokens)?);
-            }
+        }
+        // Punctuation-only discovery queries (for example source-style
+        // alternatives containing `.*` and `|`) already use the source
+        // fallback below.  Do not also run the leading-wildcard name scan:
+        // on the full index it adds a measurable unbounded pass for a query
+        // whose long identifier tokens are unlikely to be useful name
+        // substrings.
+        if should_use_name_contains_fallback(query, rows.len(), &contains_tokens) {
+            rows.extend(name_contains_candidates(&connection, &contains_tokens)?);
         }
         if !name_query && !include_all_signatures {
             rows.extend(module_context_candidates(
