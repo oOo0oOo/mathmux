@@ -2783,6 +2783,15 @@ fn exact_resolution_fails_closed_instead_of_returning_a_different_declaration() 
             .is_some_and(|note| note.contains("exact declaration not found"))
     );
     assert!(miss.hits.iter().all(|hit| hit.name != "AlgHom.pullbackFst"));
+
+    let batch = searcher
+        .exact_name_batch(&workspace, &["pullbackCompHom".into()], false)
+        .unwrap();
+    assert_eq!(batch.inference, "exact-miss");
+    assert!(batch.hits.is_empty());
+    assert!(batch.note.as_deref().is_some_and(|note| {
+        note.contains("next: `mathmux search \"concept pullbackCompHom\"` for broad discovery")
+    }));
 }
 
 #[test]

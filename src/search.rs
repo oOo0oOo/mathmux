@@ -757,6 +757,12 @@ impl Searcher {
             if warming {
                 note.push_str("\nsource index warming");
             }
+            if miss_suggestions.is_empty() {
+                note.push_str(&format!(
+                    "\nnext: `mathmux search \"concept {}\"` for broad discovery",
+                    missing.join(" ")
+                ));
+            }
             return Ok(SearchResult {
                 hits: miss_suggestions,
                 inference: "exact-miss".into(),
