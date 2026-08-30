@@ -1,5 +1,6 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 #[cfg(feature = "development")]
@@ -694,6 +695,7 @@ fn connect_or_start(repo: &Repo) -> Result<UnixStream> {
 
 fn restart_daemon(repo: &Repo, request: &Request) -> Result<u8> {
     let stream = connect_or_start(repo)?;
+    let mut instance = socket_inode(repo)?;
     let mut response = exchange(stream, request)?;
     if response.retry {
         let stream = if request.generation > response.generation {
@@ -701,6 +703,7 @@ fn restart_daemon(repo: &Repo, request: &Request) -> Result<u8> {
         } else {
             wait_for_replacement(repo)?
         };
+        instance = socket_inode(repo)?;
         response = exchange(stream, request)?;
     }
     ensure!(
@@ -708,11 +711,28 @@ fn restart_daemon(repo: &Repo, request: &Request) -> Result<u8> {
         "daemon restart request failed: {}",
         response.summary
     );
-    wait_for_daemon_exit(repo)?;
+    wait_for_daemon_replacement(repo, instance)?;
     let stream = connect_or_start(repo)?;
     drop(stream);
     output_summary("restarted mathmux daemon")?;
     Ok(0)
+}
+
+fn socket_inode(repo: &Repo) -> Result<u64> {
+    Ok(std::fs::metadata(&repo.socket_path)?.ino())
+}
+
+fn wait_for_daemon_replacement(repo: &Repo, previous_inode: u64) -> Result<()> {
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(10 * 60) {
+        match std::fs::metadata(&repo.socket_path) {
+            Ok(metadata) if metadata.ino() != previous_inode => return Ok(()),
+            Ok(_) => std::thread::sleep(Duration::from_millis(25)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    bail!("mathmux daemon did not restart within 10 minutes")
 }
 
 fn replace_daemon(repo: &Repo, request: &Request) -> Result<UnixStream> {
