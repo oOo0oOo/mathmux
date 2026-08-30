@@ -649,6 +649,8 @@ fn query_parsing_scoring_and_ranking_regressions() {
         "projectionRange.*trivial|isomorphic"
     ));
     assert!(allow_name_contains_fallback("orthogonal complement"));
+    let concept_tokens = meaningful_query_tokens("concept projectionRange restriction");
+    assert!(!concept_tokens.iter().any(|token| token == "concept"));
     assert!(should_use_name_contains_fallback(
         "orthogonal complement",
         0,

@@ -1003,6 +1003,7 @@ pub(super) fn search_syntax_token(token: &str) -> bool {
             | "apply"
             | "assumption"
             | "class"
+            | "concept"
             | "constructor"
             | "constructors"
             | "def"
