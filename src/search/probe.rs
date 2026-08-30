@@ -51,6 +51,7 @@ struct ProbeRequest {
 
 impl ProbeRequest {
     fn parse(query: &str) -> Result<Self> {
+        let query = normalize_colon_attached_source_facet(query.trim());
         let query = query.trim();
         ensure!(!query.is_empty(), "probe query is empty");
         if query == "mathmux probe" || query.starts_with("mathmux probe ") {
@@ -2084,6 +2085,14 @@ mod tests {
         for facet in ["outline", "declarations", "imports", "dependents"] {
             assert_eq!(
                 ProbeRequest::parse(&format!("Demo.lean {facet}"))
+                    .unwrap_err()
+                    .to_string(),
+                format!(
+                    "`{facet}` is a source-search facet, not a probe subject; use `mathmux search Demo.lean {facet}`"
+                )
+            );
+            assert_eq!(
+                ProbeRequest::parse(&format!("Demo.lean:{facet}"))
                     .unwrap_err()
                     .to_string(),
                 format!(
