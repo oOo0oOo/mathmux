@@ -1357,17 +1357,35 @@ fn error_class(summary: &str) -> String {
         ("no goals to be solved", "no goals to be solved"),
         ("fields missing", "fields missing"),
         ("internal exception", "internal exception"),
+        ("ambiguous declaration name", "ambiguous declaration name"),
     ] {
         if lower.starts_with(prefix) {
             return class.into();
         }
     }
-    let value = value.split_once(':').map_or(value, |(class, _)| class);
+    let value = strip_diagnostic_location(value);
     let mut boundary = value.len().min(120);
     while !value.is_char_boundary(boundary) {
         boundary -= 1;
     }
     value[..boundary].to_owned()
+}
+
+fn strip_diagnostic_location(value: &str) -> &str {
+    let mut parts = value.splitn(4, ':');
+    let file = parts.next();
+    let line = parts.next();
+    let column = parts.next();
+    let message = parts.next();
+    if file.is_some_and(|file| !file.is_empty())
+        && line.is_some_and(|line| !line.is_empty() && line.chars().all(|c| c.is_ascii_digit()))
+        && column
+            .is_some_and(|column| !column.is_empty() && column.chars().all(|c| c.is_ascii_digit()))
+    {
+        message.map_or(value, str::trim_start)
+    } else {
+        value
+    }
 }
 
 fn parse_event_reference(reference: &str) -> Result<i64> {
@@ -1762,6 +1780,12 @@ mod tests {
         assert_eq!(
             error_class("probe result\ntactic  Demo.lean:40\n<input>:1:441: expected end of input"),
             "parse error"
+        );
+        assert_eq!(
+            error_class(
+                "#check requires FILE, FILE:LINE, cREF, or qREF context; use NAME signature for a declaration"
+            ),
+            "#check requires FILE, FILE:LINE, cREF, or qREF context; use NAME signature for a declaration"
         );
         assert_eq!(
             error_class("source file is on managed main; run mathmux sync"),
