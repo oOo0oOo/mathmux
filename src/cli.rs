@@ -15,6 +15,8 @@ use crate::issue::development_enabled;
 use crate::issue::{IssueStore, TelemetryStore};
 use crate::protocol::{Command, Progress, Request, Response};
 use crate::repo::Repo;
+#[cfg(feature = "development")]
+use crate::state::State;
 use anyhow::{Context, Result, bail, ensure};
 #[cfg(feature = "development")]
 use clap::ValueEnum;
@@ -294,6 +296,14 @@ enum DevCommand {
         /// Include complete captured context.
         #[arg(long)]
         all: bool,
+    },
+    /// Report project-owned storage and safe reclaimable space.
+    Storage,
+    /// Reclaim deleted-workspace setups and obsolete generated services.
+    Gc {
+        /// Report what would be removed without changing anything.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -597,7 +607,7 @@ fn run_issue_report(command: &IssueCommand, cwd: &Path) -> Result<u8> {
 }
 
 #[cfg(feature = "development")]
-fn run_dev(command: &DevCommand, _cwd: &Path) -> Result<u8> {
+fn run_dev(command: &DevCommand, cwd: &Path) -> Result<u8> {
     let summary = match command {
         DevCommand::Issue { command } => {
             let store = IssueStore::global()?;
@@ -622,6 +632,16 @@ fn run_dev(command: &DevCommand, _cwd: &Path) -> Result<u8> {
             } else {
                 bail!("dev show expects iREF or eREF")
             }
+        }
+        DevCommand::Storage => {
+            let repo = Repo::discover(cwd)?;
+            let state = State::new(&repo.db_path)?;
+            crate::storage::render_storage(&repo, &state)?
+        }
+        DevCommand::Gc { dry_run } => {
+            let repo = Repo::discover(cwd)?;
+            let state = State::new(&repo.db_path)?;
+            crate::storage::run_gc(&repo, &state, *dry_run)?
         }
     };
     output_summary(&summary)?;
@@ -841,6 +861,16 @@ mod tests {
                 command: DevCommand::Issue {
                     command: DevIssueCommand::List { .. }
                 }
+            }
+        ));
+        let matches = command_line()
+            .try_get_matches_from(["mathmux", "dev", "gc", "--dry-run"])
+            .unwrap();
+        let args = Args::from_arg_matches(&matches).unwrap();
+        assert!(matches!(
+            args.command,
+            TopCommand::Dev {
+                command: DevCommand::Gc { dry_run: true }
             }
         ));
     }

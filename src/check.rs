@@ -12,7 +12,7 @@ use fs2::FileExt;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use crate::coordination::{lock_exclusive_until, lock_mutex_until, open_lock};
+use crate::coordination::{lock_exclusive_until, lock_mutex_until, lock_shared_until, open_lock};
 use crate::git::{dirty_lean_files, lake_command, merge_in_progress, project_lean_files};
 use crate::issue::{TelemetryOperation, TelemetryStore};
 use crate::lean_service::{LeanServiceProcess, ServiceRequestError, reap_stale_processes};
@@ -1264,6 +1264,9 @@ impl Checker {
         input_fingerprint: &str,
         has_project_dependencies: bool,
     ) -> Result<PathBuf> {
+        let gc_lock = open_lock(&self.repo.state_dir.join("setup-gc.lock"))?;
+        lock_shared_until(&gc_lock, CHECK_QUEUE_TIMEOUT)
+            .context("setup garbage collection is still running after five minutes; retry later")?;
         let build_lock = has_project_dependencies.then(|| {
             let mut locks = self
                 .coordinator

@@ -11,7 +11,7 @@ use crate::util::now_unix_ms;
 mod display;
 use display::{render_check_run, render_search_run, render_submission};
 
-const SEARCH_HISTORY_LIMIT: i64 = 20_000;
+const SEARCH_HISTORY_LIMIT: i64 = 50_000;
 const SEARCH_HISTORY_AGE_MS: i64 = 48 * 60 * 60 * 1000;
 const STORED_PROFILE_LIMIT_BYTES: usize = 512 * 1024;
 const STATE_SCHEMA_VERSION: i64 = 3;
@@ -480,6 +480,35 @@ impl State {
         let rows = statement.query_map([], workspace_from_row)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)
+    }
+
+    pub(crate) fn deleted_workspace_references(&self) -> Result<Vec<String>> {
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            "SELECT ref FROM workspaces WHERE deleted_at IS NOT NULL ORDER BY deleted_at",
+        )?;
+        let rows = statement.query_map([], |row| row.get(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn prune_search_history(&self) -> Result<usize> {
+        let mut connection = self.open()?;
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let removed_by_age = transaction.execute(
+            "DELETE FROM searches WHERE created_at < ?1",
+            [now_unix_ms() - SEARCH_HISTORY_AGE_MS],
+        )?;
+        let removed_by_limit = transaction.execute(
+            "DELETE FROM searches WHERE ref IN (
+                SELECT ref FROM searches
+                ORDER BY created_at DESC, ref DESC LIMIT -1 OFFSET ?1
+             )",
+            [SEARCH_HISTORY_LIMIT],
+        )?;
+        transaction.commit()?;
+        Ok(removed_by_age + removed_by_limit)
     }
 
     pub fn workspace_named(&self, name: &str) -> Result<Option<Workspace>> {

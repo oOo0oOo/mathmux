@@ -18,7 +18,7 @@ use crate::util::{build_id, format_duration, hash_bytes, now_unix_ms, resident_m
 const SNAPSHOT_LIMIT: usize = 256 * 1024;
 const LOG_LINES: usize = 80;
 const TELEMETRY_DAYS: i64 = 30;
-const TELEMETRY_LIMIT: i64 = 50_000;
+const TELEMETRY_LIMIT: i64 = 100_000;
 
 #[derive(Debug, Clone)]
 pub struct IssueStore {
@@ -337,6 +337,28 @@ impl TelemetryStore {
         store.migrate()?;
         fs::set_permissions(&store.path, fs::Permissions::from_mode(0o600))?;
         Ok(store)
+    }
+
+    pub(crate) fn prune_history(&self) -> Result<usize> {
+        let mut connection = open_db(&self.path)?;
+        let transaction = connection.transaction()?;
+        let before: i64 =
+            transaction.query_row("SELECT COUNT(*) FROM telemetry_events", [], |row| {
+                row.get(0)
+            })?;
+        prune_telemetry(&transaction, now_unix_ms())?;
+        let after: i64 =
+            transaction.query_row("SELECT COUNT(*) FROM telemetry_events", [], |row| {
+                row.get(0)
+            })?;
+        transaction.commit()?;
+        Ok(before.saturating_sub(after) as usize)
+    }
+
+    pub(crate) fn checkpoint(&self) -> Result<()> {
+        let connection = open_db(&self.path)?;
+        connection.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()))?;
+        Ok(())
     }
 
     fn migrate(&self) -> Result<()> {
