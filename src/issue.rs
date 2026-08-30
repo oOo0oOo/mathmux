@@ -1303,6 +1303,9 @@ fn error_class(summary: &str) -> String {
     {
         return "near suggestions".into();
     }
+    if summary.contains("valid focuses:") {
+        return "invalid probe focus".into();
+    }
     let lines = summary
         .lines()
         .map(str::trim)
@@ -1798,6 +1801,12 @@ mod tests {
                 "#check requires FILE, FILE:LINE, cREF, or qREF context; use NAME signature for a declaration"
             ),
             "#check requires FILE, FILE:LINE, cREF, or qREF context; use NAME signature for a declaration"
+        );
+        assert_eq!(
+            error_class(
+                "Demo.target is def, not a class or structure; valid focuses: signature, source, outline"
+            ),
+            "invalid probe focus"
         );
         assert_eq!(
             error_class("probe result\ntactic  Demo.lean:40\nType mismatch: expected Nat"),
