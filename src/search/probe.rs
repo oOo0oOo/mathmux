@@ -76,6 +76,14 @@ impl ProbeRequest {
                 "probe --all is not valid here; use `mathmux show {first} --all` for stored detail"
             )
         }
+        if let Some(ProbeContext::Check(reference)) = &context
+            && remainder
+                .split_whitespace()
+                .next()
+                .is_some_and(|term| term.trim_matches(['\'', '"']) == "--wait")
+        {
+            bail!("--wait belongs to show; use `mathmux show {reference} --wait`")
+        }
         if remainder
             .split_whitespace()
             .any(|term| term.trim_matches(['\'', '"']) == "--all")
@@ -1772,6 +1780,10 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             "source ranges are a search form, not a probe context; use `mathmux search Demo.lean:42-48` for source or `mathmux probe Demo.lean:42 goal` for Lean context"
+        );
+        assert_eq!(
+            ProbeRequest::parse("c42 --wait").unwrap_err().to_string(),
+            "--wait belongs to show; use `mathmux show c42 --wait`"
         );
         assert!(usage_path_matches_scope(
             "Mathlib/Data/List/Basic.lean",
