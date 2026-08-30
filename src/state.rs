@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::{Context, Result, bail, ensure};
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, Type, ValueRef};
@@ -20,6 +21,7 @@ pub(crate) const SEARCH_USAGE_LIMIT: usize = 8;
 #[derive(Debug, Clone)]
 pub struct State {
     path: PathBuf,
+    write_lock: Arc<Mutex<()>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -274,6 +276,7 @@ impl State {
     pub fn existing(path: impl AsRef<Path>) -> Self {
         Self {
             path: path.as_ref().to_path_buf(),
+            write_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -289,6 +292,12 @@ impl State {
         connection.pragma_update(None, "foreign_keys", "ON")?;
         connection.busy_timeout(std::time::Duration::from_secs(60))?;
         Ok(connection)
+    }
+
+    fn write_guard(&self) -> MutexGuard<'_, ()> {
+        self.write_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn migrate(&self) -> Result<()> {
@@ -425,6 +434,11 @@ impl State {
     }
 
     pub(crate) fn next_reference(&self, kind: ReferenceKind) -> Result<String> {
+        let _write_guard = self.write_guard();
+        self.next_reference_locked(kind)
+    }
+
+    fn next_reference_locked(&self, kind: ReferenceKind) -> Result<String> {
         let mut connection = self.open()?;
         let transaction =
             connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -443,6 +457,7 @@ impl State {
     }
 
     pub fn add_workspace(&self, workspace: &Workspace) -> Result<()> {
+        let _write_guard = self.write_guard();
         let now = now_unix_ms();
         self.open()?.execute(
             "INSERT INTO workspaces(ref, name, path, branch, model, created_at, last_active)
@@ -460,6 +475,7 @@ impl State {
     }
 
     pub fn remove_workspace(&self, reference: &str) -> Result<()> {
+        let _write_guard = self.write_guard();
         let mut connection = self.open()?;
         let transaction = connection.transaction()?;
         transaction.execute(
@@ -497,6 +513,7 @@ impl State {
     }
 
     pub(crate) fn prune_search_history(&self) -> Result<usize> {
+        let _write_guard = self.write_guard();
         let mut connection = self.open()?;
         let transaction =
             connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -538,6 +555,7 @@ impl State {
     }
 
     pub fn touch_workspace(&self, reference: &str) -> Result<()> {
+        let _write_guard = self.write_guard();
         self.open()?.execute(
             "UPDATE workspaces SET last_active = ?2 WHERE ref = ?1",
             params![reference, now_unix_ms()],
@@ -546,6 +564,7 @@ impl State {
     }
 
     pub fn set_workspace_model(&self, reference: &str, model: &str) -> Result<()> {
+        let _write_guard = self.write_guard();
         self.open()?.execute(
             "UPDATE workspaces SET model = ?2 WHERE ref = ?1 AND deleted_at IS NULL",
             params![reference, model],
@@ -688,6 +707,7 @@ impl State {
     }
 
     pub fn add_check_run(&self, run: &CheckRun, certificates: &[CheckRecord]) -> Result<()> {
+        let _write_guard = self.write_guard();
         let mut connection = self.open()?;
         let transaction = connection.transaction()?;
         let profile_json = run.profile.as_ref().map(stored_profile_json).transpose()?;
@@ -765,6 +785,7 @@ impl State {
     }
 
     pub fn add_warning_probe(&self, probe: &WarningProbe) -> Result<()> {
+        let _write_guard = self.write_guard();
         self.open()?.execute(
             "INSERT INTO warning_probes(
                 ref, workspace_ref, check_ref, path, line, column_number, source_hash,
@@ -859,7 +880,8 @@ impl State {
     }
 
     pub fn add_sync(&self, workspace_ref: &str, status: &str, detail: &str) -> Result<String> {
-        let reference = self.next_reference(ReferenceKind::Sync)?;
+        let _write_guard = self.write_guard();
+        let reference = self.next_reference_locked(ReferenceKind::Sync)?;
         self.open()?.execute(
             "INSERT INTO syncs(ref, workspace_ref, status, detail, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -869,6 +891,7 @@ impl State {
     }
 
     pub fn add_submission(&self, submission: &Submission) -> Result<()> {
+        let _write_guard = self.write_guard();
         self.open()?.execute(
             "INSERT INTO submissions(
                 ref, workspace_ref, workspace_commit, main_commit, base_commit, checks_json,
@@ -999,6 +1022,7 @@ impl State {
     }
 
     pub fn next_validation(&self) -> Result<Option<Submission>> {
+        let _write_guard = self.write_guard();
         let connection = self.open()?;
         let running: bool = connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM submissions WHERE validation_status = 'running')",
@@ -1040,6 +1064,7 @@ impl State {
     }
 
     pub fn finish_validation(&self, reference: &str, report: &ValidationReport) -> Result<()> {
+        let _write_guard = self.write_guard();
         let status = if report.passed { "passed" } else { "failed" };
         self.open()?.execute(
             "UPDATE submissions
@@ -1062,6 +1087,7 @@ impl State {
     }
 
     pub fn recover_validation(&self) -> Result<()> {
+        let _write_guard = self.write_guard();
         self.open()?.execute(
             "UPDATE submissions SET validation_status = 'queued' WHERE validation_status = 'running'",
             [],
@@ -1092,6 +1118,7 @@ impl State {
 
     pub fn add_search(&self, run: &SearchRun) -> Result<()> {
         let hits_json = serde_json::to_string(&run.hits)?;
+        let _write_guard = self.write_guard();
         let mut connection = self.open()?;
         let transaction =
             connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -1552,6 +1579,18 @@ mod tests {
         assert_eq!(version, STATE_SCHEMA_VERSION);
         assert!(!legacy_checks);
         assert!(audited_index);
+    }
+
+    #[test]
+    fn cloned_states_share_the_write_gate() {
+        let directory = tempdir().unwrap();
+        let state = State::existing(directory.path().join("state.db"));
+        let guard = state.write_lock.lock().unwrap();
+        let clone = state.clone();
+
+        assert!(clone.write_lock.try_lock().is_err());
+        drop(guard);
+        assert!(clone.write_lock.try_lock().is_ok());
     }
 
     #[test]
