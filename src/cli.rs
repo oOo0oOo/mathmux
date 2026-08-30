@@ -101,7 +101,8 @@ RULES
   fields/constructors target structures/inductives; ext/simp may be empty.
   instances/coercions find declarations in the subject's name family; inspect
   signature for required typeclasses or a theorem result such as Bijective.
-  cREF goal/analyses need a matching stored failure; profile needs check --profile.
+  cREF goal/analyses need a matching stored failure; for a running check, use
+  mathmux show cREF --wait first; profile needs check --profile.
   warnings omits mechanical fixes owned by Lean automation and never reruns Lean.
   Context is mandatory for directives and never guessed. FILE uses its imports;
   FILE:LINE uses that exact line—there is no nearby-line fallback. Probe never

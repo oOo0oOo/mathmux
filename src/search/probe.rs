@@ -737,6 +737,9 @@ impl Searcher {
             .check_run(reference)?
             .with_context(|| format!("unknown check reference {reference}"))?;
         let diagnostic = run.diagnostics.first().or_else(|| run.warnings.first());
+        if run.status == crate::state::CheckStatus::Running && diagnostic.is_none() {
+            bail!("{}", running_check_probe_hint(reference));
+        }
         let text = diagnostic
             .map(|diagnostic| diagnostic.text.as_str())
             .unwrap_or("check has no diagnostic");
@@ -1567,6 +1570,12 @@ fn stored_goal_detail(diagnostic: &str, source_context: Option<&str>) -> String 
         .join("\n")
 }
 
+fn running_check_probe_hint(reference: &str) -> String {
+    format!(
+        "check {reference} is still running; use `mathmux show {reference} --wait`, then retry `mathmux probe {reference} goal|types|defeq|rewrite|profile`"
+    )
+}
+
 #[derive(Clone, Copy)]
 struct WarningClassification {
     category: &'static str,
@@ -2218,11 +2227,75 @@ mod tests {
             ProbeRequest::parse("c123 --all").unwrap_err().to_string(),
             "probe --all is not valid here; use `mathmux probe c123 goal|types|defeq|rewrite|profile`"
         );
+        assert_eq!(
+            running_check_probe_hint("c123"),
+            "check c123 is still running; use `mathmux show c123 --wait`, then retry `mathmux probe c123 goal|types|defeq|rewrite|profile`"
+        );
         assert!(is_declaration_header(
             "noncomputable def parameterizedBottThickClutchingCore"
         ));
         assert!(is_declaration_header("private theorem hidden"));
         assert!(!is_declaration_header("  intro i"));
+    }
+
+    #[test]
+    fn running_check_probe_redirects_to_bounded_wait() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("root");
+        let state_dir = directory.path().join("state");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let repo = Repo {
+            root: root.clone(),
+            common_git_dir: directory.path().join("git"),
+            state_dir: state_dir.clone(),
+            socket_path: state_dir.join("daemon.sock"),
+            db_path: state_dir.join("state.sqlite3"),
+            search_db_path: state_dir.join("search.sqlite3"),
+            log_path: state_dir.join("daemon.log"),
+            cache_dir: state_dir.join("cache"),
+            integration_lock: state_dir.join("integration.lock"),
+            validation_lock: state_dir.join("validation.lock"),
+            startup_lock: state_dir.join("startup.lock"),
+        };
+        let state = State::new(repo.db_path.clone()).unwrap();
+        let workspace = Workspace {
+            reference: "w1".into(),
+            name: "demo".into(),
+            path: root.clone(),
+            branch: "demo".into(),
+            model: None,
+        };
+        state.add_workspace(&workspace).unwrap();
+        let checker = Arc::new(Checker::new(repo.clone(), state.clone(), None).unwrap());
+        let searcher = Searcher::new(repo, state.clone(), checker, None).unwrap();
+        state
+            .add_check_run(
+                &crate::state::CheckRun {
+                    reference: "c123".into(),
+                    workspace_ref: workspace.reference.clone(),
+                    status: crate::state::CheckStatus::Running,
+                    files: Vec::new(),
+                    passed: Vec::new(),
+                    failed: None,
+                    not_checked: Vec::new(),
+                    warnings: Vec::new(),
+                    linters: Vec::new(),
+                    suggestions: Vec::new(),
+                    diagnostics: Vec::new(),
+                    profile: None,
+                    duration_ms: 0,
+                    created_at: now_unix_ms(),
+                },
+                &[],
+            )
+            .unwrap();
+
+        let error = searcher
+            .probe(&workspace, &root, "c123 goal")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, running_check_probe_hint("c123"));
     }
 
     #[test]
