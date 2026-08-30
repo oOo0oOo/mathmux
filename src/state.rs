@@ -531,6 +531,17 @@ impl State {
             .map_err(Into::into)
     }
 
+    pub fn workspace_creation_times(&self) -> Result<Vec<(String, i64)>> {
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            "SELECT ref, created_at FROM workspaces
+             WHERE deleted_at IS NULL ORDER BY created_at",
+        )?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
     pub fn activity_metrics(&self, since: i64) -> Result<ActivityMetrics> {
         let connection = self.open()?;
         let (checks, failed_checks, average_check_ms) = connection.query_row(

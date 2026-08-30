@@ -60,7 +60,11 @@ pub fn render(repo: &Repo, state: &State, telemetry: Option<&TelemetryStore>) ->
         .workspace_activity()?
         .into_iter()
         .collect::<HashMap<_, _>>();
-    let agents = project_agents(&workspaces, &activity, now);
+    let creation_times = state
+        .workspace_creation_times()?
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+    let agents = project_agents(&workspaces, &activity, &creation_times, now);
     remember_agent_models(state, &agents);
     let code = current_code(&repo.root)?;
     let sorries = audited_sorry_count(state, &revision)?;
@@ -414,6 +418,7 @@ fn render_tooling(output: &mut String, metrics: &ActivityMetrics) -> std::fmt::R
 fn project_agents(
     workspaces: &[Workspace],
     activity: &HashMap<String, i64>,
+    creation_times: &HashMap<String, i64>,
     now: i64,
 ) -> Vec<AgentStatus> {
     let mut agents = agent_state_dir()
@@ -430,7 +435,7 @@ fn project_agents(
         {
             continue;
         }
-        if let Some(agent) = workspace_agent_status(workspace, activity, now) {
+        if let Some(agent) = workspace_agent_status(workspace, activity, creation_times, now) {
             agents.push(agent);
         }
     }
@@ -441,12 +446,23 @@ fn project_agents(
 fn workspace_agent_status(
     workspace: &Workspace,
     activity: &HashMap<String, i64>,
+    creation_times: &HashMap<String, i64>,
     now: i64,
 ) -> Option<AgentStatus> {
     let last_active = activity.get(&workspace.reference).copied()? / 1000;
     if last_active == 0 || now.saturating_sub(last_active) > ACTIVE_SECS {
         return None;
     }
+    let started_at = creation_times
+        .get(&workspace.reference)
+        .copied()
+        .unwrap_or_default()
+        / 1000;
+    let started_at = if started_at > 0 {
+        started_at
+    } else {
+        last_active.saturating_sub(ACTIVE_SECS)
+    };
     let paths = dirty_paths(&workspace.path).unwrap_or_default();
     Some(AgentStatus {
         id: workspace
@@ -461,7 +477,7 @@ fn workspace_agent_status(
             .clone()
             .unwrap_or_else(|| "workspace".into()),
         state: "active".into(),
-        started_at: last_active,
+        started_at,
         last_active,
         dirty: paths.len(),
         workspace_fallback: true,
@@ -778,35 +794,48 @@ fn agent_hours(
     let Some(events) = events else {
         return agents
             .iter()
-            .map(|agent| {
-                let start = if agent.workspace_fallback {
-                    agent.last_active.saturating_sub(ACTIVE_SECS)
-                } else {
-                    agent.started_at
-                };
-                now.saturating_sub(start.max(since)) as f64
-            })
+            .map(|agent| active_agent_interval(agent, since, now))
             .sum::<f64>()
             / HOUR_SECS as f64;
     };
     let mut by_workspace = event_intervals(events);
     for agent in agents {
-        by_workspace
-            .entry(agent.workspace_ref.clone())
-            .or_default()
-            .extend([
-                (
-                    agent.started_at,
-                    agent.started_at.saturating_add(ACTIVE_SECS),
-                ),
-                (
-                    agent.last_active.saturating_sub(ACTIVE_SECS),
-                    agent.last_active,
-                ),
-            ]);
+        let interval = if agent.state == "active" {
+            (agent_start(agent), now)
+        } else {
+            (
+                agent.last_active.saturating_sub(ACTIVE_SECS),
+                agent.last_active,
+            )
+        };
+        let start = interval.0.max(since);
+        let end = interval.1.min(now);
+        if start < end {
+            by_workspace
+                .entry(agent.workspace_ref.clone())
+                .or_default()
+                .push((start, end));
+        }
     }
     let active_seconds = merge_workspace_intervals(by_workspace, since, now);
     active_seconds as f64 / HOUR_SECS as f64
+}
+
+fn active_agent_interval(agent: &AgentStatus, since: i64, now: i64) -> f64 {
+    if agent.state == "active" {
+        now.saturating_sub(agent_start(agent).max(since)) as f64
+    } else {
+        let start = agent.last_active.saturating_sub(ACTIVE_SECS).max(since);
+        agent.last_active.min(now).saturating_sub(start) as f64
+    }
+}
+
+fn agent_start(agent: &AgentStatus) -> i64 {
+    if agent.started_at > 0 {
+        agent.started_at
+    } else {
+        agent.last_active.saturating_sub(ACTIVE_SECS)
+    }
 }
 
 fn recorded_agent_hours(events: &[ContextEvent]) -> f64 {
@@ -1018,7 +1047,7 @@ mod tests {
             workspace: "demo".into(),
             model: "agent".into(),
             state: "active".into(),
-            started_at: 7_200,
+            started_at: 6_900,
             last_active: 7_200,
             dirty: 0,
             workspace_fallback: true,
@@ -1034,12 +1063,46 @@ mod tests {
             workspace: "demo".into(),
             model: "agent".into(),
             state: "active".into(),
-            started_at: 7_200,
+            started_at: 6_900,
             last_active: 7_200,
             dirty: 0,
             workspace_fallback: true,
         };
         assert_eq!(agent_hours(&[agent], None, 6_900, 7_200), 1.0 / 12.0);
+    }
+
+    #[test]
+    fn active_fleet_agents_each_count_the_full_window_with_sparse_telemetry() {
+        let agents = (1..=7)
+            .map(|id| AgentStatus {
+                id,
+                workspace_ref: format!("w{id}"),
+                workspace: format!("agent-{id}"),
+                model: "agent".into(),
+                state: "active".into(),
+                started_at: 1_000,
+                last_active: 65_800,
+                dirty: 0,
+                workspace_fallback: true,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(agent_hours(&agents, Some(&[]), 1_000, 65_800), 126.0);
+    }
+
+    #[test]
+    fn idle_agents_stop_counting_at_their_last_activity_without_telemetry() {
+        let agent = AgentStatus {
+            id: 1,
+            workspace_ref: "w1".into(),
+            workspace: "demo".into(),
+            model: "agent".into(),
+            state: "idle".into(),
+            started_at: 100,
+            last_active: 400,
+            dirty: 0,
+            workspace_fallback: false,
+        };
+        assert_eq!(agent_hours(&[agent], None, 0, 1_000), 1.0 / 12.0);
     }
 
     #[test]
@@ -1052,11 +1115,13 @@ mod tests {
             model: Some("gpt-test".into()),
         };
         let activity = HashMap::from([(String::from("w28"), 900_000)]);
-        let agent = workspace_agent_status(&workspace, &activity, 1_000).unwrap();
+        let creation_times = HashMap::from([(String::from("w28"), 100_000)]);
+        let agent = workspace_agent_status(&workspace, &activity, &creation_times, 1_000).unwrap();
         assert!(agent.workspace_fallback);
         assert_eq!(agent.workspace_ref, "w28");
         assert_eq!(agent.state, "active");
-        assert!(workspace_agent_status(&workspace, &activity, 1_201).is_none());
+        assert_eq!(agent.started_at, 100);
+        assert!(workspace_agent_status(&workspace, &activity, &creation_times, 1_201).is_none());
     }
 
     #[test]
