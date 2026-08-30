@@ -146,7 +146,7 @@ impl ProbeRequest {
                     "Lean context requires an exact position; use `probe FILE:LINE goal` or `probe FILE:LINE TERM`"
                 ),
                 _ => bail!(
-                    "unknown declaration focus `{requested}`; use signature, source, apply, fields, constructors, ext, simp, instances, coercions, or usages"
+                    "unknown declaration focus `{requested}`; try `probe {name} signature`, `probe {name} source`, or `probe {name} usages`"
                 ),
             }
         }
@@ -1843,6 +1843,12 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             "declaration types use `probe Demo.foo signature`"
+        );
+        assert_eq!(
+            ProbeRequest::parse("Demo.foo Fiber")
+                .unwrap_err()
+                .to_string(),
+            "unknown declaration focus `Fiber`; try `probe Demo.foo signature`, `probe Demo.foo source`, or `probe Demo.foo usages`"
         );
         assert_eq!(
             static_probe_query(None, "Demo.foo", Some("types"))
