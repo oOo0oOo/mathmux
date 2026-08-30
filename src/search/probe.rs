@@ -104,7 +104,7 @@ impl ProbeRequest {
                 directive: Some(directive),
             });
         }
-        if let Some(ProbeContext::File(file)) = &context {
+        if let Some(ProbeContext::File(file) | ProbeContext::Scope(file)) = &context {
             let mut facet_terms = remainder.split_whitespace();
             if let (Some(facet), None) = (facet_terms.next(), facet_terms.next()) {
                 let facet = facet.trim_matches(['\'', '"']);
@@ -1761,6 +1761,12 @@ mod tests {
                 )
             );
         }
+        assert_eq!(
+            ProbeRequest::parse("Demo/ outline")
+                .unwrap_err()
+                .to_string(),
+            "`outline` is a source-search facet, not a probe subject; use `mathmux search Demo/ outline`"
+        );
         assert_eq!(
             ProbeRequest::parse("Demo.lean:42-48 source")
                 .unwrap_err()
