@@ -161,6 +161,7 @@ impl ProbeRequest {
         let mut terms = remainder.split_whitespace().collect::<Vec<_>>();
         let focus = terms
             .last()
+            .map(|term| unquote(term))
             .filter(|term| FOCUSES.contains(&term.to_ascii_lowercase().as_str()))
             .map(|term| term.to_ascii_lowercase());
         if focus.is_some() {
@@ -194,7 +195,7 @@ impl ProbeRequest {
             && !terms.first().is_some_and(|term| term.starts_with("type:"))
             && terms.len() > 1
         {
-            let requested = terms.last().copied().unwrap_or_default();
+            let requested = unquote(terms.last().copied().unwrap_or_default());
             let name = terms[..terms.len() - 1].join(" ");
             match requested {
                 "type" => bail!("declaration types use `probe {name} signature`"),
@@ -2165,6 +2166,9 @@ mod tests {
                 .to_string(),
             "unknown declaration focus `Fiber`; try `probe Demo.foo signature`, `probe Demo.foo source`, or `probe Demo.foo usages`"
         );
+        let quoted_focus = ProbeRequest::parse("Demo.foo 'source'").unwrap();
+        assert_eq!(quoted_focus.subject.as_deref(), Some("Demo.foo"));
+        assert_eq!(quoted_focus.focus.as_deref(), Some("source"));
         assert_eq!(
             static_probe_query(None, "Demo.foo", Some("types"))
                 .unwrap_err()
