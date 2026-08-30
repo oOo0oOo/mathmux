@@ -70,6 +70,18 @@ impl SearchRequest {
                 "name: accepts one name or a `|` batch"
             );
             let names = names.split('|').map(str::trim).collect::<Vec<_>>();
+            if names
+                .iter()
+                .skip(1)
+                .any(|name| name.strip_prefix("name:").is_some())
+            {
+                let pattern = names
+                    .iter()
+                    .map(|name| name.strip_prefix("name:").unwrap_or(name))
+                    .collect::<Vec<_>>()
+                    .join("|");
+                bail!("name: accepts one prefix; use `name:{pattern}` for an exact batch");
+            }
             if names.is_empty() || !names.iter().all(|name| declaration_name(name)) {
                 if names.iter().any(|name| name.contains('*')) {
                     let pattern = names.join("|");
@@ -228,6 +240,11 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "name: is exact-only; use `mathmux search 'declaration *FinalCriterion*'` for wildcard discovery or name:A|B|C for an exact batch"
+        );
+        let error = SearchRequest::parse("name:A|name:B", None, false).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "name: accepts one prefix; use `name:A|B` for an exact batch"
         );
     }
 
