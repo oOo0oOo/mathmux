@@ -48,6 +48,24 @@ To install that development build for the local fleet:
 cargo install --locked --force --features development --path .
 ```
 
+Inspect and manually reclaim MathMux-owned generated storage from any managed
+workspace:
+
+```sh
+mathmux dev storage
+mathmux dev gc --dry-run
+mathmux dev gc
+```
+
+Normal GC removes setup files belonging to deleted workspaces, shared setup
+files no active workspace references, and obsolete Lean-service generations.
+It also enforces the 48-hour/50,000-row search-history cap and the
+30-day/100,000-row development-telemetry cap, then passively checkpoints the
+SQLite databases. It does not remove submissions, checks, source history,
+active worktree `.lake` directories, the shared Lake artifact cache, or the
+validation worktree. GC is manual; MathMux does not schedule it or trigger it
+from free-disk thresholds.
+
 ## Minimal CLI for fast local Lean checks in isolated git worktrees
 
 ### mathmux will do

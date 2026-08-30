@@ -12,5 +12,7 @@ pub mod repo;
 pub mod search;
 pub mod state;
 pub mod status;
+#[cfg(feature = "development")]
+mod storage;
 pub mod util;
 pub mod validation;

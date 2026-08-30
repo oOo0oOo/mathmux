@@ -253,12 +253,7 @@ pub(crate) fn prepare(repo: &Repo, workspace: &Path) -> Result<PathBuf> {
         open_lock(&lock_path).with_context(|| format!("cannot open {}", lock_path.display()))?;
     lock_exclusive(&lock)?;
 
-    let toolchain = fs::read_to_string(workspace.join("lean-toolchain")).unwrap_or_default();
-    let mut material = toolchain.into_bytes();
-    for (_, source) in SERVICE_FILES {
-        material.extend_from_slice(source.as_bytes());
-    }
-    let fingerprint = hash_bytes(&material);
+    let fingerprint = generation_fingerprint(workspace);
     let root = repo.state_dir.join("lean-service").join(&fingerprint[..16]);
     let marker = root.join("built");
     if fs::read_to_string(&marker).ok().as_deref() == Some(fingerprint.as_str()) {
@@ -306,6 +301,19 @@ pub(crate) fn prepare(repo: &Repo, workspace: &Path) -> Result<PathBuf> {
     }
     fs::write(marker, &fingerprint)?;
     Ok(root)
+}
+
+pub(crate) fn generation_name(workspace: &Path) -> String {
+    generation_fingerprint(workspace)[..16].to_owned()
+}
+
+fn generation_fingerprint(workspace: &Path) -> String {
+    let toolchain = fs::read_to_string(workspace.join("lean-toolchain")).unwrap_or_default();
+    let mut material = toolchain.into_bytes();
+    for (_, source) in SERVICE_FILES {
+        material.extend_from_slice(source.as_bytes());
+    }
+    hash_bytes(&material)
 }
 
 fn lean_path(repo: &Repo, workspace: &Path, root: &Path) -> Result<String> {

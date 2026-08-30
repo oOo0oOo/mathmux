@@ -58,6 +58,24 @@ pub(crate) fn lock_exclusive(file: &File) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn lock_shared_until(file: &File, timeout: Duration) -> Result<()> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match FileExt::try_lock_shared(file) {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline =>
+            {
+                pause(timeout);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                anyhow::bail!("lock wait timed out")
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
 fn pause(timeout: Duration) {
     std::thread::sleep(POLL_INTERVAL.min(timeout));
 }
@@ -67,7 +85,6 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-
     #[test]
     fn mutex_wait_is_bounded() {
         let lock = Mutex::new(());
@@ -83,5 +100,15 @@ mod tests {
         owner.lock_exclusive().unwrap();
         let waiter = open_lock(&path).unwrap();
         assert!(lock_exclusive_until(&waiter, Duration::from_millis(5)).is_err());
+    }
+
+    #[test]
+    fn shared_process_locks_block_exclusive_waiters() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("coordination.lock");
+        let reader = open_lock(&path).unwrap();
+        reader.lock_shared().unwrap();
+        let writer = open_lock(&path).unwrap();
+        assert!(lock_exclusive_until(&writer, Duration::from_millis(5)).is_err());
     }
 }
