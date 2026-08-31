@@ -385,6 +385,8 @@ impl State {
                 ON submissions(validation_status, created_at);
              CREATE INDEX IF NOT EXISTS submissions_created
                 ON submissions(created_at DESC);
+             CREATE INDEX IF NOT EXISTS submissions_workspace_history
+                ON submissions(workspace_ref, created_at, ref, workspace_commit);
              CREATE TABLE IF NOT EXISTS searches (
                 ref TEXT PRIMARY KEY,
                 workspace_ref TEXT NOT NULL REFERENCES workspaces(ref),
@@ -1605,6 +1607,7 @@ mod tests {
             "check_runs_workspace_status_created",
             "check_runs_created",
             "submissions_created",
+            "submissions_workspace_history",
         ] {
             let present: bool = connection
                 .query_row(
