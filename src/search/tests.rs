@@ -2900,6 +2900,37 @@ fn source_dependents_include_the_active_workspace_index() {
 }
 
 #[test]
+fn foreground_search_index_lock_wait_is_bounded() {
+    let directory = tempfile::tempdir().unwrap();
+    let state_dir = directory.path().join("state");
+    fs::create_dir_all(&state_dir).unwrap();
+    let repo = Repo {
+        root: directory.path().join("root"),
+        common_git_dir: directory.path().join("git"),
+        state_dir: state_dir.clone(),
+        socket_path: state_dir.join("daemon.sock"),
+        db_path: state_dir.join("state.sqlite3"),
+        search_db_path: state_dir.join("search.sqlite3"),
+        log_path: state_dir.join("daemon.log"),
+        cache_dir: state_dir.join("cache"),
+        integration_lock: state_dir.join("integration.lock"),
+        validation_lock: state_dir.join("validation.lock"),
+        startup_lock: state_dir.join("startup.lock"),
+    };
+    let lock_path = repo.state_dir.join("search-index.lock");
+    let owner = open_lock(&lock_path).unwrap();
+    crate::coordination::lock_exclusive(&owner).unwrap();
+
+    let started = Instant::now();
+    let error = try_search_index_writer_lock(&repo).unwrap_err();
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(
+        format!("{error:#}").contains("lock wait timed out"),
+        "{error:#}"
+    );
+}
+
+#[test]
 fn exact_misses_overlay_active_sibling_declarations_as_unmerged() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("root");

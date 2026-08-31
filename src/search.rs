@@ -16,7 +16,7 @@ use serde_json::Value;
 use walkdir::WalkDir;
 
 use crate::check::{Checker, parse_imports, project_module_name};
-use crate::coordination::{lock_exclusive, open_lock};
+use crate::coordination::{lock_exclusive, lock_exclusive_until, open_lock};
 use crate::git::{dirty_lean_files, lake_command, project_lean_files};
 use crate::issue::{TelemetryOperation, TelemetryStore};
 use crate::presentation::{SEARCH_PRESENTATION, SOURCE_PREVIEW_LINES};
@@ -70,6 +70,7 @@ const SOURCE_INDEX_KIND: &str = "source-v12";
 const DECLARATION_DETAIL_LINES: usize = SEARCH_PRESENTATION.declaration_detail_lines;
 const INDEX_COMMIT_BATCH: usize = 64;
 const SEARCH_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+const SEARCH_INDEX_LOCK_WAIT: Duration = Duration::from_millis(100);
 const SOURCE_SCAN_BUDGET: Duration = Duration::from_millis(300);
 const SOURCE_FALLBACK_BUDGET: Duration = Duration::from_millis(750);
 
@@ -1408,7 +1409,7 @@ impl Searcher {
             .get(&workspace.reference)
             .is_none_or(|last| last.elapsed() >= SEARCH_REFRESH_INTERVAL);
         if refresh_due && let Ok(_base_guard) = self.index.base_lock.try_lock() {
-            match search_index_writer_lock(&self.repo) {
+            match try_search_index_writer_lock(&self.repo) {
                 Ok(_process_guard) => {
                     for root in &roots {
                         if let Err(error) = self.refresh_sources(root, &workspace.path) {
@@ -3521,6 +3522,18 @@ fn search_index_writer_lock(repo: &Repo) -> Result<fs::File> {
     let path = repo.state_dir.join("search-index.lock");
     let file = open_lock(&path).with_context(|| format!("cannot open {}", path.display()))?;
     lock_exclusive(&file).with_context(|| format!("cannot lock {}", path.display()))?;
+    Ok(file)
+}
+
+fn try_search_index_writer_lock(repo: &Repo) -> Result<fs::File> {
+    search_index_writer_lock_until(repo, SEARCH_INDEX_LOCK_WAIT)
+}
+
+fn search_index_writer_lock_until(repo: &Repo, timeout: Duration) -> Result<fs::File> {
+    let path = repo.state_dir.join("search-index.lock");
+    let file = open_lock(&path).with_context(|| format!("cannot open {}", path.display()))?;
+    lock_exclusive_until(&file, timeout)
+        .with_context(|| format!("cannot lock {}", path.display()))?;
     Ok(file)
 }
 
