@@ -249,12 +249,16 @@ enum WsCommand {
     },
     /// List workspace references, names, dirty counts, and model labels.
     List,
-    /// Delete a clean managed workspace.
+    /// Delete a managed workspace.
     ///
-    /// Refuses dirty workspaces, then removes the worktree and its branch.
+    /// Refuses dirty workspaces unless --force is supplied. --force discards
+    /// uncommitted changes and unsubmitted branch commits.
     Delete {
         /// Workspace name.
         name: String,
+        /// Explicitly discard all workspace and unsubmitted branch changes.
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -382,7 +386,7 @@ pub fn run() -> Result<u8> {
         TopCommand::Ws { command } => match command {
             WsCommand::Create { name, model } => Command::WsCreate { name, model },
             WsCommand::List => Command::WsList,
-            WsCommand::Delete { name } => Command::WsDelete { name },
+            WsCommand::Delete { name, force } => Command::WsDelete { name, force },
         },
         TopCommand::Status { formalization_yaml } => Command::Status { formalization_yaml },
         TopCommand::Check { file, profile } => Command::Check {

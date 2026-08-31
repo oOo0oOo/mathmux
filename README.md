@@ -95,6 +95,10 @@ validation worktree. It reports Git worktrees outside the MathMux registry,
 including dirty or missing paths, but never removes them. GC is manual; MathMux
 does not schedule it or trigger it from free-disk thresholds.
 
+To intentionally discard a dirty workspace and any unsubmitted branch commits,
+an operator may use `mathmux ws delete --force NAME`. The normal delete command
+remains refuse-by-default and never discards workspace changes.
+
 ## Minimal CLI for fast local Lean checks in isolated git worktrees
 
 ### mathmux will do

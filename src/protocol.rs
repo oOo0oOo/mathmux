@@ -21,6 +21,8 @@ pub enum Command {
     WsList,
     WsDelete {
         name: String,
+        #[serde(default)]
+        force: bool,
     },
     Check {
         file: Option<String>,

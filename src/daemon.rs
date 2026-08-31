@@ -312,7 +312,7 @@ impl Service {
                     status::render(&self.repo, &self.state, self.telemetry.as_deref(), &cwd)
                 }
             }
-            Command::WsDelete { name } => {
+            Command::WsDelete { name, force } => {
                 let _guard = self.mutations.lock().expect("mutation lock poisoned");
                 let workspace = self
                     .state
@@ -320,7 +320,7 @@ impl Service {
                     .with_context(|| format!("unknown workspace {name}"))?;
                 self.watcher.unwatch(&workspace.path);
                 self.checker.evict_workspace_workers(&workspace.reference);
-                git::delete_workspace(&self.repo, &self.state, &name)?;
+                git::delete_workspace(&self.repo, &self.state, &name, force)?;
                 Ok(format!("{} deleted", workspace.reference))
             }
             Command::Check { file, profile } => {

@@ -139,7 +139,7 @@ pub fn prepare_workspace(repo: &Repo, workspace: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn delete_workspace(repo: &Repo, state: &State, name: &str) -> Result<Workspace> {
+pub fn delete_workspace(repo: &Repo, state: &State, name: &str, force: bool) -> Result<Workspace> {
     let workspace = state
         .workspace_named(name)?
         .with_context(|| format!("unknown workspace {name}"))?;
@@ -149,15 +149,13 @@ pub fn delete_workspace(repo: &Repo, state: &State, name: &str) -> Result<Worksp
             "workspace {name} path is missing and its branch contains unsubmitted commits; restore the worktree before deletion"
         );
         if registered_worktree(repo, &workspace.path)? {
-            run_checked(
-                "git",
-                [
-                    "worktree",
-                    "remove",
-                    workspace.path.to_string_lossy().as_ref(),
-                ],
-                &repo.root,
-            )?;
+            let mut args = vec!["worktree", "remove"];
+            if force {
+                args.push("--force");
+            }
+            let path = workspace.path.to_string_lossy();
+            args.push(path.as_ref());
+            run_checked("git", args, &repo.root)?;
         }
         if branch_exists(repo, &workspace.branch)? {
             run_checked("git", ["branch", "-D", &workspace.branch], &repo.root)?;
@@ -165,19 +163,19 @@ pub fn delete_workspace(repo: &Repo, state: &State, name: &str) -> Result<Worksp
         state.remove_workspace(&workspace.reference)?;
         return Ok(workspace);
     }
-    ensure!(
-        dirty_paths(&workspace.path)?.is_empty(),
-        "workspace {name} has unsubmitted changes"
-    );
-    run_checked(
-        "git",
-        [
-            "worktree",
-            "remove",
-            workspace.path.to_string_lossy().as_ref(),
-        ],
-        &repo.root,
-    )?;
+    if !force {
+        ensure!(
+            dirty_paths(&workspace.path)?.is_empty(),
+            "workspace {name} has unsubmitted changes; rerun with `mathmux ws delete --force {name}` to discard them"
+        );
+    }
+    let mut args = vec!["worktree", "remove"];
+    if force {
+        args.push("--force");
+    }
+    let path = workspace.path.to_string_lossy();
+    args.push(path.as_ref());
+    run_checked("git", args, &repo.root)?;
     run_checked("git", ["branch", "-D", &workspace.branch], &repo.root)?;
     state.remove_workspace(&workspace.reference)?;
     Ok(workspace)
@@ -819,7 +817,7 @@ mod tests {
         let moved_path = directory.path().join("removed-workspace");
         fs::rename(&missing_path, &moved_path).unwrap();
 
-        delete_workspace(&repo, &state, "agent").unwrap();
+        delete_workspace(&repo, &state, "agent", false).unwrap();
 
         assert!(state.list_workspaces().unwrap().is_empty());
         assert!(!branch_exists(&repo, "mathmux/agent").unwrap());
@@ -854,7 +852,7 @@ mod tests {
         let moved_path = directory.path().join("removed-workspace");
         fs::rename(&missing_path, &moved_path).unwrap();
 
-        let error = delete_workspace(&repo, &state, "agent")
+        let error = delete_workspace(&repo, &state, "agent", false)
             .err()
             .expect("missing workspace with branch changes should be preserved");
         assert!(
@@ -866,6 +864,43 @@ mod tests {
         assert!(branch_exists(&repo, "mathmux/agent").unwrap());
         assert!(registered_worktree(&repo, &missing_path).unwrap());
         assert!(moved_path.is_dir());
+    }
+
+    #[test]
+    fn force_delete_discards_dirty_workspace_and_unsubmitted_branch() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("repo");
+        fs::create_dir(&root).unwrap();
+        run_checked("git", ["init", "-b", "main"], &root).unwrap();
+        run_checked("git", ["config", "user.name", "mathmux test"], &root).unwrap();
+        run_checked(
+            "git",
+            ["config", "user.email", "mathmux@test.invalid"],
+            &root,
+        )
+        .unwrap();
+        fs::write(root.join("Proof.lean"), "def value := 0\n").unwrap();
+        run_checked("git", ["add", "."], &root).unwrap();
+        run_checked("git", ["commit", "-m", "initial"], &root).unwrap();
+
+        let repo = Repo::discover(&root).unwrap();
+        let state = State::new(&repo.db_path).unwrap();
+        let workspace = create_workspace(&repo, &state, "agent", None).unwrap();
+        fs::write(workspace.path.join("Proof.lean"), "def value := 1\n").unwrap();
+        run_checked("git", ["add", "."], &workspace.path).unwrap();
+        run_checked("git", ["commit", "-m", "unsubmitted"], &workspace.path).unwrap();
+        fs::write(workspace.path.join("Scratch.lean"), "def scratch := true\n").unwrap();
+
+        delete_workspace(&repo, &state, "agent", true).unwrap();
+
+        assert!(state.list_workspaces().unwrap().is_empty());
+        assert!(!workspace.path.exists());
+        assert!(!branch_exists(&repo, "mathmux/agent").unwrap());
+        assert!(!registered_worktree(&repo, &workspace.path).unwrap());
+        assert_eq!(
+            fs::read_to_string(root.join("Proof.lean")).unwrap(),
+            "def value := 0\n"
+        );
     }
 
     #[test]
