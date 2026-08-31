@@ -397,6 +397,15 @@ fn query_parsing_scoring_and_ranking_regressions() {
         ),
         0.0
     );
+    assert!(
+        structural_result_type_score(
+            "∀ n : ℤ, _",
+            "(h : ∀ n : ℤ, IsCompactOperator (T n)) : IsCompactOperator T",
+        ) > structural_result_type_score(
+            "∀ n : ℤ, _",
+            "(h : ∀ n : ℕ, IsCompactOperator (T n)) : IsCompactOperator T",
+        )
+    );
     assert_eq!(
         structural_result_type_score(
             "C(B, C(AddCircle (1 : ℝ), Matrix.GeneralLinearGroup (Fin _) ℂ))",

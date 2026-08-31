@@ -2185,6 +2185,14 @@ impl Searcher {
                 .map_or(0.0, |_| SEARCH_TUNING.lexical.symbolic_name);
             let score = lexical
                 + type_score
+                + if strict_type
+                    && (row.owner.starts_with("workspace:")
+                        || row.owner.starts_with("artifacts:"))
+                {
+                    SEARCH_TUNING.type_score.project
+                } else {
+                    0.0
+                }
                 + symbolic_name_score
                 + if row.owner == format!("workspace:{}", workspace.reference) {
                     SEARCH_TUNING.lexical.workspace
@@ -2881,7 +2889,12 @@ impl Searcher {
         let sql = if fts_query.is_empty() && include_all_signatures {
             indexed_rows_sql(&format!(
                 "WHERE signature <> ''
-                 AND owner IN (SELECT owner FROM active_search_scopes) LIMIT {}",
+                 AND owner IN (SELECT owner FROM active_search_scopes)
+                 ORDER BY CASE
+                   WHEN owner LIKE 'workspace:%' OR owner LIKE 'artifacts:%' THEN 0
+                   ELSE 1
+                 END, rowid
+                 LIMIT {}",
                 SEARCH_TUNING.retrieval.type_rows
             ))
         } else if name_query {

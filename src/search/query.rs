@@ -1775,7 +1775,15 @@ pub(super) fn structural_result_type_score(pattern: &str, signature: &str) -> f6
     {
         return 0.0;
     }
-    structural_type_score(pattern, result)
+    let quantified = if pattern.contains('∀')
+        && signature.contains('∀')
+        && (!pattern.contains('ℤ') || signature.contains('ℤ'))
+    {
+        SEARCH_TUNING.type_score.quantified
+    } else {
+        0.0
+    };
+    structural_type_score(pattern, result) + quantified
 }
 
 fn declaration_result_type(signature: &str) -> &str {
