@@ -574,7 +574,8 @@ impl State {
     pub fn set_workspace_model(&self, reference: &str, model: &str) -> Result<()> {
         let _write_guard = self.write_guard();
         self.open()?.execute(
-            "UPDATE workspaces SET model = ?2 WHERE ref = ?1 AND deleted_at IS NULL",
+            "UPDATE workspaces SET model = ?2
+             WHERE ref = ?1 AND deleted_at IS NULL AND model IS NOT ?2",
             params![reference, model],
         )?;
         Ok(())
@@ -1627,6 +1628,38 @@ mod tests {
         assert!(clone.write_lock.try_lock().is_err());
         drop(guard);
         assert!(clone.write_lock.try_lock().is_ok());
+    }
+
+    #[test]
+    fn setting_an_unchanged_workspace_model_does_not_write() {
+        let directory = tempdir().unwrap();
+        let state = State::new(directory.path().join("state.db")).unwrap();
+        state
+            .add_workspace(&Workspace {
+                reference: "w1".into(),
+                name: "agent".into(),
+                path: directory.path().join("agent"),
+                branch: "mathmux/agent".into(),
+                model: Some("gpt-5.6-sol".into()),
+            })
+            .unwrap();
+        let connection = state.open().unwrap();
+        let before: i64 = connection
+            .query_row("PRAGMA data_version", [], |row| row.get(0))
+            .unwrap();
+        state.set_workspace_model("w1", "gpt-5.6-sol").unwrap();
+        let unchanged: i64 = connection
+            .query_row("PRAGMA data_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(unchanged, before);
+
+        state
+            .set_workspace_model("w1", "gpt-5.6-luna-xhigh")
+            .unwrap();
+        let changed: i64 = connection
+            .query_row("PRAGMA data_version", [], |row| row.get(0))
+            .unwrap();
+        assert_ne!(changed, unchanged);
     }
 
     #[test]
