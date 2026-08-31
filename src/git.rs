@@ -1,5 +1,5 @@
-use std::collections::HashSet;
 use std::fs;
+use std::io::Write;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -296,31 +296,6 @@ pub fn head(root: &Path) -> Result<String> {
     run_checked("git", ["rev-parse", "HEAD"], root)
 }
 
-fn pending_workspace_commits(
-    upstream: &str,
-    workspace_head: &str,
-    root: &Path,
-) -> Result<Vec<String>> {
-    let cherry = run_checked("git", ["cherry", upstream, workspace_head], root)?;
-    let pending = cherry
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.split_whitespace();
-            if fields.next() == Some("+") {
-                fields.next().map(str::to_owned)
-            } else {
-                None
-            }
-        })
-        .collect::<HashSet<_>>();
-    let range = format!("{upstream}..{workspace_head}");
-    Ok(run_checked("git", ["rev-list", "--reverse", &range], root)?
-        .lines()
-        .filter(|commit| pending.contains(*commit))
-        .map(str::to_owned)
-        .collect())
-}
-
 pub fn reconcile_integration(repo: &Repo) -> Result<()> {
     if run_checked(
         "git",
@@ -587,21 +562,81 @@ pub fn submit(repo: &Repo, workspace: &Workspace, message: &str) -> Result<Submi
     run_checked("git", ["commit", "-m", message], &workspace.path)?;
     let workspace_commit = head(&workspace.path)?;
 
-    let pending = pending_workspace_commits(&base_commit, &workspace_commit, &workspace.path)?;
-    ensure!(
-        !pending.is_empty(),
-        "workspace changes are already represented on managed main; run mathmux sync"
-    );
-    let mut cherry_pick_args = vec!["cherry-pick".to_owned()];
-    cherry_pick_args.extend(pending);
-    let output = run_output("git", cherry_pick_args, &repo.root)?;
-    if !output.status.success() {
-        let _ = run_output("git", ["cherry-pick", "--abort"], &repo.root);
+    let merge = run_output(
+        "git",
+        [
+            "merge-tree",
+            "--write-tree",
+            &base_commit,
+            &workspace_commit,
+        ],
+        &repo.root,
+    )?;
+    if !merge.status.success() {
         let restore = run_output("git", ["reset", "--mixed", "HEAD^"], &workspace.path)?;
         if !restore.status.success() {
             bail!("integration conflict; workspace change remains committed; run mathmux sync");
         }
         bail!("integration conflict; run mathmux sync");
+    }
+
+    let diff = run_output(
+        "git",
+        [
+            "diff",
+            "--binary",
+            "--no-ext-diff",
+            &base_commit,
+            &workspace_commit,
+        ],
+        &workspace.path,
+    )?;
+    ensure!(
+        diff.status.success(),
+        "cannot compute workspace integration diff: {}",
+        command_detail(&diff)
+    );
+    if diff.stdout.is_empty() {
+        let restore = run_output("git", ["reset", "--mixed", "HEAD^"], &workspace.path)?;
+        if !restore.status.success() {
+            bail!(
+                "workspace changes are already represented on managed main; workspace change remains committed; run mathmux sync"
+            );
+        }
+        bail!("workspace changes are already represented on managed main; run mathmux sync");
+    }
+
+    let mut apply = Command::new("git");
+    apply
+        .args(["apply", "--index", "--whitespace=nowarn", "-"])
+        .current_dir(&repo.root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = apply
+        .spawn()
+        .context("cannot start workspace integration")?;
+    child
+        .stdin
+        .take()
+        .context("workspace integration has no input")?
+        .write_all(&diff.stdout)?;
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        let _ = run_output("git", ["reset", "--hard", &base_commit], &repo.root);
+        let restore = run_output("git", ["reset", "--mixed", "HEAD^"], &workspace.path)?;
+        if !restore.status.success() {
+            bail!("integration conflict; workspace change remains committed; run mathmux sync");
+        }
+        bail!("integration conflict; run mathmux sync");
+    }
+    let commit = run_output("git", ["commit", "-m", message], &repo.root)?;
+    if !commit.status.success() {
+        let _ = run_output("git", ["reset", "--hard", &base_commit], &repo.root);
+        bail!(
+            "managed main integration commit failed; workspace change remains committed: {}",
+            command_detail(&commit)
+        );
     }
     let main_commit = head(&repo.root)?;
     Ok(SubmitResult {
@@ -877,6 +912,54 @@ mod tests {
         assert_eq!(
             fs::read_to_string(root.join("Later.lean")).unwrap(),
             "def later := true\n"
+        );
+        assert!(dirty_paths(&root).unwrap().is_empty());
+        assert!(dirty_paths(&workspace.path).unwrap().is_empty());
+    }
+
+    #[test]
+    fn submit_uses_workspace_tree_delta_after_sync() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("repo");
+        fs::create_dir(&root).unwrap();
+        run_checked("git", ["init", "-b", "main"], &root).unwrap();
+        run_checked("git", ["config", "user.name", "mathmux test"], &root).unwrap();
+        run_checked(
+            "git",
+            ["config", "user.email", "mathmux@test.invalid"],
+            &root,
+        )
+        .unwrap();
+        fs::write(root.join("Proof.lean"), "def value := 0\n").unwrap();
+        run_checked("git", ["add", "."], &root).unwrap();
+        run_checked("git", ["commit", "-m", "initial"], &root).unwrap();
+
+        let repo = Repo::discover(&root).unwrap();
+        let state = State::new(&repo.db_path).unwrap();
+        let workspace = create_workspace(&repo, &state, "agent", None).unwrap();
+        fs::write(workspace.path.join("Proof.lean"), "def value := 1\n").unwrap();
+        run_checked("git", ["add", "."], &workspace.path).unwrap();
+        run_checked("git", ["commit", "-m", "workspace proof"], &workspace.path).unwrap();
+
+        // Main reaches the same proof through a different patch, so the
+        // workspace history is not patch-equivalent even though sync is clean.
+        fs::write(root.join("Proof.lean"), "def value := 1\n").unwrap();
+        fs::write(root.join("Main.lean"), "def main := true\n").unwrap();
+        run_checked("git", ["add", "."], &root).unwrap();
+        run_checked("git", ["commit", "-m", "main proof and extra"], &root).unwrap();
+        assert!(sync(&repo, &workspace).unwrap().clean);
+        assert!(dirty_paths(&workspace.path).unwrap().is_empty());
+
+        fs::write(workspace.path.join("New.lean"), "def new := true\n").unwrap();
+        submit(&repo, &workspace, "new workspace file").unwrap();
+
+        assert_eq!(
+            fs::read_to_string(root.join("Proof.lean")).unwrap(),
+            "def value := 1\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("New.lean")).unwrap(),
+            "def new := true\n"
         );
         assert!(dirty_paths(&root).unwrap().is_empty());
         assert!(dirty_paths(&workspace.path).unwrap().is_empty());
