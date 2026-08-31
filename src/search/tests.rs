@@ -483,6 +483,22 @@ fn query_parsing_scoring_and_ranking_regressions() {
         explicit_declaration_name("declaration parameterizedMatrixLaurent*"),
         Some("parameterizedMatrixLaurent*")
     );
+    assert_eq!(
+        explicit_declaration_name("declaration theorem parameterizedMatrixLaurent*"),
+        Some("parameterizedMatrixLaurent*")
+    );
+    assert_eq!(
+        explicit_declaration_kind("declaration theorem parameterizedMatrixLaurent*"),
+        Some("theorem")
+    );
+    assert_eq!(
+        explicit_declaration_kind("definition parameterizedMatrixLaurent*"),
+        Some("def")
+    );
+    assert_eq!(
+        explicit_declaration_kind("parameterizedMatrixLaurent*"),
+        None
+    );
     assert_eq!(explicit_declaration_name("theorem search terms"), None);
     assert_eq!(
         declaration_suffix_base("Demo.longDeclaration_E"),
@@ -2170,13 +2186,50 @@ fn declaration_glob_candidates_are_name_scoped_and_skip_generic_matches() {
     }
     install_active_scopes(&connection, &HashSet::from(["workspace:w1".into()])).unwrap();
 
-    let rows = declaration_glob_candidates_from_connection(&connection, "FiberBundle.*equiv")
+    let rows = declaration_glob_candidates_from_connection(&connection, "FiberBundle.*equiv", None)
         .unwrap()
         .unwrap();
 
     assert_eq!(
         rows.into_iter().map(|row| row.name).collect::<Vec<_>>(),
         ["Demo.FiberBundle.local_equiv"]
+    );
+}
+
+#[test]
+fn declaration_glob_candidates_filter_explicit_kind() {
+    let connection = Connection::open_in_memory().unwrap();
+    connection
+        .execute_batch(
+            "CREATE VIRTUAL TABLE search_fts USING fts5(
+                    owner UNINDEXED, origin UNINDEXED, file UNINDEXED,
+                    module UNINDEXED, line UNINDEXED, name, kind UNINDEXED,
+                    signature, docs, body
+                 );",
+        )
+        .unwrap();
+    for (kind, name) in [
+        ("def", "Demo.target_def"),
+        ("theorem", "Demo.target_theorem"),
+    ] {
+        connection
+            .execute(
+                "INSERT INTO search_fts(
+                        owner, origin, file, module, line, name, kind, signature, docs, body
+                     ) VALUES ('workspace:w1', '', 'Demo.lean', 'Demo', 1, ?1, ?2, 'True', '', '')",
+                params![name, kind],
+            )
+            .unwrap();
+    }
+    install_active_scopes(&connection, &HashSet::from(["workspace:w1".into()])).unwrap();
+
+    let rows = declaration_glob_candidates_from_connection(&connection, "target*", Some("theorem"))
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        rows.into_iter().map(|row| row.name).collect::<Vec<_>>(),
+        ["Demo.target_theorem"]
     );
 }
 
@@ -3279,7 +3332,7 @@ fn exact_resolution_fails_closed_instead_of_returning_a_different_declaration() 
     let plan = exact_plan("pullbackCompHom source", false).unwrap();
     assert!(
         searcher
-            .resolve_exact(&workspace, &scopes, None, false, &plan)
+            .resolve_exact(&workspace, &scopes, None, false, &plan, None)
             .unwrap()
             .result
             .is_none()

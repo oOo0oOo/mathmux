@@ -331,25 +331,26 @@ pub(super) fn declaration_predicate_base(query: &str) -> Option<String> {
     (!rest.is_empty()).then(|| owner.map_or(rest.clone(), |owner| format!("{owner}.{rest}")))
 }
 
-pub(super) fn explicit_declaration_name(query: &str) -> Option<&str> {
+struct ExplicitDeclaration<'a> {
+    name: &'a str,
+    kind: Option<&'a str>,
+}
+
+fn explicit_declaration(query: &str) -> Option<ExplicitDeclaration<'_>> {
     let mut terms = query.split_whitespace();
-    let kind = terms.next()?;
-    if !matches!(
-        kind.to_ascii_lowercase().as_str(),
-        "abbrev"
-            | "class"
-            | "declaration"
-            | "def"
-            | "definition"
-            | "inductive"
-            | "instance"
-            | "lemma"
-            | "structure"
-            | "theorem"
-    ) {
+    let first = terms.next()?;
+    let (kind, name) = if first.eq_ignore_ascii_case("declaration") {
+        let next = terms.next()?;
+        if declaration_kind_query(next) {
+            (Some(next), terms.next()?)
+        } else {
+            (None, next)
+        }
+    } else if declaration_kind_query(first) {
+        (Some(first), terms.next()?)
+    } else {
         return None;
-    }
-    let name = terms.next()?;
+    };
     if !(declaration_name_query(name) || declaration_glob_query(name))
         || !terms.all(|term| {
             matches!(
@@ -360,7 +361,40 @@ pub(super) fn explicit_declaration_name(query: &str) -> Option<&str> {
     {
         return None;
     }
-    Some(name)
+    Some(ExplicitDeclaration { name, kind })
+}
+
+fn declaration_kind_query(query: &str) -> bool {
+    matches!(
+        query.to_ascii_lowercase().as_str(),
+        "abbrev"
+            | "class"
+            | "def"
+            | "definition"
+            | "inductive"
+            | "instance"
+            | "lemma"
+            | "structure"
+            | "theorem"
+    )
+}
+
+pub(super) fn explicit_declaration_name(query: &str) -> Option<&str> {
+    explicit_declaration(query).map(|declaration| declaration.name)
+}
+
+pub(super) fn explicit_declaration_kind(query: &str) -> Option<&str> {
+    explicit_declaration(query)
+        .and_then(|declaration| declaration.kind)
+        .map(canonical_declaration_kind)
+}
+
+fn canonical_declaration_kind(kind: &str) -> &str {
+    if kind.eq_ignore_ascii_case("definition") {
+        "def"
+    } else {
+        kind
+    }
 }
 
 pub(super) fn declaration_glob_query(query: &str) -> bool {

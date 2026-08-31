@@ -421,19 +421,26 @@ fn indexed_candidate(
 fn declaration_glob_candidates_from_connection(
     connection: &Connection,
     query: &str,
+    kind: Option<&str>,
 ) -> Result<Option<Vec<IndexedRow>>> {
     let Some(glob_query) = declaration_glob_fts_query(query) else {
         return Ok(None);
     };
+    let kind_condition = kind.map_or(String::new(), |_| " AND lower(kind) = lower(?2)".into());
     let sql = ranked_rows_sql(&format!(
         "WHERE search_fts MATCH ?1
-         AND owner IN (SELECT owner FROM active_search_scopes) LIMIT {}",
+         AND owner IN (SELECT owner FROM active_search_scopes){kind_condition} LIMIT {}",
         SEARCH_TUNING.retrieval.discovery_rows
     ));
-    let rows = connection
-        .prepare(&sql)?
-        .query_map([glob_query], indexed_row_from_row)?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut statement = connection.prepare(&sql)?;
+    let rows = match kind {
+        Some(kind) => statement
+            .query_map(params![glob_query, kind], indexed_row_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+        None => statement
+            .query_map([glob_query], indexed_row_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+    };
     Ok(Some(rows))
 }
 
@@ -2020,6 +2027,7 @@ impl Searcher {
         let mut pipeline = SearchPipeline::start();
         let field_inventory = field_inventory_query(query);
         let explicit_declaration = explicit_declaration_name(query);
+        let declaration_kind = explicit_declaration_kind(query);
         let source_requested = query_requests_proof_body(query);
         let query = explicit_declaration.unwrap_or(query);
         let type_search = matches!(plan, TextSearchPlan::Type | TextSearchPlan::ForcedType);
@@ -2049,6 +2057,7 @@ impl Searcher {
                 import_context.as_ref(),
                 base_warming,
                 &exact_plan,
+                declaration_kind,
             )?;
             if let Some(result) = resolution.result {
                 return Ok(result);
@@ -2065,7 +2074,8 @@ impl Searcher {
             }
         }
         let candidates_started = Instant::now();
-        let mut rows = self.candidates(query, &query_tokens, type_search, scopes)?;
+        let mut rows =
+            self.candidates(query, &query_tokens, type_search, declaration_kind, scopes)?;
         pipeline.timings.candidates_ms = candidates_started.elapsed().as_millis() as u64;
         let name_search = !type_search && declaration_name_query(query);
         let mut ranked = Vec::new();
@@ -2097,6 +2107,7 @@ impl Searcher {
                         identifier,
                         &meaningful_query_tokens(identifier),
                         true,
+                        None,
                         scopes,
                     )?
                 } else {
@@ -2441,6 +2452,7 @@ impl Searcher {
         import_context: Option<&ImportContext>,
         base_warming: bool,
         plan: &ExactPlan,
+        declaration_kind: Option<&str>,
     ) -> Result<ExactResolution> {
         let name = &plan.anchor;
         // Exact declaration lookup must not compete with the synthetic file
@@ -2451,6 +2463,7 @@ impl Searcher {
             .exact_candidates(name, scopes)?
             .into_iter()
             .filter(|row| !matches!(row.kind.as_str(), "file" | "imports"))
+            .filter(|row| declaration_kind.is_none_or(|kind| row.kind.eq_ignore_ascii_case(kind)))
             .collect::<Vec<_>>();
         let ambiguous = rows
             .iter()
@@ -2485,9 +2498,15 @@ impl Searcher {
                     warming: false,
                 })
             });
-        let matched = match matched {
+        let matched = match matched.filter(|matched| {
+            declaration_kind
+                .is_none_or(|kind| matched.candidate.hit.kind.eq_ignore_ascii_case(kind))
+        }) {
             Some(matched) => Some(matched),
-            None => self.generated_exact_match(name, scopes)?,
+            None => self.generated_exact_match(name, scopes)?.filter(|matched| {
+                declaration_kind
+                    .is_none_or(|kind| matched.candidate.hit.kind.eq_ignore_ascii_case(kind))
+            }),
         };
         if let Some(matched) = matched {
             let result = self.finish_exact(
@@ -2872,6 +2891,7 @@ impl Searcher {
         query: &str,
         tokens: &[String],
         include_all_signatures: bool,
+        declaration_kind: Option<&str>,
         scopes: &HashSet<String>,
     ) -> Result<Vec<IndexedRow>> {
         let connection = self.open()?;
@@ -2880,7 +2900,8 @@ impl Searcher {
         // query. Avoid generic token/prefix retrieval that would be filtered
         // out later and is expensive on the full project index.
         if !include_all_signatures
-            && let Some(rows) = declaration_glob_candidates_from_connection(&connection, query)?
+            && let Some(rows) =
+                declaration_glob_candidates_from_connection(&connection, query, declaration_kind)?
         {
             return Ok(rows);
         }
