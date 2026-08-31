@@ -1155,10 +1155,10 @@ fn merge_workspace_intervals(
             let (seconds, _) = intervals.fold(
                 (0_i64, None),
                 |(seconds, end), (start, next_end)| match end {
-                    Some(end) if start <= end => (
-                        seconds + next_end.saturating_sub(end),
-                        Some(next_end.max(end)),
-                    ),
+                    Some(end) if start <= end => {
+                        let new_end = next_end.max(end);
+                        (seconds + new_end.saturating_sub(end), Some(new_end))
+                    }
                     _ => (seconds + next_end.saturating_sub(start), Some(next_end)),
                 },
             );
@@ -1499,6 +1499,30 @@ mod tests {
         assert_eq!(metrics.lines, 10);
         assert_eq!(metrics.calls, 2);
         assert_eq!(metrics.output_bytes, 300);
+    }
+
+    #[test]
+    fn overlapping_telemetry_does_not_reduce_live_agent_hours() {
+        let agent = AgentStatus {
+            id: 1,
+            workspace_ref: "w1".into(),
+            workspace: "demo".into(),
+            model: "agent".into(),
+            state: "active".into(),
+            started_at: 3_600,
+            last_active: 7_200,
+            dirty: 0,
+            latest_dirty_at: 0,
+            workspace_fallback: true,
+        };
+        let events = [ContextEvent {
+            created_at: 5_400_000,
+            client_ms: 0,
+            workspace: "w1".into(),
+            reference: None,
+            response_bytes: 0,
+        }];
+        assert_eq!(agent_hours(&[agent], Some(&events), 3_600, 7_200), 1.0);
     }
 
     #[test]
