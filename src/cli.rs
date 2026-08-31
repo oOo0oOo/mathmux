@@ -82,7 +82,7 @@ FORMS — type one directly; there are no API, LEAN, or other category keywords
   FILE:LINE [goal] | FILE:LINE TERM [signature]
   PATH NAME usages
   cREF [goal|types|defeq|rewrite|profile]
-  declaration-qREF[#N] [signature|source|outline|find TERM|usages|constructors]
+  qREF[#N] [signature|source|outline|find TERM|usages|constructors]
   positioned-qREF [goal] | stored-probe-qREF
   FILE|FILE:LINE|cREF|qREF "#check TERM"|"#synth TYPE"|"#reduce TERM"
   FILE:LINE|cREF|positioned-qREF "by TACTIC"
@@ -997,7 +997,7 @@ mod tests {
             "FILE warnings",
             "FILE:LINE [goal]",
             "cREF [goal|types|defeq|rewrite|profile]",
-            "declaration-qREF[#N] [signature|source|outline|find TERM|usages|constructors]",
+            "qREF[#N] [signature|source|outline|find TERM|usages|constructors]",
             "Context is mandatory",
             "Use NAME signature, not",
             "no nearby-line fallback",
@@ -1007,6 +1007,7 @@ mod tests {
                 "missing probe contract {contract}"
             );
         }
+        assert!(!probe_help.contains("declaration-qREF"));
         assert!(!probe_help.contains("API       NAME"));
         assert!(!probe_help.contains("LEAN      FILE"));
         for removed in ["neighborhood", "dependencies", "instances", "coercions"] {
