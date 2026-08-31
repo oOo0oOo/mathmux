@@ -36,6 +36,8 @@ const CHECK_QUEUE_TIMEOUT: Duration = CHECK_TIMEOUT;
 // rather than fail shortly before its reusable result becomes available.
 const SHARED_CHECK_TIMEOUT: Duration = Duration::from_secs(2 * 5 * 60);
 const COLD_PROBE_TIMEOUT: Duration = Duration::from_secs(16);
+const TACTIC_PROBE_TIMEOUT: Duration = Duration::from_secs(16);
+const WARM_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const SLOW_CHECK_PROFILE_MS: u64 = 5_000;
 const PROFILE_ENTRY_LIMIT: usize = 512;
 const PROJECT_CONFIG_FILES: [&str; 4] = [
@@ -44,6 +46,14 @@ const PROJECT_CONFIG_FILES: [&str; 4] = [
     "lakefile.toml",
     "lake-manifest.json",
 ];
+
+fn probe_timeout(operation: &str) -> Duration {
+    if matches!(operation, "goal" | "tactic") {
+        TACTIC_PROBE_TIMEOUT
+    } else {
+        WARM_PROBE_TIMEOUT
+    }
+}
 
 #[derive(Debug)]
 struct CheckTimeout(Duration);
@@ -1138,7 +1148,7 @@ impl Checker {
             &environment,
             &source,
             WorkerRun::Probe {
-                timeout: Duration::from_secs(2),
+                timeout: probe_timeout(operation),
                 action: WorkerAction {
                     operation,
                     line,
@@ -2453,6 +2463,14 @@ mod tests {
     fn test_repo(root: &Path) -> Repo {
         run_checked("git", ["init", "-b", "main"], root).unwrap();
         Repo::from_root(root).unwrap()
+    }
+
+    #[test]
+    fn tactic_and_goal_probes_use_the_extended_budget() {
+        assert_eq!(probe_timeout("tactic"), TACTIC_PROBE_TIMEOUT);
+        assert_eq!(probe_timeout("goal"), TACTIC_PROBE_TIMEOUT);
+        assert_eq!(probe_timeout("check"), WARM_PROBE_TIMEOUT);
+        assert_eq!(probe_timeout("synth"), WARM_PROBE_TIMEOUT);
     }
 
     fn running_check(workspace: &Workspace, reference: &str) -> CheckRun {

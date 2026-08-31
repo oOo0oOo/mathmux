@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
@@ -295,6 +296,31 @@ pub fn head(root: &Path) -> Result<String> {
     run_checked("git", ["rev-parse", "HEAD"], root)
 }
 
+fn pending_workspace_commits(
+    upstream: &str,
+    workspace_head: &str,
+    root: &Path,
+) -> Result<Vec<String>> {
+    let cherry = run_checked("git", ["cherry", upstream, workspace_head], root)?;
+    let pending = cherry
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            if fields.next() == Some("+") {
+                fields.next().map(str::to_owned)
+            } else {
+                None
+            }
+        })
+        .collect::<HashSet<_>>();
+    let range = format!("{upstream}..{workspace_head}");
+    Ok(run_checked("git", ["rev-list", "--reverse", &range], root)?
+        .lines()
+        .filter(|commit| pending.contains(*commit))
+        .map(str::to_owned)
+        .collect())
+}
+
 pub fn reconcile_integration(repo: &Repo) -> Result<()> {
     if run_checked(
         "git",
@@ -561,7 +587,14 @@ pub fn submit(repo: &Repo, workspace: &Workspace, message: &str) -> Result<Submi
     run_checked("git", ["commit", "-m", message], &workspace.path)?;
     let workspace_commit = head(&workspace.path)?;
 
-    let output = run_output("git", ["cherry-pick", &workspace_commit], &repo.root)?;
+    let pending = pending_workspace_commits(&base_commit, &workspace_commit, &workspace.path)?;
+    ensure!(
+        !pending.is_empty(),
+        "workspace changes are already represented on managed main; run mathmux sync"
+    );
+    let mut cherry_pick_args = vec!["cherry-pick".to_owned()];
+    cherry_pick_args.extend(pending);
+    let output = run_output("git", cherry_pick_args, &repo.root)?;
     if !output.status.success() {
         let _ = run_output("git", ["cherry-pick", "--abort"], &repo.root);
         let restore = run_output("git", ["reset", "--mixed", "HEAD^"], &workspace.path)?;
@@ -794,6 +827,59 @@ mod tests {
             fs::read_to_string(root.join("Proof.lean")).unwrap(),
             "def value := 1\n"
         );
+    }
+
+    #[test]
+    fn submit_integrates_unmerged_workspace_history() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("repo");
+        fs::create_dir(&root).unwrap();
+        run_checked("git", ["init", "-b", "main"], &root).unwrap();
+        run_checked("git", ["config", "user.name", "mathmux test"], &root).unwrap();
+        run_checked(
+            "git",
+            ["config", "user.email", "mathmux@test.invalid"],
+            &root,
+        )
+        .unwrap();
+        fs::write(root.join("Proof.lean"), "def value := 0\n").unwrap();
+        run_checked("git", ["add", "."], &root).unwrap();
+        run_checked("git", ["commit", "-m", "initial"], &root).unwrap();
+
+        let repo = Repo::discover(&root).unwrap();
+        let state = State::new(&repo.db_path).unwrap();
+        let workspace = create_workspace(&repo, &state, "agent", None).unwrap();
+        fs::write(workspace.path.join("Proof.lean"), "def value := 1\n").unwrap();
+        run_checked("git", ["add", "."], &workspace.path).unwrap();
+        run_checked(
+            "git",
+            ["commit", "-m", "first workspace change"],
+            &workspace.path,
+        )
+        .unwrap();
+        fs::write(workspace.path.join("Extra.lean"), "def extra := true\n").unwrap();
+
+        submit(&repo, &workspace, "second workspace change").unwrap();
+
+        assert_eq!(
+            fs::read_to_string(root.join("Proof.lean")).unwrap(),
+            "def value := 1\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("Extra.lean")).unwrap(),
+            "def extra := true\n"
+        );
+        assert!(dirty_paths(&root).unwrap().is_empty());
+        assert!(dirty_paths(&workspace.path).unwrap().is_empty());
+
+        fs::write(workspace.path.join("Later.lean"), "def later := true\n").unwrap();
+        submit(&repo, &workspace, "later workspace change").unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("Later.lean")).unwrap(),
+            "def later := true\n"
+        );
+        assert!(dirty_paths(&root).unwrap().is_empty());
+        assert!(dirty_paths(&workspace.path).unwrap().is_empty());
     }
 
     #[test]
