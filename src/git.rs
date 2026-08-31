@@ -635,6 +635,12 @@ pub fn submit(repo: &Repo, workspace: &Workspace, message: &str) -> Result<Submi
         }
         bail!("integration conflict; run mathmux sync");
     }
+    let merged_tree = String::from_utf8_lossy(&merge.stdout).trim().to_owned();
+    ensure!(
+        !merged_tree.is_empty(),
+        "cannot read workspace integration tree: {}",
+        command_detail(&merge)
+    );
 
     let diff = run_output(
         "git",
@@ -643,7 +649,7 @@ pub fn submit(repo: &Repo, workspace: &Workspace, message: &str) -> Result<Submi
             "--binary",
             "--no-ext-diff",
             &base_commit,
-            &workspace_commit,
+            &merged_tree,
         ],
         &workspace.path,
     )?;
@@ -1078,6 +1084,60 @@ mod tests {
         assert_eq!(
             fs::read_to_string(root.join("Later.lean")).unwrap(),
             "def later := true\n"
+        );
+        assert!(dirty_paths(&root).unwrap().is_empty());
+        assert!(dirty_paths(&workspace.path).unwrap().is_empty());
+    }
+
+    #[test]
+    fn submit_preserves_intervening_main_changes_when_workspace_is_stale() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("repo");
+        fs::create_dir(&root).unwrap();
+        run_checked("git", ["init", "-b", "main"], &root).unwrap();
+        run_checked("git", ["config", "user.name", "mathmux test"], &root).unwrap();
+        run_checked(
+            "git",
+            ["config", "user.email", "mathmux@test.invalid"],
+            &root,
+        )
+        .unwrap();
+        fs::write(root.join("Proof.lean"), "def value := 0\n").unwrap();
+        run_checked("git", ["add", "."], &root).unwrap();
+        run_checked("git", ["commit", "-m", "initial"], &root).unwrap();
+
+        let repo = Repo::discover(&root).unwrap();
+        let state = State::new(&repo.db_path).unwrap();
+        let workspace = create_workspace(&repo, &state, "agent", None).unwrap();
+        fs::write(workspace.path.join("Workspace.lean"), "def workspace := true\n").unwrap();
+        run_checked("git", ["add", "."], &workspace.path).unwrap();
+        run_checked(
+            "git",
+            ["commit", "-m", "workspace change"],
+            &workspace.path,
+        )
+        .unwrap();
+
+        // Main advances independently after the workspace was created. The
+        // submission must not replay the stale workspace tree and delete this file.
+        fs::write(root.join("Main.lean"), "def main := true\n").unwrap();
+        run_checked("git", ["add", "."], &root).unwrap();
+        run_checked("git", ["commit", "-m", "main change"], &root).unwrap();
+        fs::write(
+            workspace.path.join("Workspace.lean"),
+            "def workspace := false\n",
+        )
+        .unwrap();
+
+        submit(&repo, &workspace, "workspace change").unwrap();
+
+        assert_eq!(
+            fs::read_to_string(root.join("Main.lean")).unwrap(),
+            "def main := true\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("Workspace.lean")).unwrap(),
+            "def workspace := false\n"
         );
         assert!(dirty_paths(&root).unwrap().is_empty());
         assert!(dirty_paths(&workspace.path).unwrap().is_empty());
