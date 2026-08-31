@@ -1370,7 +1370,7 @@ fn abbreviation_target(hit: &SearchHit) -> Option<&str> {
 fn render_static_probe_summary(run: &SearchRun, focus: &str) -> String {
     let mut run = run.clone();
     match focus {
-        "signature" | "ext" | "apply" => {
+        "signature" | "apply" => {
             run.inference = if focus == "signature" {
                 "signature".into()
             } else {
@@ -1418,6 +1418,24 @@ fn render_static_probe_summary(run: &SearchRun, focus: &str) -> String {
                         .collect::<Vec<_>>()
                         .join("\n")
                 });
+            }
+        }
+        "ext" => {
+            run.hits.retain(|hit| {
+                hit.source
+                    .as_deref()
+                    .is_some_and(|source| source.contains("@[ext"))
+            });
+            if run.hits.is_empty()
+                && !run
+                    .note
+                    .as_deref()
+                    .is_some_and(|note| note.contains("warming"))
+            {
+                run.note = Some("no indexed @[ext] declaration in this name family".into());
+            }
+            for hit in &mut run.hits {
+                hit.source = None;
             }
         }
         "simp" => {
@@ -1572,7 +1590,7 @@ fn static_probe_query(
         focus if focus.starts_with("find:") => format!("{subject} source"),
         "fields" => format!("{subject} fields"),
         "constructors" => format!("{subject}.mk"),
-        "ext" => format!("{subject}.ext"),
+        "ext" => format!("declaration {subject}*"),
         "simp" => format!("declaration {subject}*"),
         "apply" => format!("declaration {subject}.apply*|{subject}_apply*"),
         "usages" => subject.to_owned(),
@@ -2135,7 +2153,7 @@ mod tests {
         );
         assert_eq!(
             static_probe_query(None, "ContinuousMap", Some("ext")).unwrap(),
-            "ContinuousMap.ext"
+            "declaration ContinuousMap*"
         );
         assert_eq!(
             static_probe_query(None, "ContinuousMap", Some("constructors")).unwrap(),
@@ -2411,8 +2429,20 @@ mod tests {
         assert!(!signature.contains(":= by"));
         assert!(!signature.contains("warming"));
 
-        let ext = render_static_probe_summary(&run, "ext");
+        let mut ext_run = run.clone();
+        ext_run.note = None;
+        ext_run.hits.push(hit(
+            "Demo.ext",
+            "@[ext] theorem ext (h : True) : True := by\n  trivial",
+        ));
+        let ext = render_static_probe_summary(&ext_run, "ext");
+        assert!(ext.contains("Demo.ext"));
+        assert!(!ext.contains("Demo.first"));
         assert!(!ext.contains(":= by"));
+
+        ext_run.hits.pop();
+        let no_ext = render_static_probe_summary(&ext_run, "ext");
+        assert!(no_ext.contains("no indexed @[ext] declaration"));
 
         let source = render_static_probe_summary(&run, "source");
         assert!(source.contains("theorem first"));
