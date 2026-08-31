@@ -660,6 +660,15 @@ pub(super) fn source_occurrence_result(
             })
             .collect::<Vec<_>>()
             .join("\n");
+        let line_label = if matches.len() > limit {
+            format!(
+                "{} shown of {} requested",
+                matches.len().min(limit),
+                matches.len()
+            )
+        } else {
+            format!("{} lines", matches.len())
+        };
         let spans = declaration_spans(&source, &project_module_name(&workspace.path, &query.path));
         let covering = spans
             .iter()
@@ -677,21 +686,19 @@ pub(super) fn source_occurrence_result(
                 if import_query {
                     format!("{} for {terms_label}", matches.len())
                 } else {
-                    format!("{} lines", matches.len())
+                    line_label.clone()
                 }
             },
             |span| {
                 if covering.len() > 1 {
                     format!(
-                        "{} lines; crosses {} declarations; starts in {}",
-                        matches.len(),
+                        "{line_label}; crosses {} declarations; starts in {}",
                         covering.len(),
                         span.name
                     )
                 } else {
                     format!(
-                        "{} lines; inside {} lines {}-{}",
-                        matches.len(),
+                        "{line_label}; inside {} lines {}-{}",
                         span.name,
                         span.start,
                         span.end

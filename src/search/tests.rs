@@ -2751,6 +2751,30 @@ fn source_query_regressions() {
         .collect::<Vec<_>>()
         .join("\n");
     fs::write(directory.path().join("Long.lean"), long_source).unwrap();
+    let boundary_range =
+        parse_source_occurrence_query(directory.path(), directory.path(), None, "Long.lean:1-49")
+            .unwrap()
+            .unwrap();
+    let boundary_range = source_occurrence_result(
+        &Workspace {
+            reference: "w1".into(),
+            name: "demo".into(),
+            path: directory.path().to_path_buf(),
+            branch: "demo".into(),
+            model: None,
+        },
+        boundary_range,
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        boundary_range.hits[0].signature.as_deref(),
+        Some("48 shown of 49 requested")
+    );
+    assert_eq!(
+        boundary_range.note.as_deref(),
+        Some("+1 lines omitted; next: mathmux search Long.lean:49-49")
+    );
     let long_range =
         parse_source_occurrence_query(directory.path(), directory.path(), None, "Long.lean:1-250")
             .unwrap()
