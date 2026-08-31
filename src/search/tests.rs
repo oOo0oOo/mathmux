@@ -309,6 +309,20 @@ fn source_parser_labels_private_declarations() {
 }
 
 #[test]
+fn source_parser_accepts_multiline_declaration_headers() {
+    let entries = parse_source(
+        "namespace Demo\ntheorem\n  multiLine (h : P) : Q := by trivial\nend Demo\n",
+        "Demo",
+    );
+    let theorem = entries
+        .iter()
+        .find(|entry| entry.name == "Demo.multiLine")
+        .unwrap();
+    assert_eq!(theorem.line, 2);
+    assert_eq!(theorem.signature, "(h : P) : Q");
+}
+
+#[test]
 fn search_rowids_advance_past_fts_and_origin_mappings() {
     let connection = Connection::open_in_memory().unwrap();
     connection
