@@ -2435,7 +2435,15 @@ impl Searcher {
         plan: &ExactPlan,
     ) -> Result<ExactResolution> {
         let name = &plan.anchor;
-        let rows = self.exact_candidates(name, scopes)?;
+        // Exact declaration lookup must not compete with the synthetic file
+        // and import rows indexed under the same module name. Those rows are
+        // useful for discovery, but can make a real declaration look
+        // ambiguous and cause probe to suggest an unusable sibling instead.
+        let rows = self
+            .exact_candidates(name, scopes)?
+            .into_iter()
+            .filter(|row| !matches!(row.kind.as_str(), "file" | "imports"))
+            .collect::<Vec<_>>();
         let ambiguous = rows
             .iter()
             .map(|row| canonical_declaration_name(&row.name).to_ascii_lowercase())

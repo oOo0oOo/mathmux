@@ -3136,6 +3136,52 @@ fn exact_misses_overlay_active_sibling_declarations_as_unmerged() {
 }
 
 #[test]
+fn exact_declaration_lookup_ignores_same_named_file_rows() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("root");
+    let state_dir = directory.path().join("state");
+    fs::create_dir_all(root.join("AtiyahSinger")).unwrap();
+    fs::create_dir_all(&state_dir).unwrap();
+    fs::write(
+        root.join("AtiyahSinger/Demo.lean"),
+        "namespace AtiyahSinger\ndef Demo : Nat := 0\nend AtiyahSinger\n",
+    )
+    .unwrap();
+    let repo = Repo {
+        root: root.clone(),
+        common_git_dir: directory.path().join("git"),
+        state_dir: state_dir.clone(),
+        socket_path: state_dir.join("daemon.sock"),
+        db_path: state_dir.join("state.sqlite3"),
+        search_db_path: state_dir.join("search.sqlite3"),
+        log_path: state_dir.join("daemon.log"),
+        cache_dir: state_dir.join("cache"),
+        integration_lock: state_dir.join("integration.lock"),
+        validation_lock: state_dir.join("validation.lock"),
+        startup_lock: state_dir.join("startup.lock"),
+    };
+    let state = State::new(repo.db_path.clone()).unwrap();
+    let workspace = Workspace {
+        reference: "w1".into(),
+        name: "demo".into(),
+        path: root.clone(),
+        branch: "demo".into(),
+        model: None,
+    };
+    state.add_workspace(&workspace).unwrap();
+    let checker = Arc::new(Checker::new(repo.clone(), state.clone(), None).unwrap());
+    let searcher = Searcher::new(repo, state, checker, None).unwrap();
+
+    let result = searcher
+        .search(&workspace, &root, "AtiyahSinger.Demo", false)
+        .unwrap();
+
+    assert!(result.starts_with("exact declaration\n"), "{result}");
+    assert!(result.contains("_root_.AtiyahSinger.Demo"), "{result}");
+    assert!(!result.contains("exact declaration not found"), "{result}");
+}
+
+#[test]
 fn nan_candidate_scores_do_not_break_candidate_sorting() {
     let candidates = vec![
         Candidate {
