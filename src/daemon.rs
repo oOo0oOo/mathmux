@@ -339,10 +339,10 @@ impl Service {
                     bail!(summary)
                 }
             }
-            Command::Search { query, limit, all } => {
+            Command::Search { query, all } => {
                 let workspace = self.state.workspace_for_path(&cwd)?;
                 git::prepare_workspace(&self.repo, &workspace.path)?;
-                self.searcher.search(&workspace, &cwd, &query, limit, all)
+                self.searcher.search(&workspace, &cwd, &query, all)
             }
             Command::Probe { query } => {
                 let workspace = self.state.workspace_for_path(&cwd)?;

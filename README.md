@@ -123,7 +123,7 @@ mathmux probe Nat.succ source
 mathmux probe Nat.succ outline
 mathmux probe q123#2 outline
 mathmux probe q123#2 find simp
-mathmux search 'type:_ → _' --limit 12
+mathmux search 'type:_ → _'
 mathmux search Mathlib/Data/Nat/Basic.lean dependents
 mathmux probe Mathlib/Data/Nat/Basic.lean '#check Nat.succ'
 mathmux probe Proof.lean:42 goal

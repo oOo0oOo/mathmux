@@ -77,6 +77,14 @@ pub(crate) fn is_exact_first_query(query: &str) -> bool {
     matches!(text_search_plan(query.trim()), TextSearchPlan::ExactFirst)
 }
 
+fn search_all_allowed(plan: &SearchPlan) -> bool {
+    match plan {
+        SearchPlan::Location(location) => location.tail,
+        SearchPlan::Source(source) => source.terms.is_empty() && source.last_line != u64::MAX,
+        _ => false,
+    }
+}
+
 pub struct Searcher {
     repo: Repo,
     state: State,
@@ -660,11 +668,10 @@ impl Searcher {
         workspace: &Workspace,
         cwd: &Path,
         query: &str,
-        limit: Option<usize>,
         all: bool,
     ) -> Result<String> {
         let query = normalize_colon_attached_source_facet(query);
-        let request = SearchRequest::parse(&query, limit, all)?;
+        let request = SearchRequest::parse(&query, all)?;
         let started = Instant::now();
         let requested_query = request.displayed_query.clone();
         let (query, forced_plan) = match &request.expression {
@@ -681,7 +688,10 @@ impl Searcher {
             &expanded.query,
             !expanded.context.is_empty(),
         )?;
-        let source_show_all = request.all;
+        ensure!(
+            !request.all || search_all_allowed(&planned.plan),
+            "search --all is only for explicit FILE:START-END or FILE:tail reads; use compact discovery, then `mathmux show qREF --all`"
+        );
         let query = planned.query.as_str();
         let reference = self.state.next_reference(ReferenceKind::Query)?;
         let result = match planned.plan {
@@ -697,7 +707,7 @@ impl Searcher {
             }
             SearchPlan::SourceRegex(source) => {
                 let recovery = regex_recovery_terms(&source.pattern);
-                let mut result = source_regex_result(workspace, source, source_show_all)?;
+                let mut result = source_regex_result(workspace, source, false)?;
                 if result.hits.is_empty() && !recovery.is_empty() {
                     let recovery_query = recovery.join(" ");
                     let recovered = self.planned_text_search(
@@ -720,7 +730,7 @@ impl Searcher {
                 if source.terms.len() == 1 && source.terms[0].eq_ignore_ascii_case("dependents") {
                     self.source_dependents(workspace, &source)?
                 } else {
-                    source_occurrence_result(workspace, source, source_show_all)?
+                    source_occurrence_result(workspace, source, request.all)?
                 }
             }
             SearchPlan::Text(text_plan) => self.planned_text_search(
@@ -729,7 +739,7 @@ impl Searcher {
                 forced_plan.unwrap_or(text_plan),
                 expanded.import_target.as_deref(),
                 expanded.auxiliary_query.as_deref(),
-                request.all,
+                false,
             )?,
         };
         let mut result = result;
@@ -738,9 +748,6 @@ impl Searcher {
         }
         if !expanded.context.is_empty() {
             result.hits.splice(0..0, expanded.context);
-        }
-        if let Some(limit) = request.limit {
-            result.hits.truncate(limit);
         }
         let run = SearchRun {
             reference: reference.clone(),
@@ -2265,9 +2272,11 @@ impl Searcher {
                 !matches!(candidate.hit.kind.as_str(), "file" | "imports")
                     && qualified_name_matches(&candidate.hit.name, query)
             });
-        let weak_coverage = query_tokens.len() >= 3
+        let coverage_tokens =
+            coverage_tokens_for_query(query, ranked.first().map(|candidate| &candidate.hit));
+        let weak_coverage = coverage_tokens.len() >= 3
             && ranked.first().is_some_and(|candidate| {
-                hit_query_coverage(&candidate.hit, &query_tokens).0 < query_tokens.len()
+                hit_query_coverage(&candidate.hit, &coverage_tokens).0 < coverage_tokens.len()
             });
         ranked.truncate(result_limit(exact_name_miss, show_all));
         let fallback_top = ranked
@@ -2291,7 +2300,7 @@ impl Searcher {
         }
         self.populate_usages(&mut ranked, scopes, workspace)?;
         let bridge_note = (!type_search && !exact_name_miss)
-            .then(|| promote_bridge_candidate(&mut ranked, &query_tokens))
+            .then(|| promote_bridge_candidate(&mut ranked, &coverage_tokens))
             .flatten();
         if weak_coverage && !show_all {
             ranked.truncate(3);
@@ -2321,7 +2330,7 @@ impl Searcher {
                 .iter()
                 .map(|candidate| candidate.hit.clone())
                 .collect::<Vec<_>>();
-            if let Some(coverage) = weak_coverage_note(&hits, &query_tokens) {
+            if let Some(coverage) = weak_coverage_note(&hits, &coverage_tokens) {
                 prepend_search_note(&mut note, coverage);
             }
         }

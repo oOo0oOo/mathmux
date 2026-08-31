@@ -29,7 +29,6 @@ pub enum Command {
     },
     Search {
         query: String,
-        limit: Option<usize>,
         #[serde(default)]
         all: bool,
     },
@@ -166,17 +165,15 @@ mod tests {
             cwd: "/project".into(),
             command: Command::Search {
                 query: "name:demo".into(),
-                limit: Some(12),
                 all: false,
             },
         };
         let encoded = serde_json::to_string(&request).unwrap();
         let decoded: Request = serde_json::from_str(&encoded).unwrap();
-        let Command::Search { all, limit, .. } = decoded.command else {
+        let Command::Search { all, .. } = decoded.command else {
             panic!("expected search command");
         };
         assert!(!all);
-        assert_eq!(limit, Some(12));
 
         let request: Request =
             serde_json::from_str(r#"{"cwd":"/project","command":{"verb":"sync"}}"#).unwrap();

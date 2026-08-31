@@ -92,15 +92,13 @@ pub(super) fn parse_source_regex_query(
         .strip_prefix('[')
         .and_then(|scope| scope.strip_suffix(']'))
         .unwrap_or(scope);
-    if let Some(option) = scope.split_whitespace().next()
-        && matches!(option, "--all" | "--limit")
-    {
-        let hint = if option == "--all" {
-            "`mathmux search '/REGEX/' --all`"
-        } else {
-            "`mathmux search '/REGEX/' --limit N`"
-        };
-        bail!("source regex options must be outside the query; use {hint}");
+    if let Some(option) = scope.split_whitespace().next() {
+        if option == "--limit" {
+            bail!("--limit was removed; refine the regex or inspect its qREF");
+        }
+        if option == "--all" {
+            bail!("search --all is only for explicit FILE:START-END or FILE:tail reads");
+        }
     }
     if scope
         .split_whitespace()
