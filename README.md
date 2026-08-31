@@ -135,6 +135,9 @@ mathmux show c123 --wait
 If a check is still running, use `mathmux show c123 --wait` before probing its
 stored goal or analyses.
 
+For asynchronous submission validation, use `mathmux show s123 --wait` to wait
+for the queued or running validation before inspecting its final result.
+
 Run `mathmux search --help` and `mathmux probe --help` for the complete compact
 grammar. Probe never guesses an elaboration context, and `check` remains the
 certification step after source edits.

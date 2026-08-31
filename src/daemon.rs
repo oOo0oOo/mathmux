@@ -435,21 +435,54 @@ impl Service {
         wait: bool,
         report: &mut dyn FnMut(&str),
     ) -> Result<String> {
-        if !wait {
-            return self.state.show(reference, all);
-        }
-        ensure!(
-            Reference::is_kind(reference, ReferenceKind::Check),
-            "`--wait` applies only to a running cREF"
-        );
-        let deadline = Instant::now() + Duration::from_secs(10 * 60);
-        loop {
-            let run = self
-                .state
+        show_reference(&self.state, reference, all, wait, report)
+    }
+}
+
+fn show_reference(
+    state: &State,
+    reference: &str,
+    all: bool,
+    wait: bool,
+    report: &mut dyn FnMut(&str),
+) -> Result<String> {
+    if !wait {
+        return state.show(reference, all);
+    }
+    ensure!(
+        Reference::is_kind(reference, ReferenceKind::Check)
+            || Reference::is_kind(reference, ReferenceKind::Submission),
+        "`--wait` applies only to a cREF or a queued/running sREF"
+    );
+    let is_submission = Reference::is_kind(reference, ReferenceKind::Submission);
+    let deadline = Instant::now() + Duration::from_secs(10 * 60);
+    loop {
+        if is_submission {
+            let submission = state
+                .submission(reference)?
+                .with_context(|| format!("unknown reference {reference}"))?;
+            if !matches!(
+                submission.validation_status,
+                ValidationStatus::Queued | ValidationStatus::Running
+            ) {
+                return state.show(reference, all);
+            }
+            if Instant::now() >= deadline {
+                bail!(
+                    "submission {reference} is still {} after 10 minutes; rerun `mathmux show {reference} --wait`",
+                    submission.validation_status
+                );
+            }
+            report(&format!(
+                "waiting for {reference} ({})",
+                submission.validation_status
+            ));
+        } else {
+            let run = state
                 .check_run(reference)?
                 .with_context(|| format!("unknown reference {reference}"))?;
             if run.status != crate::state::CheckStatus::Running {
-                return self.state.show(reference, all);
+                return state.show(reference, all);
             }
             if Instant::now() >= deadline {
                 bail!(
@@ -457,8 +490,8 @@ impl Service {
                 );
             }
             report(&format!("waiting for {reference} (running)"));
-            thread::sleep(Duration::from_secs(1));
         }
+        thread::sleep(Duration::from_secs(1));
     }
 }
 
@@ -626,7 +659,8 @@ impl WorkspaceWatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::Diagnostic;
+    use crate::state::{Diagnostic, ValidationReport, Workspace};
+    use tempfile::tempdir;
 
     #[test]
     fn root_scratch_files_are_ephemeral() {
@@ -634,6 +668,65 @@ mod tests {
         assert!(is_root_scratch(Path::new("ScratchHard.lean")));
         assert!(!is_root_scratch(Path::new("Demo/Scratch.lean")));
         assert!(!is_root_scratch(Path::new("Scratch.md")));
+    }
+
+    #[test]
+    fn show_wait_polls_queued_submission_until_validation_finishes() {
+        let directory = tempdir().unwrap();
+        let state = State::new(directory.path().join("state.sqlite3")).unwrap();
+        state
+            .add_workspace(&Workspace {
+                reference: "w1".into(),
+                name: "workspace".into(),
+                path: directory.path().join("workspace"),
+                branch: "workspace".into(),
+                model: None,
+            })
+            .unwrap();
+        state
+            .add_submission(&Submission {
+                reference: "s1".into(),
+                workspace_ref: "w1".into(),
+                workspace_commit: "workspace".into(),
+                main_commit: "main".into(),
+                base_commit: "base".into(),
+                checks: Vec::new(),
+                validation_status: ValidationStatus::Queued,
+                validation_detail: None,
+                build_output: None,
+                axioms: Vec::new(),
+                sorries: Vec::new(),
+                validation_duration_ms: None,
+                validated_by: None,
+                created_at: 0,
+            })
+            .unwrap();
+        let updater = state.clone();
+        let thread = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(25));
+            updater
+                .finish_validation(
+                    "s1",
+                    &ValidationReport {
+                        passed: true,
+                        sorry_audit: true,
+                        detail: String::new(),
+                        build_output: String::new(),
+                        axioms: Vec::new(),
+                        sorries: Vec::new(),
+                        duration_ms: 25,
+                    },
+                )
+                .unwrap();
+        });
+        let mut progress = Vec::new();
+        let shown = show_reference(&state, "s1", false, true, &mut |message| {
+            progress.push(message.to_owned());
+        })
+        .unwrap();
+        thread.join().unwrap();
+        assert!(shown.starts_with("s1 passed"));
+        assert_eq!(progress, vec!["waiting for s1 (queued)"]);
     }
 
     #[test]

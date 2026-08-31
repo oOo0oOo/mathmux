@@ -102,7 +102,8 @@ NEXT
 RULES
   fields/constructors target structures/inductives; ext/simp may be empty.
   cREF goal/analyses need a matching stored failure; for a running check, use
-  mathmux show cREF --wait first; profile needs check --profile.
+  mathmux show cREF --wait first; profile needs check --profile. For queued or
+  running validation, use mathmux show sREF --wait.
   warnings omits mechanical fixes owned by Lean automation and never reruns Lean.
   Context is mandatory for directives and never guessed. FILE uses its imports;
   FILE:LINE uses that exact line—there is no nearby-line fallback. Probe never
@@ -194,14 +195,14 @@ enum TopCommand {
     /// Show stored detail for a short reference.
     ///
     /// Accepts cREF, qREF, sREF, uREF, or wREF. --all expands stored detail while
-    /// keeping raw build logs bounded. --wait waits for a running cREF.
+    /// keeping raw build logs bounded. --wait waits for a running cREF or sREF validation.
     Show {
         /// Stored cREF, qREF, sREF, uREF, or wREF.
         reference: String,
         /// Include expanded stored detail.
         #[arg(long, conflicts_with = "wait")]
         all: bool,
-        /// Wait for a running cREF to finish, with bounded progress updates.
+        /// Wait for a running cREF or queued/running sREF to finish, with bounded progress updates.
         #[arg(long, conflicts_with = "all")]
         wait: bool,
     },
