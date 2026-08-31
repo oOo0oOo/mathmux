@@ -5,7 +5,8 @@ use super::{
     ValidationStatus,
 };
 use crate::presentation::{
-    BUILD_OUTPUT_LINES, BUILD_OUTPUT_TAIL_LINES, SOURCE_PREVIEW_LINES, bounded_head_tail,
+    BUILD_OUTPUT_LINES, BUILD_OUTPUT_TAIL_LINES, SOURCE_PREVIEW_LINES, append_path_location,
+    bounded_head_tail,
 };
 use crate::util::{
     enriched_validation_detail, format_duration, now_unix_ms, query_requests_proof_body,
@@ -154,6 +155,7 @@ pub(super) fn render_search_run(run: &SearchRun, all: bool) -> String {
         return output;
     }
     let hit_limit = if all { run.hits.len() } else { 5 };
+    let mut previous_hit_path = None;
     for (index, hit) in run.hits.iter().take(hit_limit).enumerate() {
         let name = if run.inference == "exact-miss" {
             hit.kind
@@ -176,10 +178,10 @@ pub(super) fn render_search_run(run: &SearchRun, all: bool) -> String {
             }
         }
         if !hit.path.is_empty() {
-            output.push_str(&format!("\n   {}", hit.path));
-            if hit.line > 0 {
-                output.push_str(&format!(":{}", hit.line));
-            }
+            output.push_str("\n   ");
+            append_path_location(&mut output, &hit.path, hit.line, &mut previous_hit_path);
+        } else {
+            previous_hit_path = None;
         }
         if hit.applicable {
             output.push_str("  applicable");
@@ -219,8 +221,15 @@ pub(super) fn render_search_run(run: &SearchRun, all: bool) -> String {
                     output.push_str(&format!("\n     {}", truncate_line(line, 240)));
                 }
             }
+            let mut previous_usage_path = None;
             for usage in hit.usages.iter().take(5) {
-                output.push_str(&format!("\n   used: {}:{}", usage.path, usage.line));
+                output.push_str("\n   used: ");
+                append_path_location(
+                    &mut output,
+                    &usage.path,
+                    usage.line,
+                    &mut previous_usage_path,
+                );
                 if let Some(context) = &usage.context {
                     output.push_str(&format!(" in {context}"));
                 }

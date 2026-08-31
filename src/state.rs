@@ -1961,6 +1961,39 @@ mod tests {
     }
 
     #[test]
+    fn expanded_search_elides_adjacent_long_paths() {
+        let path = "AtiyahSinger/Topology/VeryLongModuleName.lean";
+        let hits = (1..=2)
+            .map(|index| SearchHit {
+                name: format!("Demo.result{index}"),
+                kind: "theorem".into(),
+                signature: Some("True".into()),
+                module: "Demo".into(),
+                path: path.into(),
+                line: index,
+                doc: None,
+                source: None,
+                usages: Vec::new(),
+                applicable: false,
+                required_import: None,
+            })
+            .collect();
+        let run = SearchRun {
+            reference: "q-paths".into(),
+            workspace_ref: "w1".into(),
+            query: "Demo.result".into(),
+            inference: "source-outline".into(),
+            hits,
+            note: None,
+            duration_ms: 0,
+            created_at: 0,
+        };
+        let rendered = render_search_run(&run, true);
+        assert_eq!(rendered.matches(path).count(), 1);
+        assert!(rendered.contains("\n   ↳ :2"), "{rendered}");
+    }
+
+    #[test]
     fn passed_validation_summarizes_build_warnings_by_default() {
         let submission = Submission {
             reference: "s1".into(),

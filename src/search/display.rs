@@ -1,4 +1,5 @@
 use super::*;
+use crate::presentation::append_path_location;
 
 pub(super) fn render_summary(run: &SearchRun) -> String {
     render_summary_inner(run, true)
@@ -169,36 +170,6 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
     }
     output.push_str(&format!("\nref: {}", run.reference));
     output
-}
-
-const REPEATED_PATH_MIN_BYTES: usize = 32;
-
-fn append_path_location<'a>(
-    output: &mut String,
-    path: &'a str,
-    line: u64,
-    previous_path: &mut Option<&'a str>,
-) {
-    if path.is_empty() {
-        output.push(':');
-        output.push_str(&line.to_string());
-        *previous_path = None;
-        return;
-    }
-    let repeated = line > 0
-        && path.len() >= REPEATED_PATH_MIN_BYTES
-        && previous_path.is_some_and(|previous| previous == path);
-    if repeated {
-        output.push_str("↳ :");
-        output.push_str(&line.to_string());
-    } else {
-        output.push_str(path);
-        if line > 0 {
-            output.push(':');
-            output.push_str(&line.to_string());
-        }
-    }
-    *previous_path = Some(path);
 }
 
 fn split_verdict_and_note(run: &SearchRun) -> (String, Option<&str>) {
