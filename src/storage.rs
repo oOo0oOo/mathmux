@@ -14,6 +14,7 @@ use crate::issue::TelemetryStore;
 use crate::lean_service;
 use crate::repo::Repo;
 use crate::state::State;
+use crate::util::run_output;
 
 #[derive(Debug)]
 struct CleanupPlan {
@@ -21,6 +22,13 @@ struct CleanupPlan {
     shared_setup_files: Vec<PathBuf>,
     lean_service_directories: Vec<PathBuf>,
     reclaimable_bytes: u64,
+}
+
+#[derive(Debug)]
+struct UnregisteredWorktree {
+    path: PathBuf,
+    exists: bool,
+    dirty_paths: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
@@ -44,6 +52,7 @@ pub(crate) fn render_storage(repo: &Repo, state: &State) -> Result<String> {
         .map(|reference| setups.join(reference))
         .collect::<Vec<_>>();
     let plan = cleanup_plan(repo, state)?;
+    let unregistered = unregistered_worktrees(repo, state)?;
 
     let mut output = format!("MathMux storage: {}", format_bytes(size(&repo.state_dir)?));
     for (label, paths) in [
@@ -78,6 +87,7 @@ pub(crate) fn render_storage(repo: &Repo, state: &State) -> Result<String> {
     output.push_str(
         "\nCategory sizes are physical estimates and may overlap where setups are hard-linked.",
     );
+    append_unregistered_worktrees(&mut output, &unregistered);
     Ok(output)
 }
 
@@ -89,6 +99,7 @@ pub(crate) fn run_gc(repo: &Repo, state: &State, dry_run: bool) -> Result<String
     lock_exclusive_until(&lean_lock, GC_LOCK_TIMEOUT)
         .context("Lean-service generation is still active after five minutes; retry GC later")?;
     let plan = cleanup_plan(repo, state)?;
+    let unregistered = unregistered_worktrees(repo, state)?;
 
     if !dry_run {
         for path in &plan.deleted_setup_directories {
@@ -134,7 +145,81 @@ pub(crate) fn run_gc(repo: &Repo, state: &State, dry_run: bool) -> Result<String
             "\nsearch history rows pruned: {search_rows}\ntelemetry rows pruned: {telemetry_rows}\nSQLite: passive checkpoint complete"
         ));
     }
+    append_unregistered_worktrees(&mut output, &unregistered);
     Ok(output)
+}
+
+fn unregistered_worktrees(repo: &Repo, state: &State) -> Result<Vec<UnregisteredWorktree>> {
+    let active = state
+        .list_workspaces()?
+        .into_iter()
+        .map(|workspace| workspace.path)
+        .collect::<HashSet<_>>();
+    let validation = repo.state_dir.join("validation-worktree");
+    let output = match run_output("git", ["worktree", "list", "--porcelain"], &repo.root) {
+        Ok(output) if output.status.success() => output,
+        _ => return Ok(Vec::new()),
+    };
+    let mut paths = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .map(PathBuf::from)
+        .filter(|path| path != &repo.root && path != &validation && !active.contains(path))
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+    Ok(paths
+        .into_iter()
+        .map(|path| {
+            let exists = path.is_dir();
+            let dirty_paths = exists
+                .then(|| crate::git::dirty_paths(&path).ok().map(|paths| paths.len()))
+                .flatten();
+            UnregisteredWorktree {
+                path,
+                exists,
+                dirty_paths,
+            }
+        })
+        .collect())
+}
+
+fn append_unregistered_worktrees(output: &mut String, worktrees: &[UnregisteredWorktree]) {
+    if worktrees.is_empty() {
+        return;
+    }
+    let clean = worktrees
+        .iter()
+        .filter(|worktree| worktree.exists && worktree.dirty_paths == Some(0))
+        .count();
+    let dirty = worktrees
+        .iter()
+        .filter(|worktree| worktree.dirty_paths.is_some_and(|paths| paths > 0))
+        .count();
+    let missing = worktrees.iter().filter(|worktree| !worktree.exists).count();
+    let unavailable = worktrees
+        .iter()
+        .filter(|worktree| worktree.exists && worktree.dirty_paths.is_none())
+        .count();
+    output.push_str(&format!(
+        "\ngit worktrees outside MathMux registry: {} ({} clean, {} dirty, {} missing, {} status unavailable)",
+        worktrees.len(), clean, dirty, missing, unavailable
+    ));
+    for worktree in worktrees
+        .iter()
+        .filter(|worktree| !worktree.exists || worktree.dirty_paths.is_none_or(|paths| paths > 0))
+    {
+        let detail = if !worktree.exists {
+            "missing".to_owned()
+        } else if let Some(paths) = worktree.dirty_paths {
+            format!("dirty ({paths} path{})", if paths == 1 { "" } else { "s" })
+        } else {
+            "status unavailable".to_owned()
+        };
+        output.push_str(&format!("\n  {}: {detail}", worktree.path.display()));
+    }
+    output
+        .push_str("\nGC leaves these git worktrees untouched; inspect before any manual removal.");
 }
 
 fn cleanup_plan(repo: &Repo, state: &State) -> Result<CleanupPlan> {
@@ -392,6 +477,7 @@ mod tests {
 
     use super::*;
     use crate::state::Workspace;
+    use crate::util::run_checked;
 
     fn repo(root: &Path) -> Repo {
         let git = root.join(".git");
@@ -423,6 +509,66 @@ mod tests {
             branch: reference.into(),
             model: None,
         }
+    }
+
+    #[test]
+    fn reports_unregistered_worktrees_without_removing_them() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("root");
+        fs::create_dir_all(&root).unwrap();
+        run_checked("git", ["init", "-b", "main"], &root).unwrap();
+        run_checked("git", ["config", "user.name", "mathmux test"], &root).unwrap();
+        run_checked(
+            "git",
+            ["config", "user.email", "mathmux@example.invalid"],
+            &root,
+        )
+        .unwrap();
+        fs::write(root.join("README"), "main\n").unwrap();
+        run_checked("git", ["add", "README"], &root).unwrap();
+        run_checked("git", ["commit", "-m", "initial"], &root).unwrap();
+
+        let repo = repo(&root);
+        let state = State::new(&repo.db_path).unwrap();
+        let external = directory.path().join("external");
+        run_checked(
+            "git",
+            [
+                "worktree",
+                "add",
+                "-b",
+                "external",
+                external.to_string_lossy().as_ref(),
+                "main",
+            ],
+            &root,
+        )
+        .unwrap();
+
+        let report = unregistered_worktrees(&repo, &state).unwrap();
+        assert_eq!(report.len(), 1);
+        assert_eq!(report[0].path, external);
+        assert_eq!(report[0].dirty_paths, Some(0));
+
+        fs::write(report[0].path.join("untracked"), "pending\n").unwrap();
+        let report = unregistered_worktrees(&repo, &state).unwrap();
+        assert_eq!(report[0].dirty_paths, Some(1));
+        let mut summary = String::new();
+        append_unregistered_worktrees(&mut summary, &report);
+        assert!(summary.contains("git worktrees outside MathMux registry: 1"));
+        assert!(summary.contains("external: dirty (1 path)"));
+        assert!(summary.contains("GC leaves these git worktrees untouched"));
+
+        state
+            .add_workspace(&Workspace {
+                reference: "w1".into(),
+                name: "external".into(),
+                path: report[0].path.clone(),
+                branch: "external".into(),
+                model: None,
+            })
+            .unwrap();
+        assert!(unregistered_worktrees(&repo, &state).unwrap().is_empty());
     }
 
     #[test]

@@ -91,8 +91,9 @@ It also enforces the 48-hour/50,000-row search-history cap and the
 30-day/100,000-row development-telemetry cap, then passively checkpoints the
 SQLite databases. It does not remove submissions, checks, source history,
 active worktree `.lake` directories, the shared Lake artifact cache, or the
-validation worktree. GC is manual; MathMux does not schedule it or trigger it
-from free-disk thresholds.
+validation worktree. It reports Git worktrees outside the MathMux registry,
+including dirty or missing paths, but never removes them. GC is manual; MathMux
+does not schedule it or trigger it from free-disk thresholds.
 
 ## Minimal CLI for fast local Lean checks in isolated git worktrees
 
