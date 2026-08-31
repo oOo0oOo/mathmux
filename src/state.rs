@@ -7,7 +7,7 @@ use rusqlite::{Connection, OptionalExtension, ToSql, params};
 use serde::{Deserialize, Serialize};
 
 use crate::reference::{Reference, ReferenceKind};
-use crate::util::now_unix_ms;
+use crate::util::{now_unix_ms, run_output};
 
 mod display;
 use display::{render_check_run, render_search_run, render_submission};
@@ -1217,10 +1217,12 @@ impl State {
                 let submission = self
                     .submission(reference)?
                     .with_context(|| format!("unknown reference {reference}"))?;
-                let mut files = Vec::new();
-                for check in &submission.checks {
-                    if let Some(run) = self.check_run(check)? {
-                        files.extend(run.files);
+                let mut files = self.submission_files(&submission)?;
+                if files.is_empty() {
+                    for check in &submission.checks {
+                        if let Some(run) = self.check_run(check)? {
+                            files.extend(run.files);
+                        }
                     }
                 }
                 files.sort();
@@ -1246,6 +1248,43 @@ impl State {
                 .with_context(|| format!("unknown reference {reference}")),
             _ => bail!("reference {reference} is not stored in project state"),
         }
+    }
+
+    fn submission_files(&self, submission: &Submission) -> Result<Vec<String>> {
+        let path = self
+            .open()?
+            .query_row(
+                "SELECT path FROM workspaces WHERE ref = ?1",
+                [&submission.workspace_ref],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(path) = path else {
+            return Ok(Vec::new());
+        };
+        let output = match run_output(
+            "git",
+            [
+                "diff",
+                "--name-only",
+                "--no-ext-diff",
+                "-z",
+                "--diff-filter=ACDMRT",
+                &submission.base_commit,
+                &submission.main_commit,
+                "--",
+            ],
+            Path::new(&path),
+        ) {
+            Ok(output) if output.status.success() => output,
+            _ => return Ok(Vec::new()),
+        };
+        Ok(output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|field| !field.is_empty())
+            .map(|field| String::from_utf8_lossy(field).into_owned())
+            .collect())
     }
 
     fn show_workspace(&self, reference: &str, all: bool) -> Result<String> {
@@ -1521,6 +1560,8 @@ fn stored_profile_json(profile: &CheckProfile) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use tempfile::tempdir;
 
     use super::*;
@@ -2106,6 +2147,89 @@ mod tests {
                 .unwrap()
                 .contains("historical: later validation s3 passed")
         );
+    }
+
+    #[test]
+    fn submission_show_lists_integrated_files_not_only_check_targets() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("repo");
+        fs::create_dir(&root).unwrap();
+        crate::util::run_checked("git", ["init", "-b", "main"], &root).unwrap();
+        crate::util::run_checked("git", ["config", "user.name", "mathmux test"], &root).unwrap();
+        crate::util::run_checked(
+            "git",
+            ["config", "user.email", "mathmux@test.invalid"],
+            &root,
+        )
+        .unwrap();
+        fs::create_dir(root.join("Demo")).unwrap();
+        fs::write(root.join("Demo/Changed.lean"), "def changed := 0\n").unwrap();
+        fs::write(root.join("Demo/Guard.lean"), "import Demo.Changed\n").unwrap();
+        crate::util::run_checked("git", ["add", "."], &root).unwrap();
+        crate::util::run_checked("git", ["commit", "-m", "initial"], &root).unwrap();
+        let base_commit = crate::util::run_checked("git", ["rev-parse", "HEAD"], &root).unwrap();
+        fs::write(root.join("Demo/Changed.lean"), "def changed := 1\n").unwrap();
+        fs::write(
+            root.join("Demo/Guard.lean"),
+            "import Demo.Changed\n#check Demo.Changed\n",
+        )
+        .unwrap();
+        crate::util::run_checked("git", ["add", "."], &root).unwrap();
+        crate::util::run_checked("git", ["commit", "-m", "integrated"], &root).unwrap();
+        let main_commit = crate::util::run_checked("git", ["rev-parse", "HEAD"], &root).unwrap();
+
+        let state = State::new(directory.path().join("state.db")).unwrap();
+        state
+            .add_workspace(&Workspace {
+                reference: "w1".into(),
+                name: "agent".into(),
+                path: root,
+                branch: "main".into(),
+                model: None,
+            })
+            .unwrap();
+        state
+            .add_check_run(
+                &CheckRun {
+                    reference: "c1".into(),
+                    workspace_ref: "w1".into(),
+                    status: CheckStatus::Passed,
+                    files: vec!["Demo/Guard.lean".into()],
+                    passed: vec!["Demo/Guard.lean".into()],
+                    failed: None,
+                    not_checked: Vec::new(),
+                    warnings: Vec::new(),
+                    linters: Vec::new(),
+                    suggestions: Vec::new(),
+                    diagnostics: Vec::new(),
+                    profile: None,
+                    duration_ms: 1,
+                    created_at: 1,
+                },
+                &[],
+            )
+            .unwrap();
+        state
+            .add_submission(&Submission {
+                reference: "s1".into(),
+                workspace_ref: "w1".into(),
+                workspace_commit: main_commit.clone(),
+                main_commit,
+                base_commit,
+                checks: vec!["c1".into()],
+                validation_status: ValidationStatus::Queued,
+                validation_detail: None,
+                build_output: None,
+                axioms: Vec::new(),
+                sorries: Vec::new(),
+                validation_duration_ms: None,
+                validated_by: None,
+                created_at: 1,
+            })
+            .unwrap();
+
+        let output = state.show("s1", false).unwrap();
+        assert!(output.contains("files:\n  Demo/Changed.lean\n  Demo/Guard.lean"));
     }
 
     #[test]
