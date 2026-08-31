@@ -1215,6 +1215,96 @@ fn exact_search_summary_is_signature_only_and_has_probe_next_action() {
 }
 
 #[test]
+fn compact_summary_elides_adjacent_long_paths_only() {
+    let path = "AtiyahSinger/Topology/VeryLongModuleName.lean";
+    let mut first = search_hit("Demo.first");
+    first.path = path.into();
+    first.line = 10;
+    let mut second = search_hit("Demo.second");
+    second.path = path.into();
+    second.line = 20;
+    let summary = render_summary(&SearchRun {
+        reference: "q-paths".into(),
+        workspace_ref: "w1".into(),
+        query: "Demo".into(),
+        inference: "hybrid".into(),
+        hits: vec![first, second],
+        note: None,
+        duration_ms: 0,
+        created_at: 0,
+    });
+    assert_eq!(summary.matches(path).count(), 1);
+    assert!(summary.contains("↳ :20"), "{summary}");
+
+    let mut short_first = search_hit("Demo.short_first");
+    short_first.line = 10;
+    let mut short_second = search_hit("Demo.short_second");
+    short_second.line = 20;
+    let short_summary = render_summary(&SearchRun {
+        reference: "q-short-paths".into(),
+        workspace_ref: "w1".into(),
+        query: "Demo".into(),
+        inference: "hybrid".into(),
+        hits: vec![short_first, short_second],
+        note: None,
+        duration_ms: 0,
+        created_at: 0,
+    });
+    assert_eq!(short_summary.matches("Demo.lean").count(), 2);
+    assert!(!short_summary.contains("↳ :20"), "{short_summary}");
+
+    let mut separated_first = search_hit("Demo.separated_first");
+    separated_first.path = path.into();
+    separated_first.line = 50;
+    let mut separated_middle = search_hit("Demo.separated_middle");
+    separated_middle.path = "AtiyahSinger/Topology/AnotherLongModuleName.lean".into();
+    separated_middle.line = 51;
+    let mut separated_last = search_hit("Demo.separated_last");
+    separated_last.path = path.into();
+    separated_last.line = 52;
+    let separated_summary = render_summary(&SearchRun {
+        reference: "q-separated-paths".into(),
+        workspace_ref: "w1".into(),
+        query: "Demo".into(),
+        inference: "hybrid".into(),
+        hits: vec![separated_first, separated_middle, separated_last],
+        note: None,
+        duration_ms: 0,
+        created_at: 0,
+    });
+    assert_eq!(separated_summary.matches(path).count(), 2);
+    assert!(!separated_summary.contains("↳ :52"), "{separated_summary}");
+
+    let mut usages = search_hit("Demo.target");
+    usages.usages = vec![
+        SearchUsage {
+            module: "Demo.First".into(),
+            path: path.into(),
+            line: 30,
+            context: Some("first".into()),
+        },
+        SearchUsage {
+            module: "Demo.Second".into(),
+            path: path.into(),
+            line: 40,
+            context: Some("second".into()),
+        },
+    ];
+    let usage_summary = render_summary(&SearchRun {
+        reference: "q-usage-paths".into(),
+        workspace_ref: "w1".into(),
+        query: "Demo.target usages".into(),
+        inference: "usages".into(),
+        hits: vec![usages],
+        note: None,
+        duration_ms: 0,
+        created_at: 0,
+    });
+    assert_eq!(usage_summary.matches(path).count(), 1);
+    assert!(usage_summary.contains("used: ↳ :40"), "{usage_summary}");
+}
+
+#[test]
 fn exact_summary_counts_usages_without_printing_examples() {
     let mut hit = search_hit("Demo.target");
     hit.signature = Some("Nat".into());

@@ -31,6 +31,7 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
     } else {
         SUMMARY_LIMIT
     };
+    let mut previous_hit_path = None;
     for (index, hit) in run.hits.iter().take(summary_limit).enumerate() {
         output.push('\n');
         if run.hits.len() > 1 {
@@ -83,10 +84,10 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
             }
         }
         if !hit.path.is_empty() {
-            output.push_str(&format!("  {}", hit.path));
-            if hit.line > 0 {
-                output.push_str(&format!(":{}", hit.line));
-            }
+            output.push_str("  ");
+            append_path_location(&mut output, &hit.path, hit.line, &mut previous_hit_path);
+        } else {
+            previous_hit_path = None;
         }
         if hit.applicable {
             output.push_str("  applicable");
@@ -95,8 +96,15 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
             output.push_str(&format!("\n  import {module}"));
         }
         if run.inference == "usages" && !(proof_body_requested && index == 0) {
+            let mut previous_usage_path = None;
             for usage in hit.usages.iter().take(3) {
-                output.push_str(&format!("\n  used: {}:{}", usage.path, usage.line));
+                output.push_str("\n  used: ");
+                append_path_location(
+                    &mut output,
+                    &usage.path,
+                    usage.line,
+                    &mut previous_usage_path,
+                );
                 if let Some(context) = &usage.context {
                     output.push_str(&format!(" in {context}"));
                 }
@@ -161,6 +169,36 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
     }
     output.push_str(&format!("\nref: {}", run.reference));
     output
+}
+
+const REPEATED_PATH_MIN_BYTES: usize = 32;
+
+fn append_path_location<'a>(
+    output: &mut String,
+    path: &'a str,
+    line: u64,
+    previous_path: &mut Option<&'a str>,
+) {
+    if path.is_empty() {
+        output.push(':');
+        output.push_str(&line.to_string());
+        *previous_path = None;
+        return;
+    }
+    let repeated = line > 0
+        && path.len() >= REPEATED_PATH_MIN_BYTES
+        && previous_path.is_some_and(|previous| previous == path);
+    if repeated {
+        output.push_str("↳ :");
+        output.push_str(&line.to_string());
+    } else {
+        output.push_str(path);
+        if line > 0 {
+            output.push(':');
+            output.push_str(&line.to_string());
+        }
+    }
+    *previous_path = Some(path);
 }
 
 fn split_verdict_and_note(run: &SearchRun) -> (String, Option<&str>) {
