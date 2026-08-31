@@ -1590,7 +1590,7 @@ fn static_probe_query(
         focus if focus.starts_with("find:") => format!("{subject} source"),
         "fields" => format!("{subject} fields"),
         "constructors" => format!("{subject}.mk"),
-        "ext" => format!("declaration {subject}*"),
+        "ext" => format!("declaration {subject}.ext*|{subject}_ext*"),
         "simp" => format!("declaration {subject}*"),
         "apply" => format!("declaration {subject}.apply*|{subject}_apply*"),
         "usages" => subject.to_owned(),
@@ -2153,7 +2153,7 @@ mod tests {
         );
         assert_eq!(
             static_probe_query(None, "ContinuousMap", Some("ext")).unwrap(),
-            "declaration ContinuousMap*"
+            "declaration ContinuousMap.ext*|ContinuousMap_ext*"
         );
         assert_eq!(
             static_probe_query(None, "ContinuousMap", Some("constructors")).unwrap(),
