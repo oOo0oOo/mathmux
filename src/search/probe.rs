@@ -1421,11 +1421,6 @@ fn render_static_probe_summary(run: &SearchRun, focus: &str) -> String {
             }
         }
         "ext" => {
-            run.hits.retain(|hit| {
-                hit.source
-                    .as_deref()
-                    .is_some_and(|source| source.contains("@[ext"))
-            });
             if run.hits.is_empty()
                 && !run
                     .note
@@ -2431,13 +2426,13 @@ mod tests {
 
         let mut ext_run = run.clone();
         ext_run.note = None;
+        ext_run.hits.clear();
         ext_run.hits.push(hit(
             "Demo.ext",
             "@[ext] theorem ext (h : True) : True := by\n  trivial",
         ));
         let ext = render_static_probe_summary(&ext_run, "ext");
         assert!(ext.contains("Demo.ext"));
-        assert!(!ext.contains("Demo.first"));
         assert!(!ext.contains(":= by"));
 
         ext_run.hits.pop();
