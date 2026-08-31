@@ -570,13 +570,18 @@ pub(super) fn merge_exact_candidates(candidates: Vec<Candidate>) -> Option<Candi
     (candidates.len() == 1).then(|| candidates.remove(0))
 }
 
+pub(super) fn descending_score(left: f64, right: f64) -> Ordering {
+    match (left.is_nan(), right.is_nan()) {
+        (true, true) => Ordering::Equal,
+        (true, false) => Ordering::Greater,
+        (false, true) => Ordering::Less,
+        (false, false) => right.partial_cmp(&left).unwrap_or(Ordering::Equal),
+    }
+}
+
 fn sort_and_merge_candidates(mut candidates: Vec<Candidate>) -> Vec<Candidate> {
     candidates.sort_by(|left, right| {
-        right
-            .score
-            .partial_cmp(&left.score)
-            .unwrap_or(Ordering::Equal)
-            .then_with(|| left.hit.name.cmp(&right.hit.name))
+        descending_score(left.score, right.score).then_with(|| left.hit.name.cmp(&right.hit.name))
     });
     let mut positions: HashMap<String, usize> = HashMap::new();
     let mut deduplicated: Vec<Candidate> = Vec::new();

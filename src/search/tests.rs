@@ -3136,6 +3136,35 @@ fn exact_misses_overlay_active_sibling_declarations_as_unmerged() {
 }
 
 #[test]
+fn nan_candidate_scores_do_not_break_candidate_sorting() {
+    let candidates = vec![
+        Candidate {
+            hit: search_hit("Demo.nan"),
+            score: f64::NAN,
+            origins: 0,
+        },
+        Candidate {
+            hit: search_hit("Demo.high"),
+            score: 10.0,
+            origins: 0,
+        },
+        Candidate {
+            hit: search_hit("Demo.low"),
+            score: 5.0,
+            origins: 0,
+        },
+    ];
+    let sorted = std::panic::catch_unwind(|| merge_exact_candidates(candidates));
+    assert!(
+        sorted.is_ok(),
+        "candidate sorting must not panic on NaN scores"
+    );
+    assert!(sorted.unwrap().is_none());
+    assert_eq!(descending_score(1.0, f64::NAN), Ordering::Less);
+    assert_eq!(descending_score(f64::NAN, 1.0), Ordering::Greater);
+}
+
+#[test]
 fn exact_resolution_fails_closed_instead_of_returning_a_different_declaration() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("root");

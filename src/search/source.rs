@@ -1136,12 +1136,7 @@ pub(super) fn fallback_source_candidates(
             });
         }
     }
-    ranked.sort_by(|left, right| {
-        right
-            .score
-            .partial_cmp(&left.score)
-            .unwrap_or(Ordering::Equal)
-    });
+    ranked.sort_by(|left, right| descending_score(left.score, right.score));
     ranked.truncate(RESULT_LIMIT * SEARCH_PRESENTATION.fallback_candidate_multiplier);
     Ok(ranked)
 }
