@@ -24,6 +24,7 @@ use clap::ValueEnum;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 const WORKFLOW_HELP: &str = r#"AGENT CONTRACT
+  api       search-v4/probe-v3; reread search/probe help only when this digest changes.
   scope     Use the preassigned workspace; never run ws or enter main/another workspace.
   discover  Search unknown things; probe known API, exact context, or failures.
             Exact declarations go straight to probe NAME; qREFs store result sets.
@@ -35,6 +36,7 @@ const WORKFLOW_HELP: &str = r#"AGENT CONTRACT
   safety    sorry is tracked; new axioms fail validation. Never edit .lake/generated artifacts."#;
 
 const SEARCH_HELP: &str = r#"SEARCH — find or read unknown things; returns qREF
+API search-v4 — compact discovery; reread only when this digest changes
 FORMS — type one directly; declaration/type/source/compose are labels, not keywords
   declaration  NAME | NAME* | KIND NAME [source|body|proof]
   type/concept TYPE_OR_CONCEPT_TERMS | type:LEAN_TYPE
@@ -51,9 +53,9 @@ RESULT
   Regex and source-term matches group by enclosing declaration. qREF metadata is last.
   Use probe NAME source|outline|usages for focused detail. qREFs retain stored result sets;
   show qREF --all expands genuine multi-result or source-range searches.
-  --limit N (1–200) caps hits and cannot combine with --all.
   Source-only ranges of 48 lines or fewer are complete in compact mode; longer
-  ranges name the next non-overlapping range. Refine grouped searches before --all.
+  ranges name the next non-overlapping range. search --all is accepted only for
+  explicit FILE:START-END or FILE:tail reads. Refine grouped searches before expansion.
   Exact names include full signatures.
 
 NEXT
@@ -71,6 +73,7 @@ RULES
   Sigil what you know; leave inference for what you do not."#;
 
 const PROBE_HELP: &str = r##"PROBE — inspect something known; returns qREF
+API probe-v3 — bounded exact inspection; reread only when this digest changes
 FORMS — type one directly; there are no API, LEAN, or other category keywords
   NAME [signature|source|outline|apply|fields|constructors|ext|simp|usages]
   NAME find TERM
@@ -155,10 +158,7 @@ enum TopCommand {
         /// Query terms; the query form is inferred as documented above.
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
-        /// Return at most N ranked results (1–200).
-        #[arg(long, conflicts_with = "all")]
-        limit: Option<usize>,
-        /// Print the complete result instead of its compact preview.
+        /// Expand an explicit FILE:START-END or FILE:tail source read.
         #[arg(long)]
         all: bool,
     },
@@ -395,9 +395,8 @@ pub fn run() -> Result<u8> {
             }),
             profile,
         },
-        TopCommand::Search { query, limit, all } => Command::Search {
+        TopCommand::Search { query, all } => Command::Search {
             query: query.join(" "),
-            limit,
             all,
         },
         TopCommand::Probe { query } => Command::Probe {
@@ -943,12 +942,16 @@ mod tests {
             .try_get_matches_from(["mathmux", "search", "LinearEquiv.ofFinrankEq", "--all"])
             .unwrap();
         let args = Args::from_arg_matches(&matches).unwrap();
-        let TopCommand::Search { query, all, limit } = args.command else {
+        let TopCommand::Search { query, all } = args.command else {
             panic!("expected search command");
         };
         assert_eq!(query, ["LinearEquiv.ofFinrankEq"]);
         assert!(all);
-        assert!(limit.is_none());
+        assert!(
+            command_line()
+                .try_get_matches_from(["mathmux", "search", "target", "--limit", "80"])
+                .is_err()
+        );
     }
 
     #[test]
@@ -959,7 +962,7 @@ mod tests {
             .unwrap()
             .render_long_help()
             .to_string();
-        assert!(help.contains("--limit N (1–200) caps hits and cannot combine with --all"));
+        assert!(help.contains("API search-v4"));
         for form in [
             "type:LEAN_TYPE",
             "FILE:LINE",
@@ -968,10 +971,11 @@ mod tests {
             "source/compose are labels, not keywords",
             "sREF requires TERMS",
             "Source facets accept a space or FILE.lean:outline shorthand.",
-            "--limit",
+            "search --all is accepted only",
         ] {
             assert!(help.contains(form), "missing search form {form}");
         }
+        assert!(!help.contains("--limit"));
         assert!(!help.contains("cREF repair"));
         assert!(!help.contains("name:NAME"));
         assert!(!help.contains("name:A|B|C"));
@@ -980,6 +984,7 @@ mod tests {
             .unwrap()
             .render_long_help()
             .to_string();
+        assert!(probe_help.contains("API probe-v3"));
         for contract in [
             "there are no API, LEAN, or other category keywords",
             "NAME [signature|source|outline|apply|fields|constructors|ext|simp|usages]",
@@ -1024,6 +1029,7 @@ mod tests {
     #[test]
     fn workflow_help_prefers_direct_workspace_experimentation() {
         let help = command_line().render_help().to_string();
+        assert!(help.contains("search-v4/probe-v3"));
         assert!(help.contains("Edit intended files -> check -> submit"));
         assert!(help.contains("Exact declarations go straight to probe NAME"));
         assert!(help.contains("Search unknown things; probe known API, exact context"));

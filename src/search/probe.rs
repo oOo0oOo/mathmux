@@ -883,7 +883,7 @@ impl Searcher {
         query: &str,
         focus: &str,
     ) -> Result<String> {
-        let rendered = self.search(workspace, cwd, query, None, false)?;
+        let rendered = self.search(workspace, cwd, query, false)?;
         let Some(reference) = rendered_search_reference(&rendered) else {
             return Ok(rendered);
         };
@@ -1003,8 +1003,7 @@ impl Searcher {
         subject: &str,
     ) -> Result<String> {
         let source_search = || -> Result<(String, Option<SearchRun>)> {
-            let rendered =
-                self.search(workspace, cwd, &format!("{subject} source"), None, false)?;
+            let rendered = self.search(workspace, cwd, &format!("{subject} source"), false)?;
             let run = rendered_search_reference(&rendered)
                 .map(|reference| self.state.search_run(&reference))
                 .transpose()?

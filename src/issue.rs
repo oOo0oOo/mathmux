@@ -662,7 +662,10 @@ impl TelemetryStore {
             &mut output,
             "recent errors",
             events.iter().filter(|event| {
-                !event.ok && event.outcome_class.as_deref() != Some("formalization")
+                matches!(
+                    event.outcome_class.as_deref(),
+                    Some("operational" | "operational_error")
+                ) || (!event.ok && event.outcome_class.is_none())
             }),
         );
         append_recent_events(
@@ -1139,17 +1142,37 @@ fn render_aggregate(verb: &str, events: &[&TelemetryEvent]) -> String {
         .iter()
         .filter(|event| event.outcome_class.as_deref() == Some("formalization"))
         .count();
+    let misses = events
+        .iter()
+        .filter(|event| event.outcome_class.as_deref() == Some("no_result"))
+        .count();
+    let near = events
+        .iter()
+        .filter(|event| event.outcome_class.as_deref() == Some("near_suggestions"))
+        .count();
     let errors = events
         .iter()
-        .filter(|event| !event.ok && event.outcome_class.as_deref() != Some("formalization"))
+        .filter(|event| {
+            matches!(
+                event.outcome_class.as_deref(),
+                Some("operational" | "operational_error")
+            ) || (!event.ok && event.outcome_class.is_none())
+        })
         .count();
     let rss = events.iter().filter_map(|event| event.rss_kib).max();
     let average = durations.iter().sum::<u64>() / durations.len() as u64;
-    let outcome = if failures == 0 {
-        format!("err:{errors}")
-    } else {
-        format!("fail:{failures} err:{errors}")
-    };
+    let mut outcomes = Vec::new();
+    if failures > 0 {
+        outcomes.push(format!("fail:{failures}"));
+    }
+    if misses > 0 {
+        outcomes.push(format!("miss:{misses}"));
+    }
+    if near > 0 {
+        outcomes.push(format!("near:{near}"));
+    }
+    outcomes.push(format!("err:{errors}"));
+    let outcome = outcomes.join(" ");
     let mut output = format!(
         "{} {} avg:{} p50:{} p95:{} {}",
         verb,
@@ -1171,12 +1194,13 @@ fn percentile(sorted: &[u64], percentile: usize) -> u64 {
 }
 
 fn render_event_line(event: &TelemetryEvent) -> String {
-    let status = if event.ok {
-        "ok"
-    } else if event.outcome_class.as_deref() == Some("formalization") {
-        "failed"
-    } else {
-        "error"
+    let status = match event.outcome_class.as_deref() {
+        Some("no_result") => "miss",
+        Some("near_suggestions") => "near",
+        Some("formalization") => "failed",
+        Some("operational" | "operational_error") => "error",
+        _ if event.ok => "ok",
+        _ => "error",
     };
     let reference = event
         .reference
@@ -1723,6 +1747,8 @@ mod tests {
             ("check", 12, true, None, None),
             ("check", 1200, false, Some("c1"), Some("formalization")),
             ("search", 8, false, None, Some("operational")),
+            ("search", 9, false, Some("q1"), Some("no_result")),
+            ("search", 10, false, Some("q2"), Some("near_suggestions")),
         ] {
             connection
                 .execute(
@@ -1739,8 +1765,9 @@ mod tests {
         }
         let summary = store.summary("24h", None, None).unwrap();
         assert!(summary.contains("check 2 avg:606ms p50:12ms p95:1.2s fail:1 err:0"));
-        assert!(summary.contains("search 1 avg:8ms p50:8ms p95:8ms err:1"));
+        assert!(summary.contains("search 3 avg:9ms p50:9ms p95:10ms miss:1 near:1 err:1"));
         assert!(summary.contains("recent errors\ne3 search 8ms error"));
+        assert!(!summary.contains("recent errors\ne4"));
         assert!(summary.contains("recent formalization failures\ne2 check 1.2s failed c1"));
         let slow = store.summary("all", None, Some(1)).unwrap();
         assert!(slow.starts_with("e2 check 1.2s failed c1"));
@@ -1950,7 +1977,6 @@ mod tests {
             cwd: root.to_string_lossy().into_owned(),
             command: Command::Search {
                 query: "Demo.target".into(),
-                limit: None,
                 all: false,
             },
         };
@@ -1983,7 +2009,6 @@ mod tests {
         let source_no_match = Request {
             command: Command::Search {
                 query: "re:never_matches".into(),
-                limit: None,
                 all: false,
             },
             ..search.clone()
@@ -1999,7 +2024,6 @@ mod tests {
         let source_timeout = Request {
             command: Command::Search {
                 query: "re:slow".into(),
-                limit: None,
                 all: false,
             },
             ..search.clone()
@@ -2015,7 +2039,6 @@ mod tests {
         let unmerged_miss = Request {
             command: Command::Search {
                 query: "CompactlySupportedKZero subtype equiv".into(),
-                limit: None,
                 all: false,
             },
             ..search.clone()
@@ -2112,7 +2135,6 @@ mod tests {
             cwd: String::new(),
             command: Command::Search {
                 query: query.into(),
-                limit: None,
                 all: false,
             },
         };
@@ -2170,7 +2192,6 @@ mod tests {
             cwd: root.to_string_lossy().into_owned(),
             command: Command::Search {
                 query: "Demo.first".into(),
-                limit: None,
                 all: false,
             },
         };

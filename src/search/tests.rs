@@ -17,6 +17,38 @@ fn search_hit(name: &str) -> SearchHit {
 }
 
 #[test]
+fn search_all_accepts_only_explicit_source_ranges() {
+    assert!(!search_all_allowed(&SearchPlan::Text(
+        TextSearchPlan::Discovery
+    )));
+    assert!(!search_all_allowed(&SearchPlan::Location(SourceLocation {
+        path: "Demo.lean".into(),
+        display_path: None,
+        line: 10,
+        tail: false,
+        expanded: false,
+    })));
+    assert!(search_all_allowed(&SearchPlan::Location(SourceLocation {
+        path: "Demo.lean".into(),
+        display_path: None,
+        line: 10,
+        tail: true,
+        expanded: false,
+    })));
+    assert!(search_all_allowed(&SearchPlan::Source(
+        SourceOccurrenceQuery {
+            path: "Demo.lean".into(),
+            main_path: None,
+            display_path: None,
+            first_line: 10,
+            last_line: 20,
+            additional_ranges: Vec::new(),
+            terms: Vec::new(),
+        }
+    )));
+}
+
+#[test]
 fn coverage_notes_do_not_call_complete_result_sets_weak() {
     let hits = vec![search_hit("Demo.alpha"), search_hit("Demo.beta_gamma")];
     let terms = vec!["alpha".into(), "beta".into(), "gamma".into()];
@@ -44,9 +76,16 @@ fn lexical_coverage_complements_do_not_claim_a_bridge() {
         },
     ];
     let terms = vec!["alpha".into(), "beta".into()];
+    assert_eq!(promote_bridge_candidate(&mut ranked, &terms), None);
+    assert_eq!(ranked[1].hit.name, "Unrelated.beta");
+}
+
+#[test]
+fn alternative_query_coverage_uses_one_branch_at_a_time() {
+    let anchor = search_hit("Demo.alpha_beta");
     assert_eq!(
-        promote_bridge_candidate(&mut ranked, &terms).as_deref(),
-        Some("coverage complement (lexical): Demo.alpha ↔ Unrelated.beta covers 2/2 concepts")
+        coverage_tokens_for_query("alpha beta|gamma delta epsilon", Some(&anchor)),
+        vec!["alpha", "beta"]
     );
 }
 
@@ -1353,7 +1392,7 @@ fn compact_source_range_marks_complete_context() {
 }
 
 #[test]
-fn search_summary_keeps_definition_body_after_ambient_context() {
+fn broad_search_summary_omits_definition_body_after_ambient_context() {
     let summary = render_summary(&SearchRun {
             reference: "q2".into(),
             workspace_ref: "w1".into(),
@@ -1379,9 +1418,9 @@ fn search_summary_keeps_definition_body_after_ambient_context() {
             duration_ms: 1,
             created_at: 0,
         });
-    assert!(summary.contains("source:\n-- ambient context"));
-    assert!(summary.contains("\n  n + 1"));
-    assert!(!summary.contains("matrixLaurentShift : Nat → Nat"));
+    assert!(!summary.contains("source:\n-- ambient context"));
+    assert!(!summary.contains("\n  n + 1"));
+    assert!(summary.contains("Demo.matrixLaurentShift : Nat → Nat"));
 }
 
 #[test]
@@ -3309,11 +3348,11 @@ fn source_regex_queries_scan_a_bounded_scope_with_context() {
     for (query, expected) in [
         (
             "/alpha_apply/ --limit 100",
-            "source regex options must be outside the query; use `mathmux search '/REGEX/' --limit N`",
+            "--limit was removed; refine the regex or inspect its qREF",
         ),
         (
             "/alpha_apply/ --all",
-            "source regex options must be outside the query; use `mathmux search '/REGEX/' --all`",
+            "search --all is only for explicit FILE:START-END or FILE:tail reads",
         ),
     ] {
         let error = match parse_source_regex_query(directory.path(), directory.path(), None, query)

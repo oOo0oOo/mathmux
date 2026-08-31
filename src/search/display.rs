@@ -56,26 +56,19 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
                 !matches!(run.inference.as_str(), "exact" | "exact-batch")
                     && !related_results
                     && ((index == 0 && proof_body_requested)
-                        || (!proof_body_requested
-                            && (declaration_leaf_matches(&hit.name, &run.query)
-                                || (index < 3
-                                    && matches!(
-                                        hit.kind.as_str(),
-                                        "class" | "inductive" | "structure"
-                                    ))
-                                || matches!(
-                                    hit.kind.as_str(),
-                                    "fields"
-                                        | "file"
-                                        | "imports"
-                                        | "location"
-                                        | "location-expanded"
-                                        | "outline"
-                                        | "proof-outline"
-                                        | "source-group"
-                                        | "source-occurrences"
-                                        | "source-range"
-                                ))))
+                        || matches!(
+                            hit.kind.as_str(),
+                            "fields"
+                                | "file"
+                                | "imports"
+                                | "location"
+                                | "location-expanded"
+                                | "outline"
+                                | "proof-outline"
+                                | "source-group"
+                                | "source-occurrences"
+                                | "source-range"
+                        ))
             })
         };
         if let Some(signature) = &hit.signature

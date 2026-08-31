@@ -935,6 +935,32 @@ pub(super) fn meaningful_query_tokens(query: &str) -> Vec<String> {
     tokens
 }
 
+pub(super) fn coverage_tokens_for_query(query: &str, anchor: Option<&SearchHit>) -> Vec<String> {
+    let alternatives = query
+        .split('|')
+        .map(str::trim)
+        .filter(|alternative| !alternative.is_empty())
+        .map(meaningful_query_tokens)
+        .filter(|tokens| !tokens.is_empty())
+        .collect::<Vec<_>>();
+    if alternatives.len() <= 1 {
+        return alternatives
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| meaningful_query_tokens(query));
+    }
+    let Some(anchor) = anchor else {
+        return Vec::new();
+    };
+    alternatives
+        .into_iter()
+        .max_by_key(|tokens| {
+            let coverage = hit_query_coverage(anchor, tokens);
+            (coverage.0 * 1_000 / tokens.len().max(1), coverage.1)
+        })
+        .unwrap_or_default()
+}
+
 fn numeric_subscript_alias(token: &str) -> Option<String> {
     const ASCII: &str = "0123456789";
     const SUBSCRIPT: &str = "₀₁₂₃₄₅₆₇₈₉";
@@ -1393,6 +1419,10 @@ pub(super) fn promote_bridge_candidate(
                 .as_deref()
                 .is_some_and(|context| context.to_ascii_lowercase().contains(anchor_leaf))
         });
+        let relation = usage_edge || shared_consumer;
+        if !relation {
+            continue;
+        }
         let union_coverage = tokens
             .iter()
             .filter(|token| {
@@ -1402,26 +1432,20 @@ pub(super) fn promote_bridge_candidate(
         if union_coverage <= anchor_coverage {
             continue;
         }
-        let relation = usage_edge || shared_consumer;
-        let score = union_coverage * 10 + usize::from(relation) * 5;
+        let score = union_coverage * 10;
         if best
             .as_ref()
-            .is_none_or(|(_, best_score, _, _)| score > *best_score)
+            .is_none_or(|(_, best_score, _)| score > *best_score)
         {
-            best = Some((index, score, union_coverage, relation));
+            best = Some((index, score, union_coverage));
         }
     }
-    let (index, _, coverage, related) = best?;
+    let (index, _, coverage) = best?;
     let bridge = ranked.remove(index);
     let bridge_name = bridge.hit.name.clone();
     ranked.insert(1, bridge);
     Some(format!(
-        "{}: {} ↔ {} covers {coverage}/{} concepts",
-        if related {
-            "bridge pair (usage-linked)"
-        } else {
-            "coverage complement (lexical)"
-        },
+        "bridge pair (usage-linked): {} ↔ {} covers {coverage}/{} concepts",
         ranked[0].hit.name,
         bridge_name,
         tokens.len()
@@ -1465,6 +1489,7 @@ fn conceptual_words_match(left: &str, right: &str) -> bool {
     shared >= 5 && shared * 3 >= shorter * 2
 }
 
+#[cfg(test)]
 pub(super) fn declaration_leaf_matches(name: &str, query: &str) -> bool {
     let leaf = name.rsplit('.').next().unwrap_or(name);
     query_tokens(query).iter().any(|token| {
