@@ -37,6 +37,10 @@ const CHECK_QUEUE_TIMEOUT: Duration = CHECK_TIMEOUT;
 const SHARED_CHECK_TIMEOUT: Duration = Duration::from_secs(2 * 5 * 60);
 const COLD_PROBE_TIMEOUT: Duration = Duration::from_secs(16);
 const TACTIC_PROBE_TIMEOUT: Duration = Duration::from_secs(16);
+// Contextual `#check` must elaborate inferred terms in the surrounding file;
+// unlike a declaration signature lookup, this can legitimately need more
+// than the short warm-worker budget.
+const CONTEXTUAL_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 const WARM_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const SLOW_CHECK_PROFILE_MS: u64 = 5_000;
 const PROFILE_ENTRY_LIMIT: usize = 512;
@@ -50,6 +54,8 @@ const PROJECT_CONFIG_FILES: [&str; 4] = [
 fn probe_timeout(operation: &str) -> Duration {
     if matches!(operation, "goal" | "tactic") {
         TACTIC_PROBE_TIMEOUT
+    } else if operation == "term" {
+        CONTEXTUAL_PROBE_TIMEOUT
     } else {
         WARM_PROBE_TIMEOUT
     }
@@ -2466,9 +2472,10 @@ mod tests {
     }
 
     #[test]
-    fn tactic_and_goal_probes_use_the_extended_budget() {
+    fn contextual_and_tactic_probes_use_the_extended_budget() {
         assert_eq!(probe_timeout("tactic"), TACTIC_PROBE_TIMEOUT);
         assert_eq!(probe_timeout("goal"), TACTIC_PROBE_TIMEOUT);
+        assert_eq!(probe_timeout("term"), CONTEXTUAL_PROBE_TIMEOUT);
         assert_eq!(probe_timeout("check"), WARM_PROBE_TIMEOUT);
         assert_eq!(probe_timeout("synth"), WARM_PROBE_TIMEOUT);
     }
