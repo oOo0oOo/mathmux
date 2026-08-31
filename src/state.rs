@@ -997,15 +997,27 @@ impl State {
     }
 
     pub fn latest_completed_validation(&self) -> Result<Option<Submission>> {
-        self.open()?
+        let connection = self.open()?;
+        let reference = connection
             .query_row(
-                "SELECT ref, workspace_ref, workspace_commit, main_commit, base_commit, checks_json,
-                        validation_status, validation_detail, build_output, axioms_json,
-                        sorries_json, validation_duration_ms, validated_by, created_at
+                "SELECT ref
                  FROM submissions WHERE validation_status IN ('passed', 'failed')
                  ORDER BY created_at DESC, CAST(substr(ref, 2) AS INTEGER) DESC
                  LIMIT 1",
                 [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(reference) = reference else {
+            return Ok(None);
+        };
+        connection
+            .query_row(
+                "SELECT ref, workspace_ref, workspace_commit, main_commit, base_commit, checks_json,
+                        validation_status, validation_detail, build_output, axioms_json,
+                        sorries_json, validation_duration_ms, validated_by, created_at
+                 FROM submissions WHERE ref = ?1",
+                [reference],
                 submission_from_row,
             )
             .optional()
