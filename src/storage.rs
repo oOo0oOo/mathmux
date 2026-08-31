@@ -342,14 +342,32 @@ fn visit_files(paths: &[PathBuf], mut visit: impl FnMut(&Path, &fs::Metadata)) -
             continue;
         }
         for entry in WalkDir::new(path).follow_links(false) {
-            let entry = entry?;
+            let Some(entry) = tolerate_missing(entry)? else {
+                continue;
+            };
             if entry.file_type().is_file() {
-                let metadata = entry.metadata()?;
+                let Some(metadata) = tolerate_missing(entry.metadata())? else {
+                    continue;
+                };
                 visit(entry.path(), &metadata);
             }
         }
     }
     Ok(())
+}
+
+fn tolerate_missing<T>(result: walkdir::Result<T>) -> Result<Option<T>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(error)
+            if error
+                .io_error()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn format_bytes(bytes: u64) -> String {
@@ -448,5 +466,30 @@ mod tests {
         assert_eq!(format_bytes(0), "0 B");
         assert_eq!(format_bytes(1024), "1.0 KiB");
         assert_eq!(format_bytes(1024 * 1024 * 1024), "1.0 GiB");
+    }
+
+    #[test]
+    fn size_many_ignores_missing_optional_database_sidecars() {
+        let directory = tempdir().unwrap();
+        let database = directory.path().join("state.sqlite3");
+        fs::write(&database, "state").unwrap();
+
+        let paths = database_paths(&[&database]);
+        assert_eq!(
+            size_many(&paths).unwrap(),
+            fs::metadata(&database).unwrap().blocks() * 512
+        );
+    }
+
+    #[test]
+    fn missing_walk_entries_are_ignored() {
+        let directory = tempdir().unwrap();
+        let missing = directory.path().join("gone");
+        let error = WalkDir::new(missing)
+            .into_iter()
+            .next()
+            .expect("missing root should produce an error")
+            .expect_err("missing root should not be visited");
+        assert!(tolerate_missing::<()>(Err(error)).unwrap().is_none());
     }
 }
