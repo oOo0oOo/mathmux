@@ -340,6 +340,12 @@ impl State {
                 duration_ms INTEGER NOT NULL,
                 created_at INTEGER NOT NULL
              );
+             CREATE INDEX IF NOT EXISTS check_runs_workspace_created
+                ON check_runs(workspace_ref, created_at DESC);
+             CREATE INDEX IF NOT EXISTS check_runs_workspace_status_created
+                ON check_runs(workspace_ref, status, created_at DESC);
+             CREATE INDEX IF NOT EXISTS check_runs_created
+                ON check_runs(created_at);
              CREATE TABLE IF NOT EXISTS certificates (
                 check_ref TEXT NOT NULL REFERENCES check_runs(ref),
                 workspace_ref TEXT NOT NULL REFERENCES workspaces(ref),
@@ -377,6 +383,8 @@ impl State {
              );
              CREATE INDEX IF NOT EXISTS submissions_validation
                 ON submissions(validation_status, created_at);
+             CREATE INDEX IF NOT EXISTS submissions_created
+                ON submissions(created_at DESC);
              CREATE TABLE IF NOT EXISTS searches (
                 ref TEXT PRIMARY KEY,
                 workspace_ref TEXT NOT NULL REFERENCES workspaces(ref),
@@ -1579,6 +1587,22 @@ mod tests {
         assert_eq!(version, STATE_SCHEMA_VERSION);
         assert!(!legacy_checks);
         assert!(audited_index);
+        for index in [
+            "check_runs_workspace_created",
+            "check_runs_workspace_status_created",
+            "check_runs_created",
+            "submissions_created",
+        ] {
+            let present: bool = connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master
+                     WHERE type = 'index' AND name = ?1)",
+                    [index],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(present, "missing state index {index}");
+        }
     }
 
     #[test]
