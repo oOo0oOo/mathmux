@@ -1,13 +1,14 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::fs::MetadataExt;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::{Arc, Mutex, OnceLock, TryLockError, Weak};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use fs2::FileExt;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -84,6 +85,34 @@ impl std::fmt::Display for CheckTimeout {
 }
 
 impl std::error::Error for CheckTimeout {}
+
+#[derive(Debug)]
+struct SetupTimeout(Duration);
+
+impl std::fmt::Display for SetupTimeout {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.0 == CHECK_TIMEOUT {
+            write!(
+                formatter,
+                "dependency setup exceeded five minutes while running lake setup-file; child process terminated"
+            )
+        } else if self.0 < Duration::from_secs(1) {
+            write!(
+                formatter,
+                "dependency setup exceeded {}ms while running lake setup-file; child process terminated",
+                self.0.as_millis()
+            )
+        } else {
+            write!(
+                formatter,
+                "dependency setup exceeded {} seconds while running lake setup-file; child process terminated",
+                self.0.as_secs()
+            )
+        }
+    }
+}
+
+impl std::error::Error for SetupTimeout {}
 
 #[derive(Debug)]
 struct DependencySetupFailure {
@@ -1322,14 +1351,15 @@ impl Checker {
             materialize_setup(&shared, &path, input_fingerprint)?;
             return Ok(path);
         }
-        let output = lake_command(&self.repo, &workspace.path)
+        let mut command = lake_command(&self.repo, &workspace.path);
+        command
             .current_dir(lake_package_root(&workspace.path, target))
             .arg("setup-file")
-            .arg(lake_package_target(&workspace.path, target))
-            .output()
+            .arg(lake_package_target(&workspace.path, target));
+        let output = run_command_with_timeout(command, CHECK_TIMEOUT)
             .with_context(|| {
                 format!(
-                    "cannot start lake to configure {}; install the project's Lean toolchain and dependencies",
+                    "lake setup-file for {} failed; install the project's Lean toolchain and dependencies",
                     target.display()
                 )
             })?;
@@ -1517,6 +1547,69 @@ impl Checker {
         }
         Ok(None)
     }
+}
+
+fn run_command_with_timeout(mut command: Command, timeout: Duration) -> Result<Output> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0);
+    let mut child = command.spawn().context("cannot start dependency setup")?;
+    let Some(mut stdout) = child.stdout.take() else {
+        kill_process_group(&mut child);
+        return Err(anyhow!("dependency setup has no stdout"));
+    };
+    let Some(mut stderr) = child.stderr.take() else {
+        kill_process_group(&mut child);
+        return Err(anyhow!("dependency setup has no stderr"));
+    };
+    let stdout_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() >= deadline => {
+                kill_process_group(&mut child);
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err(SetupTimeout(timeout).into());
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(error) => {
+                kill_process_group(&mut child);
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err(error).context("cannot wait for dependency setup");
+            }
+        }
+    };
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| anyhow!("dependency setup stdout reader panicked"))??;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| anyhow!("dependency setup stderr reader panicked"))??;
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn kill_process_group(child: &mut Child) {
+    let pid = child.id() as i32;
+    unsafe {
+        libc::kill(-pid, libc::SIGKILL);
+    }
+    let _ = child.wait();
 }
 
 fn first_source_column(source: &str, line: u64) -> u64 {
@@ -2478,6 +2571,29 @@ mod tests {
         assert_eq!(probe_timeout("term"), CONTEXTUAL_PROBE_TIMEOUT);
         assert_eq!(probe_timeout("check"), WARM_PROBE_TIMEOUT);
         assert_eq!(probe_timeout("synth"), WARM_PROBE_TIMEOUT);
+    }
+
+    #[test]
+    fn dependency_setup_timeout_kills_the_child_process_group() {
+        let started = Instant::now();
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 30 & wait"]);
+        let error = run_command_with_timeout(command, Duration::from_millis(50))
+            .expect_err("dependency setup should time out");
+        assert!(
+            error
+                .downcast_ref::<SetupTimeout>()
+                .is_some_and(|timeout| timeout.0 == Duration::from_millis(50))
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "timed-out setup child was not cleaned up promptly"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("dependency setup exceeded 50ms while running lake setup-file")
+        );
     }
 
     fn running_check(workspace: &Workspace, reference: &str) -> CheckRun {
