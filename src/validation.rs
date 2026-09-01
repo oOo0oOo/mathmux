@@ -188,26 +188,44 @@ fn validate(repo: &Repo, submission: &Submission) -> Result<ValidationReport> {
         }
     };
     let passed = audit.axioms.is_empty();
+    let detail = validation_detail_for_audit(&audit, project_modules.len());
     Ok(ValidationReport {
         passed,
         sorry_audit: true,
-        detail: if passed {
-            format!(
-                "build passed; axioms clean ({} modules)",
-                project_modules.len()
-            )
-        } else {
-            format!(
-                "build passed; {} extra axiom{}",
-                audit.axioms.len(),
-                if audit.axioms.len() == 1 { "" } else { "s" }
-            )
-        },
+        detail,
         build_output,
         axioms: audit.axioms,
         sorries: audit.sorries,
         duration_ms: started.elapsed().as_millis() as u64,
     })
+}
+
+fn validation_detail_for_audit(audit: &AxiomAudit, module_count: usize) -> String {
+    if audit.axioms.is_empty() {
+        format!(
+            "build passed; axioms clean ({} modules)",
+            module_count
+        )
+    } else if audit.native_decides.is_empty() {
+        format!(
+            "build passed; {} extra axiom{}",
+            audit.axioms.len(),
+            if audit.axioms.len() == 1 { "" } else { "s" }
+        )
+    } else {
+        format!(
+            "build passed; native_decide detected in {} declaration{}: {}; {} extra axiom{}",
+            audit.native_decides.len(),
+            if audit.native_decides.len() == 1 {
+                ""
+            } else {
+                "s"
+            },
+            audit.native_decides.join(", "),
+            audit.axioms.len(),
+            if audit.axioms.len() == 1 { "" } else { "s" }
+        )
+    }
 }
 
 fn axiom_audit_detail(detail: &str) -> String {
@@ -402,10 +420,42 @@ fn deliverable_modules(root: &Path) -> (Vec<String>, Vec<String>) {
 
 struct AxiomAudit {
     axioms: Vec<String>,
+    native_decides: Vec<String>,
     sorries: Vec<String>,
 }
 
 const AXIOM_AUDIT_MAX_REC_DEPTH: usize = 100_000;
+const NATIVE_DECIDE_AXIOM_MARKER: &str = "._native.native_decide.ax_";
+
+fn is_native_decide_axiom(axiom: &str) -> bool {
+    axiom.contains(NATIVE_DECIDE_AXIOM_MARKER)
+}
+
+fn parse_axiom_audit_output(text: &str) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let mut axioms = Vec::new();
+    let mut native_decides = Vec::new();
+    let mut sorries = Vec::new();
+    for line in text.lines() {
+        if let Some(line) = line.strip_prefix("MATHMUX_AXIOM\t") {
+            let Some((axiom, declaration)) = line.split_once('\t') else {
+                continue;
+            };
+            axioms.push(axiom.to_owned());
+            if is_native_decide_axiom(axiom) {
+                native_decides.push(declaration.to_owned());
+            }
+        } else if let Some(declaration) = line.strip_prefix("MATHMUX_SORRY\t") {
+            sorries.push(declaration.to_owned());
+        }
+    }
+    axioms.sort();
+    axioms.dedup();
+    native_decides.sort();
+    native_decides.dedup();
+    sorries.sort();
+    sorries.dedup();
+    (axioms, native_decides, sorries)
+}
 
 fn axiom_audit_command_args() -> Vec<String> {
     vec![
@@ -426,6 +476,7 @@ fn run_axiom_audit(
     if roots.is_empty() {
         return Ok(AxiomAudit {
             axioms: Vec::new(),
+            native_decides: Vec::new(),
             sorries: Vec::new(),
         });
     }
@@ -484,25 +535,13 @@ unsafe def main : IO UInt32 := do
     let output = run_command_with_timeout(command, AXIOM_AUDIT_TIMEOUT, "axiom audit")
         .context("cannot run axiom audit")?;
     let text = combined_output(&output);
-    let mut failures = text
-        .lines()
-        .filter_map(|line| line.strip_prefix("MATHMUX_AXIOM\t"))
-        .filter_map(|line| line.split_once('\t').map(|(axiom, _)| axiom.to_owned()))
-        .collect::<Vec<_>>();
-    failures.sort();
-    failures.dedup();
-    let mut sorries = text
-        .lines()
-        .filter_map(|line| line.strip_prefix("MATHMUX_SORRY\t"))
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    sorries.sort();
-    sorries.dedup();
+    let (failures, native_decides, sorries) = parse_axiom_audit_output(&text);
     if !output.status.success() && failures.is_empty() {
         bail!("axiom audit failed: {}", command_detail(&output));
     }
     Ok(AxiomAudit {
         axioms: failures,
+        native_decides,
         sorries,
     })
 }
@@ -539,6 +578,46 @@ mod tests {
         assert_eq!(
             axiom_audit_command_args(),
             ["env", "lean", "-D", "maxRecDepth=100000", "--run"]
+        );
+    }
+
+    #[test]
+    fn axiom_audit_classifies_native_decide_fixture_without_allowing_it() {
+        let fixture = concat!(
+            "MATHMUX_AXIOM\t",
+            "AtiyahSinger.ExteriorKoszul.exteriorBasisTwo_singleton_zero._native.native_decide.ax_1",
+            "\tAtiyahSinger.ExteriorKoszul.exteriorBasisTwo_singleton_zero\n",
+            "MATHMUX_AXIOM\tUnsafe.assume\tDemo.bad\n",
+            "MATHMUX_SORRY\tDemo.sorry\n",
+        );
+        let (axioms, native_decides, sorries) = parse_axiom_audit_output(fixture);
+
+        assert_eq!(
+            axioms,
+            [
+                "AtiyahSinger.ExteriorKoszul.exteriorBasisTwo_singleton_zero._native.native_decide.ax_1",
+                "Unsafe.assume",
+            ]
+        );
+        assert_eq!(
+            native_decides,
+            ["AtiyahSinger.ExteriorKoszul.exteriorBasisTwo_singleton_zero"]
+        );
+        assert_eq!(sorries, ["Demo.sorry"]);
+        assert!(is_native_decide_axiom(
+            "AtiyahSinger.ExteriorKoszul.exteriorBasisTwo_singleton_zero._native.native_decide.ax_1"
+        ));
+        assert!(!is_native_decide_axiom("Lean.ofReduceBool"));
+        let audit = AxiomAudit {
+            axioms,
+            native_decides,
+            sorries,
+        };
+        assert_eq!(
+            validation_detail_for_audit(&audit, 2665),
+            "build passed; native_decide detected in 1 declaration: "
+                .to_owned()
+                + "AtiyahSinger.ExteriorKoszul.exteriorBasisTwo_singleton_zero; 2 extra axioms"
         );
     }
 
