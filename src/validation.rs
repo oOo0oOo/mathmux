@@ -13,10 +13,19 @@ use crate::repo::Repo;
 #[cfg(test)]
 use crate::state::ValidationStatus;
 use crate::state::{State, Submission, ValidationReport};
-use crate::util::{build_error_diagnostic, command_detail, output_text, run_checked, run_output};
+use crate::util::{
+    build_error_diagnostic, command_detail, output_text, run_checked, run_command_with_timeout,
+    run_output,
+};
 use anyhow::{Context, Result, bail, ensure};
 
 type ValidationSignal = Arc<(Mutex<bool>, Condvar)>;
+
+// Validation builds the entire managed project, so it gets a larger bounded
+// budget than an individual check while still releasing the validation lock
+// when a compiler or dependency process stalls.
+const VALIDATION_BUILD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const AXIOM_AUDIT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Clone)]
 pub struct ValidationQueue {
@@ -153,11 +162,10 @@ fn validate(repo: &Repo, submission: &Submission) -> Result<ValidationReport> {
     let root = prepare_worktree(repo, &submission.main_commit)?;
     let (roots, project_modules) = deliverable_modules(&root);
     invalidate_newer_project_artifacts(&root)?;
-    let output = background_lake_command(repo, &root)
-        .arg("build")
-        .args(&roots)
-        .output()
-        .context("cannot start validation build")?;
+    let mut build = background_lake_command(repo, &root);
+    build.arg("build").args(&roots);
+    let output = run_command_with_timeout(build, VALIDATION_BUILD_TIMEOUT, "validation build")
+        .context("cannot run validation build")?;
     let build_output = combined_output(&output);
     if !output.status.success() {
         return Ok(failed_report(
@@ -471,11 +479,10 @@ unsafe def main : IO UInt32 := do
     );
     let path = repo.state_dir.join("MathmuxAxiomAudit.lean");
     fs::write(&path, source)?;
-    let output = lake_command(repo, root)
-        .args(axiom_audit_command_args())
-        .arg(&path)
-        .output()
-        .context("cannot start axiom audit")?;
+    let mut command = lake_command(repo, root);
+    command.args(axiom_audit_command_args()).arg(&path);
+    let output = run_command_with_timeout(command, AXIOM_AUDIT_TIMEOUT, "axiom audit")
+        .context("cannot run axiom audit")?;
     let text = combined_output(&output);
     let mut failures = text
         .lines()
@@ -505,6 +512,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::util::CommandTimeout;
 
     #[test]
     fn host_load_brake_matches_cpu_capacity() {
@@ -532,6 +540,24 @@ mod tests {
             axiom_audit_command_args(),
             ["env", "lean", "-D", "maxRecDepth=100000", "--run"]
         );
+    }
+
+    #[test]
+    fn validation_phase_timeout_diagnostics_name_the_phase() {
+        for phase in ["validation build", "axiom audit"] {
+            let mut command = std::process::Command::new("sh");
+            command.args(["-c", "sleep 30 & wait"]);
+            let error = run_command_with_timeout(command, Duration::from_millis(50), phase)
+                .expect_err("validation phase should time out");
+            let timeout = error
+                .downcast_ref::<CommandTimeout>()
+                .expect("timeout error should retain its phase");
+            assert_eq!(timeout.phase, phase);
+            assert_eq!(timeout.timeout, Duration::from_millis(50));
+            assert!(error.to_string().contains(&format!(
+                "{phase} exceeded 50ms; child process group terminated"
+            )));
+        }
     }
     use crate::state::Workspace;
 

@@ -1,11 +1,45 @@
 use std::ffi::OsStr;
 use std::fs;
+use std::io::Read;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::OnceLock;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
+
+#[derive(Debug)]
+pub(crate) struct CommandTimeout {
+    pub(crate) phase: &'static str,
+    pub(crate) timeout: Duration,
+}
+
+impl std::fmt::Display for CommandTimeout {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let duration = if self.timeout == Duration::from_secs(5 * 60) {
+            "five minutes".to_owned()
+        } else if self.timeout < Duration::from_secs(1) {
+            format!("{}ms", self.timeout.as_millis())
+        } else {
+            format!("{} seconds", self.timeout.as_secs())
+        };
+        if self.phase == "dependency setup" {
+            write!(
+                formatter,
+                "dependency setup exceeded {duration} while running lake setup-file; child process terminated"
+            )
+        } else {
+            write!(
+                formatter,
+                "{} exceeded {duration}; child process group terminated",
+                self.phase
+            )
+        }
+    }
+}
+
+impl std::error::Error for CommandTimeout {}
 
 pub fn now_unix_ms() -> i64 {
     SystemTime::now()
@@ -30,6 +64,73 @@ where
         .stdin(Stdio::null())
         .output()
         .with_context(|| format!("failed to start command in {}", cwd.display()))
+}
+
+pub(crate) fn run_command_with_timeout(
+    mut command: Command,
+    timeout: Duration,
+    phase: &'static str,
+) -> Result<Output> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0);
+    let mut child = command.spawn().context("cannot start timed command")?;
+    let Some(mut stdout) = child.stdout.take() else {
+        kill_process_group(&mut child);
+        return Err(anyhow!("timed command has no stdout"));
+    };
+    let Some(mut stderr) = child.stderr.take() else {
+        kill_process_group(&mut child);
+        return Err(anyhow!("timed command has no stderr"));
+    };
+    let stdout_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() >= deadline => {
+                kill_process_group(&mut child);
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err(CommandTimeout { phase, timeout }.into());
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(error) => {
+                kill_process_group(&mut child);
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err(error).context("cannot wait for timed command");
+            }
+        }
+    };
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| anyhow!("timed command stdout reader panicked"))??;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| anyhow!("timed command stderr reader panicked"))??;
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn kill_process_group(child: &mut Child) {
+    let pid = child.id() as i32;
+    unsafe {
+        libc::kill(-pid, libc::SIGKILL);
+    }
+    let _ = child.wait();
 }
 
 pub fn run_checked<I, S>(program: impl AsRef<OsStr>, args: I, cwd: &Path) -> Result<String>

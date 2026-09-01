@@ -1,14 +1,13 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::os::unix::fs::MetadataExt;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock, TryLockError, Weak};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use anyhow::{Context, Result, anyhow, ensure};
+use anyhow::{Context, Result, ensure};
 use fs2::FileExt;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -23,7 +22,7 @@ use crate::state::{
     CheckProfile, CheckProfileEntry, CheckRecord, CheckRun, CheckStatus, Diagnostic,
     FileCheckProfile, State, Workspace,
 };
-use crate::util::{hash_bytes, hash_file, now_unix_ms};
+use crate::util::{hash_bytes, hash_file, now_unix_ms, run_command_with_timeout};
 
 mod diagnostics;
 
@@ -85,34 +84,6 @@ impl std::fmt::Display for CheckTimeout {
 }
 
 impl std::error::Error for CheckTimeout {}
-
-#[derive(Debug)]
-struct SetupTimeout(Duration);
-
-impl std::fmt::Display for SetupTimeout {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.0 == CHECK_TIMEOUT {
-            write!(
-                formatter,
-                "dependency setup exceeded five minutes while running lake setup-file; child process terminated"
-            )
-        } else if self.0 < Duration::from_secs(1) {
-            write!(
-                formatter,
-                "dependency setup exceeded {}ms while running lake setup-file; child process terminated",
-                self.0.as_millis()
-            )
-        } else {
-            write!(
-                formatter,
-                "dependency setup exceeded {} seconds while running lake setup-file; child process terminated",
-                self.0.as_secs()
-            )
-        }
-    }
-}
-
-impl std::error::Error for SetupTimeout {}
 
 #[derive(Debug)]
 struct DependencySetupFailure {
@@ -1356,7 +1327,7 @@ impl Checker {
             .current_dir(lake_package_root(&workspace.path, target))
             .arg("setup-file")
             .arg(lake_package_target(&workspace.path, target));
-        let output = run_command_with_timeout(command, CHECK_TIMEOUT)
+        let output = run_command_with_timeout(command, CHECK_TIMEOUT, "dependency setup")
             .with_context(|| {
                 format!(
                     "lake setup-file for {} failed; install the project's Lean toolchain and dependencies",
@@ -1547,69 +1518,6 @@ impl Checker {
         }
         Ok(None)
     }
-}
-
-fn run_command_with_timeout(mut command: Command, timeout: Duration) -> Result<Output> {
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0);
-    let mut child = command.spawn().context("cannot start dependency setup")?;
-    let Some(mut stdout) = child.stdout.take() else {
-        kill_process_group(&mut child);
-        return Err(anyhow!("dependency setup has no stdout"));
-    };
-    let Some(mut stderr) = child.stderr.take() else {
-        kill_process_group(&mut child);
-        return Err(anyhow!("dependency setup has no stderr"));
-    };
-    let stdout_reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stdout.read_to_end(&mut bytes).map(|_| bytes)
-    });
-    let stderr_reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stderr.read_to_end(&mut bytes).map(|_| bytes)
-    });
-    let deadline = Instant::now() + timeout;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() >= deadline => {
-                kill_process_group(&mut child);
-                let _ = stdout_reader.join();
-                let _ = stderr_reader.join();
-                return Err(SetupTimeout(timeout).into());
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-            Err(error) => {
-                kill_process_group(&mut child);
-                let _ = stdout_reader.join();
-                let _ = stderr_reader.join();
-                return Err(error).context("cannot wait for dependency setup");
-            }
-        }
-    };
-    let stdout = stdout_reader
-        .join()
-        .map_err(|_| anyhow!("dependency setup stdout reader panicked"))??;
-    let stderr = stderr_reader
-        .join()
-        .map_err(|_| anyhow!("dependency setup stderr reader panicked"))??;
-    Ok(Output {
-        status,
-        stdout,
-        stderr,
-    })
-}
-
-fn kill_process_group(child: &mut Child) {
-    let pid = child.id() as i32;
-    unsafe {
-        libc::kill(-pid, libc::SIGKILL);
-    }
-    let _ = child.wait();
 }
 
 fn first_source_column(source: &str, line: u64) -> u64 {
@@ -2557,6 +2465,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::util::CommandTimeout;
     use crate::util::run_checked;
 
     fn test_repo(root: &Path) -> Repo {
@@ -2578,12 +2487,16 @@ mod tests {
         let started = Instant::now();
         let mut command = Command::new("sh");
         command.args(["-c", "sleep 30 & wait"]);
-        let error = run_command_with_timeout(command, Duration::from_millis(50))
-            .expect_err("dependency setup should time out");
+        let error =
+            run_command_with_timeout(command, Duration::from_millis(50), "dependency setup")
+                .expect_err("dependency setup should time out");
         assert!(
             error
-                .downcast_ref::<SetupTimeout>()
-                .is_some_and(|timeout| timeout.0 == Duration::from_millis(50))
+                .downcast_ref::<CommandTimeout>()
+                .is_some_and(|timeout| {
+                    timeout.phase == "dependency setup"
+                        && timeout.timeout == Duration::from_millis(50)
+                })
         );
         assert!(
             started.elapsed() < Duration::from_secs(2),
