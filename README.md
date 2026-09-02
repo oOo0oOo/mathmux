@@ -95,6 +95,22 @@ validation worktree. It reports Git worktrees outside the MathMux registry,
 including dirty or missing paths, but never removes them. GC is manual; MathMux
 does not schedule it or trigger it from free-disk thresholds.
 
+For an explicitly confirmed deep cleanup, inspect the candidates first:
+
+```sh
+mathmux dev gc --hard --dry-run
+mathmux dev gc --hard --confirm
+```
+
+Hard GC requires idle checks, validation, and integration. It removes only
+single-link Lake artifacts, generated validation `.lake/build` output, `target/`
+directories from clean, unlocked, process-free unregistered Cargo worktrees,
+and clean unregistered worktrees whose tree exactly matches managed `main`.
+Dirty, locked, divergent, active, or outside-parent worktrees are preserved and
+reported; divergent worktrees may still have their generated `target/` removed.
+The command never removes source, package dependencies, submissions, or the
+shared Lake output cache.
+
 To intentionally discard a dirty workspace and any unsubmitted branch commits,
 an operator may use `mathmux ws delete --force NAME`. The normal delete command
 remains refuse-by-default and never discards workspace changes.

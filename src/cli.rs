@@ -309,6 +309,13 @@ enum DevCommand {
         /// Report what would be removed without changing anything.
         #[arg(long)]
         dry_run: bool,
+        /// Include unreachable Lake artifacts, generated validation output,
+        /// and safe unregistered worktrees.
+        #[arg(long)]
+        hard: bool,
+        /// Confirm destructive hard-GC cleanup.
+        #[arg(long, requires = "hard")]
+        confirm: bool,
     },
 }
 
@@ -646,10 +653,14 @@ fn run_dev(command: &DevCommand, cwd: &Path) -> Result<u8> {
             let state = State::new(&repo.db_path)?;
             crate::storage::render_storage(&repo, &state)?
         }
-        DevCommand::Gc { dry_run } => {
+        DevCommand::Gc {
+            dry_run,
+            hard,
+            confirm,
+        } => {
             let repo = Repo::discover(cwd)?;
             let state = State::new(&repo.db_path)?;
-            crate::storage::run_gc(&repo, &state, *dry_run)?
+            crate::storage::run_gc(&repo, &state, *dry_run, *hard, *confirm)?
         }
     };
     output_summary(&summary)?;
@@ -936,7 +947,25 @@ mod tests {
         assert!(matches!(
             args.command,
             TopCommand::Dev {
-                command: DevCommand::Gc { dry_run: true }
+                command: DevCommand::Gc {
+                    dry_run: true,
+                    hard: false,
+                    confirm: false
+                }
+            }
+        ));
+        let matches = command_line()
+            .try_get_matches_from(["mathmux", "dev", "gc", "--hard", "--dry-run"])
+            .unwrap();
+        let args = Args::from_arg_matches(&matches).unwrap();
+        assert!(matches!(
+            args.command,
+            TopCommand::Dev {
+                command: DevCommand::Gc {
+                    dry_run: true,
+                    hard: true,
+                    confirm: false
+                }
             }
         ));
     }
