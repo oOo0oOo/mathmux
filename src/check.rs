@@ -12,6 +12,7 @@ use fs2::FileExt;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+use crate::artifact_cache::restore_available_olean;
 use crate::coordination::{lock_exclusive_until, lock_mutex_until, lock_shared_until, open_lock};
 use crate::git::{dirty_lean_files, lake_command, merge_in_progress, project_lean_files};
 use crate::issue::{TelemetryOperation, TelemetryStore};
@@ -1309,6 +1310,7 @@ impl Checker {
             })
             .transpose()?;
         let path = self.setup_path(workspace, target);
+        restore_setup_artifacts_from_cache(&self.repo.cache_dir, &path)?;
         if setup_is_usable(&path, input_fingerprint) {
             return Ok(path);
         }
@@ -1318,6 +1320,7 @@ impl Checker {
         lock_exclusive_until(&shared_lock, CHECK_QUEUE_TIMEOUT).context(
             "shared import preparation is still running after five minutes; retry after it finishes",
         )?;
+        restore_setup_artifacts_from_cache(&self.repo.cache_dir, &shared)?;
         if setup_is_usable(&shared, input_fingerprint) {
             materialize_setup(&shared, &path, input_fingerprint)?;
             return Ok(path);
@@ -1701,6 +1704,22 @@ fn materialize_setup(shared: &Path, path: &Path, input_fingerprint: &str) -> Res
     }
     fs::write(setup_fingerprint_path(path), input_fingerprint)?;
     Ok(())
+}
+
+fn restore_setup_artifacts_from_cache(cache_dir: &Path, setup_path: &Path) -> Result<usize> {
+    let bytes = match fs::read(setup_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error.into()),
+    };
+    let Ok(value) = serde_json::from_slice(&bytes) else {
+        return Ok(0);
+    };
+    let mut artifacts = BTreeSet::new();
+    collect_artifact_paths(&value, &mut artifacts);
+    artifacts.into_iter().try_fold(0, |restored, artifact| {
+        Ok(restored + usize::from(restore_available_olean(cache_dir, &artifact)?))
+    })
 }
 
 fn prune_shared_setups(directory: &Path, current: &Path) {
@@ -2876,6 +2895,71 @@ mod tests {
         fs::write(setup_fingerprint_path(&setup), "current").unwrap();
         assert!(setup_is_usable(&setup, "current"));
         fs::remove_file(artifact).unwrap();
+        assert!(!setup_is_usable(&setup, "current"));
+    }
+
+    #[test]
+    fn setup_artifacts_are_restored_from_matching_cache_before_preparation() {
+        let directory = tempdir().unwrap();
+        let cache = directory.path().join("cache");
+        let artifact = directory.path().join(".lake/build/lib/lean/Base.olean");
+        let setup = directory.path().join("setup.json");
+        let hash = "0123456789abcdef";
+        fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+        fs::write(
+            &setup,
+            serde_json::to_vec(&serde_json::json!({ "import": artifact })).unwrap(),
+        )
+        .unwrap();
+        fs::write(setup_fingerprint_path(&setup), "current").unwrap();
+        fs::write(
+            artifact.with_extension("trace"),
+            format!(r#"{{"outputs":{{"o":["{hash}.olean"]}}}}"#),
+        )
+        .unwrap();
+        fs::create_dir_all(cache.join("artifacts")).unwrap();
+        fs::write(
+            cache.join("artifacts").join(format!("{hash}.olean")),
+            "cached",
+        )
+        .unwrap();
+
+        let restored = restore_setup_artifacts_from_cache(&cache, &setup).unwrap();
+
+        assert_eq!(restored, 1);
+        assert!(setup_is_usable(&setup, "current"));
+        assert_eq!(fs::read_to_string(artifact).unwrap(), "cached");
+    }
+
+    #[test]
+    fn setup_artifacts_skip_a_cache_hash_mismatch() {
+        let directory = tempdir().unwrap();
+        let cache = directory.path().join("cache");
+        let artifact = directory.path().join(".lake/build/lib/lean/Base.olean");
+        let setup = directory.path().join("setup.json");
+        fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+        fs::write(
+            &setup,
+            serde_json::to_vec(&serde_json::json!({ "import": artifact })).unwrap(),
+        )
+        .unwrap();
+        fs::write(setup_fingerprint_path(&setup), "current").unwrap();
+        fs::write(
+            artifact.with_extension("trace"),
+            r#"{"outputs":{"o":["0123456789abcdef.olean"]}}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(cache.join("artifacts")).unwrap();
+        fs::write(
+            cache.join("artifacts/fedcba9876543210.olean"),
+            "wrong cached artifact",
+        )
+        .unwrap();
+
+        let restored = restore_setup_artifacts_from_cache(&cache, &setup).unwrap();
+
+        assert_eq!(restored, 0);
+        assert!(!artifact.exists());
         assert!(!setup_is_usable(&setup, "current"));
     }
 

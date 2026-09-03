@@ -1,3 +1,4 @@
+mod artifact_cache;
 pub mod check;
 pub mod cli;
 mod coordination;

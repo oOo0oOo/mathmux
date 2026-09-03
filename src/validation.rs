@@ -5,6 +5,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::artifact_cache::{restore_available_olean, restore_olean};
 use crate::check::{parse_imports, project_module_name};
 use crate::coordination::{lock_exclusive, open_lock};
 use crate::git::{background_lake_command, lake_command, project_lean_files};
@@ -17,7 +18,7 @@ use crate::util::{
     build_error_diagnostic, command_detail, output_text, run_checked, run_command_with_timeout,
     run_output,
 };
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, bail};
 
 type ValidationSignal = Arc<(Mutex<bool>, Condvar)>;
 
@@ -298,27 +299,8 @@ fn restore_project_oleans(cache_dir: &Path, root: &Path, modules: &[String]) -> 
             .join(".lake/build/lib/lean")
             .join(module.replace('.', "/"))
             .with_extension("olean");
-        if artifact.is_file() {
-            continue;
-        }
-        let hash = project_olean_hash(&artifact)
-            .with_context(|| format!("missing artifact hash for {module}"))?;
-        ensure!(
-            hash.len() == 16 && hash.chars().all(|character| character.is_ascii_hexdigit()),
-            "invalid artifact hash for {module}"
-        );
-        let cached = cache_dir.join("artifacts").join(format!("{hash}.olean"));
-        ensure!(cached.is_file(), "cached artifact missing for {module}");
-        if let Some(parent) = artifact.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        if let Err(error) = fs::hard_link(&cached, &artifact) {
-            fs::copy(&cached, &artifact).with_context(|| {
-                format!(
-                    "cannot restore cached artifact for {module} after hard-link failed: {error}"
-                )
-            })?;
-        }
+        restore_olean(cache_dir, &artifact)
+            .with_context(|| format!("cannot restore cached artifact for {module}"))?;
     }
     Ok(())
 }
@@ -334,66 +316,11 @@ fn restore_available_project_oleans(
             .join(".lake/build/lib/lean")
             .join(module.replace('.', "/"))
             .with_extension("olean");
-        if artifact.is_file() {
-            continue;
+        if restore_available_olean(cache_dir, &artifact)? {
+            restored += 1;
         }
-
-        // A source changed since the previous build can have no reusable
-        // metadata after invalidation. Let Lake produce that artifact instead
-        // of turning a cache miss into a validation failure.
-        if !artifact.with_extension("trace").is_file()
-            && !artifact.with_extension("olean.hash").is_file()
-        {
-            continue;
-        }
-        let Ok(hash) = project_olean_hash(&artifact) else {
-            continue;
-        };
-        if hash.len() != 16
-            || !hash.chars().all(|character| character.is_ascii_hexdigit())
-        {
-            continue;
-        }
-        let cached = cache_dir.join("artifacts").join(format!("{hash}.olean"));
-        if !cached.is_file() {
-            continue;
-        }
-        if let Some(parent) = artifact.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        if let Err(error) = fs::hard_link(&cached, &artifact) {
-            fs::copy(&cached, &artifact).with_context(|| {
-                format!("cannot restore cached olean for {module} after hard-link failed: {error}")
-            })?;
-        }
-        restored += 1;
     }
     Ok(restored)
-}
-
-fn project_olean_hash(artifact: &Path) -> Result<String> {
-    let trace_path = artifact.with_extension("trace");
-    if trace_path.is_file() {
-        let trace: serde_json::Value = serde_json::from_slice(&fs::read(trace_path)?)?;
-        if let Some(hash) = trace
-            .pointer("/outputs/o")
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(serde_json::Value::as_str)
-            .find_map(|name| {
-                Path::new(name)
-                    .file_stem()
-                    .and_then(|stem| stem.to_str())
-                    .map(str::to_owned)
-            })
-        {
-            return Ok(hash);
-        }
-    }
-    fs::read_to_string(artifact.with_extension("olean.hash"))
-        .map(|hash| hash.trim().to_owned())
-        .context("artifact has neither a cached olean output nor an olean hash")
 }
 
 fn combined_output(output: &std::process::Output) -> String {
