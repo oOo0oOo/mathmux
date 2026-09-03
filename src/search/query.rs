@@ -439,7 +439,7 @@ pub(super) fn apply_declaration_glob(candidates: &mut Vec<Candidate>, query: &st
     had_candidates && candidates.is_empty()
 }
 
-fn declaration_alternative_matches(name: &str, query: &str) -> bool {
+pub(super) fn declaration_alternative_matches(name: &str, query: &str) -> bool {
     query.split('|').map(str::trim).any(|alternative| {
         if alternative.contains('*') {
             declaration_glob_matches(name, alternative)

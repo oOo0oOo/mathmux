@@ -441,7 +441,11 @@ fn declaration_glob_candidates_from_connection(
             .query_map([glob_query], indexed_row_from_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?,
     };
-    Ok(Some(rows))
+    Ok(Some(
+        rows.into_iter()
+            .filter(|row| declaration_alternative_matches(&row.name, query))
+            .collect(),
+    ))
 }
 
 fn install_active_scopes(connection: &Connection, scopes: &HashSet<String>) -> Result<()> {
