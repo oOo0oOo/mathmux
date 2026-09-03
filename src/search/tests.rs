@@ -3444,6 +3444,16 @@ fn anchored_query_with_uncovered_refinements_discovers_member_family() {
             )
             .unwrap();
     }
+    connection
+        .execute(
+            "INSERT INTO search_fts(
+                owner, origin, file, module, line, name, kind, signature, docs, body
+             ) VALUES ('workspace:w1', 'Demo.lean', 'Demo.lean',
+                       'LinearIsometry', 4, 'LinearIsometryEquiv.symm_trans_self',
+                       'theorem', 'e.symm.trans e = refl', 'e.apply_symm_apply', '')",
+            [],
+        )
+        .unwrap();
     // Dependency source rows carry signatures and docs, while the matching
     // .ilean rows are intentionally compact.  Keep source rows ahead of a
     // large artifact-only family so the bounded family lookup cannot hide the
@@ -3525,6 +3535,20 @@ fn anchored_query_with_uncovered_refinements_discovers_member_family() {
             .iter()
             .take(3)
             .all(|name| name.starts_with("LinearIsometryEquiv.")),
+        "{names:?}"
+    );
+    assert!(
+        names
+            .iter()
+            .take(2)
+            .any(|name| name.ends_with(".trans_apply")),
+        "{names:?}"
+    );
+    assert!(
+        names
+            .iter()
+            .take(2)
+            .any(|name| name.ends_with(".symm_apply_apply")),
         "{names:?}"
     );
     assert!(

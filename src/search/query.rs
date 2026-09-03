@@ -1330,6 +1330,10 @@ pub(super) fn promote_family_candidates(
                     .starts_with(&prefix)
             })
             .map(|(position, candidate)| {
+                let name_matched = requested_terms
+                    .iter()
+                    .filter(|term| hit_name_matches(&candidate.hit.name, term))
+                    .count();
                 let matched = requested_terms
                     .iter()
                     .filter(|term| {
@@ -1340,12 +1344,13 @@ pub(super) fn promote_family_candidates(
                     && candidate.hit.name.to_ascii_lowercase().contains("apply");
                 (
                     position,
+                    name_matched,
+                    usize::from(apply_name),
                     matched,
                     requested_terms
                         .iter()
                         .filter(|term| hit_matches_token(&candidate.hit, term))
                         .count(),
-                    usize::from(apply_name),
                     candidate.score,
                 )
             })
@@ -1354,9 +1359,10 @@ pub(super) fn promote_family_candidates(
                     .cmp(&right.1)
                     .then_with(|| left.2.cmp(&right.2))
                     .then_with(|| left.3.cmp(&right.3))
-                    .then_with(|| left.4.total_cmp(&right.4))
+                    .then_with(|| left.4.cmp(&right.4))
+                    .then_with(|| left.5.total_cmp(&right.5))
             })
-            .map(|(position, matched, _, _, _)| (position, matched))
+            .map(|(position, _, _, matched, _, _)| (position, matched))
         else {
             break;
         };
