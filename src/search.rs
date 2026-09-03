@@ -2046,6 +2046,7 @@ impl Searcher {
         }
         let import_context = self.import_context(workspace, scopes, base_warming, import_target);
         pipeline.timings.import_ms = pipeline.started.elapsed().as_millis() as u64;
+        let mut family_anchor = None;
         if matches!(plan, TextSearchPlan::ExactFirst)
             && let Some(structure) = field_inventory
             && let Some(result) = self.field_inventory_result(
@@ -2083,11 +2084,32 @@ impl Searcher {
                     resolution.ambiguous,
                 );
             }
+            family_anchor = Some(exact_plan.anchor.clone());
         }
         let candidates_started = Instant::now();
         let mut rows =
             self.candidates(query, &query_tokens, type_search, declaration_kind, scopes)?;
+        if let Some(anchor) = family_anchor.as_deref() {
+            // An anchored refinement miss is a request for members of the
+            // anchor's namespace.  Add that bounded name family explicitly;
+            // generic FTS terms can otherwise return unrelated declarations
+            // whose signatures merely mention the anchor type.
+            let family_query = format!("{anchor}.*");
+            rows.extend(
+                self.candidates(&family_query, &[], false, None, scopes)?
+                    .into_iter()
+                    .filter(|row| !matches!(row.kind.as_str(), "file" | "imports")),
+            );
+            let anchor = canonical_declaration_name(anchor).to_ascii_lowercase();
+            rows.retain(|row| canonical_declaration_name(&row.name).to_ascii_lowercase() != anchor);
+        }
         pipeline.timings.candidates_ms = candidates_started.elapsed().as_millis() as u64;
+        let family_prefix = family_anchor.as_deref().map(|anchor| {
+            format!(
+                "{}.",
+                canonical_declaration_name(anchor).to_ascii_lowercase()
+            )
+        });
         let name_search = !type_search && declaration_name_query(query);
         let mut ranked = Vec::new();
         let mut warming = false;
@@ -2205,6 +2227,14 @@ impl Searcher {
             let symbolic_name_score = symbolic_source_term(query)
                 .filter(|term| row.name.to_lowercase().contains(term))
                 .map_or(0.0, |_| SEARCH_TUNING.lexical.symbolic_name);
+            let family_score = family_prefix
+                .as_deref()
+                .filter(|prefix| {
+                    canonical_declaration_name(&row.name)
+                        .to_ascii_lowercase()
+                        .starts_with(prefix)
+                })
+                .map_or(0.0, |_| SEARCH_TUNING.qualified.member);
             let score = lexical
                 + type_score
                 + if strict_type
@@ -2216,6 +2246,7 @@ impl Searcher {
                     0.0
                 }
                 + symbolic_name_score
+                + family_score
                 + if row.owner == format!("workspace:{}", workspace.reference) {
                     SEARCH_TUNING.lexical.workspace
                 } else {

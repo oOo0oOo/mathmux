@@ -3421,6 +3421,10 @@ fn anchored_query_with_uncovered_refinements_discovers_member_family() {
     };
     let connection = Connection::open(repo.search_db_path).unwrap();
     for (name, signature) in [
+        (
+            "AtiyahSinger.PiLpFinLpTranspose",
+            "LinearIsometryEquiv trans",
+        ),
         ("LinearIsometryEquiv", "structure"),
         ("LinearIsometryEquiv.trans", "E ≃ F → F ≃ G → E ≃ G"),
         (
@@ -3475,6 +3479,13 @@ fn anchored_query_with_uncovered_refinements_discovers_member_family() {
     );
     assert!(
         names.iter().any(|name| name.ends_with(".symm_apply_apply")),
+        "{names:?}"
+    );
+    assert!(
+        names
+            .iter()
+            .take(3)
+            .all(|name| name.starts_with("LinearIsometryEquiv.")),
         "{names:?}"
     );
     assert!(
