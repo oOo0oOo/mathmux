@@ -267,12 +267,45 @@ fn invalidate_newer_project_artifacts(root: &Path) -> Result<()> {
 }
 
 fn build_failure_detail(output: &str, exit_code: Option<i32>) -> String {
+    if let Some(diagnostic) = missing_import_diagnostic(output) {
+        return format!("build failed: {diagnostic}");
+    }
     if let Some(diagnostic) = build_error_diagnostic(output) {
         return format!("build failed: {diagnostic}");
     }
     match exit_code {
         Some(code) => format!("build failed with exit code {code}; no Lean error diagnostic"),
         None => "build failed: process terminated by a signal or external interruption; no Lean error diagnostic".into(),
+    }
+}
+
+fn missing_import_diagnostic(output: &str) -> Option<String> {
+    const BAD_IMPORT_MARKER: &str = ": bad import '";
+
+    let mut imports = Vec::new();
+    for line in output.lines() {
+        let line = line.trim();
+        let line = line.strip_prefix("error:").unwrap_or(line).trim();
+        let Some((importer, imported)) = line.split_once(BAD_IMPORT_MARKER) else {
+            continue;
+        };
+        let Some(imported) = imported.strip_suffix('\'') else {
+            continue;
+        };
+        let importer = importer.trim();
+        if importer.is_empty() || imported.is_empty() {
+            continue;
+        }
+        let entry = format!("'{imported}' required by {importer}");
+        if !imports.contains(&entry) {
+            imports.push(entry);
+        }
+    }
+
+    match imports.as_slice() {
+        [] => None,
+        [entry] => Some(format!("missing source import {entry}")),
+        entries => Some(format!("missing source imports: {}", entries.join("; "))),
     }
 }
 
@@ -626,6 +659,25 @@ mod tests {
             build_failure_detail(output, Some(1)),
             "build failed: Demo.lean:12:4: failed to synthesize CompactSpace B"
         );
+    }
+
+    #[test]
+    fn build_failure_detail_names_missing_imports_before_generic_lake_errors() {
+        let output = concat!(
+            "error: no such file or directory (error code: 2)\n",
+            "error: AtiyahSinger/Consumer.lean: bad import '",
+            "AtiyahSinger.Missing",
+            "'\n",
+            "error: AtiyahSinger/Guards/ConsumerGuard.lean: bad import '",
+            "AtiyahSinger.Consumer",
+            "'\n",
+        );
+        let expected = concat!(
+            "build failed: missing source imports: '",
+            "AtiyahSinger.Missing' required by AtiyahSinger/Consumer.lean; '",
+            "AtiyahSinger.Consumer' required by AtiyahSinger/Guards/ConsumerGuard.lean",
+        );
+        assert_eq!(build_failure_detail(output, Some(2)), expected);
     }
 
     #[test]
