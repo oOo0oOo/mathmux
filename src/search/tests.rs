@@ -3444,8 +3444,47 @@ fn anchored_query_with_uncovered_refinements_discovers_member_family() {
             )
             .unwrap();
     }
+    // Dependency source rows carry signatures and docs, while the matching
+    // .ilean rows are intentionally compact.  Keep source rows ahead of a
+    // large artifact-only family so the bounded family lookup cannot hide the
+    // requested members behind generated cache entries.
+    for index in 0..270 {
+        connection
+            .execute(
+                "INSERT INTO search_fts(
+                    owner, origin, file, module, line, name, kind, signature, docs, body
+                 ) VALUES ('artifact-packages:demo', 'Demo.lean', 'Demo.lean',
+                           'LinearIsometry', 4, ?1, 'declaration', '', '', '')",
+                params![format!("LinearIsometryEquiv.artifact_{index:03}")],
+            )
+            .unwrap();
+    }
+    for (name, signature) in [
+        (
+            "LinearIsometryEquiv.trans_apply",
+            "(e₁.trans e₂) x = e₂ (e₁ x)",
+        ),
+        (
+            "LinearIsometryEquiv.symm_apply_apply",
+            "e.symm (e x) = x",
+        ),
+    ] {
+        connection
+            .execute(
+                "INSERT INTO search_fts(
+                    owner, origin, file, module, line, name, kind, signature, docs, body
+                 ) VALUES ('packages:demo', 'Demo.lean', 'Demo.lean',
+                           'LinearIsometry', 4, ?1, 'theorem', ?2, '', '')",
+                params![name, signature],
+            )
+            .unwrap();
+    }
 
-    let scopes = HashSet::from(["workspace:w1".into()]);
+    let scopes = HashSet::from([
+        "workspace:w1".into(),
+        "packages:demo".into(),
+        "artifact-packages:demo".into(),
+    ]);
     let query = "LinearIsometryEquiv trans symm apply";
     let plan = exact_plan(query, false).unwrap();
     assert!(

@@ -3145,7 +3145,10 @@ impl Searcher {
              AND owner IN (SELECT owner FROM active_search_scopes)
              ORDER BY CASE
                WHEN owner LIKE 'workspace:%' OR owner LIKE 'artifacts:%' THEN 0
-               ELSE 1
+               WHEN owner LIKE 'packages:%' THEN 1
+               WHEN owner LIKE 'stdlib:%' THEN 2
+               WHEN owner LIKE 'artifact-packages:%' THEN 3
+               ELSE 4
              END, length(name), name
              LIMIT {}",
             SEARCH_TUNING.retrieval.qualified_rows,
