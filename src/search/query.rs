@@ -1367,11 +1367,11 @@ pub(super) fn promote_family_candidates(
                 )
             })
             .max_by(|left, right| {
-                left.1
-                    .cmp(&right.1)
+                left.4
+                    .cmp(&right.4)
+                    .then_with(|| left.1.cmp(&right.1))
                     .then_with(|| left.2.cmp(&right.2))
                     .then_with(|| left.3.cmp(&right.3))
-                    .then_with(|| left.4.cmp(&right.4))
                     .then_with(|| left.5.cmp(&right.5))
                     .then_with(|| left.6.total_cmp(&right.6))
             })

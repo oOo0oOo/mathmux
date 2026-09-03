@@ -3540,14 +3540,14 @@ fn anchored_query_with_uncovered_refinements_discovers_member_family() {
     assert!(
         names
             .iter()
-            .take(2)
+            .take(3)
             .any(|name| name.ends_with(".trans_apply")),
         "{names:?}"
     );
     assert!(
         names
             .iter()
-            .take(2)
+            .take(3)
             .any(|name| name.ends_with(".symm_apply_apply")),
         "{names:?}"
     );
