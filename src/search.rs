@@ -2100,9 +2100,8 @@ impl Searcher {
             // anchor's namespace.  Add that bounded name family explicitly;
             // generic FTS terms can otherwise return unrelated declarations
             // whose signatures merely mention the anchor type.
-            let family_query = format!("{anchor}.*");
             rows.extend(
-                self.candidates(&family_query, &[], false, None, scopes)?
+                self.declaration_family_candidates(anchor, scopes)?
                     .into_iter()
                     .filter(|row| !matches!(row.kind.as_str(), "file" | "imports")),
             );
@@ -3131,6 +3130,31 @@ impl Searcher {
             scopes,
             SEARCH_TUNING.retrieval.exact_rows,
         )
+    }
+
+    fn declaration_family_candidates(
+        &self,
+        anchor: &str,
+        scopes: &HashSet<String>,
+    ) -> Result<Vec<IndexedRow>> {
+        let connection = self.open()?;
+        install_active_scopes(&connection, scopes)?;
+        let sql = indexed_rows_sql(&format!(
+            "WHERE (lower(name) LIKE lower(?1) || '.%'
+                    OR lower(name) LIKE '%.' || lower(?1) || '.%')
+             AND owner IN (SELECT owner FROM active_search_scopes)
+             ORDER BY CASE
+               WHEN owner LIKE 'workspace:%' OR owner LIKE 'artifacts:%' THEN 0
+               ELSE 1
+             END, length(name), name
+             LIMIT {}",
+            SEARCH_TUNING.retrieval.qualified_rows,
+        ));
+        connection
+            .prepare(&sql)?
+            .query_map([canonical_declaration_name(anchor)], indexed_row_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 
     fn field_inventory_result(
