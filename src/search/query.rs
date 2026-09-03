@@ -1302,6 +1302,80 @@ pub(super) fn promote_query_coverage(ranked: &mut Vec<Candidate>, query: &str, t
     *ranked = promoted;
 }
 
+pub(super) fn promote_family_candidates(
+    ranked: &mut Vec<Candidate>,
+    anchor: &str,
+    requested_terms: &[String],
+) {
+    if ranked.is_empty() || requested_terms.is_empty() {
+        return;
+    }
+    let prefix = format!(
+        "{}.",
+        canonical_declaration_name(anchor).to_ascii_lowercase()
+    );
+    let prefer_apply = requested_terms
+        .iter()
+        .any(|term| term.eq_ignore_ascii_case("apply"));
+    let mut remaining = std::mem::take(ranked);
+    let mut promoted = Vec::new();
+    let mut covered = HashSet::new();
+    while promoted.len() < 3 {
+        let Some((position, new_terms)) = remaining
+            .iter()
+            .enumerate()
+            .filter(|(_, candidate)| {
+                canonical_declaration_name(&candidate.hit.name)
+                    .to_ascii_lowercase()
+                    .starts_with(&prefix)
+            })
+            .map(|(position, candidate)| {
+                let matched = requested_terms
+                    .iter()
+                    .filter(|term| {
+                        !covered.contains(term.as_str()) && hit_matches_token(&candidate.hit, term)
+                    })
+                    .count();
+                let apply_name = prefer_apply
+                    && candidate.hit.name.to_ascii_lowercase().contains("apply");
+                (
+                    position,
+                    matched,
+                    requested_terms
+                        .iter()
+                        .filter(|term| hit_matches_token(&candidate.hit, term))
+                        .count(),
+                    usize::from(apply_name),
+                    candidate.score,
+                )
+            })
+            .max_by(|left, right| {
+                left.1
+                    .cmp(&right.1)
+                    .then_with(|| left.2.cmp(&right.2))
+                    .then_with(|| left.3.cmp(&right.3))
+                    .then_with(|| left.4.total_cmp(&right.4))
+            })
+            .map(|(position, matched, _, _, _)| (position, matched))
+        else {
+            break;
+        };
+        if new_terms == 0 {
+            break;
+        }
+        let candidate = remaining.remove(position);
+        for term in requested_terms
+            .iter()
+            .filter(|term| hit_matches_token(&candidate.hit, term))
+        {
+            covered.insert(term.clone());
+        }
+        promoted.push(candidate);
+    }
+    promoted.extend(remaining);
+    *ranked = promoted;
+}
+
 fn compound_name_query_parts(query: &str) -> Option<Vec<String>> {
     (declaration_name_query(query) && !query.contains('.'))
         .then(|| {

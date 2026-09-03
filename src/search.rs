@@ -2051,6 +2051,7 @@ impl Searcher {
         let import_context = self.import_context(workspace, scopes, base_warming, import_target);
         pipeline.timings.import_ms = pipeline.started.elapsed().as_millis() as u64;
         let mut family_anchor = None;
+        let mut family_requested_terms = Vec::new();
         if matches!(plan, TextSearchPlan::ExactFirst)
             && let Some(structure) = field_inventory
             && let Some(result) = self.field_inventory_result(
@@ -2089,6 +2090,7 @@ impl Searcher {
                 );
             }
             family_anchor = Some(exact_plan.anchor.clone());
+            family_requested_terms = exact_plan.requested_terms.clone();
         }
         let candidates_started = Instant::now();
         let mut rows =
@@ -2333,6 +2335,9 @@ impl Searcher {
             explicit_declaration.is_some(),
             import_context.as_ref(),
         );
+        if let Some(anchor) = family_anchor.as_deref() {
+            promote_family_candidates(&mut ranked, anchor, &family_requested_terms);
+        }
         let exact_name_miss = name_search
             && !ranked.iter().any(|candidate| {
                 !matches!(candidate.hit.kind.as_str(), "file" | "imports")
