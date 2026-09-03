@@ -1192,8 +1192,13 @@ impl Checker {
             Some(path) => path,
             None if setup_is_usable(&persisted_setup, &setup_input) => persisted_setup,
             None => {
-                let path =
-                    self.prepare_setup(workspace, target, &setup_input, !dependencies.is_empty())?;
+                let path = self.prepare_setup(
+                    workspace,
+                    target,
+                    &setup_input,
+                    !dependencies.is_empty(),
+                    dependencies,
+                )?;
                 environment =
                     self.worker_environment_from_base(workspace, target, &environment_base)?;
                 path
@@ -1280,6 +1285,7 @@ impl Checker {
         target: &Path,
         input_fingerprint: &str,
         has_project_dependencies: bool,
+        dependencies: &[PathBuf],
     ) -> Result<PathBuf> {
         let gc_lock = open_lock(&self.repo.state_dir.join("setup-gc.lock"))?;
         lock_shared_until(&gc_lock, CHECK_QUEUE_TIMEOUT)
@@ -1309,6 +1315,11 @@ impl Checker {
                 )
             })
             .transpose()?;
+        // A focused check may have no persisted setup manifest yet. Restore
+        // reusable dependency outputs from their trace/hash metadata before
+        // Lake computes the setup-file, so setup preparation can use the
+        // shared artifact cache just like full validation builds do.
+        restore_available_dependency_oleans(&self.repo.cache_dir, &workspace.path, dependencies)?;
         let path = self.setup_path(workspace, target);
         restore_setup_artifacts_from_cache(&self.repo.cache_dir, &path)?;
         if setup_is_usable(&path, input_fingerprint) {
@@ -1718,6 +1729,17 @@ fn restore_setup_artifacts_from_cache(cache_dir: &Path, setup_path: &Path) -> Re
     let mut artifacts = BTreeSet::new();
     collect_artifact_paths(&value, &mut artifacts);
     artifacts.into_iter().try_fold(0, |restored, artifact| {
+        Ok(restored + usize::from(restore_available_olean(cache_dir, &artifact)?))
+    })
+}
+
+fn restore_available_dependency_oleans(
+    cache_dir: &Path,
+    root: &Path,
+    dependencies: &[PathBuf],
+) -> Result<usize> {
+    dependencies.iter().try_fold(0, |restored, dependency| {
+        let artifact = artifact_path(root, dependency);
         Ok(restored + usize::from(restore_available_olean(cache_dir, &artifact)?))
     })
 }
@@ -2961,6 +2983,38 @@ mod tests {
         assert_eq!(restored, 0);
         assert!(!artifact.exists());
         assert!(!setup_is_usable(&setup, "current"));
+    }
+
+    #[test]
+    fn focused_setup_restores_available_dependency_artifacts_before_lake() {
+        let directory = tempdir().unwrap();
+        let cache = directory.path().join("cache");
+        let artifact = directory
+            .path()
+            .join(".lake/build/lib/lean/Dependency.olean");
+        let hash = "0123456789abcdef";
+        fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+        fs::write(
+            artifact.with_extension("trace"),
+            format!(r#"{{"outputs":{{"o":["{hash}.olean"]}}}}"#),
+        )
+        .unwrap();
+        fs::create_dir_all(cache.join("artifacts")).unwrap();
+        fs::write(
+            cache.join("artifacts").join(format!("{hash}.olean")),
+            "cached dependency",
+        )
+        .unwrap();
+
+        let restored = restore_available_dependency_oleans(
+            &cache,
+            directory.path(),
+            &[PathBuf::from("Dependency.lean")],
+        )
+        .unwrap();
+
+        assert_eq!(restored, 1);
+        assert_eq!(fs::read_to_string(artifact).unwrap(), "cached dependency");
     }
 
     #[test]
