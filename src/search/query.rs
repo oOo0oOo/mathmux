@@ -1334,6 +1334,17 @@ pub(super) fn promote_family_candidates(
                     .iter()
                     .filter(|term| hit_name_matches(&candidate.hit.name, term))
                     .count();
+                let name_occurrences = requested_terms
+                    .iter()
+                    .map(|term| {
+                        candidate
+                            .hit
+                            .name
+                            .split(['.', '_'])
+                            .filter(|segment| words_match(segment, term))
+                            .count()
+                    })
+                    .sum::<usize>();
                 let matched = requested_terms
                     .iter()
                     .filter(|term| {
@@ -1345,6 +1356,7 @@ pub(super) fn promote_family_candidates(
                 (
                     position,
                     name_matched,
+                    name_occurrences,
                     usize::from(apply_name),
                     matched,
                     requested_terms
@@ -1360,9 +1372,10 @@ pub(super) fn promote_family_candidates(
                     .then_with(|| left.2.cmp(&right.2))
                     .then_with(|| left.3.cmp(&right.3))
                     .then_with(|| left.4.cmp(&right.4))
-                    .then_with(|| left.5.total_cmp(&right.5))
+                    .then_with(|| left.5.cmp(&right.5))
+                    .then_with(|| left.6.total_cmp(&right.6))
             })
-            .map(|(position, name_matched, _, matched, _, _)| {
+            .map(|(position, name_matched, _, _, matched, _, _)| {
                 (position, name_matched, matched)
             })
         else {
