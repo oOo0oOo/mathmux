@@ -3,7 +3,7 @@ use std::io::Write;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
 use walkdir::WalkDir;
@@ -15,6 +15,39 @@ use crate::state::{State, Workspace};
 use crate::util::{canonical, command_detail, run_checked, run_output};
 
 const MAX_MANAGED_WORKSPACES: usize = 100;
+const INDEX_LOCK_RETRY_WINDOW: Duration = Duration::from_secs(10);
+const INDEX_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(100);
+
+fn acquire_integration_lock(repo: &Repo) -> Result<fs::File> {
+    let lock = open_lock(&repo.integration_lock)?;
+    lock_exclusive(&lock)?;
+    Ok(lock)
+}
+
+fn run_git_checked_with_index_lock_retry<I, S>(args: I, cwd: &Path) -> Result<String>
+where
+    I: IntoIterator<Item = S> + Clone,
+    S: AsRef<std::ffi::OsStr>,
+{
+    let deadline = Instant::now() + INDEX_LOCK_RETRY_WINDOW;
+    loop {
+        let output = run_output("git", args.clone(), cwd)?;
+        if output.status.success() {
+            return Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned());
+        }
+        let detail = command_detail(&output);
+        if !(detail.contains("index.lock") && detail.contains("File exists")) {
+            bail!("command failed: {detail}");
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "command failed: {detail}\nGit index.lock remained busy for {} seconds; no lock was removed",
+                INDEX_LOCK_RETRY_WINDOW.as_secs()
+            );
+        }
+        std::thread::sleep(INDEX_LOCK_RETRY_INTERVAL);
+    }
+}
 
 pub fn workspace_limit() -> usize {
     if let Some(limit) = std::env::var("MATHMUX_MAX_WORKSPACES")
@@ -55,6 +88,7 @@ pub fn create_workspace(
             "model must be at most 128 characters without control characters"
         );
     }
+    let _integration_lock = acquire_integration_lock(repo)?;
     ensure!(
         dirty_paths(&repo.root)?.is_empty(),
         "managed main worktree is not clean"
@@ -140,6 +174,7 @@ pub fn prepare_workspace(repo: &Repo, workspace: &Path) -> Result<()> {
 }
 
 pub fn delete_workspace(repo: &Repo, state: &State, name: &str, force: bool) -> Result<Workspace> {
+    let _integration_lock = acquire_integration_lock(repo)?;
     let workspace = state
         .workspace_named(name)?
         .with_context(|| format!("unknown workspace {name}"))?;
@@ -353,6 +388,7 @@ pub fn head(root: &Path) -> Result<String> {
 }
 
 pub fn reconcile_integration(repo: &Repo) -> Result<()> {
+    let _integration_lock = acquire_integration_lock(repo)?;
     if run_checked(
         "git",
         ["rev-parse", "-q", "--verify", "CHERRY_PICK_HEAD"],
@@ -372,8 +408,7 @@ pub struct SyncResult {
 }
 
 pub fn push_main(repo: &Repo) -> Result<String> {
-    let lock = open_lock(&repo.integration_lock)?;
-    lock_exclusive(&lock)?;
+    let _integration_lock = acquire_integration_lock(repo)?;
     ensure!(
         dirty_paths(&repo.root)?.is_empty(),
         "managed main worktree is not clean"
@@ -400,6 +435,7 @@ pub fn push_main(repo: &Repo) -> Result<String> {
 }
 
 pub fn sync(repo: &Repo, workspace: &Workspace) -> Result<SyncResult> {
+    let _integration_lock = acquire_integration_lock(repo)?;
     ensure!(
         dirty_paths(&repo.root)?.is_empty(),
         "managed main worktree is not clean"
@@ -597,8 +633,7 @@ pub struct SubmitResult {
 
 pub fn submit(repo: &Repo, workspace: &Workspace, message: &str) -> Result<SubmitResult> {
     ensure!(!message.trim().is_empty(), "submission message is empty");
-    let lock = open_lock(&repo.integration_lock)?;
-    lock_exclusive(&lock)?;
+    let _integration_lock = acquire_integration_lock(repo)?;
 
     ensure!(
         dirty_paths(&repo.root)?.is_empty(),
@@ -609,13 +644,13 @@ pub fn submit(repo: &Repo, workspace: &Workspace, message: &str) -> Result<Submi
         "workspace has an unfinished merge; resolve it before submit"
     );
     let base_commit = head(&repo.root)?;
-    run_checked("git", ["add", "-A"], &workspace.path)?;
+    run_git_checked_with_index_lock_retry(["add", "-A"], &workspace.path)?;
     let staged = run_output("git", ["diff", "--cached", "--quiet"], &workspace.path)?;
     ensure!(
         staged.status.code() == Some(1),
         "workspace has no changes to submit"
     );
-    run_checked("git", ["commit", "-m", message], &workspace.path)?;
+    run_git_checked_with_index_lock_retry(["commit", "-m", message], &workspace.path)?;
     let workspace_commit = head(&workspace.path)?;
 
     let merge = run_output(
@@ -797,6 +832,29 @@ mod tests {
         assert_eq!(clamp_workspace_limit(MAX_MANAGED_WORKSPACES), 100);
         assert_eq!(clamp_workspace_limit(MAX_MANAGED_WORKSPACES + 1), 100);
         assert_eq!(clamp_workspace_limit(usize::MAX), 100);
+    }
+
+    #[test]
+    fn git_index_lock_retry_waits_for_a_transient_lock() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("repo");
+        fs::create_dir(&root).unwrap();
+        run_checked("git", ["init", "-b", "main"], &root).unwrap();
+        fs::write(root.join("README"), "initial\n").unwrap();
+        let lock_path = root.join(".git/index.lock");
+        fs::write(&lock_path, "").unwrap();
+
+        let remover = std::thread::spawn({
+            let lock_path = lock_path.clone();
+            move || {
+                std::thread::sleep(Duration::from_millis(150));
+                fs::remove_file(lock_path).unwrap();
+            }
+        });
+        run_git_checked_with_index_lock_retry(["add", "README"], &root).unwrap();
+        remover.join().unwrap();
+        assert!(!lock_path.exists());
+        assert_eq!(dirty_paths(&root).unwrap(), vec![PathBuf::from("README")]);
     }
 
     #[test]
