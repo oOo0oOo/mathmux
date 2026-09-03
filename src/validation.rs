@@ -162,6 +162,10 @@ fn validate(repo: &Repo, submission: &Submission) -> Result<ValidationReport> {
     let root = prepare_worktree(repo, &submission.main_commit)?;
     let (roots, project_modules) = deliverable_modules(&root);
     invalidate_newer_project_artifacts(&root)?;
+    // A timed-out build may leave cached outputs and their Lake traces behind
+    // while removing the corresponding worktree artifacts. Restore those
+    // reusable outputs before asking Lake to rebuild the project.
+    restore_available_project_oleans(&repo.cache_dir, &root, &project_modules)?;
     let mut build = background_lake_command(repo, &root);
     build.arg("build").args(&roots);
     let output = run_command_with_timeout(build, VALIDATION_BUILD_TIMEOUT, "validation build")
@@ -317,6 +321,54 @@ fn restore_project_oleans(cache_dir: &Path, root: &Path, modules: &[String]) -> 
         }
     }
     Ok(())
+}
+
+fn restore_available_project_oleans(
+    cache_dir: &Path,
+    root: &Path,
+    modules: &[String],
+) -> Result<usize> {
+    let mut restored = 0;
+    for module in modules {
+        let artifact = root
+            .join(".lake/build/lib/lean")
+            .join(module.replace('.', "/"))
+            .with_extension("olean");
+        if artifact.is_file() {
+            continue;
+        }
+
+        // A source changed since the previous build can have no reusable
+        // metadata after invalidation. Let Lake produce that artifact instead
+        // of turning a cache miss into a validation failure.
+        if !artifact.with_extension("trace").is_file()
+            && !artifact.with_extension("olean.hash").is_file()
+        {
+            continue;
+        }
+        let Ok(hash) = project_olean_hash(&artifact) else {
+            continue;
+        };
+        if hash.len() != 16
+            || !hash.chars().all(|character| character.is_ascii_hexdigit())
+        {
+            continue;
+        }
+        let cached = cache_dir.join("artifacts").join(format!("{hash}.olean"));
+        if !cached.is_file() {
+            continue;
+        }
+        if let Some(parent) = artifact.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        if let Err(error) = fs::hard_link(&cached, &artifact) {
+            fs::copy(&cached, &artifact).with_context(|| {
+                format!("cannot restore cached olean for {module} after hard-link failed: {error}")
+            })?;
+        }
+        restored += 1;
+    }
+    Ok(restored)
 }
 
 fn project_olean_hash(artifact: &Path) -> Result<String> {
@@ -804,5 +856,41 @@ mod tests {
 
         restore_project_oleans(&cache, &root, &["Demo.Result".into()]).unwrap();
         assert_eq!(fs::read_to_string(artifact).unwrap(), "olean");
+    }
+
+    #[test]
+    fn prebuild_restore_reuses_timeout_cache_without_blocking_changed_sources() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("worktree");
+        let cache = directory.path().join("cache");
+        let cached_hash = "0123456789abcdef";
+        let cached_artifact = root.join(".lake/build/lib/lean/Demo/Cached.olean");
+        let changed_artifact = root.join(".lake/build/lib/lean/Demo/Changed.olean");
+        fs::create_dir_all(cached_artifact.parent().unwrap()).unwrap();
+        fs::write(
+            cached_artifact.with_extension("trace"),
+            format!(r#"{{"outputs":{{"o":["{cached_hash}.olean"]}}}}"#),
+        )
+        .unwrap();
+        fs::create_dir_all(cache.join("artifacts")).unwrap();
+        fs::write(
+            cache.join("artifacts").join(format!("{cached_hash}.olean")),
+            "cached after timeout",
+        )
+        .unwrap();
+
+        let restored = restore_available_project_oleans(
+            &cache,
+            &root,
+            &["Demo.Cached".into(), "Demo.Changed".into()],
+        )
+        .unwrap();
+
+        assert_eq!(restored, 1);
+        assert_eq!(
+            fs::read_to_string(cached_artifact).unwrap(),
+            "cached after timeout"
+        );
+        assert!(!changed_artifact.exists());
     }
 }
