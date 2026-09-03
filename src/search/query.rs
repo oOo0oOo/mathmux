@@ -1321,7 +1321,7 @@ pub(super) fn promote_family_candidates(
     let mut promoted = Vec::new();
     let mut covered = HashSet::new();
     while promoted.len() < 3 {
-        let Some((position, new_terms)) = remaining
+        let Some((position, name_matched, new_terms)) = remaining
             .iter()
             .enumerate()
             .filter(|(_, candidate)| {
@@ -1362,11 +1362,13 @@ pub(super) fn promote_family_candidates(
                     .then_with(|| left.4.cmp(&right.4))
                     .then_with(|| left.5.total_cmp(&right.5))
             })
-            .map(|(position, _, _, matched, _, _)| (position, matched))
+            .map(|(position, name_matched, _, matched, _, _)| {
+                (position, name_matched, matched)
+            })
         else {
             break;
         };
-        if new_terms == 0 {
+        if name_matched == 0 && new_terms == 0 {
             break;
         }
         let candidate = remaining.remove(position);
