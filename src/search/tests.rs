@@ -3390,6 +3390,102 @@ fn exact_resolution_fails_closed_instead_of_returning_a_different_declaration() 
 }
 
 #[test]
+fn anchored_query_with_uncovered_refinements_discovers_member_family() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("root");
+    let state_dir = directory.path().join("state");
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(&state_dir).unwrap();
+    let repo = Repo {
+        root: root.clone(),
+        common_git_dir: directory.path().join("git"),
+        state_dir: state_dir.clone(),
+        socket_path: state_dir.join("daemon.sock"),
+        db_path: state_dir.join("state.sqlite3"),
+        search_db_path: state_dir.join("search.sqlite3"),
+        log_path: state_dir.join("daemon.log"),
+        cache_dir: state_dir.join("cache"),
+        integration_lock: state_dir.join("integration.lock"),
+        validation_lock: state_dir.join("validation.lock"),
+        startup_lock: state_dir.join("startup.lock"),
+    };
+    let state = State::new(repo.db_path.clone()).unwrap();
+    let checker = Arc::new(Checker::new(repo.clone(), state.clone(), None).unwrap());
+    let searcher = Searcher::new(repo.clone(), state, checker, None).unwrap();
+    let workspace = Workspace {
+        reference: "w1".into(),
+        name: "demo".into(),
+        path: root,
+        branch: "demo".into(),
+        model: None,
+    };
+    let connection = Connection::open(repo.search_db_path).unwrap();
+    for (name, signature) in [
+        ("LinearIsometryEquiv", "structure"),
+        ("LinearIsometryEquiv.trans", "E ≃ F → F ≃ G → E ≃ G"),
+        (
+            "LinearIsometryEquiv.trans_apply",
+            "(e₁.trans e₂) x = e₂ (e₁ x)",
+        ),
+        ("LinearIsometryEquiv.symm", "F ≃ E"),
+        ("LinearIsometryEquiv.symm_apply_apply", "e.symm (e x) = x"),
+    ] {
+        connection
+            .execute(
+                "INSERT INTO search_fts(
+                    owner, origin, file, module, line, name, kind, signature, docs, body
+                 ) VALUES ('workspace:w1', 'Demo.lean', 'Demo.lean',
+                           'LinearIsometry', 4, ?1, 'theorem', ?2, '', '')",
+                params![name, signature],
+            )
+            .unwrap();
+    }
+
+    let scopes = HashSet::from(["workspace:w1".into()]);
+    let query = "LinearIsometryEquiv trans symm apply";
+    let plan = exact_plan(query, false).unwrap();
+    assert!(
+        searcher
+            .resolve_exact(&workspace, &scopes, None, false, &plan, None)
+            .unwrap()
+            .result
+            .is_none()
+    );
+    let result = searcher
+        .execute_text_search(
+            &workspace,
+            query,
+            TextSearchPlan::ExactFirst,
+            TextSearchContext {
+                scopes: &scopes,
+                base_warming: false,
+                import_target: None,
+                show_all: false,
+            },
+        )
+        .unwrap();
+    let names = result
+        .hits
+        .iter()
+        .map(|hit| hit.name.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        names.iter().any(|name| name.ends_with(".trans_apply")),
+        "{names:?}"
+    );
+    assert!(
+        names.iter().any(|name| name.ends_with(".symm_apply_apply")),
+        "{names:?}"
+    );
+    assert!(
+        !result
+            .note
+            .as_deref()
+            .is_some_and(|note| note.starts_with("exact declaration"))
+    );
+}
+
+#[test]
 fn warning_probe_indexes_current_residuals_and_invalidates_changed_source() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("root");

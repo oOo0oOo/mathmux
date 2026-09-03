@@ -2032,7 +2032,18 @@ impl Searcher {
         let query = explicit_declaration.unwrap_or(query);
         let type_search = matches!(plan, TextSearchPlan::Type | TextSearchPlan::ForcedType);
         let strict_type = matches!(plan, TextSearchPlan::ForcedType);
-        let query_tokens = meaningful_query_tokens(query);
+        let mut query_tokens = meaningful_query_tokens(query);
+        // Anchored API queries use their trailing terms to discover members of
+        // the anchor's declaration family.  Keep those requested terms in the
+        // fallback token set even when one is also a tactic keyword (for
+        // example, `apply` in `LinearIsometryEquiv.trans_apply`).
+        if !type_search && let Some(plan) = exact_plan(query, false) {
+            for term in plan.requested_terms {
+                if !query_tokens.contains(&term) {
+                    query_tokens.push(term);
+                }
+            }
+        }
         let import_context = self.import_context(workspace, scopes, base_warming, import_target);
         pipeline.timings.import_ms = pipeline.started.elapsed().as_millis() as u64;
         if matches!(plan, TextSearchPlan::ExactFirst)
@@ -2482,6 +2493,17 @@ impl Searcher {
                 .first()
                 .map(|candidate| exact_refinement_score(&candidate.hit, &plan.refinement_tokens))
                 .unwrap_or(0);
+            if best == 0 {
+                // An anchored query with refinements is asking for a member
+                // family, not just the anchor declaration.  Let the normal
+                // discovery pipeline rank related declarations when the
+                // anchor carries none of the requested terms; returning it
+                // here hides useful `.trans`/`.symm`-style members.
+                return Ok(ExactResolution {
+                    result: None,
+                    ambiguous,
+                });
+            }
             if best > 0
                 && ranked.get(1).is_none_or(|candidate| {
                     exact_refinement_score(&candidate.hit, &plan.refinement_tokens) < best
