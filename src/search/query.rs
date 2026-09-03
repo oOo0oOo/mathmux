@@ -1348,7 +1348,8 @@ pub(super) fn promote_family_candidates(
                 let matched = requested_terms
                     .iter()
                     .filter(|term| {
-                        !covered.contains(term.as_str()) && hit_matches_token(&candidate.hit, term)
+                        !covered.contains(term.as_str())
+                            && hit_name_matches(&candidate.hit.name, term)
                     })
                     .count();
                 let apply_name = prefer_apply
@@ -1387,7 +1388,7 @@ pub(super) fn promote_family_candidates(
         let candidate = remaining.remove(position);
         for term in requested_terms
             .iter()
-            .filter(|term| hit_matches_token(&candidate.hit, term))
+            .filter(|term| hit_name_matches(&candidate.hit.name, term))
         {
             covered.insert(term.clone());
         }
