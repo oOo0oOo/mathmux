@@ -3233,6 +3233,36 @@ fn exact_misses_overlay_active_sibling_declarations_as_unmerged() {
     assert_eq!(summary.matches("suggestion:").count(), 2);
     assert_eq!(summary.matches("UNMERGED (").count(), 1);
     assert!(summary.contains("unmerged sibling declarations (not usable locally):"));
+
+    for (owner, origin) in [
+        ("workspace:w1", "current/OnlyFile.lean"),
+        ("workspace:w2", "sibling/OnlyFile.lean"),
+    ] {
+        connection
+            .execute(
+                "INSERT INTO search_fts(
+                    owner, origin, file, module, line, name, kind, signature, docs, body
+                 ) VALUES (?1, ?2, 'OnlyFile.lean',
+                           'AtiyahSinger.OnlyFile', 12, ?3, 'file', '', '', '')",
+                params![owner, origin, "AtiyahSinger.OnlyFile"],
+            )
+            .unwrap();
+    }
+    let file_result = searcher
+        .exact_miss_result(
+            &current,
+            "AtiyahSinger.OnlyFile",
+            &scopes,
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+    assert!(file_result.hits.is_empty());
+    let file_note = file_result.note.as_deref().unwrap();
+    assert!(!file_note.contains("unmerged sibling declarations"));
+    assert!(file_note.contains("local source module found: OnlyFile.lean"));
+    assert!(file_note.contains("mathmux search OnlyFile.lean outline"));
 }
 
 #[test]

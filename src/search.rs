@@ -2613,6 +2613,12 @@ impl Searcher {
         } else {
             format!("exact declaration not found: {query}")
         };
+        let local_source_module = self
+            .exact_candidates(query, scopes)?
+            .into_iter()
+            .find(|row| {
+                row.owner == format!("workspace:{}", workspace.reference) && row.kind == "file"
+            });
         let unmerged = self.fleet_exact_suggestions(workspace, query)?;
         let has_local_suggestions = !suggestions.is_empty();
         let has_unmerged_suggestions = !unmerged.is_empty();
@@ -2630,6 +2636,12 @@ impl Searcher {
         }
         if has_unmerged_suggestions {
             note.push_str("\nunmerged sibling declarations (not usable locally):");
+        }
+        if let Some(source) = local_source_module {
+            note.push_str(&format!(
+                "\nlocal source module found: {}; use `mathmux search {} outline` for its declarations",
+                source.path, source.path
+            ));
         }
         if base_warming {
             note.push_str("\nsource index warming");
@@ -2711,6 +2723,7 @@ impl Searcher {
             for mut candidate in ranked_exact_candidates(rows, query, &sibling)
                 .into_iter()
                 .filter(|candidate| exact_declaration_name_matches(&candidate.hit.name, query))
+                .filter(|candidate| !matches!(candidate.hit.kind.as_str(), "file" | "imports"))
             {
                 if !seen.insert(candidate.hit.name.clone()) {
                     continue;
