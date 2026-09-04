@@ -1989,6 +1989,7 @@ mod tests {
             cwd: root.to_string_lossy().into_owned(),
             command: Command::Search {
                 query: "Demo.target".into(),
+                max_results: None,
                 all: false,
             },
         };
@@ -2021,6 +2022,7 @@ mod tests {
         let source_no_match = Request {
             command: Command::Search {
                 query: "re:never_matches".into(),
+                max_results: None,
                 all: false,
             },
             ..search.clone()
@@ -2036,6 +2038,7 @@ mod tests {
         let source_timeout = Request {
             command: Command::Search {
                 query: "re:slow".into(),
+                max_results: None,
                 all: false,
             },
             ..search.clone()
@@ -2051,6 +2054,7 @@ mod tests {
         let unmerged_miss = Request {
             command: Command::Search {
                 query: "CompactlySupportedKZero subtype equiv".into(),
+                max_results: None,
                 all: false,
             },
             ..search.clone()
@@ -2161,6 +2165,7 @@ mod tests {
             cwd: String::new(),
             command: Command::Search {
                 query: query.into(),
+                max_results: None,
                 all: false,
             },
         };
@@ -2218,6 +2223,7 @@ mod tests {
             cwd: root.to_string_lossy().into_owned(),
             command: Command::Search {
                 query: "Demo.first".into(),
+                max_results: None,
                 all: false,
             },
         };

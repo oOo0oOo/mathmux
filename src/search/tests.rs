@@ -3273,7 +3273,7 @@ fn exact_declaration_lookup_ignores_same_named_file_rows() {
     let searcher = Searcher::new(repo, state, checker, None).unwrap();
 
     let result = searcher
-        .search(&workspace, &root, "AtiyahSinger.Demo", false)
+        .search(&workspace, &root, "AtiyahSinger.Demo", None, false)
         .unwrap();
 
     assert!(result.starts_with("exact declaration\n"), "{result}");

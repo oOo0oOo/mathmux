@@ -680,10 +680,11 @@ impl Searcher {
         workspace: &Workspace,
         cwd: &Path,
         query: &str,
+        max_results: Option<usize>,
         all: bool,
     ) -> Result<String> {
         let query = normalize_colon_attached_source_facet(query);
-        let request = SearchRequest::parse(&query, all)?;
+        let request = SearchRequest::parse(&query, max_results, all)?;
         let started = Instant::now();
         let requested_query = request.displayed_query.clone();
         let (query, forced_plan) = match &request.expression {
@@ -760,6 +761,9 @@ impl Searcher {
         }
         if !expanded.context.is_empty() {
             result.hits.splice(0..0, expanded.context);
+        }
+        if let Some(max_results) = request.max_results {
+            result.hits.truncate(max_results);
         }
         let run = SearchRun {
             reference: reference.clone(),

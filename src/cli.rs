@@ -53,6 +53,7 @@ RESULT
   Regex and source-term matches group by enclosing declaration. qREF metadata is last.
   Use probe NAME source|outline|usages for focused detail. qREFs retain stored result sets;
   show qREF --all expands genuine multi-result or source-range searches.
+  --max-results N (1–200) caps hits and cannot combine with --all.
   Source-only ranges of 48 lines or fewer are complete in compact mode; longer
   ranges name the next non-overlapping range. search --all is accepted only for
   explicit FILE:START-END or FILE:tail reads. Refine grouped searches before expansion.
@@ -159,6 +160,13 @@ enum TopCommand {
         /// Query terms; the query form is inferred as documented above.
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
+        /// Return at most N ranked results (1–200).
+        #[arg(
+            long = "max-results",
+            value_parser = parse_max_results,
+            conflicts_with = "all"
+        )]
+        max_results: Option<usize>,
         /// Expand an explicit FILE:START-END or FILE:tail source read.
         #[arg(long)]
         all: bool,
@@ -407,8 +415,13 @@ pub fn run() -> Result<u8> {
             }),
             profile,
         },
-        TopCommand::Search { query, all } => Command::Search {
+        TopCommand::Search {
+            query,
+            max_results,
+            all,
+        } => Command::Search {
             query: query.join(" "),
+            max_results,
             all,
         },
         TopCommand::Probe { query } => Command::Probe {
@@ -513,6 +526,17 @@ pub fn run() -> Result<u8> {
     } else {
         eprintln!("error {}", response.summary);
         Ok(1)
+    }
+}
+
+fn parse_max_results(value: &str) -> std::result::Result<usize, String> {
+    let max_results = value
+        .parse::<usize>()
+        .map_err(|_| "--max-results must be between 1 and 200".to_owned())?;
+    if (1..=200).contains(&max_results) {
+        Ok(max_results)
+    } else {
+        Err("--max-results must be between 1 and 200".to_owned())
     }
 }
 
@@ -976,14 +1000,37 @@ mod tests {
             .try_get_matches_from(["mathmux", "search", "LinearEquiv.ofFinrankEq", "--all"])
             .unwrap();
         let args = Args::from_arg_matches(&matches).unwrap();
-        let TopCommand::Search { query, all } = args.command else {
+        let TopCommand::Search {
+            query,
+            max_results,
+            all,
+        } = args.command
+        else {
             panic!("expected search command");
         };
         assert_eq!(query, ["LinearEquiv.ofFinrankEq"]);
+        assert_eq!(max_results, None);
         assert!(all);
         assert!(
             command_line()
                 .try_get_matches_from(["mathmux", "search", "target", "--limit", "80"])
+                .is_err()
+        );
+        let matches = command_line()
+            .try_get_matches_from(["mathmux", "search", "target", "--max-results", "3"])
+            .unwrap();
+        let args = Args::from_arg_matches(&matches).unwrap();
+        let TopCommand::Search {
+            max_results, all, ..
+        } = args.command
+        else {
+            panic!("expected search command");
+        };
+        assert_eq!(max_results, Some(3));
+        assert!(!all);
+        assert!(
+            command_line()
+                .try_get_matches_from(["mathmux", "search", "target", "--max-results", "0"])
                 .is_err()
         );
     }
@@ -1005,6 +1052,7 @@ mod tests {
             "source/compose are labels, not keywords",
             "sREF requires TERMS",
             "Source facets accept a space or FILE.lean:outline shorthand.",
+            "--max-results N (1–200) caps hits and cannot combine with --all",
             "search --all is accepted only",
         ] {
             assert!(help.contains(form), "missing search form {form}");

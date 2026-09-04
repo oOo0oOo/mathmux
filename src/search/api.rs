@@ -12,13 +12,24 @@ pub(super) enum SearchExpression {
 pub(super) struct SearchRequest {
     pub(super) expression: SearchExpression,
     pub(super) displayed_query: String,
+    pub(super) max_results: Option<usize>,
     pub(super) all: bool,
 }
 
 impl SearchRequest {
-    pub(super) fn parse(query: &str, all: bool) -> Result<Self> {
+    pub(super) fn parse(query: &str, max_results: Option<usize>, all: bool) -> Result<Self> {
         let query = query.trim();
         ensure!(!query.is_empty(), "search query is empty");
+        if let Some(max_results) = max_results {
+            ensure!(
+                (1..=200).contains(&max_results),
+                "--max-results must be between 1 and 200"
+            );
+        }
+        ensure!(
+            max_results.is_none() || !all,
+            "--max-results cannot be combined with --all"
+        );
         ensure!(
             !query
                 .split_whitespace()
@@ -66,6 +77,7 @@ impl SearchRequest {
         Ok(Self {
             expression,
             displayed_query: query.to_owned(),
+            max_results,
             all,
         })
     }
@@ -142,32 +154,56 @@ mod tests {
     #[test]
     fn parses_forced_query_classes_without_fallback() {
         assert_eq!(
-            SearchRequest::parse("type:_ ≃L[ℂ] F", false)
+            SearchRequest::parse("type:_ ≃L[ℂ] F", None, false)
                 .unwrap()
                 .expression,
             SearchExpression::Type("_ ≃L[ℂ] F".into())
         );
         assert_eq!(
-            SearchRequest::parse("Mathlib re:/foo|bar/", false)
+            SearchRequest::parse("Mathlib re:/foo|bar/", None, false)
                 .unwrap()
                 .expression,
             SearchExpression::Regex("Mathlib /foo|bar/".into())
         );
-        assert!(SearchRequest::parse("type:(Nat → Nat", false).is_err());
+        assert!(SearchRequest::parse("type:(Nat → Nat", None, false).is_err());
     }
 
     #[test]
     fn rejects_removed_legacy_forms() {
-        assert!(SearchRequest::parse("q12 more", false).is_err());
-        assert!(SearchRequest::parse("c12 repair", false).is_err());
-        assert!(SearchRequest::parse("#check Nat", false).is_err());
-        assert!(SearchRequest::parse("theorem name:foo", false).is_err());
-        assert!(SearchRequest::parse("name:A.B", false).is_err());
+        assert!(SearchRequest::parse("q12 more", None, false).is_err());
+        assert!(SearchRequest::parse("c12 repair", None, false).is_err());
+        assert!(SearchRequest::parse("#check Nat", None, false).is_err());
+        assert!(SearchRequest::parse("theorem name:foo", None, false).is_err());
+        assert!(SearchRequest::parse("name:A.B", None, false).is_err());
+    }
+
+    #[test]
+    fn validates_max_results_cap() {
+        let request = SearchRequest::parse("Demo", Some(3), false).unwrap();
+        assert_eq!(request.max_results, Some(3));
+        assert_eq!(
+            SearchRequest::parse("Demo", Some(0), false)
+                .unwrap_err()
+                .to_string(),
+            "--max-results must be between 1 and 200"
+        );
+        assert_eq!(
+            SearchRequest::parse("Demo", Some(201), false)
+                .unwrap_err()
+                .to_string(),
+            "--max-results must be between 1 and 200"
+        );
+        assert_eq!(
+            SearchRequest::parse("Demo", Some(3), true)
+                .unwrap_err()
+                .to_string(),
+            "--max-results cannot be combined with --all"
+        );
     }
 
     #[test]
     fn explains_removed_exact_name_syntax() {
-        let error = SearchRequest::parse("name:A", false).unwrap_err();
+        let error = SearchRequest::parse("name:A", None, false).unwrap_err();
         assert_eq!(
             error.to_string(),
             "name: search was removed; use a bare exact declaration name or `declaration PATTERN`"
@@ -176,12 +212,12 @@ mod tests {
 
     #[test]
     fn rejects_malformed_pasted_fragments_before_search() {
-        let error = SearchRequest::parse("Fin (n + m)))))", false).unwrap_err();
+        let error = SearchRequest::parse("Fin (n + m)))))", None, false).unwrap_err();
         assert!(error.to_string().contains("malformed search fragment"));
         assert!(error.to_string().contains("type:Fin (n + m)))))"));
         assert!(error.to_string().contains("FILE:LINE"));
 
-        let error = SearchRequest::parse("foo \"bar", false).unwrap_err();
+        let error = SearchRequest::parse("foo \"bar", None, false).unwrap_err();
         assert!(error.to_string().contains("unterminated string literal"));
     }
 }
