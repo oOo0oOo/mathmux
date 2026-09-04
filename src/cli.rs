@@ -540,15 +540,28 @@ fn parse_max_results(value: &str) -> std::result::Result<usize, String> {
     }
 }
 
+fn exchange_progress_label(command: &Command) -> Option<&'static str> {
+    match command {
+        Command::Check { .. } => Some("check"),
+        Command::Probe { .. } => Some("probe"),
+        Command::Show { wait: true, .. } => Some("show"),
+        _ => None,
+    }
+}
+
+fn progress_update_due(
+    progress_label: Option<&str>,
+    elapsed: Duration,
+    next_report: Duration,
+) -> bool {
+    progress_label == Some("show") && elapsed >= next_report
+}
+
 fn exchange(mut stream: UnixStream, request: &Request) -> Result<Response> {
     serde_json::to_writer(&mut stream, &request)?;
     stream.write_all(b"\n")?;
     stream.flush()?;
-    let progress_label = match request.command {
-        Command::Check { .. } => Some("check"),
-        Command::Probe { .. } => Some("probe"),
-        _ => None,
-    };
+    let progress_label = exchange_progress_label(&request.command);
     if progress_label.is_some() {
         stream.set_read_timeout(Some(Duration::from_secs(30)))?;
     }
@@ -572,6 +585,14 @@ fn exchange(mut stream: UnixStream, request: &Request) -> Result<Response> {
             Ok(_) => {
                 if let Ok(frame) = serde_json::from_str::<Progress>(&line) {
                     progress = frame.progress;
+                    if progress_update_due(progress_label, started.elapsed(), next_report) {
+                        eprintln!(
+                            "{} {progress} {}s",
+                            progress_label.expect("progress label is present"),
+                            started.elapsed().as_secs()
+                        );
+                        next_report += Duration::from_secs(30);
+                    }
                     continue;
                 }
                 return serde_json::from_str(&line).context("invalid daemon response");
@@ -912,6 +933,38 @@ mod tests {
         server_thread.join().unwrap();
         assert!(response.ok);
         assert_eq!(response.summary, "ok c1 1ms");
+    }
+
+    #[test]
+    fn show_wait_progress_is_bounded_without_changing_plain_show() {
+        let show_wait = Command::Show {
+            reference: "s1".into(),
+            all: false,
+            wait: true,
+        };
+        let plain_show = Command::Show {
+            reference: "s1".into(),
+            all: false,
+            wait: false,
+        };
+
+        assert_eq!(exchange_progress_label(&show_wait), Some("show"));
+        assert_eq!(exchange_progress_label(&plain_show), None);
+        assert!(!progress_update_due(
+            Some("show"),
+            Duration::from_secs(9),
+            Duration::from_secs(10)
+        ));
+        assert!(progress_update_due(
+            Some("show"),
+            Duration::from_secs(10),
+            Duration::from_secs(10)
+        ));
+        assert!(!progress_update_due(
+            Some("check"),
+            Duration::from_secs(20),
+            Duration::from_secs(10)
+        ));
     }
 
     #[cfg(not(feature = "development"))]
