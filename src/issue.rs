@@ -953,7 +953,11 @@ fn exchange_outcome_class(
         Command::Search { .. } | Command::Probe { .. }
     ) {
         if response.summary.contains("source regex scan timed out") {
-            return Some("operational_error");
+            return Some(if response.ok {
+                "partial_result"
+            } else {
+                "operational_error"
+            });
         }
         if response.summary.contains("no regex source matches")
             || response.summary.contains(" no results")
@@ -1150,6 +1154,10 @@ fn render_aggregate(verb: &str, events: &[&TelemetryEvent]) -> String {
         .iter()
         .filter(|event| event.outcome_class.as_deref() == Some("near_suggestions"))
         .count();
+    let partial = events
+        .iter()
+        .filter(|event| event.outcome_class.as_deref() == Some("partial_result"))
+        .count();
     let errors = events
         .iter()
         .filter(|event| {
@@ -1170,6 +1178,9 @@ fn render_aggregate(verb: &str, events: &[&TelemetryEvent]) -> String {
     }
     if near > 0 {
         outcomes.push(format!("near:{near}"));
+    }
+    if partial > 0 {
+        outcomes.push(format!("partial:{partial}"));
     }
     outcomes.push(format!("err:{errors}"));
     let outcome = outcomes.join(" ");
@@ -1197,6 +1208,7 @@ fn render_event_line(event: &TelemetryEvent) -> String {
     let status = match event.outcome_class.as_deref() {
         Some("no_result") => "miss",
         Some("near_suggestions") => "near",
+        Some("partial_result") => "partial",
         Some("formalization") => "failed",
         Some("operational" | "operational_error") => "error",
         _ if event.ok => "ok",
@@ -2101,7 +2113,21 @@ mod tests {
             .unwrap();
         assert_eq!(
             source_outcomes,
-            vec![Some("no_result".into()), Some("operational_error".into())]
+            vec![Some("no_result".into()), Some("partial_result".into())]
+        );
+        let summary = store.summary("24h", None, None).unwrap();
+        assert!(
+            summary.contains("search 5 avg:9ms p50:8ms p95:12ms miss:2 near:1 partial:1 err:0")
+        );
+        let partial_event = store
+            .events_since(0, None)
+            .unwrap()
+            .into_iter()
+            .find(|event| event.id == 5)
+            .unwrap();
+        assert_eq!(
+            render_event_line(&partial_event),
+            "e5 search 8ms partial q5"
         );
         let unmerged_outcome = connection
             .query_row(
