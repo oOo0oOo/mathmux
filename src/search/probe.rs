@@ -264,6 +264,16 @@ fn indexed_check_hit<'a>(run: &'a SearchRun, subject: &str) -> Option<&'a Search
     })
 }
 
+fn indexed_check_hit_from_result(result: SearchResult, subject: &str) -> Option<SearchHit> {
+    result.hits.into_iter().find(|hit| {
+        qualified_name_matches(&hit.name, subject)
+            && hit
+                .signature
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+    })
+}
+
 fn parse_context(value: &str) -> Option<ProbeContext> {
     if Reference::is_kind(value, ReferenceKind::Check) {
         return Some(ProbeContext::Check(value.into()));
@@ -336,7 +346,8 @@ impl Searcher {
         if let Some(directive) = request.directive {
             let context = request.context.unwrap();
             if let LeanDirective::Check(subject) = &directive
-                && let Some(rendered) = self.probe_indexed_check(workspace, &context, subject)?
+                && let Some(rendered) =
+                    self.probe_indexed_check(workspace, cwd, &context, subject)?
             {
                 return Ok(rendered);
             }
@@ -462,21 +473,52 @@ impl Searcher {
     fn probe_indexed_check(
         &self,
         workspace: &Workspace,
+        cwd: &Path,
         context: &ProbeContext,
         subject: &str,
     ) -> Result<Option<String>> {
-        let ProbeContext::Query(reference, hit_index) = context else {
-            return Ok(None);
+        let query = match context {
+            ProbeContext::Query(reference, _) => format!("{reference} #check {subject}"),
+            ProbeContext::File(file) => format!("{file} #check {subject}"),
+            _ => return Ok(None),
         };
-        let Some(run) = self.state.search_run(reference)? else {
-            return Ok(None);
+        let file_target = match context {
+            ProbeContext::File(file) => {
+                let (path, _) =
+                    self.resolve_probe_context(workspace, cwd, ProbeContext::File(file.clone()))?;
+                Some(
+                    path.strip_prefix(&workspace.path)
+                        .unwrap_or(&path)
+                        .to_owned(),
+                )
+            }
+            _ => None,
         };
-        let Some(hit) = run
-            .hits
-            .get(*hit_index)
-            .filter(|hit| qualified_name_matches(&hit.name, subject))
-            .or_else(|| indexed_check_hit(&run, subject))
-        else {
+        let hit = match context {
+            ProbeContext::Query(reference, hit_index) => {
+                let Some(run) = self.state.search_run(reference)? else {
+                    return Ok(None);
+                };
+                run.hits
+                    .get(*hit_index)
+                    .filter(|hit| qualified_name_matches(&hit.name, subject))
+                    .or_else(|| indexed_check_hit(&run, subject))
+                    .cloned()
+            }
+            ProbeContext::File(_) if declaration_name_query(subject) => self
+                .planned_text_search(
+                    workspace,
+                    subject,
+                    TextSearchPlan::ExactFirst,
+                    file_target.as_deref(),
+                    None,
+                    false,
+                )
+                .ok()
+                .and_then(|result| indexed_check_hit_from_result(result, subject)),
+            _ => None,
+        };
+        let Some(hit) = hit else {
             return Ok(None);
         };
         let signature = hit
@@ -485,7 +527,7 @@ impl Searcher {
             .expect("indexed check requires a signature");
         self.store_probe_result(
             workspace,
-            &format!("{reference} #check {subject}"),
+            &query,
             "check",
             format!("{} : {signature}", hit.name),
             (!hit.path.is_empty()).then_some(hit.path.as_str()),
@@ -2319,6 +2361,33 @@ mod tests {
         ));
         assert!(is_declaration_header("private theorem hidden"));
         assert!(!is_declaration_header("  intro i"));
+    }
+
+    #[test]
+    fn indexed_file_check_accepts_an_exact_declaration_hit() {
+        let result = SearchResult {
+            hits: vec![SearchHit {
+                name: "Demo.target".into(),
+                kind: "theorem".into(),
+                signature: Some(": True".into()),
+                module: "Demo".into(),
+                path: "Demo.lean".into(),
+                line: 7,
+                doc: None,
+                source: None,
+                usages: Vec::new(),
+                applicable: false,
+                required_import: None,
+            }],
+            inference: "exact".into(),
+            note: None,
+            ok: true,
+        };
+
+        assert_eq!(
+            indexed_check_hit_from_result(result, "Demo.target").map(|hit| hit.name),
+            Some("Demo.target".into())
+        );
     }
 
     #[test]

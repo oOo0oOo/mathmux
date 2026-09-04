@@ -67,9 +67,18 @@ where
 }
 
 pub(crate) fn run_command_with_timeout(
+    command: Command,
+    timeout: Duration,
+    phase: &'static str,
+) -> Result<Output> {
+    run_command_with_timeout_cancelable(command, timeout, phase, || false)
+}
+
+pub(crate) fn run_command_with_timeout_cancelable(
     mut command: Command,
     timeout: Duration,
     phase: &'static str,
+    cancelled: impl Fn() -> bool,
 ) -> Result<Output> {
     command
         .stdin(Stdio::null())
@@ -97,6 +106,12 @@ pub(crate) fn run_command_with_timeout(
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
+            Ok(None) if cancelled() => {
+                kill_process_group(&mut child);
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err(anyhow!("{phase} cancelled by operator"));
+            }
             Ok(None) if Instant::now() >= deadline => {
                 kill_process_group(&mut child);
                 let _ = stdout_reader.join();

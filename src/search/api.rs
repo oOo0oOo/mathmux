@@ -106,8 +106,13 @@ fn validate_balanced_fragment_with_hint(fragment: &str, form: &str) -> Result<()
             }
             continue;
         }
+        if escaped {
+            escaped = false;
+            continue;
+        }
         match ch {
             '"' => quoted = true,
+            '\\' => escaped = true,
             '(' | '[' | '{' => stack.push(ch),
             ')' | ']' | '}' => {
                 let expected = match ch {
@@ -118,7 +123,7 @@ fn validate_balanced_fragment_with_hint(fragment: &str, form: &str) -> Result<()
                 };
                 ensure!(
                     stack.pop() == Some(expected),
-                    "malformed {form} fragment: unmatched `{ch}`; try `type:{fragment}` for a type fragment or `FILE:LINE`/`FILE:START-END` for source code context"
+                    "malformed {form} fragment: unmatched `{ch}`; escape literal delimiters (for example `\\(`), try `type:{fragment}` for a type fragment, or use `FILE:LINE`/`FILE:START-END` for source code context"
                 );
             }
             _ => {}
@@ -126,11 +131,11 @@ fn validate_balanced_fragment_with_hint(fragment: &str, form: &str) -> Result<()
     }
     ensure!(
         !quoted,
-        "malformed {form} fragment: unterminated string literal; try `type:{fragment}` for a type fragment or `FILE:LINE`/`FILE:START-END` for source code context"
+        "malformed {form} fragment: unterminated string literal; escape literal delimiters (for example `\\(`), try `type:{fragment}` for a type fragment, or use `FILE:LINE`/`FILE:START-END` for source code context"
     );
     ensure!(
         stack.is_empty(),
-        "malformed {form} fragment: unmatched delimiter; try `type:{fragment}` for a type fragment or `FILE:LINE`/`FILE:START-END` for source code context"
+        "malformed {form} fragment: unmatched delimiter; escape literal delimiters (for example `\\(`), try `type:{fragment}` for a type fragment, or use `FILE:LINE`/`FILE:START-END` for source code context"
     );
     Ok(())
 }
@@ -216,6 +221,9 @@ mod tests {
         assert!(error.to_string().contains("malformed search fragment"));
         assert!(error.to_string().contains("type:Fin (n + m)))))"));
         assert!(error.to_string().contains("FILE:LINE"));
+        assert!(error.to_string().contains("escape literal delimiters"));
+
+        assert!(SearchRequest::parse(r"inner ℂ \(∑", None, false).is_ok());
 
         let error = SearchRequest::parse("foo \"bar", None, false).unwrap_err();
         assert!(error.to_string().contains("unterminated string literal"));

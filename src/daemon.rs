@@ -339,6 +339,10 @@ impl Service {
                     bail!(summary)
                 }
             }
+            Command::Cancel { reference } => {
+                let workspace = self.state.workspace_for_path(&cwd)?;
+                self.checker.cancel(&workspace.reference, &reference)
+            }
             Command::Search {
                 query,
                 max_results,

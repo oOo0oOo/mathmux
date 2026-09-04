@@ -171,6 +171,10 @@ impl LeanServiceProcess {
         matches!(self.child.try_wait(), Ok(None))
     }
 
+    pub(crate) fn process_group_id(&self) -> u32 {
+        self.child.id()
+    }
+
     pub(crate) fn rss_kib(&self) -> Option<u64> {
         let group = self.child.id() as i32;
         let mut total = 0_u64;

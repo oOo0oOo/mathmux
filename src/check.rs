@@ -4,6 +4,7 @@ use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, TryLockError, Weak};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
@@ -23,7 +24,10 @@ use crate::state::{
     CheckProfile, CheckProfileEntry, CheckRecord, CheckRun, CheckStatus, Diagnostic,
     FileCheckProfile, State, Workspace,
 };
-use crate::util::{hash_bytes, hash_file, now_unix_ms, run_command_with_timeout};
+use crate::util::{
+    hash_bytes, hash_file, now_unix_ms, run_command_with_timeout,
+    run_command_with_timeout_cancelable,
+};
 
 mod diagnostics;
 
@@ -104,6 +108,17 @@ impl std::fmt::Display for CheckTimeout {
 }
 
 impl std::error::Error for CheckTimeout {}
+
+#[derive(Debug)]
+struct CheckCancelled;
+
+impl std::fmt::Display for CheckCancelled {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("check cancelled by operator")
+    }
+}
+
+impl std::error::Error for CheckCancelled {}
 
 #[derive(Debug)]
 struct DependencySetupFailure {
@@ -251,7 +266,38 @@ pub struct Checker {
     coordinator: CheckCoordinator,
     cache: CheckCache,
     runner: LeanCheckRunner,
+    active_checks: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    active_processes: Mutex<HashMap<String, HashSet<u32>>>,
     telemetry: Option<Arc<TelemetryStore>>,
+}
+
+struct ActiveCheckGuard<'a> {
+    checker: &'a Checker,
+    reference: String,
+}
+
+impl Drop for ActiveCheckGuard<'_> {
+    fn drop(&mut self) {
+        self.checker
+            .active_checks
+            .lock()
+            .expect("active check map poisoned")
+            .remove(&self.reference);
+        self.checker
+            .active_processes
+            .lock()
+            .expect("active process map poisoned")
+            .remove(&self.reference);
+    }
+}
+
+fn terminate_process_group(process_group: u32) {
+    if process_group <= 1 {
+        return;
+    }
+    unsafe {
+        libc::kill(-(process_group as i32), libc::SIGKILL);
+    }
 }
 
 impl Checker {
@@ -271,6 +317,8 @@ impl Checker {
             coordinator: CheckCoordinator::default(),
             cache: CheckCache::default(),
             runner: LeanCheckRunner::default(),
+            active_checks: Mutex::new(HashMap::new()),
+            active_processes: Mutex::new(HashMap::new()),
             telemetry,
         };
         let recovered = checker.recover_interrupted_checks()?;
@@ -283,6 +331,44 @@ impl Checker {
             let _ = writeln!(log, "recovered {recovered} interrupted check(s)");
         }
         Ok(checker)
+    }
+
+    pub fn cancel(&self, workspace_ref: &str, reference: &str) -> Result<String> {
+        let run = self
+            .state
+            .check_run(reference)?
+            .with_context(|| format!("unknown check {reference}"))?;
+        ensure!(
+            run.workspace_ref == workspace_ref,
+            "{reference} belongs to {}; cancel it from that workspace",
+            run.workspace_ref
+        );
+        ensure!(
+            run.status == CheckStatus::Running,
+            "{reference} is not running (status {})",
+            run.status
+        );
+        let cancellation = self
+            .active_checks
+            .lock()
+            .expect("active check map poisoned")
+            .get(reference)
+            .cloned()
+            .with_context(|| format!("{reference} is not cancellable in this daemon"))?;
+        cancellation.store(true, Ordering::SeqCst);
+        let process_groups = self
+            .active_processes
+            .lock()
+            .expect("active process map poisoned")
+            .get(reference)
+            .cloned()
+            .unwrap_or_default();
+        for process_group in process_groups {
+            terminate_process_group(process_group);
+        }
+        Ok(format!(
+            "{reference} cancellation requested; show {reference} to confirm the terminal result"
+        ))
     }
 
     fn check_run_lock_path(&self, reference: &str) -> PathBuf {
@@ -379,6 +465,15 @@ impl Checker {
             },
             &[],
         )?;
+        let cancellation = Arc::new(AtomicBool::new(false));
+        self.active_checks
+            .lock()
+            .expect("active check map poisoned")
+            .insert(reference.clone(), cancellation.clone());
+        let _active_check = ActiveCheckGuard {
+            checker: self,
+            reference: reference.clone(),
+        };
         let mut certificates = Vec::new();
         let mut passed = Vec::new();
         let mut warnings = Vec::new();
@@ -390,11 +485,21 @@ impl Checker {
 
         for target in &targets {
             let target_name = target.to_string_lossy().into_owned();
+            if cancellation.load(Ordering::SeqCst) {
+                failed = Some(target_name);
+                diagnostics.push(Diagnostic {
+                    kind: "mathmux.cancelled".into(),
+                    text: "check cancelled by operator".into(),
+                    context: None,
+                });
+                break;
+            }
             report(&format!("{reference} checking {target_name}"));
             match self.check_one(
                 workspace,
                 target,
                 &reference,
+                &cancellation,
                 include_profile,
                 dirty_targets.as_ref().map(|dirty| ImportCoverage {
                     dirty,
@@ -420,15 +525,31 @@ impl Checker {
                     }
                 }
                 Err(error) => {
-                    diagnostics.push(Diagnostic {
-                        kind: "mathmux".into(),
-                        text: format!("{error:#}"),
-                        context: None,
-                    });
+                    if cancellation.load(Ordering::SeqCst) {
+                        diagnostics.push(Diagnostic {
+                            kind: "mathmux.cancelled".into(),
+                            text: "check cancelled by operator".into(),
+                            context: None,
+                        });
+                    } else {
+                        diagnostics.push(Diagnostic {
+                            kind: "mathmux".into(),
+                            text: format!("{error:#}"),
+                            context: None,
+                        });
+                    }
                     failed = Some(target_name);
                     break;
                 }
             }
+        }
+        if failed.is_none() && cancellation.load(Ordering::SeqCst) {
+            failed = files.first().cloned();
+            diagnostics.push(Diagnostic {
+                kind: "mathmux.cancelled".into(),
+                text: "check cancelled by operator".into(),
+                context: None,
+            });
         }
         deduplicate(&mut warnings);
         deduplicate(&mut linters);
@@ -553,6 +674,7 @@ impl Checker {
         workspace: &Workspace,
         target: &Path,
         reference: &str,
+        cancellation: &AtomicBool,
         include_profile: bool,
         import_coverage: Option<ImportCoverage<'_>>,
         report: &mut dyn FnMut(&str),
@@ -745,11 +867,15 @@ impl Checker {
             });
         }
         let phase = Instant::now();
+        if cancellation.load(Ordering::SeqCst) {
+            return Err(CheckCancelled.into());
+        }
         report(&format!(
             "{reference} preparing imports for {}",
             target.display()
         ));
-        let (setup_path, environment) = match self.worker_setup(workspace, target, &dependencies) {
+        let setup = self.worker_setup(workspace, target, &dependencies, Some(cancellation));
+        let (setup_path, environment) = match setup {
             Ok(setup) => setup,
             Err(error) => {
                 let Some(failure) = error
@@ -814,6 +940,9 @@ impl Checker {
                 return Ok(result);
             }
         };
+        if cancellation.load(Ordering::SeqCst) {
+            return Err(CheckCancelled.into());
+        }
         let setup_ms = phase.elapsed().as_millis() as u64;
         let phase = Instant::now();
         report(&format!("{reference} elaborating {}", target.display()));
@@ -828,6 +957,8 @@ impl Checker {
             } else {
                 WorkerRun::Check
             },
+            Some(reference),
+            Some(cancellation),
         )?;
         let elaborate_ms = phase.elapsed().as_millis() as u64;
         ensure!(
@@ -972,6 +1103,8 @@ impl Checker {
         environment: &str,
         source: &str,
         run: WorkerRun<'_>,
+        check_reference: Option<&str>,
+        cancellation: Option<&AtomicBool>,
     ) -> Result<(WorkerResponse, &'static str, Option<u64>)> {
         let (allow_fallback, retry_worker, timeout, action, deadline) = match run {
             WorkerRun::Check => (true, true, CHECK_TIMEOUT, WorkerAction::CHECK, None),
@@ -1083,13 +1216,46 @@ impl Checker {
         } else {
             timeout
         };
-        match worker_guard.request(
+        if cancellation.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+            drop(worker_guard);
+            self.remove_worker(&key, &worker);
+            return Err(CheckCancelled.into());
+        }
+        let process_group = worker_guard.process.process_group_id();
+        if let Some(reference) = check_reference {
+            self.active_processes
+                .lock()
+                .expect("active process map poisoned")
+                .entry(reference.to_owned())
+                .or_default()
+                .insert(process_group);
+        }
+        let response = worker_guard.request(
             source,
             &target.to_string_lossy(),
             request_timeout,
             !profile,
             action,
-        ) {
+        );
+        if let Some(reference) = check_reference {
+            let mut active_processes = self
+                .active_processes
+                .lock()
+                .expect("active process map poisoned");
+            if let Some(processes) = active_processes.get_mut(reference) {
+                processes.remove(&process_group);
+                if processes.is_empty() {
+                    active_processes.remove(reference);
+                }
+            }
+        }
+        if cancellation.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+            terminate_process_group(process_group);
+            drop(worker_guard);
+            self.remove_worker(&key, &worker);
+            return Err(CheckCancelled.into());
+        }
+        match response {
             Ok((response, reuse)) => Ok((
                 response,
                 if profile {
@@ -1105,12 +1271,13 @@ impl Checker {
             )),
             Err(error) => {
                 let timed_out = error.downcast_ref::<CheckTimeout>().is_some();
-                if !(timed_out && deadline.is_some()) {
+                let cancelled = error.downcast_ref::<CheckCancelled>().is_some();
+                if !cancelled && !(timed_out && deadline.is_some()) {
                     self.record_worker_failure(&format!("request: {error:#}"));
                 }
                 drop(worker_guard);
                 self.remove_worker(&key, &worker);
-                if timed_out {
+                if timed_out || cancelled {
                     Err(error)
                 } else if retry_worker {
                     let mut replacement = LeanWorker::start(
@@ -1182,7 +1349,13 @@ impl Checker {
             Some(current) => current,
             None => {
                 let dependencies = transitive_dependencies(&workspace.path, &target)?;
-                self.worker_setup_with_deadline(workspace, &target, &dependencies, Some(deadline))?
+                self.worker_setup_with_deadline(
+                    workspace,
+                    &target,
+                    &dependencies,
+                    Some(deadline),
+                    None,
+                )?
             }
         };
         let (response, _, _) = self.run_worker(
@@ -1201,6 +1374,8 @@ impl Checker {
                     input,
                 },
             },
+            None,
+            None,
         )?;
         let detail = if response.detail.trim().is_empty() {
             response
@@ -1220,8 +1395,9 @@ impl Checker {
         workspace: &Workspace,
         target: &Path,
         dependencies: &[PathBuf],
+        cancellation: Option<&AtomicBool>,
     ) -> Result<(PathBuf, String)> {
-        self.worker_setup_with_deadline(workspace, target, dependencies, None)
+        self.worker_setup_with_deadline(workspace, target, dependencies, None, cancellation)
     }
 
     fn worker_setup_with_deadline(
@@ -1230,6 +1406,7 @@ impl Checker {
         target: &Path,
         dependencies: &[PathBuf],
         deadline: Option<Instant>,
+        cancellation: Option<&AtomicBool>,
     ) -> Result<(PathBuf, String)> {
         let setup_input = setup_input_fingerprint(&workspace.path, target, dependencies)?;
         let environment_base = environment_fingerprint(&workspace.path, dependencies)?;
@@ -1247,6 +1424,7 @@ impl Checker {
                     !dependencies.is_empty(),
                     dependencies,
                     deadline,
+                    cancellation,
                 )?;
                 environment =
                     self.worker_environment_from_base(workspace, target, &environment_base)?;
@@ -1336,6 +1514,7 @@ impl Checker {
         has_project_dependencies: bool,
         dependencies: &[PathBuf],
         deadline: Option<Instant>,
+        cancellation: Option<&AtomicBool>,
     ) -> Result<PathBuf> {
         let gc_lock = open_lock(&self.repo.state_dir.join("setup-gc.lock"))?;
         lock_shared_until(
@@ -1402,11 +1581,19 @@ impl Checker {
             .current_dir(lake_package_root(&workspace.path, target))
             .arg("setup-file")
             .arg(lake_package_target(&workspace.path, target));
-        let output = run_command_with_timeout(
-            command,
-            probe_phase_timeout(deadline, CHECK_TIMEOUT, "dependency setup")?,
-            "dependency setup",
-        )
+        let output = match cancellation {
+            Some(cancellation) => run_command_with_timeout_cancelable(
+                command,
+                probe_phase_timeout(deadline, CHECK_TIMEOUT, "dependency setup")?,
+                "dependency setup",
+                || cancellation.load(Ordering::SeqCst),
+            ),
+            None => run_command_with_timeout(
+                command,
+                probe_phase_timeout(deadline, CHECK_TIMEOUT, "dependency setup")?,
+                "dependency setup",
+            ),
+        }
             .with_context(|| {
                 format!(
                     "lake setup-file for {} failed; install the project's Lean toolchain and dependencies",
@@ -2568,6 +2755,8 @@ fn available_memory_gib() -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::process::CommandExt;
+
     use tempfile::tempdir;
 
     use super::*;
@@ -2634,6 +2823,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cancelled_dependency_setup_kills_the_child_process_group() {
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let trigger = cancellation.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            trigger.store(true, Ordering::SeqCst);
+        });
+        let started = Instant::now();
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 30 & wait"]);
+        let error = run_command_with_timeout_cancelable(
+            command,
+            Duration::from_secs(5),
+            "dependency setup",
+            || cancellation.load(Ordering::SeqCst),
+        )
+        .expect_err("cancelled dependency setup should fail");
+        assert!(error.to_string().contains("dependency setup cancelled"));
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
     fn running_check(workspace: &Workspace, reference: &str) -> CheckRun {
         CheckRun {
             reference: reference.into(),
@@ -2651,6 +2862,53 @@ mod tests {
             duration_ms: 0,
             created_at: now_unix_ms(),
         }
+    }
+
+    #[test]
+    fn cancel_owned_check_marks_it_and_terminates_its_process_group() {
+        let directory = tempdir().unwrap();
+        let repo = test_repo(directory.path());
+        let state = State::new(&repo.db_path).unwrap();
+        let workspace = Workspace {
+            reference: "w1".into(),
+            name: "agent".into(),
+            path: directory.path().to_path_buf(),
+            branch: "main".into(),
+            model: None,
+        };
+        state.add_workspace(&workspace).unwrap();
+        state
+            .add_check_run(&running_check(&workspace, "c1"), &[])
+            .unwrap();
+        let lock_path = repo.state_dir.join("check-runs/c1.lock");
+        fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+        let held = open_lock(&lock_path).unwrap();
+        held.try_lock_exclusive().unwrap();
+        let checker = Checker::new(repo, state, None).unwrap();
+        let cancellation = Arc::new(AtomicBool::new(false));
+        checker
+            .active_checks
+            .lock()
+            .unwrap()
+            .insert("c1".into(), cancellation.clone());
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        checker
+            .active_processes
+            .lock()
+            .unwrap()
+            .entry("c1".into())
+            .or_default()
+            .insert(child.id());
+
+        let summary = checker.cancel("w1", "c1").unwrap();
+        assert!(cancellation.load(Ordering::SeqCst));
+        assert!(summary.contains("c1 cancellation requested"));
+        assert!(!child.wait().unwrap().success());
+        drop(held);
     }
 
     #[test]

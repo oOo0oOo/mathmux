@@ -29,6 +29,9 @@ pub enum Command {
         #[serde(default)]
         profile: bool,
     },
+    Cancel {
+        reference: String,
+    },
     Search {
         query: String,
         #[serde(default)]
@@ -66,6 +69,7 @@ impl Command {
             Self::WsList => "ws_list",
             Self::WsDelete { .. } => "ws_delete",
             Self::Check { .. } => "check",
+            Self::Cancel { .. } => "cancel",
             Self::Search { .. } => "search",
             Self::Probe { .. } => "probe",
             Self::Status { .. } => "status",
@@ -184,6 +188,15 @@ mod tests {
         assert!(!all);
         assert_eq!(max_results, Some(12));
 
+        let request: Request = serde_json::from_str(
+            r#"{"cwd":"/project","command":{"verb":"cancel","reference":"c123"}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            request.command,
+            Command::Cancel { reference } if reference == "c123"
+        ));
+
         let request: Request =
             serde_json::from_str(r#"{"cwd":"/project","command":{"verb":"sync"}}"#).unwrap();
         let Command::Sync { push } = request.command else {
@@ -237,6 +250,12 @@ mod tests {
         );
         assert!(Command::Restart.transport_retry_safe());
         assert!(!Command::Submit { message: None }.transport_retry_safe());
+        assert!(
+            !Command::Cancel {
+                reference: "c1".into()
+            }
+            .transport_retry_safe()
+        );
         assert!(
             !Command::WsCreate {
                 name: "agent".into(),

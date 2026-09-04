@@ -53,7 +53,7 @@ RESULT
   Regex and source-term matches group by enclosing declaration. qREF metadata is last.
   Use probe NAME source|outline|usages for focused detail. qREFs retain stored result sets;
   show qREF --all expands genuine multi-result or source-range searches.
-  --max-results N (1–200) caps hits and cannot combine with --all.
+  --max-results/--limit N (1–200) caps hits and cannot combine with --all.
   Source-only ranges of 48 lines or fewer are complete in compact mode; longer
   ranges name the next non-overlapping range. search --all is accepted only for
   explicit FILE:START-END or FILE:tail reads. Refine grouped searches before expansion.
@@ -109,7 +109,8 @@ RULES
   Context is mandatory for directives and never guessed. FILE uses its imports;
   FILE:LINE uses that exact line—there is no nearby-line fallback. Probe never
   edits or certifies source; use check after editing. Use NAME signature, not
-  NAME "#check NAME". Quote directives."##;
+  NAME "#check NAME". Quote directives. Cancel an owned running check with
+  `mathmux cancel cREF`, then use `mathmux show cREF` to confirm termination."##;
 
 #[derive(Parser)]
 #[command(
@@ -154,6 +155,11 @@ enum TopCommand {
         #[arg(long)]
         profile: bool,
     },
+    /// Cancel an owned running check and terminate its Lean process group.
+    Cancel {
+        /// Running check reference, for example c123.
+        reference: String,
+    },
     /// Find Lean declarations, types, concepts, and source.
     #[command(before_help = SEARCH_HELP)]
     Search {
@@ -163,6 +169,7 @@ enum TopCommand {
         /// Return at most N ranked results (1–200).
         #[arg(
             long = "max-results",
+            visible_alias = "limit",
             value_parser = parse_max_results,
             conflicts_with = "all"
         )]
@@ -415,6 +422,7 @@ pub fn run() -> Result<u8> {
             }),
             profile,
         },
+        TopCommand::Cancel { reference } => Command::Cancel { reference },
         TopCommand::Search {
             query,
             max_results,
@@ -1048,6 +1056,18 @@ mod tests {
     }
 
     #[test]
+    fn cancel_accepts_a_check_reference() {
+        let matches = command_line()
+            .try_get_matches_from(["mathmux", "cancel", "c123"])
+            .unwrap();
+        let args = Args::from_arg_matches(&matches).unwrap();
+        assert!(matches!(
+            args.command,
+            TopCommand::Cancel { reference } if reference == "c123"
+        ));
+    }
+
+    #[test]
     fn search_all_is_an_option_not_a_query_term() {
         let matches = command_line()
             .try_get_matches_from(["mathmux", "search", "LinearEquiv.ofFinrankEq", "--all"])
@@ -1064,11 +1084,14 @@ mod tests {
         assert_eq!(query, ["LinearEquiv.ofFinrankEq"]);
         assert_eq!(max_results, None);
         assert!(all);
-        assert!(
-            command_line()
-                .try_get_matches_from(["mathmux", "search", "target", "--limit", "80"])
-                .is_err()
-        );
+        let matches = command_line()
+            .try_get_matches_from(["mathmux", "search", "target", "--limit", "80"])
+            .unwrap();
+        let args = Args::from_arg_matches(&matches).unwrap();
+        let TopCommand::Search { max_results, .. } = args.command else {
+            panic!("expected search command");
+        };
+        assert_eq!(max_results, Some(80));
         let matches = command_line()
             .try_get_matches_from(["mathmux", "search", "target", "--max-results", "3"])
             .unwrap();
@@ -1105,12 +1128,12 @@ mod tests {
             "source/compose are labels, not keywords",
             "sREF requires TERMS",
             "Source facets accept a space or FILE.lean:outline shorthand.",
-            "--max-results N (1–200) caps hits and cannot combine with --all",
+            "--max-results/--limit N (1–200) caps hits and cannot combine with --all",
             "search --all is accepted only",
         ] {
             assert!(help.contains(form), "missing search form {form}");
         }
-        assert!(!help.contains("--limit"));
+        assert!(help.contains("--limit"));
         assert!(!help.contains("cREF repair"));
         assert!(!help.contains("name:NAME"));
         assert!(!help.contains("name:A|B|C"));
