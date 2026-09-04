@@ -15,7 +15,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::artifact_cache::restore_available_olean;
 use crate::coordination::{lock_exclusive_until, lock_mutex_until, lock_shared_until, open_lock};
-use crate::git::{dirty_lean_files, lake_command, merge_in_progress, project_lean_files};
+use crate::git::{
+    dirty_lean_files, lake_command, merge_in_progress, project_lean_files, tracked_at_head,
+};
 use crate::issue::{TelemetryOperation, TelemetryStore};
 use crate::lean_service::{LeanServiceProcess, ServiceRequestError, reap_stale_processes};
 use crate::reference::ReferenceKind;
@@ -2339,15 +2341,31 @@ fn invalidates_worker(root: &Path, path: &Path, target: &Path) -> bool {
 }
 
 pub fn resolve_target(root: &Path, requested: &Path) -> Result<PathBuf> {
-    let absolute = if requested.is_absolute() {
+    let requested_absolute = if requested.is_absolute() {
         requested.to_path_buf()
     } else {
         std::env::current_dir()?.join(requested)
     };
-    let absolute = fs::canonicalize(&absolute)
-        .with_context(|| format!("cannot resolve {}", requested.display()))?;
+    let absolute = match fs::canonicalize(&requested_absolute) {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let parent = requested_absolute
+                .parent()
+                .with_context(|| format!("cannot resolve {}", requested.display()))?;
+            let parent = fs::canonicalize(parent)
+                .with_context(|| format!("cannot resolve {}", requested.display()))?;
+            let file_name = requested_absolute
+                .file_name()
+                .with_context(|| format!("cannot resolve {}", requested.display()))?;
+            parent.join(file_name)
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("cannot resolve {}", requested.display()));
+        }
+    };
+    let root = fs::canonicalize(root).with_context(|| "cannot resolve workspace root")?;
     ensure!(
-        absolute.starts_with(root),
+        absolute.starts_with(&root),
         "target is outside the current workspace"
     );
     ensure!(
@@ -2356,7 +2374,15 @@ pub fn resolve_target(root: &Path, requested: &Path) -> Result<PathBuf> {
             .is_some_and(|extension| extension == "lean"),
         "target is not a Lean file"
     );
-    Ok(absolute.strip_prefix(root)?.to_path_buf())
+    let relative = absolute.strip_prefix(&root)?.to_path_buf();
+    if !absolute.is_file() {
+        ensure!(
+            tracked_at_head(&root, &relative)?,
+            "target {} does not exist and is not tracked at HEAD",
+            requested.display()
+        );
+    }
+    Ok(relative)
 }
 
 pub fn transitive_dependencies(root: &Path, target: &Path) -> Result<Vec<PathBuf>> {
@@ -2775,6 +2801,53 @@ mod tests {
         assert_eq!(probe_timeout("term"), CONTEXTUAL_PROBE_TIMEOUT);
         assert_eq!(probe_timeout("check"), WARM_PROBE_TIMEOUT);
         assert_eq!(probe_timeout("synth"), WARM_PROBE_TIMEOUT);
+    }
+
+    #[test]
+    fn explicit_check_covers_a_deleted_tracked_lean_file() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("repo");
+        fs::create_dir_all(root.join("Guard")).unwrap();
+        let repo = test_repo(&root);
+        run_checked(
+            "git",
+            ["config", "user.name", "mathmux test"],
+            &root,
+        )
+        .unwrap();
+        run_checked(
+            "git",
+            ["config", "user.email", "mathmux@test.invalid"],
+            &root,
+        )
+        .unwrap();
+        let target = PathBuf::from("Guard/MalformedGuard.lean");
+        fs::write(root.join(&target), "def guard := True\n").unwrap();
+        run_checked("git", ["add", "."], &root).unwrap();
+        run_checked("git", ["commit", "-m", "tracked guard"], &root).unwrap();
+        fs::remove_file(root.join(&target)).unwrap();
+
+        let state = State::new(repo.db_path.clone()).unwrap();
+        let workspace = Workspace {
+            reference: "w1".into(),
+            name: "agent".into(),
+            path: root.clone(),
+            branch: "main".into(),
+            model: None,
+        };
+        state.add_workspace(&workspace).unwrap();
+        let checker = Checker::new(repo, state, None).unwrap();
+        let requested = root.join(&target);
+        let outcome = checker
+            .check(&workspace, Some(&requested), false, &mut |_| {})
+            .unwrap();
+
+        assert!(outcome.ok);
+        assert!(checker.valid_certificates(&workspace, &[target]).is_ok());
+
+        let untracked = root.join("Guard/Untracked.lean");
+        let error = resolve_target(&root, &untracked).unwrap_err();
+        assert!(error.to_string().contains("not tracked at HEAD"));
     }
 
     #[test]
