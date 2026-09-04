@@ -42,6 +42,9 @@ const TACTIC_PROBE_TIMEOUT: Duration = Duration::from_secs(16);
 // unlike a declaration signature lookup, this can legitimately need more
 // than the short warm-worker budget.
 const CONTEXTUAL_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+// Keep setup and worker contention from extending a probe indefinitely before
+// its operation-specific Lean budget starts.
+const PROBE_SETUP_TIMEOUT: Duration = Duration::from_secs(30);
 const WARM_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const SLOW_CHECK_PROFILE_MS: u64 = 5_000;
 const PROFILE_ENTRY_LIMIT: usize = 512;
@@ -60,6 +63,22 @@ fn probe_timeout(operation: &str) -> Duration {
     } else {
         WARM_PROBE_TIMEOUT
     }
+}
+
+fn probe_phase_timeout(
+    deadline: Option<Instant>,
+    fallback: Duration,
+    phase: &'static str,
+) -> Result<Duration> {
+    let Some(deadline) = deadline else {
+        return Ok(fallback);
+    };
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    ensure!(
+        !remaining.is_zero(),
+        "Lean probe total budget exceeded during {phase}"
+    );
+    Ok(remaining)
 }
 
 #[derive(Debug)]
@@ -215,6 +234,7 @@ enum WorkerRun<'a> {
     Check,
     Probe {
         timeout: Duration,
+        deadline: Instant,
         action: WorkerAction<'a>,
     },
     Profile,
@@ -953,10 +973,14 @@ impl Checker {
         source: &str,
         run: WorkerRun<'_>,
     ) -> Result<(WorkerResponse, &'static str, Option<u64>)> {
-        let (allow_fallback, retry_worker, timeout, action) = match run {
-            WorkerRun::Check => (true, true, CHECK_TIMEOUT, WorkerAction::CHECK),
-            WorkerRun::Probe { timeout, action } => (false, false, timeout, action),
-            WorkerRun::Profile => (false, true, CHECK_TIMEOUT, WorkerAction::CHECK),
+        let (allow_fallback, retry_worker, timeout, action, deadline) = match run {
+            WorkerRun::Check => (true, true, CHECK_TIMEOUT, WorkerAction::CHECK, None),
+            WorkerRun::Probe {
+                timeout,
+                deadline,
+                action,
+            } => (false, false, timeout, action, Some(deadline)),
+            WorkerRun::Profile => (false, true, CHECK_TIMEOUT, WorkerAction::CHECK, None),
         };
         let profile = matches!(run, WorkerRun::Profile);
         let key = (workspace.reference.clone(), target.to_path_buf(), profile);
@@ -1011,8 +1035,13 @@ impl Checker {
                 }
             }
         };
-        let mut worker_guard = if matches!(run, WorkerRun::Probe { .. }) {
-            lock_mutex_until(&worker, timeout.max(COLD_PROBE_TIMEOUT)).context(
+        let mut worker_guard = if let Some(deadline) = deadline {
+            let wait_timeout = probe_phase_timeout(
+                Some(deadline),
+                timeout.max(COLD_PROBE_TIMEOUT),
+                "worker lock",
+            )?;
+            lock_mutex_until(&worker, wait_timeout).context(
                 "Lean worker is busy with another request; retry the probe after it finishes",
             )?
         } else {
@@ -1042,7 +1071,14 @@ impl Checker {
                 }
             }
         }
-        let request_timeout = if matches!(run, WorkerRun::Probe { .. }) && (inserted || replace) {
+        let request_timeout = if let Some(deadline) = deadline {
+            let cold_timeout = if inserted || replace {
+                timeout.max(COLD_PROBE_TIMEOUT)
+            } else {
+                timeout
+            };
+            probe_phase_timeout(Some(deadline), cold_timeout, "worker request")?
+        } else if inserted || replace {
             timeout.max(COLD_PROBE_TIMEOUT)
         } else {
             timeout
@@ -1069,7 +1105,7 @@ impl Checker {
             )),
             Err(error) => {
                 let timed_out = error.downcast_ref::<CheckTimeout>().is_some();
-                if !(timed_out && matches!(run, WorkerRun::Probe { .. })) {
+                if !(timed_out && deadline.is_some()) {
                     self.record_worker_failure(&format!("request: {error:#}"));
                 }
                 drop(worker_guard);
@@ -1136,6 +1172,7 @@ impl Checker {
         let target = resolve_target(&workspace.path, requested)?;
         let source = fs::read_to_string(workspace.path.join(&target))
             .with_context(|| format!("cannot read probe context {}", target.display()))?;
+        let deadline = Instant::now() + PROBE_SETUP_TIMEOUT + probe_timeout(operation);
         let column = if !matches!(operation, "goal" | "tactic") && line > 0 && column == 0 {
             first_source_column(&source, line)
         } else {
@@ -1145,7 +1182,7 @@ impl Checker {
             Some(current) => current,
             None => {
                 let dependencies = transitive_dependencies(&workspace.path, &target)?;
-                self.worker_setup(workspace, &target, &dependencies)?
+                self.worker_setup_with_deadline(workspace, &target, &dependencies, Some(deadline))?
             }
         };
         let (response, _, _) = self.run_worker(
@@ -1156,6 +1193,7 @@ impl Checker {
             &source,
             WorkerRun::Probe {
                 timeout: probe_timeout(operation),
+                deadline,
                 action: WorkerAction {
                     operation,
                     line,
@@ -1183,6 +1221,16 @@ impl Checker {
         target: &Path,
         dependencies: &[PathBuf],
     ) -> Result<(PathBuf, String)> {
+        self.worker_setup_with_deadline(workspace, target, dependencies, None)
+    }
+
+    fn worker_setup_with_deadline(
+        &self,
+        workspace: &Workspace,
+        target: &Path,
+        dependencies: &[PathBuf],
+        deadline: Option<Instant>,
+    ) -> Result<(PathBuf, String)> {
         let setup_input = setup_input_fingerprint(&workspace.path, target, dependencies)?;
         let environment_base = environment_fingerprint(&workspace.path, dependencies)?;
         let mut environment =
@@ -1198,6 +1246,7 @@ impl Checker {
                     &setup_input,
                     !dependencies.is_empty(),
                     dependencies,
+                    deadline,
                 )?;
                 environment =
                     self.worker_environment_from_base(workspace, target, &environment_base)?;
@@ -1286,10 +1335,14 @@ impl Checker {
         input_fingerprint: &str,
         has_project_dependencies: bool,
         dependencies: &[PathBuf],
+        deadline: Option<Instant>,
     ) -> Result<PathBuf> {
         let gc_lock = open_lock(&self.repo.state_dir.join("setup-gc.lock"))?;
-        lock_shared_until(&gc_lock, CHECK_QUEUE_TIMEOUT)
-            .context("setup garbage collection is still running after five minutes; retry later")?;
+        lock_shared_until(
+            &gc_lock,
+            probe_phase_timeout(deadline, CHECK_QUEUE_TIMEOUT, "setup garbage collection")?,
+        )
+        .context("setup garbage collection is still running after five minutes; retry later")?;
         let build_lock = has_project_dependencies.then(|| {
             let mut locks = self
                 .coordinator
@@ -1310,7 +1363,11 @@ impl Checker {
         let _build_guard = build_lock
             .as_ref()
             .map(|lock| {
-                lock_mutex_until(lock, CHECK_QUEUE_TIMEOUT).context(
+                lock_mutex_until(
+                    lock,
+                    probe_phase_timeout(deadline, CHECK_QUEUE_TIMEOUT, "workspace setup")?,
+                )
+                .context(
                     "workspace import preparation is still running after five minutes; retry after it finishes",
                 )
             })
@@ -1328,7 +1385,11 @@ impl Checker {
         let shared = self.shared_setup_path(target, input_fingerprint);
         fs::create_dir_all(shared.parent().expect("shared setup has a parent"))?;
         let shared_lock = open_lock(&shared.with_extension("lock"))?;
-        lock_exclusive_until(&shared_lock, CHECK_QUEUE_TIMEOUT).context(
+        lock_exclusive_until(
+            &shared_lock,
+            probe_phase_timeout(deadline, CHECK_QUEUE_TIMEOUT, "shared setup")?,
+        )
+        .context(
             "shared import preparation is still running after five minutes; retry after it finishes",
         )?;
         restore_setup_artifacts_from_cache(&self.repo.cache_dir, &shared)?;
@@ -1341,7 +1402,11 @@ impl Checker {
             .current_dir(lake_package_root(&workspace.path, target))
             .arg("setup-file")
             .arg(lake_package_target(&workspace.path, target));
-        let output = run_command_with_timeout(command, CHECK_TIMEOUT, "dependency setup")
+        let output = run_command_with_timeout(
+            command,
+            probe_phase_timeout(deadline, CHECK_TIMEOUT, "dependency setup")?,
+            "dependency setup",
+        )
             .with_context(|| {
                 format!(
                     "lake setup-file for {} failed; install the project's Lean toolchain and dependencies",
@@ -2521,6 +2586,25 @@ mod tests {
         assert_eq!(probe_timeout("term"), CONTEXTUAL_PROBE_TIMEOUT);
         assert_eq!(probe_timeout("check"), WARM_PROBE_TIMEOUT);
         assert_eq!(probe_timeout("synth"), WARM_PROBE_TIMEOUT);
+    }
+
+    #[test]
+    fn probe_phase_budget_is_bounded_by_deadline() {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let remaining = probe_phase_timeout(Some(deadline), CHECK_TIMEOUT, "setup").unwrap();
+        assert!(remaining <= Duration::from_secs(5));
+        assert_eq!(
+            probe_phase_timeout(None, CHECK_TIMEOUT, "setup").unwrap(),
+            CHECK_TIMEOUT
+        );
+
+        let expired = Instant::now() - Duration::from_secs(1);
+        let error = probe_phase_timeout(Some(expired), CHECK_TIMEOUT, "setup").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Lean probe total budget exceeded during setup")
+        );
     }
 
     #[test]
