@@ -198,6 +198,21 @@ pub fn delete_workspace(repo: &Repo, state: &State, name: &str, force: bool) -> 
         state.remove_workspace(&workspace.reference)?;
         return Ok(workspace);
     }
+    if !registered_worktree(repo, &workspace.path)? {
+        let branch_exists = branch_exists(repo, &workspace.branch)?;
+        if branch_exists && !force {
+            ensure!(
+                branch_tree_matches_main(repo, &workspace.branch)?,
+                "workspace {name} is not a registered Git worktree and its branch contains unsubmitted commits; restore the worktree before deletion"
+            );
+        }
+        remove_orphan_workspace(repo, &workspace, force)?;
+        if branch_exists {
+            run_checked("git", ["branch", "-D", &workspace.branch], &repo.root)?;
+        }
+        state.remove_workspace(&workspace.reference)?;
+        return Ok(workspace);
+    }
     if !force {
         ensure!(
             dirty_paths(&workspace.path)?.is_empty(),
@@ -250,6 +265,69 @@ fn registered_worktree(repo: &Repo, path: &Path) -> Result<bool> {
             .map(Path::new)
             .any(|candidate| candidate == path),
     )
+}
+
+fn remove_orphan_workspace(repo: &Repo, workspace: &Workspace, force: bool) -> Result<()> {
+    let parent = repo.workspace_parent()?;
+    ensure!(
+        workspace.path == parent.join(&workspace.name),
+        "workspace {} path is outside the managed workspace parent; refusing orphan cleanup",
+        workspace.name
+    );
+    let metadata = fs::symlink_metadata(&workspace.path)
+        .with_context(|| format!("cannot inspect workspace {}", workspace.name))?;
+    ensure!(
+        metadata.is_dir() && !metadata.file_type().is_symlink(),
+        "workspace {} is not a removable directory; restore it before deletion",
+        workspace.name
+    );
+    if !force {
+        ensure!(
+            orphan_workspace_is_generated_only(repo, &workspace.path)?,
+            "workspace {} is not a registered Git worktree and contains possible unsubmitted files; restore it before deletion",
+            workspace.name
+        );
+    }
+    fs::remove_dir_all(&workspace.path)
+        .with_context(|| format!("cannot remove orphan workspace {}", workspace.name))?;
+    Ok(())
+}
+
+fn orphan_workspace_is_generated_only(repo: &Repo, path: &Path) -> Result<bool> {
+    let mut entries = fs::read_dir(path)?;
+    let Some(lake_entry) = entries.next().transpose()? else {
+        return Ok(true);
+    };
+    if lake_entry.file_name() != ".lake" {
+        return Ok(false);
+    }
+    if entries.next().transpose()?.is_some() {
+        return Ok(false);
+    }
+
+    let lake = lake_entry.path();
+    let lake_metadata = fs::symlink_metadata(&lake)?;
+    if !lake_metadata.is_dir() || lake_metadata.file_type().is_symlink() {
+        return Ok(false);
+    }
+    let shared_packages = repo.root.join(".lake/packages");
+    if !shared_packages.is_dir() {
+        return Ok(false);
+    }
+    let shared_packages = canonical(shared_packages)?;
+    let mut lake_entries = fs::read_dir(lake)?;
+    let Some(packages_entry) = lake_entries.next().transpose()? else {
+        return Ok(true);
+    };
+    if packages_entry.file_name() != "packages"
+        || !fs::symlink_metadata(packages_entry.path())?
+            .file_type()
+            .is_symlink()
+        || canonical(packages_entry.path())? != shared_packages
+    {
+        return Ok(false);
+    }
+    Ok(lake_entries.next().transpose()?.is_none())
 }
 
 pub fn dirty_paths(root: &Path) -> Result<Vec<PathBuf>> {
@@ -887,6 +965,98 @@ mod tests {
         assert!(!branch_exists(&repo, "mathmux/agent").unwrap());
         assert!(!registered_worktree(&repo, &missing_path).unwrap());
         assert!(moved_path.is_dir());
+    }
+
+    #[test]
+    fn delete_orphaned_generated_workspace_cleans_metadata() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("repo");
+        fs::create_dir(&root).unwrap();
+        run_checked("git", ["init", "-b", "main"], &root).unwrap();
+        run_checked("git", ["config", "user.name", "mathmux test"], &root).unwrap();
+        run_checked(
+            "git",
+            ["config", "user.email", "mathmux@test.invalid"],
+            &root,
+        )
+        .unwrap();
+        fs::create_dir_all(root.join(".lake/packages")).unwrap();
+        fs::write(root.join("Proof.lean"), "def value := 0\n").unwrap();
+        run_checked("git", ["add", "."], &root).unwrap();
+        run_checked("git", ["commit", "-m", "initial"], &root).unwrap();
+
+        let repo = Repo::discover(&root).unwrap();
+        let state = State::new(&repo.db_path).unwrap();
+        let workspace = create_workspace(&repo, &state, "agent", None).unwrap();
+        let stale_path = workspace.path.clone();
+        run_checked(
+            "git",
+            [
+                "worktree",
+                "remove",
+                "--force",
+                stale_path.to_string_lossy().as_ref(),
+            ],
+            &root,
+        )
+        .unwrap();
+        fs::create_dir_all(stale_path.join(".lake")).unwrap();
+        symlink(
+            canonical(root.join(".lake/packages")).unwrap(),
+            stale_path.join(".lake/packages"),
+        )
+        .unwrap();
+
+        delete_workspace(&repo, &state, "agent", false).unwrap();
+
+        assert!(state.list_workspaces().unwrap().is_empty());
+        assert!(!stale_path.exists());
+        assert!(root.join(".lake/packages").is_dir());
+        assert!(!branch_exists(&repo, "mathmux/agent").unwrap());
+    }
+
+    #[test]
+    fn delete_orphaned_workspace_with_source_preserves_it() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("repo");
+        fs::create_dir(&root).unwrap();
+        run_checked("git", ["init", "-b", "main"], &root).unwrap();
+        run_checked("git", ["config", "user.name", "mathmux test"], &root).unwrap();
+        run_checked(
+            "git",
+            ["config", "user.email", "mathmux@test.invalid"],
+            &root,
+        )
+        .unwrap();
+        fs::write(root.join("Proof.lean"), "def value := 0\n").unwrap();
+        run_checked("git", ["add", "."], &root).unwrap();
+        run_checked("git", ["commit", "-m", "initial"], &root).unwrap();
+
+        let repo = Repo::discover(&root).unwrap();
+        let state = State::new(&repo.db_path).unwrap();
+        let workspace = create_workspace(&repo, &state, "agent", None).unwrap();
+        let stale_path = workspace.path.clone();
+        run_checked(
+            "git",
+            [
+                "worktree",
+                "remove",
+                "--force",
+                stale_path.to_string_lossy().as_ref(),
+            ],
+            &root,
+        )
+        .unwrap();
+        fs::create_dir_all(&stale_path).unwrap();
+        fs::write(stale_path.join("Unsubmitted.lean"), "def value := 1\n").unwrap();
+
+        let error = delete_workspace(&repo, &state, "agent", false)
+            .err()
+            .expect("source-bearing orphan should not be deleted");
+        assert!(error.to_string().contains("possible unsubmitted files"));
+        assert!(stale_path.join("Unsubmitted.lean").exists());
+        assert_eq!(state.list_workspaces().unwrap().len(), 1);
+        assert!(branch_exists(&repo, "mathmux/agent").unwrap());
     }
 
     #[test]
