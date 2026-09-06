@@ -25,7 +25,7 @@ installed build. The earlier 697322f build is interim.
   never claim semantic independence from syntactic absence.
 - [x] Complete documentation/help digest and tests across unrelated fixtures;
   real Lean and CLI smoke; replay the known coercion episode without project rules.
-- [ ] Land final verified changes on main, then request Agent Two's development
+- [x] Land final verified changes on main, then request Agent Two's development
   release, verify the installed build, and deliver concise guidance to the swarm.
 
 Validation before final release: 237 Rust development tests; 15 real Lean service
@@ -39,3 +39,12 @@ Telemetry includes explicit optional actor/session provenance; causal follow-ups
 require qREF/cREF rather than inferring causality from shared-workspace adjacency.
 Evidence freshness is explicitly scoped to project sources/imports and pinned
 configuration, not verification of externally modified dependency artifacts.
+
+Development rollout completed 2026-09-07: Agent Two installed production code
+from 248be57 with `--features development`; the installed probe-v5 binary passed
+the full isolated CLI smoke. SHA-256:
+`d6b801ea6851688b0475b380c063d87a042733b2aaa0aaf27eeb9e096d30cc28`.
+Follow-up b11d3ba changes only the smoke harness (portable Lean version parsing
+and awaiting the explicit telemetry reference). The repository service reports
+validation idle. Agent Two routed release guidance to the current orchestrator.
+No stable publication or formalization-process interruption was requested.
