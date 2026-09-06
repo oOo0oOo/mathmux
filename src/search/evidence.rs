@@ -175,11 +175,19 @@ impl Searcher {
         let mut notes = Vec::new();
         if let Some(verified) = verified {
             notes.push(verified);
-        } else if matches!(hit.kind.as_str(), "structure" | "class" | "inductive")
-            && let Ok(Some((name, signature))) =
-                self.direct_obstruction_candidate(workspace, subject)
+        } else if matches!(
+            hit.kind.as_str(),
+            "structure" | "class" | "inductive" | "abbrev" | "def"
+        ) && let Ok(Some((name, signature))) =
+            self.direct_obstruction_candidate(workspace, subject)
         {
-            notes.push(format!("source obstruction candidate (unverified): {name}\n{}\nInspect hypotheses: mathmux probe {subject} evidence", truncate_line(&signature, 240)));
+            notes.push(format!("source contract evidence (unverified): {name}\n{}\nInspect hypotheses: mathmux probe {subject} evidence", truncate_line(&signature, 240)));
+        }
+        if notes.is_empty()
+            && let Some(signature) = hit.signature.as_deref()
+            && let Ok(Some(notice)) = self.input_obstruction_notice(workspace, signature)
+        {
+            notes.push(notice);
         }
         match authored {
             Ok(authored) if !authored.is_empty() => notes.push(authored),

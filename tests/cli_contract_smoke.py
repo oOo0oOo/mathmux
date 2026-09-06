@@ -18,7 +18,7 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
     version = run([str(pathlib.Path(leanbin) / 'lean'), '--version']).stdout.split('version ', 1)[1].split()[0].rstrip(',')
     (root / 'lean-toolchain').write_text('leanprover/lean4:v' + version + '\n')
     (root / 'lakefile.toml').write_text('name = "probe_fixture"\nversion = "0.1.0"\n[[lean_lib]]\nname = "Fixture"\n')
-    source = 'import Lean\nstructure Impossible where\n  witness : False\ntheorem impossible_empty : ¬ Nonempty Impossible := by\n  intro h\n  cases h with | intro x => exact x.witness\ndef forgetInput (_n : Nat) : Nat := 0\ntheorem needsHypothesis (n : Nat) (h : n = 0) : n + 0 = 0 := by simpa using h\nexample (n : Nat) : n + 0 = 0 := by\n  sorry\n'
+    source = 'import Lean\nstructure Impossible where\n  witness : False\ntheorem a_admitted_empty : ¬ Nonempty Impossible := by sorry\ntheorem impossible_empty : ¬ Nonempty Impossible := by\n  intro h\n  cases h with | intro x => exact x.witness\ndef forgetInput (_n : Nat) : Nat := 0\ntheorem needsHypothesis (n : Nat) (h : n = 0) : n + 0 = 0 := by simpa using h\nexample (n : Nat) : n + 0 = 0 := by\n  sorry\n'
     (root / 'Fixture.lean').write_text(source)
     run(['git', 'add', '.'])
     run(['git', 'commit', '-m', 'fixture'])
@@ -43,24 +43,34 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
             return run([binary, 'probe', q], ws).stdout
         assert 'premises retained' in probe('Impossible assumptions')
         assert 'obstruction candidate' in probe('Impossible evidence')
-        detail = probe('Fixture.lean:10 #inspect forgetInput')
+        detail = probe('Fixture.lean:11 #inspect forgetInput')
         assert 'absent from definition body' in detail, detail
-        detail = probe('Fixture.lean:10 #apply needsHypothesis n')
+        detail = probe('Fixture.lean:11 #apply needsHypothesis n')
         assert 'n = 0' in detail, detail
-        detail = probe('Fixture.lean:10 Impossible evidence')
+        failed = run([binary, 'probe', 'Fixture.lean:11 #apply True.intro'], ws, ok=False)
+        failure = failed.stdout + failed.stderr
+        assert failed.returncode != 0 and 'first type difference' in failure, failure
+        assert 'Full diagnostic: mathmux show' in failure, failure
+        failed_ref = next(line.removeprefix('ref: ') for line in failure.splitlines() if line.startswith('ref: '))
+        full = run([binary, 'show', failed_ref, '--all'], ws).stdout
+        assert 'Full Lean diagnostic:' in full and 'Tactic `apply` failed' in full, full
+        detail = probe('Fixture.lean:11 Impossible evidence')
         assert 'Lean inspection succeeded' in detail, detail
         detail = run([binary, 'search', 'Impossible'], ws).stdout
         assert 'matching project-source/configuration snapshot' in detail, detail
         (ws / '.mathmux-evidence.json').write_text(json.dumps({'version': 1, 'links': [{'subject': 'Impossible', 'replacement': 'Nat', 'examples': ['forgetInput'], 'explanation': 'Only an advisory example.'}]}))
         detail = probe('Impossible examples')
         assert 'forgetInput' in detail and 'advisory' in detail, detail
+        examples_ref = next(line.removeprefix('ref: ') for line in detail.splitlines() if line.startswith('ref: '))
+        selected = probe(examples_ref + '#1 assumptions')
+        assert 'forgetInput' in selected and '_n' in selected, selected
         detail = run([binary, 'search', 'Impossible'], ws).stdout
         assert 'project-authored route' in detail, detail
         (ws / 'Fixture.lean').write_text(source + '\n-- changed snapshot\n')
         detail = run([binary, 'search', 'Impossible'], ws).stdout
         assert 'matching project-source/configuration snapshot' not in detail, detail
         (ws / 'Fixture.lean').write_text(source)
-        detail = probe('Fixture.lean:10 #inspect needsHypothesis')
+        detail = probe('Fixture.lean:11 #inspect needsHypothesis')
         assert 'proof assumption h' in detail, detail
         output = run([binary, 'search', 'DefinitelyAbsentName*'], ws).stdout
         reference = next(line.removeprefix('ref: ') for line in output.splitlines() if line.startswith('ref: '))

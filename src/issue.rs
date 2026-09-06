@@ -854,6 +854,8 @@ fn probe_facet(request: &Request) -> Option<String> {
     };
     let query = query.trim_matches([' ', '\'', '"']);
     for (directive, facet) in [
+        ("#inspect", "inspect"),
+        ("#apply", "apply"),
         ("#check", "check"),
         ("#synth", "synth"),
         ("#reduce", "reduce"),
@@ -944,6 +946,10 @@ fn is_probe_focus(value: &str) -> bool {
             | "rewrite"
             | "profile"
             | "warnings"
+            | "assumptions"
+            | "evidence"
+            | "examples"
+            | "context"
     )
 }
 
@@ -980,7 +986,7 @@ fn exchange_outcome_class(
             return Some(match outcome.resolution.as_str() {
                 "no_result" => "no_result",
                 "near_suggestions" => "near_suggestions",
-                "partial_result" => "partial_result",
+                "partial_result" | "index_warming" => "partial_result",
                 "exact_hit" => "exact_hit",
                 "inspection" => {
                     if response.ok {
@@ -1708,6 +1714,31 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[test]
+    fn telemetry_recognizes_contract_facets_and_directives() {
+        for (query, expected) in [
+            ("Demo assumptions", "assumptions"),
+            ("Demo evidence", "evidence"),
+            ("Demo examples", "examples"),
+            ("c42 context", "context"),
+            ("File.lean:3 #inspect Demo", "inspect"),
+            ("File.lean:3 #apply Demo x", "apply"),
+            ("File.lean:3 Demo evidence", "evidence"),
+        ] {
+            let request = Request {
+                build: String::new(),
+                generation: 0,
+                actor_id: None,
+                session_id: None,
+                cwd: String::new(),
+                command: Command::Probe {
+                    query: query.into(),
+                },
+            };
+            assert_eq!(probe_facet(&request).as_deref(), Some(expected), "{query}");
+        }
+    }
 
     #[test]
     fn global_issue_path_uses_persistent_data_home() {

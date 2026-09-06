@@ -36,26 +36,181 @@ fn conclusion(signature: &str) -> &str {
     signature.trim()
 }
 
+fn top_level_relation(result: &str) -> bool {
+    let mut depth = 0i32;
+    for c in result.chars() {
+        match c {
+            '(' | '[' | '{' | '⦃' => depth += 1,
+            ')' | ']' | '}' | '⦄' => depth -= 1,
+            '→' | '↔' | '≃' | '≅' | '↪' | '×' | '=' | '<' | '>' if depth == 0 => {
+                return true;
+            }
+            _ => (),
+        }
+    }
+    false
+}
+
+fn unparen(mut text: &str) -> &str {
+    loop {
+        text = text.trim();
+        if !text.starts_with('(') || !text.ends_with(')') {
+            return text;
+        }
+        let mut depth = 0;
+        let mut wraps_all = true;
+        for (i, c) in text.char_indices() {
+            if c == '(' {
+                depth += 1;
+            }
+            if c == ')' {
+                depth -= 1;
+            }
+            if depth == 0 && i + c.len_utf8() < text.len() {
+                wraps_all = false;
+                break;
+            }
+        }
+        if !wraps_all {
+            return text;
+        }
+        text = &text[1..text.len() - 1];
+    }
+}
+
+fn direct_subject(text: &str, name: &str) -> bool {
+    let text = unparen(text);
+    !top_level_relation(text)
+        && identifiers(text).first().is_some_and(|head| {
+            head.trim_start_matches("_root_.") == name.trim_start_matches("_root_.")
+                || head == name.rsplit('.').next().unwrap_or(name)
+        })
+}
+
 fn relation(signature: &str, name: &str) -> Option<&'static str> {
-    let result = conclusion(signature);
+    let result = unparen(conclusion(signature));
     let leaf = name.rsplit('.').next().unwrap_or(name);
     if !mentions(result, name) && !mentions(result, leaf) {
         return None;
     }
-    // Never classify a negative premise on the left of an implication as an obstruction.
-    let negative = result.starts_with("¬ Nonempty")
-        || result.starts_with("Not (Nonempty")
-        || result.starts_with("¬Nonempty");
-    if negative && !result.contains('→') && !result.contains("->") {
+    let negative = result
+        .strip_prefix('¬')
+        .or_else(|| result.strip_prefix("Not "));
+    if negative
+        .and_then(|s| unparen(s).strip_prefix("Nonempty "))
+        .is_some_and(|s| direct_subject(s, name))
+    {
         Some("obstruction candidate")
-    } else if result.starts_with(name)
-        || result.starts_with(leaf)
-        || result.starts_with("Nonempty ")
+    } else if result
+        .strip_prefix("Subsingleton ")
+        .is_some_and(|s| direct_subject(s, name))
+    {
+        Some("subsingleton candidate")
+    } else if result
+        .strip_prefix("IsEmpty ")
+        .is_some_and(|s| direct_subject(s, name))
+    {
+        Some("emptiness candidate")
+    } else if direct_subject(result, name)
+        || result
+            .strip_prefix("Nonempty ")
+            .is_some_and(|s| direct_subject(s, name))
     {
         Some("construction candidate")
     } else {
         Some("related law candidate")
     }
+}
+
+/// Split only outer binders. Nested function types and default values stay intact.
+fn signature_binders(signature: &str) -> Vec<&str> {
+    let mut rest = signature.trim();
+    let mut binders = Vec::new();
+    while rest.starts_with(['(', '{', '[', '⦃']) {
+        let mut depth = 0i32;
+        let mut end = None;
+        for (i, c) in rest.char_indices() {
+            match c {
+                '(' | '{' | '[' | '⦃' => depth += 1,
+                ')' | '}' | ']' | '⦄' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(i + c.len_utf8());
+                        break;
+                    }
+                }
+                _ => (),
+            }
+        }
+        let Some(end) = end else {
+            break;
+        };
+        binders.push(&rest[..end]);
+        rest = rest[end..].trim_start();
+    }
+    binders
+}
+
+fn input_heads(signature: &str) -> Vec<String> {
+    let binders = signature_binders(signature);
+    binders
+        .iter()
+        .filter(|b| b.starts_with('('))
+        .chain(binders.iter().filter(|b| !b.starts_with('(')))
+        .filter_map(|binder| {
+            let start = binder.chars().next().unwrap().len_utf8();
+            let end = binder.chars().last().unwrap().len_utf8();
+            let interior = &binder[start..binder.len() - end];
+            let ty = interior
+                .split_once(':')
+                .map_or(interior, |(_, ty)| ty)
+                .trim();
+            identifiers(ty).into_iter().next()
+        })
+        .collect()
+}
+
+fn wrapped_contract_line(label: &str, text: &str) -> String {
+    let mut result = String::new();
+    let mut line = label.to_owned();
+    for word in text.split_whitespace() {
+        if line.chars().count() + word.chars().count() + 1 > 180 {
+            result.push_str(&line);
+            result.push('\n');
+            line = "  ".into();
+        }
+        if !line.ends_with(' ') {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    result.push_str(&line);
+    result.push('\n');
+    result
+}
+
+fn assumption_signature(signature: &str) -> String {
+    let binders = signature_binders(signature);
+    if binders.is_empty() {
+        return wrapped_contract_line("signature (premises retained):", signature);
+    }
+    let result = conclusion(signature);
+    let mut detail = if result == signature.trim() {
+        String::new()
+    } else {
+        wrapped_contract_line("result (indexed):", result)
+    };
+    detail.push_str("signature (premises retained); explicit inputs first:\n");
+    for binder in binders.iter().filter(|b| b.starts_with('(')) {
+        detail.push_str(&wrapped_contract_line("input:", binder));
+    }
+    for binder in binders.iter().filter(|b| !b.starts_with('(')) {
+        detail.push_str(&wrapped_contract_line("implicit/context:", binder));
+    }
+    detail.push_str(
+        "Section parameters may be implicit; #inspect resolves the full Lean contract.\n",
+    );
+    detail
 }
 
 fn contract_exact_hit(
@@ -88,7 +243,7 @@ impl Searcher {
             return Ok(Vec::new());
         }
         let sql = ranked_rows_sql(&format!(
-            "WHERE search_fts MATCH ?1 AND kind NOT IN ('file', 'imports') AND signature <> ''
+            "WHERE search_fts MATCH ?1 AND kind NOT IN ('file', 'imports', 'field') AND signature <> ''
              AND owner IN (SELECT owner FROM active_search_scopes)
              ORDER BY rank LIMIT {CANDIDATE_LIMIT}"
         ));
@@ -97,6 +252,38 @@ impl Searcher {
             .query_map([query], indexed_row_from_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    fn risk_rows(&self, workspace: &Workspace, subject: &str) -> Result<Vec<IndexedRow>> {
+        let (scopes, _) = self.search_scopes(workspace)?;
+        let connection = self.open()?;
+        install_active_scopes(&connection, &scopes)?;
+        let leaf = subject
+            .rsplit('.')
+            .next()
+            .unwrap_or(subject)
+            .replace('"', "\"\"");
+        let query =
+            format!("signature : \"{leaf}\" AND signature : (Nonempty OR Subsingleton OR IsEmpty)");
+        let sql = ranked_rows_sql(
+            "WHERE search_fts MATCH ?1 AND kind NOT IN ('file','imports','field')
+            AND owner IN (SELECT owner FROM active_search_scopes) ORDER BY rank LIMIT 24",
+        );
+        let rows = connection
+            .prepare(&sql)?
+            .query_map([query], indexed_row_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows
+            .into_iter()
+            .filter(|r| {
+                matches!(
+                    relation(&r.signature, subject),
+                    Some(
+                        "obstruction candidate" | "subsingleton candidate" | "emptiness candidate"
+                    )
+                )
+            })
+            .collect())
     }
 
     pub(super) fn probe_contract(
@@ -115,21 +302,27 @@ impl Searcher {
             "{name}\nsource evidence: {}:{}; index warming: {warming}\n",
             hit.path, hit.line
         );
-        detail.push_str(&format!(
-            "signature (premises retained):\n{}\n",
-            hit.signature.as_deref().unwrap_or("unavailable")
-        ));
+        if focus == "assumptions" {
+            detail.push_str(&assumption_signature(
+                hit.signature.as_deref().unwrap_or("unavailable"),
+            ));
+        } else {
+            detail.push_str(&format!(
+                "signature (premises retained):\n{}\n",
+                hit.signature.as_deref().unwrap_or("unavailable")
+            ));
+        }
         if focus == "assumptions" {
             detail.push_str("A conditional signature does not construct its inputs. Inspect selected input types and fields, then test the intended application.\n");
             if matches!(hit.kind.as_str(), "structure" | "class" | "abbrev") {
                 detail.push_str(&format!("fields: mathmux probe {name} fields\n"));
             }
-            let terms = identifiers(hit.signature.as_deref().unwrap_or(""));
+            let terms = input_heads(hit.signature.as_deref().unwrap_or(""));
             let mut shown = 0;
             for term in terms
                 .into_iter()
                 .filter(|t| t.contains('.') || t.chars().next().is_some_and(char::is_uppercase))
-                .take(16)
+                .take(8)
             {
                 if let Ok(input) =
                     contract_exact_hit(self.exact_candidates(&term, &scopes)?, &term, workspace)
@@ -146,11 +339,12 @@ impl Searcher {
                     }
                 }
             }
-            detail.push_str("exact Lean inspection: mathmux probe FILE:LINE '#inspect NAME_OR_TERM'\napplication: mathmux probe FILE:LINE '#apply TERM'\nsmall case: mathmux probe FILE:LINE '#check (TERM : EXPECTED_TYPE)' or '#reduce TERM'\n");
+            detail.push_str("next: mathmux probe FILE:LINE '#inspect NAME_OR_TERM' for full premises; #apply TERM tests the intended use.\n");
         } else {
             let leaf = name.rsplit('.').next().unwrap_or(name);
-            let mut related = self
-                .contract_rows(workspace, &[leaf.to_owned()])?
+            let mut rows = self.risk_rows(workspace, name)?;
+            rows.extend(self.contract_rows(workspace, &[leaf.to_owned()])?);
+            let mut related = rows
                 .into_iter()
                 .filter(|r| r.name.trim_start_matches("_root_.") != name)
                 .filter_map(|r| relation(&r.signature, name).map(|kind| (kind, r)))
@@ -158,7 +352,9 @@ impl Searcher {
             related.sort_by_key(|(kind, r)| {
                 (
                     match *kind {
-                        "obstruction candidate" => 0,
+                        "obstruction candidate"
+                        | "emptiness candidate"
+                        | "subsingleton candidate" => 0,
                         "construction candidate" => 1,
                         _ => 2,
                     },
@@ -167,15 +363,19 @@ impl Searcher {
             });
             let mut seen = HashSet::new();
             related.retain(|(_, r)| seen.insert(r.name.clone()));
-            for (kind, row) in related.iter().take(6) {
+            for (kind, row) in related.iter().take(3) {
                 detail.push_str(&format!(
-                    "\n{kind}: {}\n{}:{}\n{}\nnext: mathmux probe {} assumptions\n",
-                    row.name,
-                    row.path,
-                    row.line,
-                    truncate_line(&row.signature, 650),
-                    row.name
+                    "\n{kind}: {}\n{}:{}\n{}\n",
+                    row.name, row.path, row.line, row.signature
                 ));
+                if row.kind == "instance" && row.name.contains("instance@") {
+                    detail.push_str(&format!(
+                        "verify: mathmux probe {}:{} '#synth {}'\n",
+                        row.path,
+                        row.line,
+                        conclusion(&row.signature)
+                    ));
+                }
             }
             if related.is_empty() {
                 detail.push_str("No construction or obstruction found in this bounded index search; this is not an existence verdict.\n");
@@ -212,6 +412,7 @@ impl Searcher {
                 candidates.extend(
                     self.exact_candidates(&example, &scopes)?
                         .into_iter()
+                        .filter(|r| r.kind != "field")
                         .map(|r| (0usize, r)),
                 );
             }
@@ -241,37 +442,85 @@ impl Searcher {
         });
         let mut seen = HashSet::new();
         candidates.retain(|(_, r)| !r.signature.is_empty() && seen.insert(r.name.clone()));
-        let mut detail = format!(
-            "Existing small-case/construction candidates for {name}\nRanked by explicit project selection, then indexed input count. Hidden inputs may remain; these are not certified inhabitants.\n"
-        );
         let context = location.unwrap_or("FILE:LINE");
-        for (score, row) in candidates.iter().take(3) {
-            detail.push_str(&format!("\n{}{} : {}\n{}:{}\ninspect: mathmux probe {context} '#inspect {}'\nsource: mathmux probe {} source\n",if *score == 0 { "project-selected (advisory) " } else { "candidate " },row.name,truncate_line(&row.signature,600),row.path,row.line,row.name,row.name));
+        let hits = candidates
+            .into_iter()
+            .take(3)
+            .map(|(_, row)| SearchHit {
+                name: row.name,
+                kind: row.kind,
+                signature: Some(row.signature),
+                module: row.module,
+                path: row.path,
+                line: row.line,
+                doc: (!row.docs.is_empty()).then_some(row.docs),
+                source: Some(row.body),
+                usages: Vec::new(),
+                applicable: false,
+                required_import: None,
+            })
+            .collect::<Vec<_>>();
+        let reference = self.state.next_reference(ReferenceKind::Query)?;
+        let mut note = format!(
+            "Existing construction candidates for {name}; project selections are advisory.\nRanked by indexed inputs; hidden prerequisites remain. No inhabitability conclusion follows from absence.\nInspect one: mathmux probe {reference}#1 assumptions; test {context} '#check (TERM : EXPECTED_TYPE)'."
+        );
+        if hits.is_empty() {
+            note = format!(
+                "No construction found in the bounded index for {name}; this is not an inhabitability verdict. Try {context} '#check (TERM : EXPECTED_TYPE)'."
+            );
         }
-        if candidates.is_empty() {
-            detail.push_str("No existing small-case construction found in this bounded search. No inhabitability conclusion follows.\n");
+        let run = SearchRun {
+            reference: reference.clone(),
+            workspace_ref: workspace.reference.clone(),
+            query: format!("{subject} examples"),
+            inference: "probe-examples".into(),
+            hits,
+            note: Some(note),
+            duration_ms: 0,
+            created_at: now_unix_ms(),
+        };
+        self.state.add_search(&run)?;
+        Ok(render_summary(&run))
+    }
+
+    pub(super) fn input_obstruction_notice(
+        &self,
+        workspace: &Workspace,
+        signature: &str,
+    ) -> Result<Option<String>> {
+        let (scopes, _) = self.search_scopes(workspace)?;
+        let mut seen = HashSet::new();
+        for binder in signature_binders(signature)
+            .into_iter()
+            .filter(|b| b.starts_with('('))
+            .take(3)
+        {
+            let Some((_, ty)) = binder.split_once(':') else {
+                continue;
+            };
+            let Some(head) = identifiers(ty).into_iter().next() else {
+                continue;
+            };
+            if !seen.insert(head.clone()) {
+                continue;
+            }
+            let Ok(hit) =
+                contract_exact_hit(self.exact_candidates(&head, &scopes)?, &head, workspace)
+            else {
+                continue;
+            };
+            if let Some((evidence, statement)) =
+                self.direct_obstruction_candidate(workspace, &hit.name)?
+            {
+                return Ok(Some(format!(
+                    "input type {} has source contract evidence (unverified): {evidence}\n{}\nCompare the specialization and premises with your inputs; probe {} evidence",
+                    hit.name,
+                    truncate_line(&statement, 240),
+                    hit.name
+                )));
+            }
         }
-        for usage in self.usages(name, &scopes, workspace)?.iter().take(2) {
-            detail.push_str(&format!(
-                "existing use: {}:{}{}\n",
-                usage.path,
-                usage.line,
-                usage
-                    .context
-                    .as_deref()
-                    .map(|c| format!(" in {c}"))
-                    .unwrap_or_default()
-            ));
-        }
-        detail.push_str(&format!("\nAfter supplying concrete arguments, test {context} '#check (TERM : EXPECTED_TYPE)' or '#reduce TERM'; #apply TERM reveals remaining proof obligations. Syntactic input absence can be inspected with #inspect.\n"));
-        self.store_probe_result(
-            workspace,
-            &format!("{subject} examples"),
-            "example-candidates",
-            detail,
-            Some(&hit.path),
-            hit.line,
-        )
+        Ok(None)
     }
 
     pub(super) fn direct_obstruction_candidate(
@@ -279,12 +528,17 @@ impl Searcher {
         workspace: &Workspace,
         subject: &str,
     ) -> Result<Option<(String, String)>> {
-        let leaf = subject.rsplit('.').next().unwrap_or(subject);
         Ok(self
-            .contract_rows(workspace, &[leaf.to_owned()])?
+            .risk_rows(workspace, subject)?
             .into_iter()
-            .find(|r| relation(&r.signature, subject) == Some("obstruction candidate"))
-            .map(|r| (r.name, r.signature)))
+            .next()
+            .map(|r| {
+                let label = relation(&r.signature, subject).unwrap_or("source candidate");
+                (
+                    format!("{label}: {} ({}:{})", r.name, r.path, r.line),
+                    r.signature,
+                )
+            }))
     }
 
     pub(super) fn probe_verified_evidence(
@@ -299,9 +553,8 @@ impl Searcher {
             "evidence verification requires an explicit position"
         );
         let (scopes, _) = self.search_scopes(workspace)?;
-        let leaf = subject.rsplit('.').next().unwrap_or(subject);
         let mut rows = self
-            .contract_rows(workspace, &[leaf.to_owned()])?
+            .risk_rows(workspace, subject)?
             .into_iter()
             .filter(|r| relation(&r.signature, subject) == Some("obstruction candidate"))
             .collect::<Vec<_>>();
@@ -316,7 +569,14 @@ impl Searcher {
         let mut detail = format!("Obstruction inspection at {}:{line}\n", path.display());
         let mut inspection_ok = true;
         let mut verified = None;
-        if let Some(row) = rows.first() {
+        let started = Instant::now();
+        for row in rows.iter().take(3) {
+            if started.elapsed() > std::time::Duration::from_secs(30) {
+                detail.push_str(
+                    "Candidate inspection budget exhausted; remaining candidates were not tried.\n",
+                );
+                break;
+            }
             let (ok, payload) = self
                 .checker
                 .probe_context(workspace, path, line, 0, "inspect_evidence", &row.name)
@@ -343,8 +603,12 @@ impl Searcher {
             } else {
                 detail.push_str(&format!("Lean inspection failed:\n{payload}\n"));
             }
-            detail.push_str("Match every hypothesis and specialization; this inspection is not a check certificate.\n");
-        } else {
+            if verified.is_some() {
+                break;
+            }
+        }
+        detail.push_str("Match every hypothesis and specialization; this inspection is not a check certificate.\n");
+        if rows.is_empty() {
             detail.push_str("No direct negative-existence candidate found in the bounded index. This is not evidence of inhabitability.\n");
         }
         detail.push_str(&self.authored_route_detail(workspace, subject)?);
@@ -578,13 +842,79 @@ impl Searcher {
 mod tests {
     use super::*;
     #[test]
+    fn warming_exact_search_never_claims_absence_or_suggests_name_repair() {
+        let run = SearchRun { reference: "q1".into(), workspace_ref: "w1".into(),
+            query: "Demo.exists".into(), inference: "exact-miss".into(), hits: Vec::new(),
+            note: Some("exact declaration not found: Demo.exists\nsource index warming".into()),
+            duration_ms: 0, created_at: 0 };
+        let output = render_summary(&run);
+        assert!(output.contains("absence not established"), "{output}");
+        assert!(!output.contains("exact declaration not found"), "{output}");
+        assert!(!output.contains("next: mathmux search"), "{output}");
+    }
+
+    #[test]
+    fn apply_difference_excludes_repeated_local_context() {
+        let diagnostic = "Tactic `apply` failed: could not unify the type of `h`\n  D.index = supplied D\nwith the goal\n  D.index = target D\n\nn : Nat\nh : True";
+        let focused = diagnostic_apply_detail(diagnostic).unwrap();
+        assert!(focused.contains("actual: supplied"), "{focused}");
+        assert!(focused.contains("expected: target"), "{focused}");
+        assert!(!focused.contains("n : Nat"));
+    }
+
+    #[test]
+    fn constructions_exclude_maps_and_equivalences_out_of_the_type() {
+        for signature in [
+            "¬ Nonempty (Wrapper Demo.Data)",
+            "Subsingleton (Demo.Data → Nat)",
+            "Demo.Data →+ ℤ",
+            "Demo.Data ≃+ Other",
+            "Demo.Data = Other",
+            "Demo.Data × Other",
+        ] {
+            assert_eq!(
+                relation(signature, "Demo.Data"),
+                Some("related law candidate")
+            );
+        }
+        assert_eq!(
+            relation("(f : X → Y) : Demo.Data", "Demo.Data"),
+            Some("construction candidate")
+        );
+        assert_eq!(
+            relation("Subsingleton (Demo.Data PUnit)", "Demo.Data"),
+            Some("subsingleton candidate")
+        );
+        assert_eq!(
+            relation("(h : Subsingleton (Demo.Data PUnit)) : True", "Demo.Data"),
+            None
+        );
+        assert_eq!(
+            input_heads("⦃X : Type⦄ (d : Demo.Data X) : True")[0],
+            "Demo.Data"
+        );
+    }
+
+    #[test]
+    fn explicit_contract_inputs_survive_long_signatures() {
+        let signature = "{X : Type} [TopologicalSpace X] (d : BundleData X) (f : (x : X) → X) (hBridge : actualIndex d = suppliedIndex d) : actualIndex d = targetIndex d";
+        let detail = assumption_signature(signature);
+        assert!(detail.starts_with("result (indexed): actualIndex d = targetIndex d"));
+        assert!(detail.contains("input: (hBridge : actualIndex d = suppliedIndex d)"));
+        assert!(detail.find("input: (d").unwrap() < detail.find("implicit/context:").unwrap());
+        assert_eq!(signature_binders(signature).len(), 5);
+        assert_eq!(input_heads(signature)[0], "BundleData");
+        assert!(!input_heads(signature).contains(&"TopologicalSpace X".to_owned()));
+    }
+
+    #[test]
     fn contract_evidence_uses_active_index_and_preserves_hypotheses() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("root");
         let state_dir = dir.path().join("state");
         fs::create_dir_all(&root).unwrap();
         fs::create_dir_all(&state_dir).unwrap();
-        fs::write(root.join("Demo.lean"), "namespace Demo\nstructure Data (n : Nat) where\n  value : Fin n\ntheorem impossible (h : n = 0) : ¬ Nonempty (Data n) := by sorry\ndef construct (h : 0 < n) : Data n := sorry\ntheorem conditional (h : ¬ Nonempty (Data n)) : True := trivial\nend Demo\n").unwrap();
+        fs::write(root.join("Demo.lean"), "namespace Demo\nstructure Data (n : Nat) where\n  value : Fin n\ntheorem impossible (h : n = 0) : ¬ Nonempty (Data n) := by sorry\ndef construct (h : 0 < n) : Data n := sorry\ntheorem conditional (h : ¬ Nonempty (Data n)) : True := trivial\ninstance : Subsingleton (Data 1) := sorry\nstructure Container where\n  item : Data 1\nend Demo\n").unwrap();
         fs::write(root.join("API.lean"), "namespace ContinuousMap\ntheorem const_apply (b : β) (a : α) : const α b a = b := by sorry\nend ContinuousMap\nnamespace Matrix\ntheorem coe_units_inv (A : (Matrix n n R)ˣ) : ↑A⁻¹ = (A⁻¹ : Matrix n n R) := by sorry\nend Matrix\nnamespace Demo\ntheorem callee (A : Matrix n n R) : True := trivial\nend Demo\n").unwrap();
         let repo = Repo {
             root: root.clone(),
@@ -623,6 +953,8 @@ mod tests {
             "{detail}"
         );
         assert!(detail.contains("h : n = 0"), "{detail}");
+        assert!(detail.contains("subsingleton candidate:"), "{detail}");
+        assert!(!detail.contains("Container.item"), "{detail}");
         assert!(
             detail.contains("construction candidate: Demo.construct"),
             "{detail}"
@@ -632,6 +964,23 @@ mod tests {
             "{detail}"
         );
         assert!(detail.contains("not verified applicability"), "{detail}");
+        let notice = searcher
+            .input_obstruction_notice(&workspace, "(d : Demo.Data 0) : True")
+            .unwrap()
+            .unwrap();
+        assert!(notice.contains("Compare the specialization"), "{notice}");
+        assert!(notice.contains("Demo.Data"), "{notice}");
+        assert!(
+            searcher
+                .input_obstruction_notice(&workspace, "(n : Nat) : True")
+                .unwrap()
+                .is_none()
+        );
+        let examples = searcher
+            .probe_examples(&workspace, "Demo.Data", None)
+            .unwrap();
+        assert!(!examples.contains("Container.item"), "{examples}");
+        assert!(examples.contains("Demo.construct"), "{examples}");
         assert!(
             searcher
                 .probe_contract(&workspace, &root, "Missing.Data", "evidence")

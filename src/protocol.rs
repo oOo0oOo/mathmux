@@ -128,7 +128,9 @@ impl std::error::Error for DiscoveryFailure {}
 impl SearchOutcome {
     pub fn from_run(run: &crate::state::SearchRun) -> Self {
         let resolution =
-            if run.inference.contains("recovery") || run.inference.ends_with("-partial") {
+            if run.hits.is_empty() && run.note.as_deref().is_some_and(|n| n.contains("index warming")) {
+                "index_warming"
+            } else if run.inference.contains("recovery") || run.inference.ends_with("-partial") {
                 "partial_result"
             } else if run.inference.contains("missing") || run.inference.contains("miss") {
                 if run.hits.is_empty() {
@@ -223,6 +225,9 @@ mod tests {
             created_at: 0,
         };
         assert_eq!(SearchOutcome::from_run(&run).resolution, "no_result");
+        run.note = Some("type index warming".into());
+        assert_eq!(SearchOutcome::from_run(&run).resolution, "index_warming");
+        run.note = None;
         run.inference = "source-regex-partial".into();
         assert_eq!(SearchOutcome::from_run(&run).resolution, "partial_result");
         let old: Response = serde_json::from_str(r#"{"ok":true,"summary":"old"}"#).unwrap();

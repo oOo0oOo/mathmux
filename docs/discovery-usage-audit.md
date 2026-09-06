@@ -1,0 +1,45 @@
+# Discovery usage audit: probe-v6
+
+2026-09-07. The operator requested repeated hands-on rounds focused on preventing
+formalization mistakes early. MathMux issues belong in MathMux's tracker and are
+fixed by the tooling agent; Oli is reserved for runtime issues.
+
+The test project was Atiyah–Singer, in dedicated managed workspace w67. Its source
+was not edited or submitted. Development replay used separate state, search indexes,
+and caches through `examples/discovery_replay.rs`; it did not replace the fleet daemon.
+The implementation contains no project-specific names or mathematical routes.
+
+| Usage evidence | Gap | Implemented correction |
+|---|---|---|
+| e147097 | An assumptions request was recorded as signature | Classify all current facets and #inspect/#apply; preserve old rows (i3) |
+| q293180, q293182 | Headline theorem hides the analytic-comparison premise in a truncated signature | Show conclusion and explicit binders before implicit context; choose input type heads rather than arbitrary tokens (i4) |
+| q293179; first replay | Projections and maps out of the requested type masquerade as construction examples | Exclude field rows and outer arrows/equivalences; preserve actual requirements in selectable qREF#N examples (i5) |
+| q293181, q293183, q293193 | Broad discovery misses a point-case Subsingleton instance that Lean synthesis finds | Reserve targeted negative-existence/IsEmpty/Subsingleton candidates, retaining specialization (i6) |
+| q293225; third replay | A function requiring the impossible product-data contract has no warning at discovery | One compact source-evidence notice for an explicit input type; never infer failure at all specializations |
+| q293237 | Failed application repeats context and hides the type comparison | Focused actual/required difference; full Lean diagnostic remains behind the reference (i7) |
+| q293192; isolated replay | Empty warming index looks like evidence of absence | Explicit incomplete-index verdict and structured index_warming outcome, counted as partial rather than a completed miss (i8) |
+
+Additional quality checks reject claims about a type inferred from an obstruction
+to a wrapper or function space containing it. Obstruction verification tries at
+most three candidates, stopping at trusted evidence; no additional attempt starts
+after thirty seconds. An admitted first candidate no longer masks a subsequent
+axiom-clean theorem. Each individual Lean call retains the existing timeout.
+
+The third replay surfaced the known point-case singleton result first and flagged
+the specialized product obstruction on the function requiring that data. Its six
+warm source queries took 11–96 ms locally. This is not a cold-start benchmark:
+initial indexing took about fourteen seconds, and an isolated uncached Lean setup
+hit the existing 45-second dependency-preparation limit. The corresponding live
+Lean probes succeeded. No toolchain-installation claim follows from that timeout.
+
+Validation: 242 Rust development tests; clippy with the two documented baseline
+lint categories allowed; full real CLI smoke including admitted-candidate fallback,
+selectable examples, compact failed application plus full stored diagnostic,
+evidence invalidation, and telemetry. The unchanged Lean service also retains its
+previous 15-case smoke coverage. Counterexamples and parser regressions use generic
+Demo/Data/Nat fixtures, including nested and Unicode binders.
+
+Replay is a maintainer helper, not a proving-agent workflow. Pass an isolated
+workspace and a scratch directory outside its source and live repository state;
+feed lines beginning with search or probe on stdin. Never replay experimental
+Lean work against an actively edited worker workspace.

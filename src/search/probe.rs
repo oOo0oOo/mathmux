@@ -389,7 +389,11 @@ impl Searcher {
                 self.run_position_probe(workspace, cwd, location, Some(subject))
             }
             (Some(ProbeContext::Position(location)), Some(subject), Some("examples")) => {
-                self.resolve_probe_context(workspace, cwd, ProbeContext::Position(location.clone()))?;
+                self.resolve_probe_context(
+                    workspace,
+                    cwd,
+                    ProbeContext::Position(location.clone()),
+                )?;
                 self.probe_examples(workspace, subject, Some(location))
             }
             (Some(ProbeContext::Position(location)), Some(subject), Some("evidence")) => {
@@ -420,7 +424,9 @@ impl Searcher {
                     ProbeContext::File(file.clone()),
                     LeanDirective::Check(subject.to_owned()),
                 ),
-            (None, Some(subject), Some("examples")) => self.probe_examples(workspace, subject, None),
+            (None, Some(subject), Some("examples")) => {
+                self.probe_examples(workspace, subject, None)
+            }
             (None, Some(subject), Some(focus @ ("assumptions" | "evidence"))) => {
                 self.probe_contract(workspace, cwd, subject, focus)
             }
@@ -829,8 +835,15 @@ impl Searcher {
             Some("context") => {
                 let mut detail =
                     diagnostic_context(text, diagnostic.and_then(|d| d.context.as_deref()));
-                detail.push_str(&self.failure_context(workspace, text,
-                    if run.workspace_ref == workspace.reference { path.as_deref() } else { None })?);
+                detail.push_str(&self.failure_context(
+                    workspace,
+                    text,
+                    if run.workspace_ref == workspace.reference {
+                        path.as_deref()
+                    } else {
+                        None
+                    },
+                )?);
                 detail
             }
             Some("types") => diagnostic_type_detail(text)
@@ -949,7 +962,9 @@ impl Searcher {
         }
         let selected_name = hit.name.strip_prefix("_root_.").unwrap_or(&hit.name);
         let subject = subject.unwrap_or(selected_name);
-        if focus == Some("examples") { return self.probe_examples(workspace, subject, None); }
+        if focus == Some("examples") {
+            return self.probe_examples(workspace, subject, None);
+        }
         if let Some(focus @ ("assumptions" | "evidence")) = focus {
             return self.probe_contract(workspace, cwd, subject, focus);
         }
@@ -1316,9 +1331,15 @@ impl Searcher {
             .context(crate::protocol::DiscoveryFailure::Infrastructure)?;
         let (ok, mut detail) = decisive_directive_result(operation, &input, worker_ok, detail);
         if operation == "tactic" && input.starts_with("apply (") {
-            detail = format!(
-                "application experiment (not a check certificate)\n{detail}\nRemaining goals are obligations, not established facts."
-            );
+            detail = if !ok && let Some(focused) = diagnostic_apply_detail(&detail) {
+                format!(
+                    "application experiment failed (not a check certificate)\n{focused}\nFull Lean diagnostic:\n{detail}"
+                )
+            } else {
+                format!(
+                    "application experiment (not a check certificate)\n{detail}\nRemaining goals are obligations, not established facts."
+                )
+            };
         }
         let query = format!("{} {} {}", path.display(), operation, input);
         let stored_path = path

@@ -158,7 +158,9 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
         output.push_str(note);
     }
     if run.inference == "exact-miss" {
-        append_exact_miss_hint(&mut output, run);
+        if !run.hits.is_empty() || !run.note.as_deref().is_some_and(|n| n.contains("index warming")) {
+            append_exact_miss_hint(&mut output, run);
+        }
     } else if run.hits.len() > summary_limit {
         if include_hints {
             append_next_hint(&mut output, run, summary_limit, proof_body_requested);
@@ -173,6 +175,9 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
 }
 
 fn split_verdict_and_note(run: &SearchRun) -> (String, Option<&str>) {
+    if run.hits.is_empty() && run.note.as_deref().is_some_and(|n| n.contains("index warming")) {
+        return ("index still warming; no indexed match yet (absence not established)\nRetry this query after indexing completes".into(), None);
+    }
     if run.inference == "exact-miss" {
         let note = run.note.as_deref().unwrap_or("exact declaration not found");
         return note.split_once('\n').map_or_else(
@@ -393,12 +398,25 @@ fn render_source(
     index: usize,
     proof_body_requested: bool,
 ) {
+    if hit.kind == "tactic"
+        && source.starts_with("application experiment failed")
+        && let Some((focused, _)) = source.split_once("\nFull Lean diagnostic:\n")
+    {
+        output.push('\n');
+        output.push_str(focused);
+        output.push_str(&format!(
+            "\nFull diagnostic: mathmux show {} --all",
+            run.reference
+        ));
+        return;
+    }
     let source_lines = if index == 0 && proof_body_requested {
         DECLARATION_DETAIL_LINES
     } else {
         match hit.kind.as_str() {
             "class" | "inductive" | "structure" => 16,
             "fields" => SOURCE_OCCURRENCE_ALL_LIMIT,
+            "contract" => 48,
             "imports" => 64,
             "outline" => OUTLINE_PREVIEW_LINES,
             "location" => LOCATION_PREVIEW_LINES,

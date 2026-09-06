@@ -24,7 +24,7 @@ use clap::ValueEnum;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 const WORKFLOW_HELP: &str = r#"AGENT CONTRACT
-  api       search-v4/probe-v5; reread search/probe help only when this digest changes.
+  api       search-v4/probe-v6; reread search/probe help only when this digest changes.
   scope     Use the preassigned workspace; never run ws or enter main/another workspace.
   discover  Search unknown things; probe known API, exact context, or failures.
             Exact declarations go straight to probe NAME; qREFs store result sets.
@@ -74,14 +74,14 @@ RULES
   Sigil what you know; leave inference for what you do not."#;
 
 const PROBE_HELP: &str = r##"PROBE — inspect something known; returns qREF
-API probe-v5 — bounded exact inspection; reread only when this digest changes
+API probe-v6 — bounded exact inspection; reread only when this digest changes
 FORMS — type one directly; there are no API, LEAN, or other category keywords
   NAME [signature|source|outline|apply|fields|constructors|ext|simp|usages|assumptions|evidence|examples]
   NAME find TERM
   type:LEAN_TYPE [types]
   FILE warnings
   FILE:LINE [goal] | FILE:LINE TERM [signature]
-  FILE:LINE NAME evidence  (inspect one obstruction candidate with Lean)
+  FILE:LINE NAME evidence  (inspect up to three candidates; stop at verified evidence)
   FILE:LINE NAME examples  (retrieve existing small-case candidates)
   PATH NAME usages
   cREF [goal|types|defeq|rewrite|profile|context]
@@ -92,12 +92,13 @@ FORMS — type one directly; there are no API, LEAN, or other category keywords
 
 RESULT
   NAME assumptions exposes premises and selected input APIs; evidence retrieves
-  construction/obstruction candidates with hypotheses. Indexed text is not verified
+  construction/obstruction/subsingleton candidates with hypotheses. Indexed text is not verified
   applicability; no results is not an existence verdict. Use qualified names.
   NAME examples selects existing constructions with fewer indexed inputs and
-  project-authored examples. Hidden premises still require Lean inspection.
+  project-authored examples as selectable qREF#N results; hidden premises remain.
   A current snapshot-verified obstruction may appear directly in search; changing
-  source/dependencies invalidates that evidence. Authored routes are advisory.
+  project sources/configuration invalidates that evidence. Authored routes are advisory.
+  Exact discovery can flag specialized evidence about an explicit input type.
   cREF context adds type differences, import-aware laws and one usage to the failure.
   #inspect inspects elaborated inputs/result, constructors or a definition body;
   #apply tests an application and reports remaining obligations, without editing.
@@ -1168,7 +1169,7 @@ mod tests {
             .unwrap()
             .render_long_help()
             .to_string();
-        assert!(probe_help.contains("API probe-v5"));
+        assert!(probe_help.contains("API probe-v6"));
         for contract in [
             "there are no API, LEAN, or other category keywords",
             "NAME [signature|source|outline|apply|fields|constructors|ext|simp|usages|assumptions|evidence|examples]",
@@ -1214,7 +1215,7 @@ mod tests {
     #[test]
     fn workflow_help_prefers_direct_workspace_experimentation() {
         let help = command_line().render_help().to_string();
-        assert!(help.contains("search-v4/probe-v5"));
+        assert!(help.contains("search-v4/probe-v6"));
         assert!(help.contains("Edit intended files -> check -> submit"));
         assert!(help.contains("Exact declarations go straight to probe NAME"));
         assert!(help.contains("Search unknown things; probe known API, exact context"));

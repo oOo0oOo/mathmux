@@ -176,7 +176,7 @@ the full requested range. Longer ranges name the next non-overlapping range.
 
 Probably won't accept your PR. Write an issue, I prefer my own agents.
 
-### Inspecting mathematical contracts (probe-v5)
+### Inspecting mathematical contracts (probe-v6)
 
 Before building on an unfamiliar API, inspect what it assumes and whether a
 construction or obstruction has been found:
@@ -196,7 +196,8 @@ mathmux probe c123 context
 results, and related laws, with their hypotheses. A constructor may still need
 impossible inputs. A missing search result is not an existence verdict, and a
 source candidate is not a verified obstruction. The positioned `evidence` form
-runs Lean inspection of one negative-existence candidate in the specified context;
+tries up to three negative-existence candidates in the specified context, stopping
+at verified evidence (no further candidate starts after 30 seconds);
 it reports the actual elaborated statement and axiom dependencies, including
 `sorryAx`. Verify the exact specialization and every premise before using it.
 
@@ -258,3 +259,15 @@ workspace do not establish causality. Historical telemetry is retained unchanged
 Run the isolated CLI integration suite with
 `python tests/cli_contract_smoke.py /path/to/mathmux /path/to/pinned/lean`.
 It owns only its temporary repository and daemon.
+
+Probe-v6 makes decisive contract information visible earlier. Assumptions show the
+indexed conclusion and explicit inputs before implicit context. Exact discovery
+can flag specialized negative-existence, emptiness, or subsingleton evidence about
+a type or one of a function's first three explicit inputs. These are source leads;
+compare all parameters and premises before drawing a conclusion. Candidates about
+wrappers or function spaces are not obstructions to their constituent types.
+
+Examples are selectable `qREF#N` declarations. Record fields and maps out of a
+type are excluded from automatic construction selection. Failed application
+experiments lead with the focused type difference; `show qREF --all` retains the
+complete Lean diagnostic.

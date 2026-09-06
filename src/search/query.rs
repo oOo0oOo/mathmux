@@ -115,6 +115,22 @@ pub(super) fn diagnostic_goal_detail(diagnostic: &str) -> Option<String> {
     (!goal.is_empty()).then(|| format!("goal\n{goal}"))
 }
 
+pub(super) fn diagnostic_apply_detail(diagnostic: &str) -> Option<String> {
+    if !diagnostic.starts_with("Tactic `apply` failed:") {
+        return None;
+    }
+    let (actual, expected) = diagnostic.split_once("\nwith the goal\n")?;
+    let (_, actual) = actual.split_once('\n')?;
+    let expected = expected
+        .lines()
+        .take_while(|l| !l.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    diagnostic_type_detail(&format!(
+        "has type\n{actual}\nbut is expected to have type\n{expected}"
+    ))
+}
+
 pub(super) fn diagnostic_type_detail(diagnostic: &str) -> Option<String> {
     const SYNTHESIS: &str = "failed to synthesize instance of type class";
     let lines = diagnostic.lines().collect::<Vec<_>>();
