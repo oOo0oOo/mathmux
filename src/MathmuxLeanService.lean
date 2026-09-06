@@ -2,6 +2,7 @@ import Lean.Language.Lean
 import Lean.Setup
 import Lean.Server.InfoUtils
 import Lean.Elab.Tactic
+import Lean.Util.CollectAxioms
 
 open Lean Lean.Elab
 open Lean.Core Lean.Meta Lean.Elab Lean.Elab.Term
@@ -155,6 +156,51 @@ def throwLoggedErrors : Term.TermElabM Unit := do
         details := details.push (← message.toString)
     throwError ("\n".intercalate details.toList)
 
+def boundedContractText (text : String) (limit : Nat := 800) : String :=
+  if text.length > limit then
+    (text.take limit).toString ++ " … [truncated; inspect selected declaration source]"
+  else text
+
+def inspectContract (value : Expr) : MetaM String := do
+  let type ← inferType value
+  let mut lines := #[s!"elaborated type: {boundedContractText (← ppExpr type).pretty}"]
+  let premises ← forallTelescope type fun args result => do
+    let mut details := #[]
+    for arg in args[:12] do
+      let decl ← arg.fvarId!.getDecl
+      let role := if ← isProp decl.type then "proof assumption" else "data input"
+      details := details.push s!"{role} {decl.userName}: {boundedContractText (← ppExpr decl.type).pretty}"
+    if args.size > 12 then details := details.push s!"{args.size - 12} additional inputs omitted"
+    details := details.push s!"result: {boundedContractText (← ppExpr result).pretty}"
+    if result.isAppOfArity ``Not 1 && (result.getArg! 0).isAppOfArity ``Nonempty 1 then
+      details := details.push s!"negative existence result under the inputs above: {boundedContractText (← ppExpr ((result.getArg! 0).getArg! 0)).pretty}"
+    return details
+  lines := lines ++ premises
+  if let .const name _ := value then
+    let info ← getConstInfo name
+    let axioms ← collectAxioms name
+    lines := lines.push s!"axioms: {if axioms.isEmpty then "none" else String.intercalate ", " (axioms.toList.map Name.toString)}"
+    if axioms.contains ``sorryAx then
+      lines := lines.push "ADMITTED: this declaration depends on sorryAx; do not treat it as a proved obstruction."
+    match info with
+    | .inductInfo info =>
+      for ctor in info.ctors.take 3 do
+        let ctorInfo ← getConstInfo ctor
+        lines := lines.push s!"constructor {ctor}: {boundedContractText (← ppExpr ctorInfo.type).pretty}"
+    | .defnInfo info =>
+      let absent ← lambdaTelescope info.value fun args body => do
+        let mut absent := #[]
+        for arg in args[:12] do
+          if !body.containsFVar arg.fvarId! then
+            absent := absent.push (← arg.fvarId!.getDecl).userName.toString
+        return absent
+      if !absent.isEmpty then
+        lines := lines.push s!"parameters absent from definition body (syntactic only): {String.intercalate ", " absent.toList}"
+      lines := lines.push s!"one-step body: {boundedContractText (← ppExpr info.value).pretty}"
+    | _ => pure ()
+  lines := lines.push "Inspection is not a certificate or a mathematical adequacy verdict. Test explicit small cases with #check/#reduce; use #apply at a goal to expose remaining obligations."
+  return String.intercalate "\n" lines.toList
+
 def inspectTerm (operation source : String) : Term.TermElabM String := do
   let stx ← parseCategory `term source
   if operation == "synth" then
@@ -171,6 +217,10 @@ def inspectTerm (operation source : String) : Term.TermElabM String := do
   if value.isSyntheticSorry then
     throwError "term elaboration failed"
   Meta.check value
+  if operation == "inspect" then
+    -- A bare declaration exposes every binder, including inferred implicit inputs.
+    let inspected := if source.trimAscii.toString.all (fun c => c.isAlphanum || c == '_' || c == '.' || c == '\'' || c == '@') then value.getAppFn else value
+    return ← inspectContract inspected
   if operation == "reduce" then
     return (← Meta.ppExpr (← Meta.reduce value)).pretty
   return s!"{(← Meta.ppExpr value).pretty} : {(← Meta.ppExpr (← Meta.inferType value)).pretty}"
@@ -191,6 +241,8 @@ def sourceContextHint (request : Request) : String :=
   s!"\nnext: `mathmux search {request.file_name}:{request.line}`"
 
 def runLocalProbe (snapshot : Language.Lean.InitialSnapshot) (request : Request) : IO Response := do
+  if request.line == 0 || request.line > (request.source.splitOn "\n").length then
+    return probeFailure "probe line is outside the source; choose an exact existing line" request.version
   let tree := Language.toSnapshotTree snapshot
   let fileMap := snapshot.ictx.fileMap
   let goal? ← goalAtPosition tree fileMap request.line request.column
@@ -212,7 +264,16 @@ def runLocalProbe (snapshot : Language.Lean.InitialSnapshot) (request : Request)
           let remaining ← Tactic.getUnsolvedGoals
           if remaining.isEmpty then return "solved"
           let formats ← liftM (m := MetaM) (remaining.mapM Meta.ppGoal)
-          return (Std.Format.prefixJoin "\n" formats).pretty
+          let mut detail := (Std.Format.prefixJoin "\n" formats).pretty
+          let mut seen : Std.HashSet Name := {}
+          for goal in remaining.take 3 do
+            let type ← instantiateMVars (← goal.getType)
+            let target := if type.isAppOfArity ``Nonempty 1 then type.getArg! 0 else type
+            if let .const name _ := target.getAppFn then
+              if !seen.contains name && name != ``Eq then
+                seen := seen.insert name
+                detail := detail ++ s!"\nobligation API: mathmux probe {name} evidence (source candidates; hypotheses still required)"
+          return detail
         (((action {elaborator := .anonymous}).run' {goals := mvars}) {}).run' {}
     else
       match goal? with
@@ -412,7 +473,7 @@ unsafe def runServer (setup : ModuleSetup) (profile : Bool) : IO Unit := do
         fresh input
       else
         processor input
-      let response ← if request.operation ∉ ["check", "goal", "tactic", "term", "synth", "reduce"] then
+      let response ← if request.operation ∉ ["check", "goal", "tactic", "term", "synth", "reduce", "inspect"] then
         pure (probeFailure s!"unknown file operation: {request.operation}" request.version)
       else if request.operation == "check" then
         processSnapshot snapshot request.version profile

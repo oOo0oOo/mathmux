@@ -246,6 +246,12 @@ fn append_next_hint(
     {
         output.push_str("\nnext: refine query");
     } else if let Some(hit) = run.hits.first().filter(|hit| is_probeable_declaration(hit)) {
+        if matches!(hit.kind.as_str(), "structure" | "class") {
+            output.push_str(&format!(
+                "\ncontract: mathmux probe {} evidence (constructions/obstructions)",
+                shell_argument(probe_name(&hit.name))
+            ));
+        }
         let focus = next_probe_focus(hit);
         output.push_str(&format!(
             "\nnext: mathmux probe {}#1 {focus}",

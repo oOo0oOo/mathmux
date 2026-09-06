@@ -481,7 +481,11 @@ impl TelemetryStore {
         let response_band = response_band(response_json.len());
         let search_form = inferred_search_form(request);
         let probe_facet = probe_facet(request);
-        let candidate_count = response_candidate_count(request, &response.summary);
+        let candidate_count = response
+            .search_outcome
+            .as_ref()
+            .map(|o| o.result_count as u64)
+            .or_else(|| response_candidate_count(request, &response.summary));
         let concept_coverage = response_concept_coverage(&response.summary);
         let follow_up = follow_up_kind(request);
         let error_class = (!response.ok).then(|| error_class(&response.summary));
@@ -664,7 +668,13 @@ impl TelemetryStore {
             events.iter().filter(|event| {
                 matches!(
                     event.outcome_class.as_deref(),
-                    Some("operational" | "operational_error")
+                    Some(
+                        "operational"
+                            | "operational_error"
+                            | "invalid_request"
+                            | "unavailable_context"
+                            | "unclassified_error"
+                    )
                 ) || (!event.ok && event.outcome_class.is_none())
             }),
         );
@@ -952,6 +962,30 @@ fn exchange_outcome_class(
         &request.command,
         Command::Search { .. } | Command::Probe { .. }
     ) {
+        if let Some(outcome) = &response.search_outcome {
+            if let Some(failure) = &outcome.failure_class {
+                return Some(match failure.as_str() {
+                    "invalid_request" => "invalid_request",
+                    "unavailable_context" => "unavailable_context",
+                    "lean_elaboration" => "formalization",
+                    _ => "unclassified_error",
+                });
+            }
+            return Some(match outcome.resolution.as_str() {
+                "no_result" => "no_result",
+                "near_suggestions" => "near_suggestions",
+                "partial_result" => "partial_result",
+                "exact_hit" => "exact_hit",
+                "inspection" => {
+                    if response.ok {
+                        "inspection"
+                    } else {
+                        "formalization"
+                    }
+                }
+                _ => "ranked_results",
+            });
+        }
         if response.summary.contains("source regex scan timed out") {
             return Some(if response.ok {
                 "partial_result"
@@ -960,7 +994,7 @@ fn exchange_outcome_class(
             });
         }
         if response.summary.contains("no regex source matches")
-            || response.summary.contains(" no results")
+            || response.summary.contains("no results")
             || response.summary.contains("exact declaration not found")
             || response.summary.contains("not found:")
         {
@@ -1163,7 +1197,13 @@ fn render_aggregate(verb: &str, events: &[&TelemetryEvent]) -> String {
         .filter(|event| {
             matches!(
                 event.outcome_class.as_deref(),
-                Some("operational" | "operational_error")
+                Some(
+                    "operational"
+                        | "operational_error"
+                        | "invalid_request"
+                        | "unavailable_context"
+                        | "unclassified_error"
+                )
             ) || (!event.ok && event.outcome_class.is_none())
         })
         .count();
@@ -1210,7 +1250,13 @@ fn render_event_line(event: &TelemetryEvent) -> String {
         Some("near_suggestions") => "near",
         Some("partial_result") => "partial",
         Some("formalization") => "failed",
-        Some("operational" | "operational_error") => "error",
+        Some(
+            "operational"
+            | "operational_error"
+            | "invalid_request"
+            | "unavailable_context"
+            | "unclassified_error",
+        ) => "error",
         _ if event.ok => "ok",
         _ => "error",
     };
@@ -1327,7 +1373,7 @@ fn error_class(summary: &str) -> String {
     if summary.contains("no tactic context") {
         return "no tactic context".into();
     }
-    if summary.contains(" no results")
+    if summary.contains("no results")
         || summary.contains("exact declaration not found")
         || summary.contains("not found:")
     {
@@ -1949,6 +1995,40 @@ mod tests {
                 None,
             ),
             Some("operational")
+        );
+    }
+
+    #[test]
+    fn telemetry_uses_structured_outcomes_and_handles_legacy_empty_output() {
+        let dir = tempdir().unwrap();
+        let state = State::new(dir.path().join("state.db")).unwrap();
+        let request: Request = serde_json::from_str(r#"{"cwd":"/demo","command":{"verb":"search","query":"Demo*","max_results":null,"all":false}}"#).unwrap();
+        for text in ["no results\nref: q1", "q1 no results"] {
+            assert_eq!(
+                exchange_outcome_class(
+                    &state,
+                    &request,
+                    &Response::ok(text),
+                    Some("q1"),
+                    Some("name")
+                ),
+                Some("no_result")
+            );
+        }
+        let mut response = Response::ok("arbitrary presentation; exact declaration");
+        response.search_outcome = Some(crate::protocol::SearchOutcome {
+            resolution: "no_result".into(),
+            result_count: 0,
+            failure_class: None,
+        });
+        assert_eq!(
+            exchange_outcome_class(&state, &request, &response, None, Some("name")),
+            Some("no_result")
+        );
+        response.search_outcome.as_mut().unwrap().failure_class = Some("invalid_request".into());
+        assert_eq!(
+            exchange_outcome_class(&state, &request, &response, None, Some("name")),
+            Some("invalid_request")
         );
     }
 

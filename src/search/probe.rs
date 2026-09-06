@@ -6,6 +6,9 @@ use super::*;
 use crate::reference::{Reference, ReferenceKind};
 
 const FOCUSES: &[&str] = &[
+    "assumptions",
+    "evidence",
+    "context",
     "signature",
     "apply",
     "fields",
@@ -39,6 +42,8 @@ enum LeanDirective {
     Synth(String),
     Reduce(String),
     Tactic(String),
+    Inspect(String),
+    Apply(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -174,6 +179,12 @@ impl ProbeRequest {
         if focus.is_some() {
             terms.pop();
         }
+        if focus.as_deref() == Some("context") && !matches!(context, Some(ProbeContext::Check(_))) {
+            bail!(
+                "Lean context requires an exact position; use `probe FILE:LINE goal` or `probe FILE:LINE TERM`"
+            );
+        }
+
         if let Some(first) = terms.first_mut()
             && let Some(stripped) = first.strip_prefix('@')
         {
@@ -323,6 +334,8 @@ fn parse_directive(value: &str) -> Result<Option<LeanDirective>> {
         ),
         ("#synth", LeanDirective::Synth),
         ("#reduce", LeanDirective::Reduce),
+        ("#inspect", LeanDirective::Inspect),
+        ("#apply", LeanDirective::Apply),
         ("by", LeanDirective::Tactic),
     ] {
         if value == prefix {
@@ -342,7 +355,8 @@ fn parse_directive(value: &str) -> Result<Option<LeanDirective>> {
 
 impl Searcher {
     pub fn probe(&self, workspace: &Workspace, cwd: &Path, query: &str) -> Result<String> {
-        let request = ProbeRequest::parse(query)?;
+        let request = ProbeRequest::parse(query)
+            .context(crate::protocol::DiscoveryFailure::InvalidRequest)?;
         if let Some(directive) = request.directive {
             let context = request.context.unwrap();
             if let LeanDirective::Check(subject) = &directive
@@ -373,6 +387,14 @@ impl Searcher {
             (Some(ProbeContext::Position(location)), Some(subject), None | Some("signature")) => {
                 self.run_position_probe(workspace, cwd, location, Some(subject))
             }
+            (Some(ProbeContext::Position(location)), Some(subject), Some("evidence")) => {
+                let (path, line) = self.resolve_probe_context(
+                    workspace,
+                    cwd,
+                    ProbeContext::Position(location.clone()),
+                )?;
+                self.probe_verified_evidence(workspace, subject, &path, line)
+            }
             (Some(ProbeContext::Position(_)), _, Some(focus)) => {
                 bail!(
                     "focus `{focus}` is not valid at FILE:LINE; use goal, TERM, or a Lean directive"
@@ -393,6 +415,9 @@ impl Searcher {
                     ProbeContext::File(file.clone()),
                     LeanDirective::Check(subject.to_owned()),
                 ),
+            (None, Some(subject), Some(focus @ ("assumptions" | "evidence"))) => {
+                self.probe_contract(workspace, cwd, subject, focus)
+            }
             (None, Some(subject), Some("constructors")) => {
                 self.run_constructors_probe(workspace, cwd, subject)
             }
@@ -795,6 +820,12 @@ impl Searcher {
             .unwrap_or("check has no diagnostic");
         let (path, line) = diagnostic_position(text, run.failed.as_deref());
         let detail = match focus {
+            Some("context") => {
+                let mut detail =
+                    diagnostic_context(text, diagnostic.and_then(|d| d.context.as_deref()));
+                detail.push_str(&self.failure_context(workspace, text, path.as_deref())?);
+                detail
+            }
             Some("types") => diagnostic_type_detail(text)
                 .with_context(|| format!("{reference} has no type or instance failure"))?,
             Some("defeq") => diagnostic_defeq_detail(text)
@@ -911,6 +942,9 @@ impl Searcher {
         }
         let selected_name = hit.name.strip_prefix("_root_.").unwrap_or(&hit.name);
         let subject = subject.unwrap_or(selected_name);
+        if let Some(focus @ ("assumptions" | "evidence")) = focus {
+            return self.probe_contract(workspace, cwd, subject, focus);
+        }
         if focus == Some("constructors") {
             return self.run_constructors_probe(workspace, cwd, subject);
         }
@@ -1045,7 +1079,8 @@ impl Searcher {
         subject: &str,
     ) -> Result<String> {
         let source_search = || -> Result<(String, Option<SearchRun>)> {
-            let rendered = self.search(workspace, cwd, &format!("{subject} source"), None, false)?;
+            let rendered =
+                self.search(workspace, cwd, &format!("{subject} source"), None, false)?;
             let run = rendered_search_reference(&rendered)
                 .map(|reference| self.state.search_run(&reference))
                 .transpose()?
@@ -1140,7 +1175,7 @@ impl Searcher {
         Ok(render_static_probe_summary(&run, focus))
     }
 
-    fn store_probe_result(
+    pub(super) fn store_probe_result(
         &self,
         workspace: &Workspace,
         query: &str,
@@ -1238,11 +1273,27 @@ impl Searcher {
         context: ProbeContext,
         directive: LeanDirective,
     ) -> Result<String> {
-        let (path, line) = self.resolve_probe_context(workspace, cwd, context)?;
+        let (path, line) = self
+            .resolve_probe_context(workspace, cwd, context)
+            .context(crate::protocol::DiscoveryFailure::UnavailableContext)?;
         let (operation, input) = match directive {
             LeanDirective::Check(input) => ("term", input),
             LeanDirective::Synth(input) => ("synth", input),
             LeanDirective::Reduce(input) => ("reduce", input),
+            LeanDirective::Inspect(input) => {
+                ensure!(
+                    line > 0,
+                    "#inspect requires FILE:LINE, cREF, or positioned qREF context"
+                );
+                ("inspect", input)
+            }
+            LeanDirective::Apply(input) => {
+                ensure!(
+                    line > 0,
+                    "#apply requires FILE:LINE, cREF, or positioned qREF context"
+                );
+                ("tactic", format!("apply ({input})"))
+            }
             LeanDirective::Tactic(input) => {
                 ensure!(
                     line > 0,
@@ -1254,7 +1305,12 @@ impl Searcher {
         let (worker_ok, detail) = self
             .checker
             .probe_context(workspace, &path, line, 0, operation, &input)?;
-        let (ok, detail) = decisive_directive_result(operation, &input, worker_ok, detail);
+        let (ok, mut detail) = decisive_directive_result(operation, &input, worker_ok, detail);
+        if operation == "tactic" && input.starts_with("apply (") {
+            detail = format!(
+                "application experiment (not a check certificate)\n{detail}\nRemaining goals are obligations, not established facts."
+            );
+        }
         let query = format!("{} {} {}", path.display(), operation, input);
         let stored_path = path
             .strip_prefix(&workspace.path)
@@ -2090,6 +2146,42 @@ mod tests {
             "failed to synthesize instance of type class\n  MissingClass Nat".into(),
         );
         assert!(!ok);
+    }
+
+    #[test]
+    fn contract_probes_require_explicit_lean_context() {
+        assert!(ProbeRequest::parse("#inspect Nat").is_err());
+        assert!(ProbeRequest::parse("#apply Nat.add_zero").is_err());
+        assert_eq!(
+            ProbeRequest::parse("Demo.lean:8 #apply h")
+                .unwrap()
+                .directive,
+            Some(LeanDirective::Apply("h".into()))
+        );
+        assert_eq!(
+            ProbeRequest::parse("Demo.lean:8 #inspect Nat")
+                .unwrap()
+                .directive,
+            Some(LeanDirective::Inspect("Nat".into()))
+        );
+        assert_eq!(
+            ProbeRequest::parse("Demo.Data assumptions")
+                .unwrap()
+                .focus
+                .as_deref(),
+            Some("assumptions")
+        );
+        assert_eq!(
+            ProbeRequest::parse("Demo.lean:8 Demo.Data evidence")
+                .unwrap()
+                .focus
+                .as_deref(),
+            Some("evidence")
+        );
+        assert_eq!(
+            ProbeRequest::parse("c1 context").unwrap().focus.as_deref(),
+            Some("context")
+        );
     }
 
     #[test]

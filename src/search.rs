@@ -32,6 +32,7 @@ use crate::util::{
 };
 
 mod api;
+mod contract;
 mod display;
 mod plan;
 mod probe;
@@ -684,7 +685,8 @@ impl Searcher {
         all: bool,
     ) -> Result<String> {
         let query = normalize_colon_attached_source_facet(query);
-        let request = SearchRequest::parse(&query, max_results, all)?;
+        let request = SearchRequest::parse(&query, max_results, all)
+            .context(crate::protocol::DiscoveryFailure::InvalidRequest)?;
         let started = Instant::now();
         let requested_query = request.displayed_query.clone();
         let (query, forced_plan) = match &request.expression {

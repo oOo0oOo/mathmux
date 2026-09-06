@@ -240,10 +240,48 @@ fn build_precedes(
 }
 
 fn handled_response(service: &Service, request: Request, report: &mut dyn FnMut(&str)) -> Response {
-    match service.handle(request, report) {
+    let discovery = matches!(
+        request.command,
+        Command::Search { .. } | Command::Probe { .. }
+    );
+    let mut response = match service.handle(request, report) {
         Ok(summary) => Response::ok(summary),
-        Err(error) => Response::error(format!("{error:#}")),
+        Err(error) => {
+            let failure = error
+                .downcast_ref::<crate::protocol::DiscoveryFailure>()
+                .map(|kind| match kind {
+                    crate::protocol::DiscoveryFailure::InvalidRequest => "invalid_request",
+                    crate::protocol::DiscoveryFailure::UnavailableContext => "unavailable_context",
+                });
+            let mut response = Response::error(format!("{error:#}"));
+            if discovery {
+                response.search_outcome = Some(crate::protocol::SearchOutcome {
+                    resolution: "none".into(),
+                    result_count: 0,
+                    failure_class: Some(failure.unwrap_or("unclassified_error").into()),
+                });
+            }
+            response
+        }
+    };
+    if discovery {
+        // The trailing reference selects the persisted result, not a classification
+        // inferred from display wording. Earlier nested probes may also have refs.
+        if let Some(reference) = response
+            .summary
+            .lines()
+            .rev()
+            .find_map(|line| line.strip_prefix("ref: "))
+            && let Ok(Some(run)) = service.state.search_run(reference.trim())
+        {
+            let mut outcome = crate::protocol::SearchOutcome::from_run(&run);
+            if !response.ok && run.inference.starts_with("probe") {
+                outcome.failure_class = Some("lean_elaboration".into());
+            }
+            response.search_outcome = Some(outcome);
+        }
     }
+    response
 }
 
 struct Service {
@@ -542,6 +580,14 @@ fn check_summary(outcome: &CheckOutcome) -> String {
             if let Some(context) = &diagnostic.context {
                 output.push('\n');
                 output.push_str(context);
+            }
+            if detail.to_ascii_lowercase().contains("type mismatch")
+                || detail.contains("definitionally equal")
+            {
+                output.push_str(&format!(
+                    "\ncontext: mathmux probe {} context",
+                    outcome.reference
+                ));
             }
             if detail.chars().count() > CHECK_DIAGNOSTIC_CHARS {
                 output.push_str(&format!("\nfull diagnostic: show {}", outcome.reference));

@@ -64,7 +64,7 @@ const PROJECT_CONFIG_FILES: [&str; 4] = [
 fn probe_timeout(operation: &str) -> Duration {
     if matches!(operation, "goal" | "tactic") {
         TACTIC_PROBE_TIMEOUT
-    } else if operation == "term" {
+    } else if matches!(operation, "term" | "inspect") {
         CONTEXTUAL_PROBE_TIMEOUT
     } else {
         WARM_PROBE_TIMEOUT

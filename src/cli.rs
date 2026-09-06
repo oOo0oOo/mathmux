@@ -24,7 +24,7 @@ use clap::ValueEnum;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 const WORKFLOW_HELP: &str = r#"AGENT CONTRACT
-  api       search-v4/probe-v3; reread search/probe help only when this digest changes.
+  api       search-v4/probe-v4; reread search/probe help only when this digest changes.
   scope     Use the preassigned workspace; never run ws or enter main/another workspace.
   discover  Search unknown things; probe known API, exact context, or failures.
             Exact declarations go straight to probe NAME; qREFs store result sets.
@@ -74,21 +74,30 @@ RULES
   Sigil what you know; leave inference for what you do not."#;
 
 const PROBE_HELP: &str = r##"PROBE — inspect something known; returns qREF
-API probe-v3 — bounded exact inspection; reread only when this digest changes
+API probe-v4 — bounded exact inspection; reread only when this digest changes
 FORMS — type one directly; there are no API, LEAN, or other category keywords
-  NAME [signature|source|outline|apply|fields|constructors|ext|simp|usages]
+  NAME [signature|source|outline|apply|fields|constructors|ext|simp|usages|assumptions|evidence]
   NAME find TERM
   type:LEAN_TYPE [types]
   FILE warnings
   FILE:LINE [goal] | FILE:LINE TERM [signature]
+  FILE:LINE NAME evidence  (inspect one obstruction candidate with Lean)
   PATH NAME usages
-  cREF [goal|types|defeq|rewrite|profile]
+  cREF [goal|types|defeq|rewrite|profile|context]
   qREF[#N] [signature|source|outline|find TERM|usages|constructors]
   positioned-qREF [goal] | stored-probe-qREF
   FILE|FILE:LINE|cREF|qREF "#check TERM"|"#synth TYPE"|"#reduce TERM"
-  FILE:LINE|cREF|positioned-qREF "by TACTIC"
+  FILE:LINE|cREF|positioned-qREF "by TACTIC"|"#apply TERM"|"#inspect TERM"
 
 RESULT
+  NAME assumptions exposes premises and selected input APIs; evidence retrieves
+  construction/obstruction candidates with hypotheses. Indexed text is not verified
+  applicability; no results is not an existence verdict. Use qualified names.
+  cREF context adds at most three signature-related laws to the original failure.
+  #inspect inspects elaborated inputs/result, constructors or a definition body;
+  #apply tests an application and reports remaining obligations, without editing.
+  Test small cases with #check (TERM : EXPECTED_TYPE), #reduce TERM or by TACTIC.
+  All experiments require explicit context; check remains certification.
   FILE warnings returns ranked residual-warning qREFs from its latest current check;
   probing one returns a source-bound dossier with API/dependency evidence.
   API focuses return one bounded dossier. goal returns the exact local goal;
@@ -1142,14 +1151,14 @@ mod tests {
             .unwrap()
             .render_long_help()
             .to_string();
-        assert!(probe_help.contains("API probe-v3"));
+        assert!(probe_help.contains("API probe-v4"));
         for contract in [
             "there are no API, LEAN, or other category keywords",
-            "NAME [signature|source|outline|apply|fields|constructors|ext|simp|usages]",
+            "NAME [signature|source|outline|apply|fields|constructors|ext|simp|usages|assumptions|evidence]",
             "NAME find TERM",
             "FILE warnings",
             "FILE:LINE [goal]",
-            "cREF [goal|types|defeq|rewrite|profile]",
+            "cREF [goal|types|defeq|rewrite|profile|context]",
             "qREF[#N] [signature|source|outline|find TERM|usages|constructors]",
             "Context is mandatory",
             "Use NAME signature, not",
@@ -1188,7 +1197,7 @@ mod tests {
     #[test]
     fn workflow_help_prefers_direct_workspace_experimentation() {
         let help = command_line().render_help().to_string();
-        assert!(help.contains("search-v4/probe-v3"));
+        assert!(help.contains("search-v4/probe-v4"));
         assert!(help.contains("Edit intended files -> check -> submit"));
         assert!(help.contains("Exact declarations go straight to probe NAME"));
         assert!(help.contains("Search unknown things; probe known API, exact context"));

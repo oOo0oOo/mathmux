@@ -234,7 +234,12 @@ pub(super) fn source_regex_result(
     let hits = groups.into_iter().map(SourceMatchGroup::into_hit).collect();
     Ok(SearchResult {
         hits,
-        inference: "source-regex".into(),
+        inference: if timed_out {
+            "source-regex-partial"
+        } else {
+            "source-regex"
+        }
+        .into(),
         note: if timed_out {
             Some("source regex scan timed out; narrow the scope".into())
         } else if total == 0 {

@@ -95,6 +95,61 @@ impl Command {
     }
 }
 
+/// Machine outcomes are independent of human presentation. Older peers omit them.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SearchOutcome {
+    pub resolution: String,
+    pub result_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_class: Option<String>,
+}
+
+#[derive(Debug)]
+pub(crate) enum DiscoveryFailure {
+    InvalidRequest,
+    UnavailableContext,
+}
+impl std::fmt::Display for DiscoveryFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::InvalidRequest => "invalid discovery request",
+            Self::UnavailableContext => "unavailable probe context",
+        })
+    }
+}
+impl std::error::Error for DiscoveryFailure {}
+
+impl SearchOutcome {
+    pub fn from_run(run: &crate::state::SearchRun) -> Self {
+        let resolution =
+            if run.inference.contains("recovery") || run.inference.ends_with("-partial") {
+                "partial_result"
+            } else if run.inference.contains("missing") || run.inference.contains("miss") {
+                if run.hits.is_empty() {
+                    "no_result"
+                } else {
+                    "near_suggestions"
+                }
+            } else if run.hits.is_empty() {
+                "no_result"
+            } else if matches!(
+                run.inference.as_str(),
+                "exact" | "exact-batch" | "signature"
+            ) {
+                "exact_hit"
+            } else if run.inference.starts_with("probe") {
+                "inspection"
+            } else {
+                "ranked_results"
+            };
+        Self {
+            resolution: resolution.into(),
+            result_count: run.hits.len(),
+            failure_class: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Response {
     #[serde(default)]
@@ -109,6 +164,8 @@ pub struct Response {
     pub daemon_ms: u64,
     #[serde(default)]
     pub rss_kib: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_outcome: Option<SearchOutcome>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,6 +195,7 @@ impl Response {
             summary: summary.into(),
             daemon_ms: 0,
             rss_kib: None,
+            search_outcome: None,
         }
     }
 }
@@ -145,6 +203,25 @@ impl Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn structured_search_outcomes_do_not_count_empty_or_partial_as_exact() {
+        let mut run = crate::state::SearchRun {
+            reference: "q1".into(),
+            workspace_ref: "w1".into(),
+            query: "X".into(),
+            inference: "exact".into(),
+            hits: vec![],
+            note: None,
+            duration_ms: 0,
+            created_at: 0,
+        };
+        assert_eq!(SearchOutcome::from_run(&run).resolution, "no_result");
+        run.inference = "source-regex-partial".into();
+        assert_eq!(SearchOutcome::from_run(&run).resolution, "partial_result");
+        let old: Response = serde_json::from_str(r#"{"ok":true,"summary":"old"}"#).unwrap();
+        assert!(old.search_outcome.is_none());
+    }
 
     #[test]
     fn protocol_round_trips_public_queries() {

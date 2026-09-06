@@ -175,3 +175,48 @@ the full requested range. Longer ranges name the next non-overlapping range.
 ## Development
 
 Probably won't accept your PR. Write an issue, I prefer my own agents.
+
+### Inspecting mathematical contracts (probe-v4)
+
+Before building on an unfamiliar API, inspect what it assumes and whether a
+construction or obstruction has been found:
+
+```sh
+mathmux probe Some.Namespace.Data assumptions
+mathmux probe Some.Namespace.Data evidence
+mathmux probe Proof.lean:42 Some.Namespace.Data evidence
+mathmux probe Proof.lean:42 '#inspect Some.Namespace.theorem'
+mathmux probe Proof.lean:42 '#apply proposedLemma'
+mathmux probe c123 context
+```
+
+`assumptions` retains the indexed signature and points to selected input APIs.
+`evidence` returns bounded source candidates for constructions, negative-existence
+results, and related laws, with their hypotheses. A constructor may still need
+impossible inputs. A missing search result is not an existence verdict, and a
+source candidate is not a verified obstruction. The positioned `evidence` form
+runs Lean inspection of one negative-existence candidate in the specified context;
+it reports the actual elaborated statement and axiom dependencies, including
+`sorryAx`. Verify the exact specialization and every premise before using it.
+
+`#inspect` distinguishes proof assumptions from data inputs, shows constructors
+or one definition body, and reports parameters syntactically absent from that
+body. This is not a semantic independence test. Use explicit small cases with
+`#check (TERM : EXPECTED_TYPE)`, `#reduce TERM`, or `by TACTIC`. `#apply` runs an
+application experiment and shows remaining obligations; it does not edit source
+or issue a check certificate. All these Lean experiments require explicit context.
+
+`cREF context` keeps the original failure and retrieves up to three related laws
+and one indexed usage. Candidates are ranked using type/signature overlap and
+small application or coercion laws, not claimed to solve the goal. Normal checks
+only add a compact pointer to this opt-in inspection, avoiding extra Lean work.
+
+Development telemetry now includes structured resolution/count/failure metadata
+for search and probe responses. Older response formats remain readable. Historical
+text-derived outcome labels are preserved and may misclassify empty searches;
+compare new-build episodes separately. Result counts are returned records, not
+proofs of usefulness. Unclassified failures remain unclassified rather than being
+assumed to be infrastructure defects.
+
+The isolated Lean smoke suite is run with
+`python tests/lean_probe_smoke.py /path/to/project-toolchain/bin/lean`.
