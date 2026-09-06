@@ -1,4 +1,4 @@
-# Discovery usage audit: probe-v6 and probe-v7
+# Discovery usage audit: probe-v6 through probe-v8
 
 2026-09-07. The operator requested repeated hands-on rounds focused on preventing
 formalization mistakes early. MathMux issues belong in MathMux's tracker and are
@@ -89,3 +89,27 @@ once so existing cached source entries acquire the parser correction.
 
 Release gate: 245 Rust development tests, clippy with documented baseline allowances,
 and the expanded pinned-Lean CLI smoke all pass.
+
+
+## Source navigation round: probe-v8 (MathMux i10)
+
+Following the source snapshot with `find ContinuousLinearBundleHom` exposed another
+concrete error: isolated q58 reported lines 298 and 368, counting twelve synthetic
+ambient-context lines as file lines. The direct name-based find returned no body
+matches because it searched only the old preview. The corresponding outline
+contained only the declaration header.
+
+Both direct and reference-based source/outline/find now refresh the complete
+current textual snapshot. Find subtracts synthetic context from file coordinates,
+labels ambient matches without inventing a file location, and reports empty or
+capped literal-match results explicitly. Declaration-header detection shares the
+source parser, including public declarations and attributes. Unavailable or indexed
+fallbacks keep an explicit completeness limitation.
+
+Replay q61/q63 returned the actual file lines 286 and 356 in both forms; the new
+outline reached the return type at line 286 and later proof structure. Warm requests
+took 34–130 ms. Generic tests cover ambient coordinates, attributed public headers,
+no-match/capped-match responses, and direct/reference find plus outline beyond the
+48-line preview. The expanded pinned-Lean CLI smoke passes. No formalization source
+was changed. The previous probe-v7 development release was independently verified
+before this follow-up was landed.

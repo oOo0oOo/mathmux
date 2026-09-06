@@ -24,7 +24,7 @@ use clap::ValueEnum;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 const WORKFLOW_HELP: &str = r#"AGENT CONTRACT
-  api       search-v4/probe-v7; reread search/probe help only when this digest changes.
+  api       search-v4/probe-v8; reread search/probe help only when this digest changes.
   scope     Use the preassigned workspace; never run ws or enter main/another workspace.
   discover  Search unknown things; probe known API, exact context, or failures.
             Exact declarations go straight to probe NAME; qREFs store result sets.
@@ -74,7 +74,7 @@ RULES
   Sigil what you know; leave inference for what you do not."#;
 
 const PROBE_HELP: &str = r##"PROBE — inspect something known; returns qREF
-API probe-v7 — bounded exact inspection; reread only when this digest changes
+API probe-v8 — bounded exact inspection; reread only when this digest changes
 FORMS — type one directly; there are no API, LEAN, or other category keywords
   NAME [signature|source|outline|apply|fields|constructors|ext|simp|usages|assumptions|evidence|examples]
   NAME find TERM
@@ -91,7 +91,8 @@ FORMS — type one directly; there are no API, LEAN, or other category keywords
   FILE:LINE|cREF|positioned-qREF "by TACTIC"|"#apply TERM"|"#inspect TERM"
 
 RESULT
-  NAME source reads a fresh textual snapshot with ambient binders and its own docs.
+  NAME source/outline/find reads a fresh textual snapshot. Source includes ambient
+  binders and its own docs; find reports actual file lines, labeling ambient matches.
   Long source previews show continuation ranges; show qREF --all recovers the stored
   snapshot. Indexed fallbacks are labeled incomplete. Text is not Lean elaboration.
   NAME assumptions exposes premises and selected input APIs; evidence retrieves
@@ -1172,7 +1173,7 @@ mod tests {
             .unwrap()
             .render_long_help()
             .to_string();
-        assert!(probe_help.contains("API probe-v7"));
+        assert!(probe_help.contains("API probe-v8"));
         for contract in [
             "there are no API, LEAN, or other category keywords",
             "NAME [signature|source|outline|apply|fields|constructors|ext|simp|usages|assumptions|evidence|examples]",
@@ -1218,7 +1219,7 @@ mod tests {
     #[test]
     fn workflow_help_prefers_direct_workspace_experimentation() {
         let help = command_line().render_help().to_string();
-        assert!(help.contains("search-v4/probe-v7"));
+        assert!(help.contains("search-v4/probe-v8"));
         assert!(help.contains("Edit intended files -> check -> submit"));
         assert!(help.contains("Exact declarations go straight to probe NAME"));
         assert!(help.contains("Search unknown things; probe known API, exact context"));

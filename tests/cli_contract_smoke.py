@@ -60,6 +60,13 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         assert 'exact .intro' in run([binary, 'show', fresh_ref, '--all'], ws).stdout
         assert 'exact True.intro' in run([binary, 'show', source_ref, '--all'], ws).stdout
         (ws / 'SourceFixture.lean').write_text(source_fixture)
+        for query in ['Demo.longProof find exact', source_ref + ' find exact']:
+            found = probe(query)
+            assert '   81    exact True.intro' in found, found
+        found = probe('Demo.longProof find nonexistentNeedle')
+        assert 'No literal matches' in found, found
+        outline = probe('Demo.longProof outline')
+        assert '   81    exact True.intro' in outline, outline
         assert 'premises retained' in probe('Impossible assumptions')
         assert 'obstruction candidate' in probe('Impossible evidence')
         detail = probe('Fixture.lean:11 #inspect forgetInput')

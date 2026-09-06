@@ -1023,7 +1023,9 @@ impl Searcher {
         if focus == "usages" {
             self.enrich_usage_dossier(workspace, &mut run)?;
         }
-        if focus == "source" && !run.hits.is_empty() {
+        if (matches!(focus, "source" | "outline") || focus.starts_with("find:"))
+            && !run.hits.is_empty()
+        {
             return self.store_query_hit_refinement(workspace, &reference, &run.hits[0], focus);
         }
         Ok(render_static_probe_summary(&run, focus))
@@ -1208,13 +1210,19 @@ impl Searcher {
         focus: &str,
     ) -> Result<String> {
         let mut hit = hit.clone();
-        let fresh_source = focus == "source" && self.refresh_probe_source(workspace, &mut hit)?;
+        let source_focus = matches!(focus, "source" | "outline") || focus.starts_with("find:");
+        let fresh_source = source_focus && self.refresh_probe_source(workspace, &mut hit)?;
         if !fresh_source && (matches!(focus, "source" | "outline") || focus.starts_with("find:")) {
             let (scopes, _) = self.search_scopes(workspace)?;
             self.enrich_exact_source(&mut hit, &scopes)?;
         }
-        let note = (focus == "source" && hit.source.is_none()).then(|| {
-            "Source unavailable in the current file or index; no completeness claim.".into()
+        let note = (source_focus && !fresh_source).then(|| {
+            if hit.source.is_none() {
+                "Source unavailable in the current file or index; no completeness claim."
+            } else {
+                "Indexed source excerpt; completeness unavailable."
+            }
+            .into()
         });
         let run = SearchRun {
             reference: self.state.next_reference(ReferenceKind::Query)?,
@@ -1577,14 +1585,7 @@ fn render_static_probe_summary(run: &SearchRun, focus: &str) -> String {
                 hit.kind = "declaration-find".into();
                 hit.signature = Some(format!("local matches for {term}"));
                 hit.source = hit.source.as_deref().map(|source| {
-                    source
-                        .lines()
-                        .enumerate()
-                        .filter(|(_, line)| line.contains(term))
-                        .take(12)
-                        .map(|(offset, line)| format!("{:>5}  {line}", hit.line + offset as u64))
-                        .collect::<Vec<_>>()
-                        .join("\n")
+                    declaration_find_from_hit(source, hit.line, term, &run.reference)
                 });
             }
         }
@@ -1636,6 +1637,51 @@ fn render_static_probe_summary(run: &SearchRun, focus: &str) -> String {
         run.note = None;
     }
     render_summary_without_hints(&run)
+}
+
+fn declaration_find_from_hit(
+    source: &str,
+    declaration_line: u64,
+    term: &str,
+    reference: &str,
+) -> String {
+    let lines = source.lines().collect::<Vec<_>>();
+    let header = lines
+        .iter()
+        .position(|line| is_declaration_header(line))
+        .unwrap_or(0);
+    let matches = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.contains(term))
+        .map(|(index, line)| {
+            if index < header {
+                format!("ambient: {}", truncate_line(line, 180))
+            } else {
+                format!(
+                    "{:>5}  {}",
+                    declaration_line + (index - header) as u64,
+                    truncate_line(line, 180)
+                )
+            }
+        })
+        .collect::<Vec<_>>();
+    if matches.is_empty() {
+        return "No literal matches in the available source snapshot.".into();
+    }
+    let mut result = matches
+        .iter()
+        .take(12)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n");
+    if matches.len() > 12 {
+        result.push_str(&format!(
+            "\n… {} matching lines not shown; full source: mathmux show {reference} --all",
+            matches.len() - 12
+        ));
+    }
+    result
 }
 
 fn declaration_outline_from_hit(source: &str, declaration_line: u64, kind: &str) -> String {
@@ -1698,32 +1744,7 @@ fn declaration_outline_from_hit(source: &str, declaration_line: u64, kind: &str)
 }
 
 fn is_declaration_header(line: &str) -> bool {
-    let mut line = line.trim_start();
-    loop {
-        let previous = line;
-        for modifier in ["noncomputable ", "private ", "protected ", "unsafe "] {
-            if let Some(rest) = line.strip_prefix(modifier) {
-                line = rest.trim_start();
-                break;
-            }
-        }
-        if line == previous {
-            break;
-        }
-    }
-    [
-        "abbrev ",
-        "class ",
-        "def ",
-        "example ",
-        "inductive ",
-        "instance ",
-        "lemma ",
-        "structure ",
-        "theorem ",
-    ]
-    .iter()
-    .any(|keyword| line.starts_with(keyword))
+    source::declaration_regex().is_match(line) || line.trim_start().starts_with("example ")
 }
 
 fn static_probe_query(
@@ -2201,6 +2222,23 @@ fn inductive_constructors(name: &str, source: &str) -> Vec<InductiveConstructor>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn declaration_find_uses_file_coordinates_and_labels_ambient_matches() {
+        let source = "-- ambient context\nvariable {α : Type}\n\n@[simp] public theorem target : True := by\n  have h : True := by trivial\n  exact h";
+        assert_eq!(
+            declaration_find_from_hit(source, 20, "exact", "q1"),
+            "   22    exact h"
+        );
+        assert!(declaration_find_from_hit(source, 20, "Type", "q1").starts_with("ambient:"));
+        assert!(
+            declaration_find_from_hit(source, 20, "missing", "q1").contains("No literal matches")
+        );
+        let many = format!("theorem target : True := by\n{}", "  -- match\n".repeat(15));
+        let found = declaration_find_from_hit(&many, 20, "match", "q1");
+        assert!(found.contains("3 matching lines not shown"));
+        assert!(found.contains("show q1 --all"));
+    }
 
     #[test]
     fn file_directives_prefer_the_requested_result_over_prior_diagnostics() {
