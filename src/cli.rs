@@ -24,7 +24,7 @@ use clap::ValueEnum;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 const WORKFLOW_HELP: &str = r#"AGENT CONTRACT
-  api       search-v4/probe-v4; reread search/probe help only when this digest changes.
+  api       search-v4/probe-v5; reread search/probe help only when this digest changes.
   scope     Use the preassigned workspace; never run ws or enter main/another workspace.
   discover  Search unknown things; probe known API, exact context, or failures.
             Exact declarations go straight to probe NAME; qREFs store result sets.
@@ -74,14 +74,15 @@ RULES
   Sigil what you know; leave inference for what you do not."#;
 
 const PROBE_HELP: &str = r##"PROBE — inspect something known; returns qREF
-API probe-v4 — bounded exact inspection; reread only when this digest changes
+API probe-v5 — bounded exact inspection; reread only when this digest changes
 FORMS — type one directly; there are no API, LEAN, or other category keywords
-  NAME [signature|source|outline|apply|fields|constructors|ext|simp|usages|assumptions|evidence]
+  NAME [signature|source|outline|apply|fields|constructors|ext|simp|usages|assumptions|evidence|examples]
   NAME find TERM
   type:LEAN_TYPE [types]
   FILE warnings
   FILE:LINE [goal] | FILE:LINE TERM [signature]
   FILE:LINE NAME evidence  (inspect one obstruction candidate with Lean)
+  FILE:LINE NAME examples  (retrieve existing small-case candidates)
   PATH NAME usages
   cREF [goal|types|defeq|rewrite|profile|context]
   qREF[#N] [signature|source|outline|find TERM|usages|constructors]
@@ -93,7 +94,11 @@ RESULT
   NAME assumptions exposes premises and selected input APIs; evidence retrieves
   construction/obstruction candidates with hypotheses. Indexed text is not verified
   applicability; no results is not an existence verdict. Use qualified names.
-  cREF context adds at most three signature-related laws to the original failure.
+  NAME examples selects existing constructions with fewer indexed inputs and
+  project-authored examples. Hidden premises still require Lean inspection.
+  A current snapshot-verified obstruction may appear directly in search; changing
+  source/dependencies invalidates that evidence. Authored routes are advisory.
+  cREF context adds type differences, import-aware laws and one usage to the failure.
   #inspect inspects elaborated inputs/result, constructors or a definition body;
   #apply tests an application and reports remaining obligations, without editing.
   Test small cases with #check (TERM : EXPECTED_TYPE), #reduce TERM or by TACTIC.
@@ -469,6 +474,8 @@ pub fn run() -> Result<u8> {
     let request = Request {
         build: crate::util::build_id().to_owned(),
         generation: crate::util::build_generation(),
+        actor_id: telemetry_identity("MATHMUX_ACTOR_ID"),
+        session_id: telemetry_identity("MATHMUX_SESSION_ID"),
         cwd: cwd.to_string_lossy().into_owned(),
         command,
     };
@@ -819,6 +826,8 @@ fn replace_daemon(repo: &Repo, request: &Request) -> Result<UnixStream> {
         let probe = Request {
             build: request.build.clone(),
             generation: request.generation,
+            actor_id: None,
+            session_id: None,
             cwd: request.cwd.clone(),
             command: Command::Show {
                 reference: "q0".into(),
@@ -894,6 +903,12 @@ fn daemon_executable() -> Result<PathBuf> {
     }
 }
 
+fn telemetry_identity(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .filter(|v| !v.is_empty() && v.len() <= 128 && !v.chars().any(char::is_control))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -939,6 +954,8 @@ mod tests {
             &Request {
                 build: String::new(),
                 generation: 0,
+                actor_id: None,
+                session_id: None,
                 cwd: "/tmp".into(),
                 command: Command::Check {
                     file: None,
@@ -1151,10 +1168,10 @@ mod tests {
             .unwrap()
             .render_long_help()
             .to_string();
-        assert!(probe_help.contains("API probe-v4"));
+        assert!(probe_help.contains("API probe-v5"));
         for contract in [
             "there are no API, LEAN, or other category keywords",
-            "NAME [signature|source|outline|apply|fields|constructors|ext|simp|usages|assumptions|evidence]",
+            "NAME [signature|source|outline|apply|fields|constructors|ext|simp|usages|assumptions|evidence|examples]",
             "NAME find TERM",
             "FILE warnings",
             "FILE:LINE [goal]",
@@ -1172,7 +1189,7 @@ mod tests {
         assert!(!probe_help.contains("declaration-qREF"));
         assert!(!probe_help.contains("API       NAME"));
         assert!(!probe_help.contains("LEAN      FILE"));
-        for removed in ["neighborhood", "dependencies", "instances", "coercions"] {
+        for removed in ["neighborhood", "|dependencies", "|instances", "|coercions"] {
             assert!(!probe_help.contains(removed));
         }
         assert!(!help.contains("diagnostics, and goals"));
@@ -1197,7 +1214,7 @@ mod tests {
     #[test]
     fn workflow_help_prefers_direct_workspace_experimentation() {
         let help = command_line().render_help().to_string();
-        assert!(help.contains("search-v4/probe-v4"));
+        assert!(help.contains("search-v4/probe-v5"));
         assert!(help.contains("Edit intended files -> check -> submit"));
         assert!(help.contains("Exact declarations go straight to probe NAME"));
         assert!(help.contains("Search unknown things; probe known API, exact context"));

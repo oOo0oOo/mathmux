@@ -487,8 +487,14 @@ impl TelemetryStore {
             .map(|o| o.result_count as u64)
             .or_else(|| response_candidate_count(request, &response.summary));
         let concept_coverage = response_concept_coverage(&response.summary);
-        let follow_up = follow_up_kind(request);
-        let error_class = (!response.ok).then(|| error_class(&response.summary));
+        let follow_up = follow_up_reference(request);
+        let error_class = (!response.ok).then(|| {
+            response
+                .search_outcome
+                .as_ref()
+                .and_then(|o| o.failure_class.clone())
+                .unwrap_or_else(|| error_class(&response.summary))
+        });
         let now = now_unix_ms();
         let mut connection = open_db(&self.path)?;
         let transaction = connection.transaction()?;
@@ -545,16 +551,15 @@ impl TelemetryStore {
             ],
         )?;
         let id = transaction.last_insert_rowid();
-        if let (Some(follow_up), Some(workspace)) = (follow_up, workspace.as_deref()) {
+        // Only an explicit reference establishes a follow-up. Workspace adjacency
+        // mixes concurrent actors and is not evidence of a causal connection.
+        if let (Some((kind, target)), Some(workspace)) = (follow_up, workspace.as_deref()) {
             transaction.execute(
                 "UPDATE telemetry_events SET follow_up = ?1
-                 WHERE id = (
-                    SELECT id FROM telemetry_events
-                    WHERE project = ?2 AND workspace = ?3 AND id < ?4
-                    ORDER BY id DESC LIMIT 1
-                 )
-                 AND query_class IS NOT NULL",
-                params![follow_up, repo.root.to_string_lossy(), workspace, id],
+                 WHERE id = (SELECT id FROM telemetry_events
+                    WHERE project = ?2 AND workspace = ?3 AND reference = ?4 AND id < ?5
+                    ORDER BY id DESC LIMIT 1)",
+                params![kind, repo.root.to_string_lossy(), workspace, target, id],
             )?;
         }
         prune_telemetry(&transaction, now)?;
@@ -968,6 +973,7 @@ fn exchange_outcome_class(
                     "invalid_request" => "invalid_request",
                     "unavailable_context" => "unavailable_context",
                     "lean_elaboration" => "formalization",
+                    "infrastructure" => "operational_error",
                     _ => "unclassified_error",
                 });
             }
@@ -1014,13 +1020,16 @@ fn exchange_outcome_class(
     failure_outcome_class(state, request, response, reference)
 }
 
-fn follow_up_kind(request: &Request) -> Option<&'static str> {
-    match &request.command {
-        Command::Probe { .. } => Some("probe"),
-        Command::Show { .. } => Some("show"),
-        Command::Check { .. } => Some("check"),
-        _ => None,
-    }
+fn follow_up_reference(request: &Request) -> Option<(&'static str, &str)> {
+    let (kind, reference) = match &request.command {
+        Command::Probe { query } => ("probe", query.split_whitespace().next()?),
+        Command::Show { reference, .. } => ("show", reference.as_str()),
+        _ => return None,
+    };
+    let digits = reference
+        .strip_prefix('q')
+        .or_else(|| reference.strip_prefix('c'))?;
+    (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())).then_some((kind, reference))
 }
 
 pub const fn development_enabled() -> bool {
@@ -1977,6 +1986,8 @@ mod tests {
         let request = Request {
             build: String::new(),
             generation: 0,
+            actor_id: None,
+            session_id: None,
             cwd: directory.path().to_string_lossy().into_owned(),
             command: Command::Check {
                 file: None,
@@ -2025,11 +2036,20 @@ mod tests {
             exchange_outcome_class(&state, &request, &response, None, Some("name")),
             Some("no_result")
         );
-        response.search_outcome.as_mut().unwrap().failure_class = Some("invalid_request".into());
-        assert_eq!(
-            exchange_outcome_class(&state, &request, &response, None, Some("name")),
-            Some("invalid_request")
-        );
+        response.ok = false;
+        for (failure, expected) in [
+            ("invalid_request", "invalid_request"),
+            ("unavailable_context", "unavailable_context"),
+            ("lean_elaboration", "formalization"),
+            ("infrastructure", "operational_error"),
+            ("unknown_future_category", "unclassified_error"),
+        ] {
+            response.search_outcome.as_mut().unwrap().failure_class = Some(failure.into());
+            assert_eq!(
+                exchange_outcome_class(&state, &request, &response, None, Some("name")),
+                Some(expected)
+            );
+        }
     }
 
     #[test]
@@ -2066,6 +2086,8 @@ mod tests {
         let search = Request {
             build: "test".into(),
             generation: 1,
+            actor_id: None,
+            session_id: None,
             cwd: root.to_string_lossy().into_owned(),
             command: Command::Search {
                 query: "Demo.target".into(),
@@ -2084,7 +2106,7 @@ mod tests {
         );
         let probe = Request {
             command: Command::Probe {
-                query: "Demo.target signature".into(),
+                query: "q1 signature".into(),
             },
             ..search.clone()
         };
@@ -2242,6 +2264,8 @@ mod tests {
         let request = |query: &str| Request {
             build: String::new(),
             generation: 0,
+            actor_id: None,
+            session_id: None,
             cwd: String::new(),
             command: Command::Search {
                 query: query.into(),
@@ -2264,7 +2288,7 @@ mod tests {
     }
 
     #[test]
-    fn follow_up_requires_the_immediate_action_in_the_same_workspace() {
+    fn follow_up_does_not_infer_causality_from_workspace_adjacency() {
         let directory = tempdir().unwrap();
         let root = directory.path().join("repo");
         let unmapped = directory.path().join("unmapped");
@@ -2300,6 +2324,8 @@ mod tests {
         let search = Request {
             build: "test".into(),
             generation: 1,
+            actor_id: None,
+            session_id: None,
             cwd: root.to_string_lossy().into_owned(),
             command: Command::Search {
                 query: "Demo.first".into(),
@@ -2356,7 +2382,7 @@ mod tests {
                 )
                 .unwrap()
         };
-        assert_eq!(follow_up("q1").as_deref(), Some("check"));
+        assert_eq!(follow_up("q1"), None);
         assert_eq!(follow_up("q2"), None);
     }
 }

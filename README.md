@@ -176,7 +176,7 @@ the full requested range. Longer ranges name the next non-overlapping range.
 
 Probably won't accept your PR. Write an issue, I prefer my own agents.
 
-### Inspecting mathematical contracts (probe-v4)
+### Inspecting mathematical contracts (probe-v5)
 
 Before building on an unfamiliar API, inspect what it assumes and whether a
 construction or obstruction has been found:
@@ -184,6 +184,7 @@ construction or obstruction has been found:
 ```sh
 mathmux probe Some.Namespace.Data assumptions
 mathmux probe Some.Namespace.Data evidence
+mathmux probe Some.Namespace.Data examples
 mathmux probe Proof.lean:42 Some.Namespace.Data evidence
 mathmux probe Proof.lean:42 '#inspect Some.Namespace.theorem'
 mathmux probe Proof.lean:42 '#apply proposedLemma'
@@ -220,3 +221,40 @@ assumed to be infrastructure defects.
 
 The isolated Lean smoke suite is run with
 `python tests/lean_probe_smoke.py /path/to/project-toolchain/bin/lean`.
+
+`probe NAME examples` selects at most three existing small constructions or
+project-authored examples, with signatures and remaining inputs. Ranking by
+indexed input count is only a starting point; implicit typeclass requirements
+still need the positioned `#inspect` / `#check` experiment.
+
+Failure context includes a focused actual/expected difference and import-aware
+candidate availability when the workspace import graph is ready. Unknown import
+availability remains unknown. Candidates have not been tested against your goal.
+
+Projects can optionally provide `.mathmux-evidence.json`:
+
+```json
+{"version":1,"links":[{"subject":"Demo.Contract","obstruction":"Demo.noContract",
+"replacement":"Demo.WeakerContract","examples":["Demo.smallExample"],
+"explanation":"This route preserves only the weaker contract."}]}
+```
+
+Routes are project-authored suggestions, never inferred equivalences. The file is
+bounded to 64 KiB and 256 links. Exact discovery shows a compact relevant notice.
+Positioned evidence inspection caches only direct negative-existence declarations
+with standard Lean axioms (no `sorryAx` or custom axioms). Notices require matching
+project source, transitive project imports, and toolchain/Lake configuration.
+This is a project snapshot check, not revalidation of externally modified package
+artifacts. The complete inspected premises and specialization remain in the probe
+reference; no global impossibility is inferred from a specialized theorem.
+
+Development callers may explicitly set `MATHMUX_ACTOR_ID` and
+`MATHMUX_SESSION_ID` (up to 128 non-control characters) for durable provenance in
+telemetry requests. Missing identities remain unknown; MathMux does not guess
+agent identities from workspace ownership. New follow-up associations require an
+explicit `qREF`/`cREF` in a probe or show request. Adjacent commands in a shared
+workspace do not establish causality. Historical telemetry is retained unchanged.
+
+Run the isolated CLI integration suite with
+`python tests/cli_contract_smoke.py /path/to/mathmux /path/to/pinned/lean`.
+It owns only its temporary repository and daemon.

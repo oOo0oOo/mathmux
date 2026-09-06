@@ -34,6 +34,7 @@ use crate::util::{
 mod api;
 mod contract;
 mod display;
+mod evidence;
 mod plan;
 mod probe;
 mod query;
@@ -767,7 +768,7 @@ impl Searcher {
         if let Some(max_results) = request.max_results {
             result.hits.truncate(max_results);
         }
-        let run = SearchRun {
+        let mut run = SearchRun {
             reference: reference.clone(),
             workspace_ref: workspace.reference.clone(),
             query: if query.is_empty() {
@@ -782,6 +783,7 @@ impl Searcher {
             created_at: now_unix_ms(),
         };
         let ok = result.ok;
+        self.append_discovery_contract(workspace, &mut run);
         self.state.add_search(&run)?;
         self.state.touch_workspace(&workspace.reference)?;
         let rendered = if request.all && !matches!(run.inference.as_str(), "exact" | "exact-batch")
@@ -2898,7 +2900,7 @@ impl Searcher {
         if base_warming {
             return None;
         }
-        let dirty = self.dirty_lean_files(workspace)?;
+        let dirty = if requested.is_some() { Vec::new() } else { self.dirty_lean_files(workspace)? };
         let nested = dirty
             .iter()
             .filter(|path| path.components().count() > 1)

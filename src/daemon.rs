@@ -252,6 +252,7 @@ fn handled_response(service: &Service, request: Request, report: &mut dyn FnMut(
                 .map(|kind| match kind {
                     crate::protocol::DiscoveryFailure::InvalidRequest => "invalid_request",
                     crate::protocol::DiscoveryFailure::UnavailableContext => "unavailable_context",
+                    crate::protocol::DiscoveryFailure::Infrastructure => "infrastructure",
                 });
             let mut response = Response::error(format!("{error:#}"));
             if discovery {

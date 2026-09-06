@@ -18,6 +18,14 @@ const STORED_PROFILE_LIMIT_BYTES: usize = 512 * 1024;
 const STATE_SCHEMA_VERSION: i64 = 3;
 pub(crate) const SEARCH_USAGE_LIMIT: usize = 8;
 
+pub(crate) struct ContractEvidenceRecord {
+    pub reference: String,
+    pub theorem: String,
+    pub path: String,
+    pub fingerprint: String,
+    pub details: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct State {
     path: PathBuf,
@@ -399,6 +407,17 @@ impl State {
              );
              CREATE INDEX IF NOT EXISTS searches_created
                 ON searches(created_at DESC);
+             CREATE TABLE IF NOT EXISTS contract_evidence (
+                ref TEXT PRIMARY KEY REFERENCES searches(ref) ON DELETE CASCADE,
+                subject TEXT NOT NULL,
+                theorem_name TEXT NOT NULL,
+                context_path TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                details TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS contract_evidence_subject
+                ON contract_evidence(subject, created_at DESC);
              CREATE TABLE IF NOT EXISTS warning_probes (
                 ref TEXT PRIMARY KEY REFERENCES searches(ref) ON DELETE CASCADE,
                 workspace_ref TEXT NOT NULL REFERENCES workspaces(ref),
@@ -887,6 +906,59 @@ impl State {
         )?;
         let rows = statement.query_map([workspace_ref], check_from_row)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn add_contract_evidence(
+        &self,
+        reference: &str,
+        subject: &str,
+        theorem: &str,
+        path: &str,
+        fingerprint: &str,
+        details: &str,
+    ) -> Result<()> {
+        let _guard = self.write_guard();
+        let connection = self.open()?;
+        connection.execute(
+            "INSERT OR REPLACE INTO contract_evidence
+            (ref,subject,theorem_name,context_path,fingerprint,details,created_at)
+            VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            params![
+                reference,
+                subject,
+                theorem,
+                path,
+                fingerprint,
+                details,
+                now_unix_ms()
+            ],
+        )?;
+        connection.execute(
+            "DELETE FROM contract_evidence WHERE ref IN
+            (SELECT ref FROM contract_evidence ORDER BY created_at DESC LIMIT -1 OFFSET 1000)",
+            [],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn contract_evidence(&self, subject: &str) -> Result<Vec<ContractEvidenceRecord>> {
+        let connection = self.open()?;
+        connection
+            .prepare(
+                "SELECT ref,theorem_name,context_path,fingerprint,details
+            FROM contract_evidence WHERE subject=?1 ORDER BY created_at DESC LIMIT 3",
+            )?
+            .query_map([subject], |row| {
+                Ok(ContractEvidenceRecord {
+                    reference: row.get(0)?,
+                    theorem: row.get(1)?,
+                    path: row.get(2)?,
+                    fingerprint: row.get(3)?,
+                    details: row.get(4)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)
     }
 

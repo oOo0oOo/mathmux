@@ -58,6 +58,21 @@ fn relation(signature: &str, name: &str) -> Option<&'static str> {
     }
 }
 
+fn contract_exact_hit(
+    rows: Vec<IndexedRow>,
+    subject: &str,
+    workspace: &Workspace,
+) -> Result<SearchHit> {
+    let rows = rows
+        .into_iter()
+        .filter(|r| !matches!(r.kind.as_str(), "file" | "imports"))
+        .collect();
+    resolved_exact_candidates(ranked_exact_candidates(rows,subject,workspace),subject)
+        .and_then(merge_exact_candidates)
+        .map(|c| c.hit)
+        .with_context(|| format!("exact declaration unavailable or ambiguous: {subject}; search the qualified name first"))
+}
+
 impl Searcher {
     fn contract_rows(&self, workspace: &Workspace, terms: &[String]) -> Result<Vec<IndexedRow>> {
         let (scopes, _) = self.search_scopes(workspace)?;
@@ -92,11 +107,8 @@ impl Searcher {
         focus: &str,
     ) -> Result<String> {
         let (scopes, warming) = self.search_scopes(workspace)?;
-        let candidates = self.exact_candidates(subject, &scopes)?;
-        let exact = resolved_exact_candidates(candidates.into_iter().map(compact_ranked_hit).collect(), subject)
-            .with_context(|| format!("exact declaration unavailable or ambiguous: {subject}; search the qualified name first"))?;
-        ensure!(exact.len() == 1, "choose one fully qualified declaration");
-        let mut hit = exact[0].hit.clone();
+        let mut hit =
+            contract_exact_hit(self.exact_candidates(subject, &scopes)?, subject, workspace)?;
         self.enrich_exact_source(&mut hit, &scopes)?;
         let name = hit.name.trim_start_matches("_root_.");
         let mut detail = format!(
@@ -119,17 +131,14 @@ impl Searcher {
                 .filter(|t| t.contains('.') || t.chars().next().is_some_and(char::is_uppercase))
                 .take(16)
             {
-                let rows = self.exact_candidates(&term, &scopes)?;
-                if let Some(rows) = resolved_exact_candidates(
-                    rows.into_iter().map(compact_ranked_hit).collect(),
-                    &term,
-                ) && rows.len() == 1
-                    && rows[0].hit.name != hit.name
-                    && matches!(rows[0].hit.kind.as_str(), "structure" | "class" | "abbrev")
+                if let Ok(input) =
+                    contract_exact_hit(self.exact_candidates(&term, &scopes)?, &term, workspace)
+                    && input.name != hit.name
+                    && matches!(input.kind.as_str(), "structure" | "class" | "abbrev")
                 {
                     detail.push_str(&format!(
                         "input API: {} — mathmux probe {} fields\n",
-                        rows[0].hit.name, rows[0].hit.name
+                        input.name, input.name
                     ));
                     shown += 1;
                     if shown == 3 {
@@ -173,6 +182,10 @@ impl Searcher {
             }
             detail.push_str("Candidates are indexed source, not verified applicability. Hypotheses and namespace resolution matter. Verify a candidate in your exact Lean context with #inspect and #apply; check remains certification.\n");
         }
+        if let Some(notice) = self.verified_contract_notice(workspace, name)? {
+            detail.push_str(&format!("\n{notice}\n"));
+        }
+        detail.push_str(&self.authored_route_detail(workspace, name)?);
         self.store_probe_result(
             workspace,
             &format!("{subject} {focus}"),
@@ -181,6 +194,97 @@ impl Searcher {
             Some(&hit.path),
             hit.line,
         )
+    }
+
+    pub(super) fn probe_examples(
+        &self,
+        workspace: &Workspace,
+        subject: &str,
+        location: Option<&str>,
+    ) -> Result<String> {
+        let (scopes, _) = self.search_scopes(workspace)?;
+        let hit = contract_exact_hit(self.exact_candidates(subject, &scopes)?, subject, workspace)?;
+        let name = hit.name.trim_start_matches("_root_.");
+        let leaf = name.rsplit('.').next().unwrap_or(name);
+        let mut candidates = Vec::new();
+        for route in super::evidence::routes(workspace, name)? {
+            for example in route.examples {
+                candidates.extend(
+                    self.exact_candidates(&example, &scopes)?
+                        .into_iter()
+                        .map(|r| (0usize, r)),
+                );
+            }
+        }
+        candidates.extend(
+            self.contract_rows(workspace, &[leaf.to_owned()])?
+                .into_iter()
+                .filter(|r| {
+                    relation(&r.signature, name) == Some("construction candidate")
+                        && r.name.trim_start_matches("_root_.") != name
+                })
+                .map(|r| {
+                    (
+                        10 + r
+                            .signature
+                            .chars()
+                            .filter(|c| matches!(c, '(' | '[' | '{' | '⦃'))
+                            .count(),
+                        r,
+                    )
+                }),
+        );
+        candidates.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then(a.1.signature.len().cmp(&b.1.signature.len()))
+                .then(a.1.name.cmp(&b.1.name))
+        });
+        let mut seen = HashSet::new();
+        candidates.retain(|(_, r)| !r.signature.is_empty() && seen.insert(r.name.clone()));
+        let mut detail = format!(
+            "Existing small-case/construction candidates for {name}\nRanked by explicit project selection, then indexed input count. Hidden inputs may remain; these are not certified inhabitants.\n"
+        );
+        let context = location.unwrap_or("FILE:LINE");
+        for (score, row) in candidates.iter().take(3) {
+            detail.push_str(&format!("\n{}{} : {}\n{}:{}\ninspect: mathmux probe {context} '#inspect {}'\nsource: mathmux probe {} source\n",if *score == 0 { "project-selected (advisory) " } else { "candidate " },row.name,truncate_line(&row.signature,600),row.path,row.line,row.name,row.name));
+        }
+        if candidates.is_empty() {
+            detail.push_str("No existing small-case construction found in this bounded search. No inhabitability conclusion follows.\n");
+        }
+        for usage in self.usages(name, &scopes, workspace)?.iter().take(2) {
+            detail.push_str(&format!(
+                "existing use: {}:{}{}\n",
+                usage.path,
+                usage.line,
+                usage
+                    .context
+                    .as_deref()
+                    .map(|c| format!(" in {c}"))
+                    .unwrap_or_default()
+            ));
+        }
+        detail.push_str(&format!("\nAfter supplying concrete arguments, test {context} '#check (TERM : EXPECTED_TYPE)' or '#reduce TERM'; #apply TERM reveals remaining proof obligations. Syntactic input absence can be inspected with #inspect.\n"));
+        self.store_probe_result(
+            workspace,
+            &format!("{subject} examples"),
+            "example-candidates",
+            detail,
+            Some(&hit.path),
+            hit.line,
+        )
+    }
+
+    pub(super) fn direct_obstruction_candidate(
+        &self,
+        workspace: &Workspace,
+        subject: &str,
+    ) -> Result<Option<(String, String)>> {
+        let leaf = subject.rsplit('.').next().unwrap_or(subject);
+        Ok(self
+            .contract_rows(workspace, &[leaf.to_owned()])?
+            .into_iter()
+            .find(|r| relation(&r.signature, subject) == Some("obstruction candidate"))
+            .map(|r| (r.name, r.signature)))
     }
 
     pub(super) fn probe_verified_evidence(
@@ -194,37 +298,56 @@ impl Searcher {
             line > 0,
             "evidence verification requires an explicit position"
         );
+        let (scopes, _) = self.search_scopes(workspace)?;
         let leaf = subject.rsplit('.').next().unwrap_or(subject);
         let mut rows = self
             .contract_rows(workspace, &[leaf.to_owned()])?
             .into_iter()
             .filter(|r| relation(&r.signature, subject) == Some("obstruction candidate"))
             .collect::<Vec<_>>();
+        for route in super::evidence::routes(workspace, subject)? {
+            if let Some(name) = route.obstruction {
+                rows.extend(self.exact_candidates(&name, &scopes)?);
+            }
+        }
         rows.sort_by(|a, b| a.name.cmp(&b.name));
         rows.dedup_by(|a, b| a.name == b.name);
+        let before = super::evidence::snapshot(workspace, path)?;
         let mut detail = format!("Obstruction inspection at {}:{line}\n", path.display());
         let mut inspection_ok = true;
-        // At most one Lean operation: no surprise multi-minute verification fanout.
+        let mut verified = None;
         if let Some(row) = rows.first() {
-            let (ok, inspected) = self
+            let (ok, payload) = self
                 .checker
-                .probe_context(workspace, path, line, 0, "inspect", &row.name)?;
+                .probe_context(workspace, path, line, 0, "inspect_evidence", &row.name)
+                .context(crate::protocol::DiscoveryFailure::Infrastructure)?;
             inspection_ok = ok;
-            detail.push_str(&format!(
-                "candidate: {} (source {}:{})\nLean inspection {}:\n{}\n",
-                row.name,
-                row.path,
-                row.line,
-                if ok { "succeeded" } else { "failed" },
-                inspected
-            ));
-            detail.push_str("The elaborated result and axioms above are authoritative, not the indexed candidate label. Match every hypothesis and specialization; check remains certification.\n");
-            if rows.len() > 1 {
-                detail.push_str("More source candidates: probe NAME evidence; verify a selected one with FILE:LINE '#inspect QUALIFIED_NAME'.\n");
+            if ok {
+                let evidence: super::evidence::LeanEvidence =
+                    serde_json::from_str(&payload).context("invalid structured Lean evidence")?;
+                detail.push_str(&format!(
+                    "candidate: {}\nLean inspection succeeded:\n{}\n",
+                    row.name, evidence.detail
+                ));
+                if evidence.trusted()
+                    && evidence.subject.as_deref().is_some_and(|s| {
+                        s == subject.trim_start_matches("_root_.")
+                            || s.rsplit('.').next() == Some(subject)
+                    })
+                {
+                    // Canonical subject comes from Lean, never from a leaf-name guess.
+                    verified = Some(evidence);
+                } else {
+                    detail.push_str("Not cached as a verified obstruction: inspect the actual subject and axiom dependencies.\n");
+                }
+            } else {
+                detail.push_str(&format!("Lean inspection failed:\n{payload}\n"));
             }
+            detail.push_str("Match every hypothesis and specialization; this inspection is not a check certificate.\n");
         } else {
             detail.push_str("No direct negative-existence candidate found in the bounded index. This is not evidence of inhabitability.\n");
         }
+        detail.push_str(&self.authored_route_detail(workspace, subject)?);
         let rendered = self.store_probe_result(
             workspace,
             &format!("{subject} evidence"),
@@ -233,6 +356,28 @@ impl Searcher {
             path.to_str(),
             line,
         )?;
+        if let Some(evidence) = verified
+            && super::evidence::snapshot(workspace, path)? == before
+            && let Some(reference) = rendered.lines().rev().find_map(|l| l.strip_prefix("ref: "))
+        {
+            let summary = format!(
+                "premises: {}\nconclusion: {}",
+                evidence.premises.join("; "),
+                evidence.conclusion
+            );
+            let relative = path
+                .strip_prefix(&workspace.path)
+                .unwrap_or(path)
+                .to_string_lossy();
+            self.state.add_contract_evidence(
+                reference,
+                evidence.subject.as_deref().unwrap(),
+                &evidence.declaration,
+                &relative,
+                &before,
+                &summary,
+            )?;
+        }
         if inspection_ok {
             Ok(rendered)
         } else {
@@ -331,6 +476,14 @@ impl Searcher {
                     .collect::<rusqlite::Result<Vec<_>>>()?,
             );
         }
+        let import_context = path.and_then(|p| {
+            self.import_context(
+                workspace,
+                &scopes,
+                self.base_scopes(workspace).1,
+                Some(Path::new(p)),
+            )
+        });
         let mut rows = candidates
             .into_iter()
             .filter(|r| matches!(r.kind.as_str(), "theorem" | "lemma"))
@@ -349,7 +502,14 @@ impl Searcher {
                 });
                 let score = (overlap.min(2) * 2 + conversion * 4 + usize::from(direct_law) * 12)
                     .saturating_sub((r.signature.chars().count() / 200).min(6));
-                (score, overlap + usize::from(direct_law), r)
+                let accessible = import_context
+                    .as_ref()
+                    .is_some_and(|c| c.accessible.contains(&r.module));
+                (
+                    score + usize::from(accessible) * 2,
+                    overlap + usize::from(direct_law),
+                    r,
+                )
             })
             .filter(|(score, overlap, _)| *overlap > 0 && *score >= 4)
             .map(|(score, _, row)| (score, row))
@@ -361,14 +521,21 @@ impl Searcher {
         });
         let mut seen = HashSet::new();
         rows.retain(|(_, r)| seen.insert(r.name.clone()));
-        let mut detail = String::new();
+        let mut detail = format!("\n{focused}\n");
         if !rows.is_empty() {
             detail.push_str(
                 "\nConversion/law candidates (signature overlap; applicability unverified):\n",
             );
             for (_, row) in rows.iter().take(3) {
+                let availability = match &import_context {
+                    Some(c) if c.accessible.contains(&row.module) => {
+                        "available through imports".to_owned()
+                    }
+                    Some(_) => format!("import may be required: {}", row.module),
+                    None => "import availability unknown".into(),
+                };
                 detail.push_str(&format!(
-                    "{} : {}\n  {}:{}; probe {} source\n",
+                    "{} : {}\n  {}:{}; {availability}; probe {} source\n",
                     row.name,
                     truncate_line(&row.signature, 250),
                     row.path,
@@ -484,6 +651,60 @@ mod tests {
         assert!(bundle.contains("ContinuousMap.const_apply"), "{bundle}");
         assert!(bundle.contains("Matrix.coe_units_inv"), "{bundle}");
         assert!(bundle.contains("applicability unverified"), "{bundle}");
+    }
+
+    #[test]
+    fn i140_source_and_compiled_entries_are_one_declaration() {
+        let ws = Workspace {
+            reference: "w1".into(),
+            name: "demo".into(),
+            path: "/demo".into(),
+            branch: "demo".into(),
+            model: None,
+        };
+        let row = |owner: &str, name: &str, kind: &str, signature: &str| IndexedRow {
+            owner: owner.into(),
+            path: "Demo.lean".into(),
+            module: "Demo".into(),
+            line: 1,
+            name: name.into(),
+            kind: kind.into(),
+            signature: signature.into(),
+            docs: String::new(),
+            body: String::new(),
+            rank: 0.0,
+        };
+        let hit = contract_exact_hit(
+            vec![
+                row(
+                    "artifacts:w1",
+                    "_root_.Demo.publicTheorem",
+                    "declaration",
+                    "",
+                ),
+                row(
+                    "workspace:w1",
+                    "Demo.publicTheorem",
+                    "theorem",
+                    "(n : Nat) : n = n",
+                ),
+            ],
+            "Demo.publicTheorem",
+            &ws,
+        )
+        .unwrap();
+        assert!(hit.signature.unwrap().contains("n = n"));
+        assert!(
+            contract_exact_hit(
+                vec![
+                    row("workspace:w1", "Left.Data", "structure", ": Type"),
+                    row("workspace:w1", "Right.Data", "structure", ": Type")
+                ],
+                "Data",
+                &ws
+            )
+            .is_err()
+        );
     }
 
     #[test]

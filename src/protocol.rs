@@ -6,6 +6,10 @@ pub struct Request {
     pub build: String,
     #[serde(default)]
     pub generation: u64,
+    #[serde(default)]
+    pub actor_id: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
     pub cwd: String,
     pub command: Command,
 }
@@ -108,12 +112,14 @@ pub struct SearchOutcome {
 pub(crate) enum DiscoveryFailure {
     InvalidRequest,
     UnavailableContext,
+    Infrastructure,
 }
 impl std::fmt::Display for DiscoveryFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::InvalidRequest => "invalid discovery request",
             Self::UnavailableContext => "unavailable probe context",
+            Self::Infrastructure => "discovery infrastructure failure",
         })
     }
 }
@@ -236,6 +242,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(request.generation, 0);
+        assert!(request.actor_id.is_none() && request.session_id.is_none());
 
         let request: Request =
             serde_json::from_str(r#"{"cwd":"/project","command":{"verb":"status"}}"#).unwrap();
@@ -247,6 +254,8 @@ mod tests {
         let request = Request {
             build: "test".into(),
             generation: 1,
+            actor_id: Some("actor-125".into()),
+            session_id: Some("session-a".into()),
             cwd: "/project".into(),
             command: Command::Search {
                 query: "name:demo".into(),
@@ -256,6 +265,8 @@ mod tests {
         };
         let encoded = serde_json::to_string(&request).unwrap();
         let decoded: Request = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.actor_id.as_deref(), Some("actor-125"));
+        assert_eq!(decoded.session_id.as_deref(), Some("session-a"));
         let Command::Search {
             all, max_results, ..
         } = decoded.command

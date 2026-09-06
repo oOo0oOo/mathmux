@@ -201,6 +201,36 @@ def inspectContract (value : Expr) : MetaM String := do
   lines := lines.push "Inspection is not a certificate or a mathematical adequacy verdict. Test explicit small cases with #check/#reduce; use #apply at a goal to expose remaining obligations."
   return String.intercalate "\n" lines.toList
 
+structure ContractEvidence where
+  declaration : String
+  subject : Option String
+  conclusion : String
+  premises : Array String
+  axioms : Array String
+  detail : String
+deriving ToJson
+
+def inspectEvidence (value : Expr) : MetaM ContractEvidence := do
+  let .const name _ := value | throwError "obstruction evidence requires a declaration"
+  let type ← inferType value
+  let (subject, conclusion, premises) ← forallTelescope type fun args result => do
+    let premises ← args.mapM fun arg => do
+      let decl ← arg.fvarId!.getDecl
+      return s!"{decl.userName}: {(← ppExpr decl.type).pretty}"
+    let mut subject := none
+    if result.isAppOfArity ``Not 1 && (result.getArg! 0).isAppOfArity ``Nonempty 1 then
+      if let .const head _ := ((result.getArg! 0).getArg! 0).getAppFn then
+        subject := some head.toString
+    return (subject, (← ppExpr result).pretty, premises)
+  return {
+    declaration := name.toString
+    subject := subject
+    conclusion := conclusion
+    premises := premises
+    axioms := (← collectAxioms name).map Name.toString
+    detail := (← inspectContract value)
+  }
+
 def inspectTerm (operation source : String) : Term.TermElabM String := do
   let stx ← parseCategory `term source
   if operation == "synth" then
@@ -217,9 +247,11 @@ def inspectTerm (operation source : String) : Term.TermElabM String := do
   if value.isSyntheticSorry then
     throwError "term elaboration failed"
   Meta.check value
-  if operation == "inspect" then
+  if operation == "inspect" || operation == "inspect_evidence" then
     -- A bare declaration exposes every binder, including inferred implicit inputs.
     let inspected := if source.trimAscii.toString.all (fun c => c.isAlphanum || c == '_' || c == '.' || c == '\'' || c == '@') then value.getAppFn else value
+    if operation == "inspect_evidence" then
+      return (toJson (← inspectEvidence inspected)).compress
     return ← inspectContract inspected
   if operation == "reduce" then
     return (← Meta.ppExpr (← Meta.reduce value)).pretty
@@ -473,7 +505,7 @@ unsafe def runServer (setup : ModuleSetup) (profile : Bool) : IO Unit := do
         fresh input
       else
         processor input
-      let response ← if request.operation ∉ ["check", "goal", "tactic", "term", "synth", "reduce", "inspect"] then
+      let response ← if request.operation ∉ ["check", "goal", "tactic", "term", "synth", "reduce", "inspect", "inspect_evidence"] then
         pure (probeFailure s!"unknown file operation: {request.operation}" request.version)
       else if request.operation == "check" then
         processSnapshot snapshot request.version profile

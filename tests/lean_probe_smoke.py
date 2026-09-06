@@ -14,7 +14,7 @@ structure Impossible where
   witness : False
 theorem impossible_empty : ¬ Nonempty Impossible := by
   intro h
-  exact h.some.witness
+  cases h with | intro x => exact x.witness
 def forgetInput (_n : Nat) : Nat := 0
 theorem admitted_empty : ¬ Nonempty Nat := by sorry
 theorem needsHypothesis (n : Nat) (h : n = 0) : n + 0 = 0 := by simpa using h
@@ -37,6 +37,9 @@ request('inspect', 'notADeclaration')
 request('inspect', 'Impossible', line=99)
 request('goal', '')
 request('inspect', 'needsHypothesis')
+request('inspect_evidence', 'impossible_empty')
+request('inspect_evidence', 'admitted_empty')
+request('inspect_evidence', 'needsHypothesis')
 with tempfile.TemporaryDirectory(prefix='mathmux-lean-probe-') as temp:
     setup = pathlib.Path(temp) / 'setup.json'
     setup.write_text(json.dumps(dict(name='ProbeFixture', package=None, isModule=False,
@@ -62,4 +65,11 @@ with tempfile.TemporaryDirectory(prefix='mathmux-lean-probe-') as temp:
     assert 'n + 0 = 0' in responses[10]['detail'], responses[10]
     assert 'proof assumption h' in responses[11]['detail'], responses[11]
     assert 'data input n' in responses[11]['detail'], responses[11]
-    print('Lean probe smoke: 12 cases passed (obstruction, fields, unused input, axioms, application, small cases, failures, goal isolation, premise roles).')
+    evidence = json.loads(responses[12]['detail'])
+    assert evidence['subject'] == 'Impossible' and evidence['conclusion'], evidence
+    assert 'sorryAx' not in evidence['axioms'], evidence
+    admitted = json.loads(responses[13]['detail'])
+    assert 'sorryAx' in admitted['axioms'], admitted
+    ordinary = json.loads(responses[14]['detail'])
+    assert ordinary.get('subject') is None and len(ordinary['premises']) == 2, ordinary
+    print('Lean probe smoke: 15 cases passed (obstruction, fields, unused input, axioms, application, small cases, failures, goal isolation, premise roles).')
