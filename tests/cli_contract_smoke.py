@@ -15,7 +15,7 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
     run(['git', 'init', '-b', 'main'])
     run(['git', 'config', 'user.name', 'Smoke'])
     run(['git', 'config', 'user.email', 'smoke@example.invalid'])
-    version = run([str(pathlib.Path(leanbin) / 'lean'), '--version']).stdout.split('version ', 1)[1].split()[0]
+    version = run([str(pathlib.Path(leanbin) / 'lean'), '--version']).stdout.split('version ', 1)[1].split()[0].rstrip(',')
     (root / 'lean-toolchain').write_text('leanprover/lean4:v' + version + '\n')
     (root / 'lakefile.toml').write_text('name = "probe_fixture"\nversion = "0.1.0"\n[[lean_lib]]\nname = "Fixture"\n')
     source = 'import Lean\nstructure Impossible where\n  witness : False\ntheorem impossible_empty : ¬ Nonempty Impossible := by\n  intro h\n  cases h with | intro x => exact x.witness\ndef forgetInput (_n : Nat) : Nat := 0\ntheorem needsHypothesis (n : Nat) (h : n = 0) : n + 0 = 0 := by simpa using h\nexample (n : Nat) : n + 0 = 0 := by\n  sorry\n'
@@ -62,9 +62,16 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         (ws / 'Fixture.lean').write_text(source)
         detail = probe('Fixture.lean:10 #inspect needsHypothesis')
         assert 'proof assumption h' in detail, detail
-        run([binary, 'search', 'DefinitelyAbsentName*'], ws)
+        output = run([binary, 'search', 'DefinitelyAbsentName*'], ws).stdout
+        reference = next(line.removeprefix('ref: ') for line in output.splitlines() if line.startswith('ref: '))
         db = sqlite3.connect(env['MATHMUX_ISSUE_DB'])
-        row = db.execute("select outcome_class,candidate_count,response_json from telemetry_events where verb='search' order by id desc limit 1").fetchone()
+        # The daemon flushes the response before writing telemetry.
+        row = None
+        for _ in range(100):
+            row = db.execute("select outcome_class,candidate_count,response_json from telemetry_events where verb='search' and reference=?", (reference,)).fetchone()
+            if row is not None:
+                break
+            time.sleep(.05)
         assert row[0] == 'no_result' and row[1] == 0, row
         assert json.loads(row[2])['search_outcome']['result_count'] == 0, row
         event = json.loads(db.execute('select request_json from telemetry_events order by id desc limit 1').fetchone()[0])
