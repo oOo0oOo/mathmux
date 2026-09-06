@@ -1553,10 +1553,11 @@ impl Checker {
                 )
             })
             .transpose()?;
-        // A focused check may have no persisted setup manifest yet. Restore
-        // reusable dependency outputs from their trace/hash metadata before
-        // Lake computes the setup-file, so setup preparation can use the
-        // shared artifact cache just like full validation builds do.
+        // A focused check may have no persisted setup manifest yet. Prefer
+        // current outputs from the warm validation tree, then fall back to
+        // reusable trace/hash-matched cache outputs before Lake computes the
+        // setup-file.
+        self.restore_warm_dependency_artifacts(workspace, dependencies)?;
         restore_available_dependency_oleans(&self.repo.cache_dir, &workspace.path, dependencies)?;
         let path = self.setup_path(workspace, target);
         restore_setup_artifacts_from_cache(&self.repo.cache_dir, &path)?;
@@ -1624,6 +1625,49 @@ impl Checker {
         materialize_setup(&shared, &path, input_fingerprint)?;
         prune_shared_setups(shared.parent().expect("shared setup has a parent"), &shared);
         Ok(path)
+    }
+
+    fn restore_warm_dependency_artifacts(
+        &self,
+        workspace: &Workspace,
+        dependencies: &[PathBuf],
+    ) -> Result<()> {
+        let validation_lock = open_lock(&self.repo.validation_lock)?;
+        let validation_available = validation_lock.try_lock_shared().is_ok();
+        let mut donors = Vec::new();
+        if validation_available {
+            let donor = self.repo.state_dir.join("validation-worktree");
+            if donor.is_dir() {
+                // The validation tree is protected by the shared lock and can
+                // safely donate hard links while validation is idle.
+                donors.push((donor, true));
+            }
+        }
+        // A focused check can be launched while validation is busy. Reuse
+        // only source/configuration-identical outputs from other registered
+        // workspaces; those workspaces are read-only donors, and copying
+        // avoids tying an active workspace's generated files to this one.
+        for donor in self.state.list_workspaces()? {
+            if donor.reference == workspace.reference
+                || donor.path == workspace.path
+                || !donor.path.is_dir()
+            {
+                continue;
+            }
+            donors.push((donor.path, false));
+        }
+        for (donor, hard_link) in donors {
+            restore_available_dependency_artifacts_with_mode(
+                &workspace.path,
+                &donor,
+                dependencies,
+                hard_link,
+            )?;
+        }
+        if validation_available {
+            let _ = validation_lock.unlock();
+        }
+        Ok(())
     }
 
     fn setup_path(&self, workspace: &Workspace, target: &Path) -> PathBuf {
@@ -1996,6 +2040,138 @@ fn restore_available_dependency_oleans(
         let artifact = artifact_path(root, dependency);
         Ok(restored + usize::from(restore_available_olean(cache_dir, &artifact)?))
     })
+}
+
+fn restore_available_dependency_artifacts_with_mode(
+    root: &Path,
+    donor: &Path,
+    dependencies: &[PathBuf],
+    hard_link: bool,
+) -> Result<usize> {
+    if !project_configuration_matches(root, donor)? {
+        return Ok(0);
+    }
+    restore_if_missing_with_mode(
+        &donor.join(".lake/build/ir/AtiyahSinger.setup.json"),
+        &root.join(".lake/build/ir/AtiyahSinger.setup.json"),
+        hard_link,
+    )?;
+    dependencies.iter().try_fold(0, |restored, dependency| {
+        let source = root.join(dependency);
+        let donor_source = donor.join(dependency);
+        if !same_file_contents(&source, &donor_source)? {
+            return Ok(restored);
+        }
+        let artifact = artifact_path(root, dependency);
+        let donor_artifact = artifact_path(donor, dependency);
+        let ir_module = ir_module_path(root, dependency);
+        let donor_ir_module = ir_module_path(donor, dependency);
+        let setup = setup_ir_path(root, dependency);
+        let donor_setup = setup_ir_path(donor, dependency);
+        restore_if_missing_with_mode(&donor_setup, &setup, hard_link)?;
+        for extension in ["c", "c.hash", "ir", "ir.hash"] {
+            restore_if_missing_with_mode(
+                &donor_ir_module.with_extension(extension),
+                &ir_module.with_extension(extension),
+                hard_link,
+            )?;
+        }
+        Ok(
+            restored
+                + usize::from(restore_artifact_bundle_with_mode(
+                    &donor_artifact,
+                    &artifact,
+                    hard_link,
+                )?),
+        )
+    })
+}
+
+fn project_configuration_matches(root: &Path, donor: &Path) -> Result<bool> {
+    for config in PROJECT_CONFIG_FILES {
+        let left = root.join(config);
+        let right = donor.join(config);
+        match (left.is_file(), right.is_file()) {
+            (false, false) => {}
+            (true, true) if same_file_contents(&left, &right)? => {}
+            _ => return Ok(false),
+        }
+    }
+    Ok(true)
+}
+
+fn setup_ir_path(root: &Path, source: &Path) -> PathBuf {
+    ir_module_path(root, source).with_extension("setup.json")
+}
+
+fn ir_module_path(root: &Path, source: &Path) -> PathBuf {
+    root.join(".lake/build/ir")
+        .join(project_module_name(root, source).replace('.', "/"))
+}
+
+fn restore_if_missing_with_mode(donor: &Path, target: &Path, hard_link: bool) -> Result<bool> {
+    if target.exists() || !donor.is_file() {
+        return Ok(false);
+    }
+    let Some(parent) = target.parent() else {
+        return Ok(false);
+    };
+    fs::create_dir_all(parent)?;
+    if hard_link {
+        if let Err(error) = fs::hard_link(donor, target) {
+            fs::copy(donor, target).with_context(|| {
+                format!("cannot restore warm generated file after hard-link failed: {error}")
+            })?;
+        }
+    } else {
+        fs::copy(donor, target)
+            .with_context(|| format!("cannot copy warm generated file from {}", donor.display()))?;
+    }
+    Ok(true)
+}
+
+fn same_file_contents(left: &Path, right: &Path) -> Result<bool> {
+    if !left.is_file() || !right.is_file() {
+        return Ok(false);
+    }
+    Ok(hash_file(left)? == hash_file(right)?)
+}
+
+fn restore_artifact_bundle_with_mode(
+    donor: &Path,
+    artifact: &Path,
+    hard_link: bool,
+) -> Result<bool> {
+    if artifact.is_file() || !donor.is_file() {
+        return Ok(false);
+    }
+    let Some(parent) = artifact.parent() else {
+        return Ok(false);
+    };
+    fs::create_dir_all(parent)?;
+    for extension in ["olean", "trace", "olean.hash", "ilean", "ir", "c"] {
+        let donor_path = donor.with_extension(extension);
+        let artifact_path = artifact.with_extension(extension);
+        if !artifact_path.exists() && donor_path.is_file() {
+            if hard_link {
+                if let Err(error) = fs::hard_link(&donor_path, &artifact_path) {
+                    fs::copy(&donor_path, &artifact_path).with_context(|| {
+                        format!(
+                            "cannot restore warm dependency artifact after hard-link failed: {error}"
+                        )
+                    })?;
+                }
+            } else {
+                fs::copy(&donor_path, &artifact_path).with_context(|| {
+                    format!(
+                        "cannot copy warm dependency artifact from {}",
+                        donor_path.display()
+                    )
+                })?;
+            }
+        }
+    }
+    Ok(artifact.is_file())
 }
 
 fn prune_shared_setups(directory: &Path, current: &Path) {
@@ -3430,6 +3606,124 @@ mod tests {
 
         assert_eq!(restored, 1);
         assert_eq!(fs::read_to_string(artifact).unwrap(), "cached dependency");
+    }
+
+    #[test]
+    fn focused_setup_restores_matching_artifacts_from_warm_validation_worktree() {
+        let directory = tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        let donor = directory.path().join("validation-worktree");
+        let source = PathBuf::from("AtiyahSinger/Dependency.lean");
+        let workspace_source = workspace.join(&source);
+        let donor_source = donor.join(&source);
+        fs::create_dir_all(workspace_source.parent().unwrap()).unwrap();
+        fs::create_dir_all(donor_source.parent().unwrap()).unwrap();
+        for config in PROJECT_CONFIG_FILES {
+            fs::write(workspace.join(config), "same configuration\n").unwrap();
+            fs::write(donor.join(config), "same configuration\n").unwrap();
+        }
+        fs::write(
+            &workspace_source,
+            "theorem dependency : True := by trivial\n",
+        )
+        .unwrap();
+        fs::write(&donor_source, fs::read(&workspace_source).unwrap()).unwrap();
+
+        let donor_artifact = donor.join(".lake/build/lib/lean/AtiyahSinger/Dependency.olean");
+        fs::create_dir_all(donor_artifact.parent().unwrap()).unwrap();
+        fs::write(&donor_artifact, "warm dependency").unwrap();
+        fs::write(donor_artifact.with_extension("trace"), "warm trace").unwrap();
+        let donor_ir_module = donor.join(".lake/build/ir/AtiyahSinger/Dependency");
+        let donor_setup = donor_ir_module.with_extension("setup.json");
+        fs::create_dir_all(donor_setup.parent().unwrap()).unwrap();
+        fs::write(&donor_setup, "warm setup").unwrap();
+        fs::write(donor_ir_module.with_extension("c"), "warm c").unwrap();
+
+        let restored = restore_available_dependency_artifacts_with_mode(
+            &workspace,
+            &donor,
+            std::slice::from_ref(&source),
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(restored, 1);
+        assert_eq!(
+            fs::read_to_string(
+                workspace.join(".lake/build/lib/lean/AtiyahSinger/Dependency.olean")
+            )
+            .unwrap(),
+            "warm dependency"
+        );
+        assert_eq!(
+            fs::read_to_string(
+                workspace.join(".lake/build/lib/lean/AtiyahSinger/Dependency.trace")
+            )
+            .unwrap(),
+            "warm trace"
+        );
+        assert_eq!(
+            fs::read_to_string(
+                workspace.join(".lake/build/ir/AtiyahSinger/Dependency.setup.json")
+            )
+            .unwrap(),
+            "warm setup"
+        );
+        assert_eq!(
+            fs::read_to_string(workspace.join(".lake/build/ir/AtiyahSinger/Dependency.c"))
+                .unwrap(),
+            "warm c"
+        );
+    }
+
+    #[test]
+    fn focused_setup_copies_from_a_secondary_warm_workspace() {
+        let directory = tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        let donor = directory.path().join("secondary-workspace");
+        let source = PathBuf::from("AtiyahSinger/Dependency.lean");
+        for root in [&workspace, &donor] {
+            fs::create_dir_all(root).unwrap();
+            for config in PROJECT_CONFIG_FILES {
+                fs::write(root.join(config), "same configuration\n").unwrap();
+            }
+            fs::create_dir_all(root.join("AtiyahSinger")).unwrap();
+            fs::write(
+                root.join(&source),
+                "theorem dependency : True := by trivial\n",
+            )
+            .unwrap();
+        }
+        let artifact = donor.join(".lake/build/lib/lean/AtiyahSinger/Dependency.olean");
+        fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+        fs::write(&artifact, "copied dependency").unwrap();
+        let setup = donor.join(".lake/build/ir/AtiyahSinger/Dependency.setup.json");
+        fs::create_dir_all(setup.parent().unwrap()).unwrap();
+        fs::write(&setup, "copied setup").unwrap();
+
+        let restored = restore_available_dependency_artifacts_with_mode(
+            &workspace,
+            &donor,
+            std::slice::from_ref(&source),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(restored, 1);
+        assert_eq!(
+            fs::read_to_string(
+                workspace.join(".lake/build/lib/lean/AtiyahSinger/Dependency.olean")
+            )
+            .unwrap(),
+            "copied dependency"
+        );
+        assert_eq!(
+            fs::read_to_string(
+                workspace.join(".lake/build/ir/AtiyahSinger/Dependency.setup.json")
+            )
+            .unwrap(),
+            "copied setup"
+        );
     }
 
     #[test]
