@@ -14,7 +14,7 @@ The implementation contains no project-specific names or mathematical routes.
 | e147097 | An assumptions request was recorded as signature | Classify all current facets and #inspect/#apply; preserve old rows (i3) |
 | q293180, q293182 | Headline theorem hides the analytic-comparison premise in a truncated signature | Show conclusion and explicit binders before implicit context; choose input type heads rather than arbitrary tokens (i4) |
 | q293179; first replay | Projections and maps out of the requested type masquerade as construction examples | Exclude field rows and outer arrows/equivalences; preserve actual requirements in selectable qREF#N examples (i5) |
-| q293181, q293183, q293193 | Broad discovery misses a point-case Subsingleton instance that Lean synthesis finds | Reserve targeted negative-existence/IsEmpty/Subsingleton candidates, retaining specialization (i6) |
+| q293181, q293183, q293193 | Broad discovery misses a point-case Subsingleton instance that Lean synthesis finds | Reserve targeted negative-existence/IsEmpty/Subsingleton candidates; explicit two-term property queries return matching source evidence, retaining specialization (i6) |
 | q293225; third replay | A function requiring the impossible product-data contract has no warning at discovery | One compact source-evidence notice for an explicit input type; never infer failure at all specializations |
 | q293237 | Failed application repeats context and hides the type comparison | Focused actual/required difference; full Lean diagnostic remains behind the reference (i7) |
 | q293192; isolated replay | Empty warming index looks like evidence of absence | Explicit incomplete-index verdict and structured index_warming outcome, counted as partial rather than a completed miss (i8) |
@@ -43,3 +43,6 @@ Replay is a maintainer helper, not a proving-agent workflow. Pass an isolated
 workspace and a scratch directory outside its source and live repository state;
 feed lines beginning with search or probe on stdin. Never replay experimental
 Lean work against an actively edited worker workspace.
+
+A fifth replay of the original type-plus-subsingleton query returned the known
+point-case instance first. Explicit property queries now omit unrelated results.

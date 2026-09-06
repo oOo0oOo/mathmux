@@ -286,6 +286,85 @@ impl Searcher {
             .collect())
     }
 
+    pub(super) fn prioritize_requested_risk(
+        &self,
+        workspace: &Workspace,
+        run: &mut SearchRun,
+    ) -> Result<()> {
+        let terms = run.query.split_whitespace().collect::<Vec<_>>();
+        if terms.len() != 2 {
+            return Ok(());
+        }
+        let Some(index) = terms
+            .iter()
+            .position(|t| matches!(t.to_ascii_lowercase().as_str(), "subsingleton" | "isempty"))
+        else {
+            return Ok(());
+        };
+        let subject = terms[1 - index];
+        let mut names = run
+            .hits
+            .iter()
+            .filter(|h| {
+                matches!(
+                    h.kind.as_str(),
+                    "def" | "abbrev" | "structure" | "class" | "inductive"
+                )
+            })
+            .map(|h| h.name.trim_start_matches("_root_."))
+            .filter(|n| {
+                n.eq_ignore_ascii_case(subject)
+                    || n.rsplit('.')
+                        .next()
+                        .is_some_and(|leaf| leaf.eq_ignore_ascii_case(subject))
+            })
+            .collect::<Vec<_>>();
+        names.sort();
+        names.dedup();
+        if names.len() != 1 {
+            return Ok(());
+        }
+        let kind = if terms[index].eq_ignore_ascii_case("subsingleton") {
+            "subsingleton candidate"
+        } else {
+            "emptiness candidate"
+        };
+        let candidates = self
+            .risk_rows(workspace, names[0])?
+            .into_iter()
+            .filter(|r| relation(&r.signature, names[0]) == Some(kind))
+            .take(3)
+            .map(|r| SearchHit {
+                name: r.name,
+                kind: r.kind,
+                signature: Some(r.signature),
+                module: r.module,
+                path: r.path,
+                line: r.line,
+                doc: Some(
+                    "source candidate; specialization and premises require verification".into(),
+                ),
+                source: Some(r.body),
+                usages: Vec::new(),
+                applicable: false,
+                required_import: None,
+            })
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            return Ok(());
+        }
+        let lead = &candidates[0];
+        let guidance = format!(
+            "Requested property found in source; not verified applicability.\nInspect: mathmux search {}:{}; use #synth in the relevant Lean context.",
+            lead.path, lead.line
+        );
+        run.hits = candidates;
+        run.inference = "contract-property".into();
+        let prior = run.note.take().unwrap_or_default();
+        run.note = Some(format!("{prior}\n{guidance}").trim().into());
+        Ok(())
+    }
+
     pub(super) fn probe_contract(
         &self,
         workspace: &Workspace,
@@ -843,10 +922,16 @@ mod tests {
     use super::*;
     #[test]
     fn warming_exact_search_never_claims_absence_or_suggests_name_repair() {
-        let run = SearchRun { reference: "q1".into(), workspace_ref: "w1".into(),
-            query: "Demo.exists".into(), inference: "exact-miss".into(), hits: Vec::new(),
+        let run = SearchRun {
+            reference: "q1".into(),
+            workspace_ref: "w1".into(),
+            query: "Demo.exists".into(),
+            inference: "exact-miss".into(),
+            hits: Vec::new(),
             note: Some("exact declaration not found: Demo.exists\nsource index warming".into()),
-            duration_ms: 0, created_at: 0 };
+            duration_ms: 0,
+            created_at: 0,
+        };
         let output = render_summary(&run);
         assert!(output.contains("absence not established"), "{output}");
         assert!(!output.contains("exact declaration not found"), "{output}");
@@ -975,6 +1060,14 @@ mod tests {
                 .input_obstruction_notice(&workspace, "(n : Nat) : True")
                 .unwrap()
                 .is_none()
+        );
+        let property = searcher
+            .search(&workspace, &root, "Demo.Data subsingleton", None, false)
+            .unwrap();
+        assert!(property.contains("Subsingleton (Data 1)"), "{property}");
+        assert!(
+            property.contains("Requested property found in source"),
+            "{property}"
         );
         let examples = searcher
             .probe_examples(&workspace, "Demo.Data", None)

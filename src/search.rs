@@ -765,9 +765,6 @@ impl Searcher {
         if !expanded.context.is_empty() {
             result.hits.splice(0..0, expanded.context);
         }
-        if let Some(max_results) = request.max_results {
-            result.hits.truncate(max_results);
-        }
         let mut run = SearchRun {
             reference: reference.clone(),
             workspace_ref: workspace.reference.clone(),
@@ -783,6 +780,8 @@ impl Searcher {
             created_at: now_unix_ms(),
         };
         let ok = result.ok;
+        self.prioritize_requested_risk(workspace, &mut run)?;
+        if let Some(limit) = request.max_results { run.hits.truncate(limit); }
         self.append_discovery_contract(workspace, &mut run);
         self.state.add_search(&run)?;
         self.state.touch_workspace(&workspace.reference)?;
