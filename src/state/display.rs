@@ -199,8 +199,14 @@ pub(super) fn render_search_run(run: &SearchRun, all: bool) -> String {
         }
         if all || index < 3 {
             if let Some(doc) = &hit.doc {
-                for line in doc.trim().lines().take(3) {
-                    output.push_str(&format!("\n   doc: {}", truncate_line(line.trim(), 240)));
+                let full_doc = all && run.inference == "probe-source";
+                for line in doc.trim().lines().take(if full_doc { usize::MAX } else { 3 }) {
+                    let line = if full_doc {
+                        line.to_owned()
+                    } else {
+                        truncate_line(line.trim(), 240)
+                    };
+                    output.push_str(&format!("\n   doc: {line}"));
                 }
             }
             if index < 3
@@ -211,14 +217,27 @@ pub(super) fn render_search_run(run: &SearchRun, all: bool) -> String {
                     output.push_str("\n   source:");
                 }
                 let source_lines = match hit.kind.as_str() {
-                    _ if all && run.inference == "probe" => usize::MAX,
+                    _ if all && matches!(run.inference.as_str(), "probe" | "probe-source") => {
+                        usize::MAX
+                    }
                     "fields" | "outline" | "source-range" | "source-occurrences" => usize::MAX,
                     "class" | "inductive" | "structure" => 48,
                     _ if index == 0 && query_requests_proof_body(&run.query) => 48,
                     _ => SOURCE_PREVIEW_LINES,
                 };
                 for line in source.trim().lines().take(source_lines) {
-                    output.push_str(&format!("\n     {}", truncate_line(line, 240)));
+                    let line = if all && run.inference == "probe-source" {
+                        line.to_owned()
+                    } else {
+                        truncate_line(line, 240)
+                    };
+                    output.push_str(&format!("\n     {line}"));
+                }
+                if !all && run.inference == "probe-source" {
+                    output.push_str(&format!(
+                        "\n   Source preview; full snapshot: mathmux show {} --all",
+                        run.reference
+                    ));
                 }
             }
             let mut previous_usage_path = None;

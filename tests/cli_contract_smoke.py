@@ -20,6 +20,8 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
     (root / 'lakefile.toml').write_text('name = "probe_fixture"\nversion = "0.1.0"\n[[lean_lib]]\nname = "Fixture"\n')
     source = 'import Lean\nstructure Impossible where\n  witness : False\ntheorem a_admitted_empty : ¬ Nonempty Impossible := by sorry\ntheorem impossible_empty : ¬ Nonempty Impossible := by\n  intro h\n  cases h with | intro x => exact x.witness\ndef forgetInput (_n : Nat) : Nat := 0\ntheorem needsHypothesis (n : Nat) (h : n = 0) : n + 0 = 0 := by simpa using h\nexample (n : Nat) : n + 0 = 0 := by\n  sorry\n'
     (root / 'Fixture.lean').write_text(source)
+    source_fixture = 'import Lean\nnamespace Demo\nvariable {α : Type}\n    [Inhabited α]\nvariable (α) in\n/-- Own documentation. -/\ndef identityValue : α := default\n\n/-- Neighbor documentation. -/\ntheorem longProof : True := by\n' + ('  -- ' + 'λ' * 250 + '\n') * 70 + '  exact True.intro\nend Demo\n'
+    (root / 'SourceFixture.lean').write_text(source_fixture)
     run(['git', 'add', '.'])
     run(['git', 'commit', '-m', 'fixture'])
     log = open(pathlib.Path(tmp) / 'daemon.log', 'w+')
@@ -41,6 +43,23 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
 
         def probe(q):
             return run([binary, 'probe', q], ws).stdout
+        short = probe('Demo.identityValue source')
+        assert '[Inhabited α]' in short and 'Own documentation.' in short, short
+        assert 'Neighbor documentation.' not in short, short
+        assert 'All source snapshot lines shown.' in short, short
+        detail = probe('Demo.longProof source')
+        assert 'lines not shown' in detail and 'Continue:' in detail, detail
+        assert 'λ' * 250 in detail, detail
+        source_ref = next(line.removeprefix('ref: ') for line in detail.splitlines() if line.startswith('ref: '))
+        full = run([binary, 'show', source_ref, '--all'], ws).stdout
+        assert 'exact True.intro' in full and 'λ' * 250 in full, full
+        (ws / 'SourceFixture.lean').write_text(source_fixture.replace('exact True.intro', 'exact .intro'))
+        fresh = probe(source_ref + ' source')
+        fresh_ref = next(line.removeprefix('ref: ') for line in fresh.splitlines() if line.startswith('ref: '))
+        assert fresh_ref != source_ref, fresh
+        assert 'exact .intro' in run([binary, 'show', fresh_ref, '--all'], ws).stdout
+        assert 'exact True.intro' in run([binary, 'show', source_ref, '--all'], ws).stdout
+        (ws / 'SourceFixture.lean').write_text(source_fixture)
         assert 'premises retained' in probe('Impossible assumptions')
         assert 'obstruction candidate' in probe('Impossible evidence')
         detail = probe('Fixture.lean:11 #inspect forgetInput')
@@ -88,7 +107,7 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         assert event['actor_id'] == 'smoke-actor' and event['session_id'] == 'smoke-session', event
         db.close()
         assert (ws / 'Fixture.lean').read_text() == source
-        print('CLI smoke passed: assumptions, source evidence, Lean evidence, inspection, application, cached evidence/invalidation, authored examples/routes, structured empty telemetry/provenance, unchanged source.')
+        print('CLI smoke passed: complete source snapshots/continuations/freshness, assumptions, source evidence, Lean evidence, inspection, application, cached evidence/invalidation, authored examples/routes, structured empty telemetry/provenance, unchanged source.')
     finally:
         try:
             daemon.wait(timeout=15)

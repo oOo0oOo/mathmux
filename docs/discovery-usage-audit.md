@@ -1,4 +1,4 @@
-# Discovery usage audit: probe-v6
+# Discovery usage audit: probe-v6 and probe-v7
 
 2026-09-07. The operator requested repeated hands-on rounds focused on preventing
 formalization mistakes early. MathMux issues belong in MathMux's tracker and are
@@ -46,3 +46,46 @@ Lean work against an actively edited worker workspace.
 
 A fifth replay of the original type-plus-subsingleton query returned the known
 point-case instance first. Explicit property queries now omit unrelated results.
+
+
+## Source usage round: probe-v7 (MathMux i9)
+
+Actual fleet source requests e147282/q293279 and e147256/q293259 were reproduced
+as q293282 and q293283 in the audit workspace. The long bundle-hom definition
+stopped halfway through its return type without notice. `mfderiv` showed only the
+first line of a multiline ambient variable command and then included the next
+declaration's documentation. Nearby `extChartAt` and `contMDiffAt_iff` requests
+confirmed that this was a general source-extraction defect.
+
+Explicit source probes now reread the selected declaration from its current file,
+retain the textual snapshot under a new reference, and display a contiguous
+48-line/8,000-character preview. Lines are never silently shortened. Omitted source
+has an exact continuation range and `show qREF --all`, which preserves the entire
+stored source including long lines. Re-probing an old reference reads current
+source under a new reference; the old snapshot remains unchanged. Indexed fallbacks
+are labeled as excerpts, and unavailable source is explicit.
+
+Ambient variable continuations survive comments and blank lines. Section scopes,
+local variable/open commands, and the declaration's own documentation are retained;
+neighboring docs, examples, attributes, and scope commands are excluded from its
+body. Textual context is not represented as elaborated dependencies: irrelevant
+ambient variables may be present, and omitted earlier ambient commands are labeled.
+This remains a lexical reader, not a replacement for positioned Lean inspection.
+
+Isolated replay q43/q45/q47/q49 (scratch state, not fleet references) recovered the
+missing manifold binders and replaced neighboring docs with the requested docs.
+The long definition offered continuation at file line 255, reaching the actual
+bundle-hom result without guessing that a `letI` assignment ended the signature.
+Warm requests took 29–117 ms. A subsequent replay verified comment-separated
+binders as well. An initially warming dependency index was allowed to finish;
+its early absence results were not treated as mathematical evidence.
+
+Generic regression fixtures cover multiline/comment-separated variables, public
+sections, local-scope cleanup, neighboring commands, Unicode lines, continuation
+coordinates, and a source body larger than the former 16,000-character index cap.
+The real CLI smoke checks the proof's last line and immutable old snapshots after
+an edit. No mathematical source was changed. The search index version advances
+once so existing cached source entries acquire the parser correction.
+
+Release gate: 245 Rust development tests, clippy with documented baseline allowances,
+and the expanded pinned-Lean CLI smoke all pass.

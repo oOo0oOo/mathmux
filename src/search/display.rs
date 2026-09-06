@@ -48,9 +48,11 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
         output.push_str(&hit.name);
         let displayed_source = if run.inference == "exact-miss" {
             None
-        } else if run.inference == "probe"
-            || (matches!(run.inference.as_str(), "exact" | "exact-batch")
-                && (proof_body_requested || hit.kind == "fields"))
+        } else if matches!(
+            run.inference.as_str(),
+            "probe" | "probe-source" | "probe-source-excerpt"
+        ) || (matches!(run.inference.as_str(), "exact" | "exact-batch")
+            && (proof_body_requested || hit.kind == "fields"))
         {
             hit.source.as_deref()
         } else {
@@ -121,25 +123,26 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
             ));
         }
         if let Some(source) = displayed_source {
-            if run.inference != "probe"
-                && !matches!(
-                    hit.kind.as_str(),
-                    "file"
-                        | "fields"
-                        | "imports"
-                        | "location"
-                        | "location-expanded"
-                        | "outline"
-                        | "proof-outline"
-                        | "declaration-outline"
-                        | "declaration-neighborhood"
-                        | "declaration-dependencies"
-                        | "declaration-find"
-                        | "source-group"
-                        | "source-occurrences"
-                        | "source-range"
-                )
-            {
+            if !matches!(
+                run.inference.as_str(),
+                "probe" | "probe-source" | "probe-source-excerpt"
+            ) && !matches!(
+                hit.kind.as_str(),
+                "file"
+                    | "fields"
+                    | "imports"
+                    | "location"
+                    | "location-expanded"
+                    | "outline"
+                    | "proof-outline"
+                    | "declaration-outline"
+                    | "declaration-neighborhood"
+                    | "declaration-dependencies"
+                    | "declaration-find"
+                    | "source-group"
+                    | "source-occurrences"
+                    | "source-range"
+            ) {
                 output.push_str("\nsource:");
             }
             render_source(&mut output, run, hit, source, index, proof_body_requested);
@@ -190,7 +193,9 @@ fn split_verdict_and_note(run: &SearchRun) -> (String, Option<&str>) {
     } else {
         match run.inference.as_str() {
             "exact" | "exact-batch" => "exact declaration".to_owned(),
-            "probe" | "usages" => "probe result".to_owned(),
+            "probe" | "probe-source" | "probe-source-excerpt" | "usages" => {
+                "probe result".to_owned()
+            }
             "source" | "source-only" | "source-regex" | "source-outline" => {
                 "source result".to_owned()
             }
@@ -398,6 +403,13 @@ fn render_source(
     index: usize,
     proof_body_requested: bool,
 ) {
+    if matches!(
+        run.inference.as_str(),
+        "probe-source" | "probe-source-excerpt"
+    ) {
+        render_probe_source(output, run, hit, source);
+        return;
+    }
     if hit.kind == "tactic"
         && source.starts_with("application experiment failed")
         && let Some((focused, _)) = source.split_once("\nFull Lean diagnostic:\n")
@@ -463,6 +475,59 @@ fn render_source(
             )),
             _ => {}
         }
+    }
+}
+
+// Contiguous previews preserve proof order and never silently cut a long line.
+fn render_probe_source(output: &mut String, run: &SearchRun, hit: &SearchHit, source: &str) {
+    let lines = source.lines().collect::<Vec<_>>();
+    let mut chars = 0;
+    let shown = lines
+        .iter()
+        .take(DECLARATION_DETAIL_LINES)
+        .take_while(|line| {
+            chars += line.chars().count() + 1;
+            chars <= 8_000
+        })
+        .count();
+    let fresh = run.inference == "probe-source";
+    output.push_str(if fresh {
+        "\nsource snapshot (textual context; not elaborated):"
+    } else {
+        "\nindexed source excerpt (completeness unavailable):"
+    });
+    if let Some(doc) = &hit.doc {
+        output.push_str(&format!("\nDoc: {}", truncate_line(doc, 400)));
+        if doc.chars().count() > 400 {
+            output.push_str(&format!("\nFull doc: mathmux show {} --all", run.reference));
+        }
+    }
+    for line in &lines[..shown] {
+        output.push('\n');
+        output.push_str(line);
+    }
+    if shown < lines.len() {
+        output.push_str(&format!(
+            "\n… {} lines not shown; mathmux show {} --all",
+            lines.len() - shown,
+            run.reference
+        ));
+        // Synthetic ambient context precedes the first matched declaration line.
+        let start = source::declaration_regex()
+            .find(source)
+            .map(|m| source[..m.start()].lines().count());
+        if fresh && let Some(start) = start {
+            let next = hit.line + shown.saturating_sub(start) as u64;
+            let end = hit.line + lines.len().saturating_sub(start + 1) as u64;
+            output.push_str(&format!(
+                "\nContinue: mathmux search {}:{}-{}",
+                hit.path,
+                next,
+                end.min(next + 47)
+            ));
+        }
+    } else if fresh {
+        output.push_str("\nAll source snapshot lines shown.");
     }
 }
 

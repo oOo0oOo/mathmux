@@ -144,6 +144,14 @@ fn mask_comments(source: &str) -> String {
 }
 
 pub(super) fn parse_source(source: &str, module: &str) -> Vec<SourceEntry> {
+    parse_source_with_limit(source, module, 16_000)
+}
+
+pub(super) fn parse_source_with_limit(
+    source: &str,
+    module: &str,
+    body_limit: usize,
+) -> Vec<SourceEntry> {
     let code = mask_comments(source);
     let declaration = declaration_regex();
     let matches = declaration.captures_iter(&code).collect::<Vec<_>>();
@@ -225,7 +233,7 @@ pub(super) fn parse_source(source: &str, module: &str) -> Vec<SourceEntry> {
             kind: kind.to_owned(),
             signature: single_line(&signature),
             docs: preceding_doc(source, complete.start()).unwrap_or_default(),
-            body: body.chars().take(16_000).collect(),
+            body: body.chars().take(body_limit).collect(),
         });
         if matches!(kind, "class" | "structure") {
             entries.extend(parse_structure_fields(
@@ -452,7 +460,7 @@ pub(super) fn declaration_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
         Regex::new(
-            r"(?m)^[ \t]*(?:@\[[^\n]*\][ \t]*)*(?:(?:private|protected|noncomputable|unsafe|partial|scoped|local)[ \t]+)*(?P<kind>theorem|lemma|def|abbrev|opaque|axiom|structure|class|inductive|instance)\s+(?:\([ \t]*priority[ \t]*:=[^\n)]*\)[ \t]+)?(?P<name>[\p{L}_][\p{L}\p{N}\p{M}_'.]*)?",
+            r"(?m)^[ \t]*(?:@\[[^\n]*\][ \t]*)*(?:(?:public|private|protected|noncomputable|unsafe|partial|scoped|local)[ \t]+)*(?P<kind>theorem|lemma|def|abbrev|opaque|axiom|structure|class|inductive|instance)\s+(?:\([ \t]*priority[ \t]*:=[^\n)]*\)[ \t]+)?(?P<name>[\p{L}_][\p{L}\p{N}\p{M}_'.]*)?",
         )
         .expect("valid declaration regex")
     })
@@ -487,13 +495,41 @@ pub(super) fn declaration_header_end(block: &str) -> usize {
 }
 
 pub(super) fn declaration_block(block: &str) -> &str {
+    let code = mask_comments(block);
     let end = block
         .match_indices('\n')
-        .map(|(index, _)| index + 1)
+        .map(|(i, _)| i + 1)
         .find(|start| {
             let line = block[*start..].lines().next().unwrap_or_default();
-            let trimmed = line.trim_start();
-            line.len() == trimmed.len() && (trimmed == "end" || trimmed.starts_with("end "))
+            let masked = code[*start..].lines().next().unwrap_or_default();
+            if line.len() != line.trim_start().len() {
+                return false;
+            }
+            (masked.trim().is_empty() && (line.starts_with("/--") || line.starts_with("/-!")))
+                || masked == "end"
+                || masked == "section"
+                || [
+                    "end ",
+                    "section ",
+                    "namespace ",
+                    "variable ",
+                    "universe ",
+                    "open ",
+                    "include ",
+                    "omit ",
+                    "attribute ",
+                    "@[",
+                    "example ",
+                    "#check ",
+                    "#eval ",
+                    "#print ",
+                    "#synth ",
+                    "set_option ",
+                    "noncomputable section",
+                    "public section",
+                ]
+                .iter()
+                .any(|p| masked.starts_with(p))
         })
         .unwrap_or(block.len());
     block[..end].trim()
@@ -516,7 +552,10 @@ pub(super) fn namespaces_by_line(source: &str) -> Vec<Vec<String>> {
             if let Some(name) = name.split_whitespace().next() {
                 scopes.push(Some(name.split('.').map(str::to_owned).collect()));
             }
-        } else if trimmed == "section" || trimmed.starts_with("section ") {
+        } else if trimmed == "section"
+            || trimmed.starts_with("section ")
+            || trimmed.ends_with(" section")
+        {
             scopes.push(None);
         } else if trimmed == "end" || trimmed.starts_with("end ") {
             scopes.pop();
@@ -526,38 +565,71 @@ pub(super) fn namespaces_by_line(source: &str) -> Vec<Vec<String>> {
 }
 
 pub(super) fn ambient_contexts_by_line(source: &str) -> Vec<Vec<String>> {
+    let lines = source.lines().collect::<Vec<_>>();
     let mut scopes = vec![Vec::<String>::new()];
+    let mut local = Vec::<String>::new();
     let mut result = Vec::new();
-    for line in source.lines() {
-        let flattened = scopes
+    for (index, line) in lines.iter().enumerate() {
+        let all = scopes.iter().flatten().collect::<Vec<_>>();
+        let mut flattened = all
             .iter()
-            .flatten()
             .rev()
             .take(16)
-            .cloned()
-            .collect::<Vec<_>>()
-            .into_iter()
             .rev()
-            .collect();
+            .map(|s| (*s).clone())
+            .collect::<Vec<_>>();
+        if all.len() > 16 {
+            flattened.insert(
+                0,
+                format!("-- {} earlier ambient commands omitted", all.len() - 16),
+            );
+        }
+        flattened.extend(local.iter().cloned());
         result.push(flattened);
         let trimmed = line.trim();
+        // A term-local `open ... in` inside a proof is not ambient context
+        // for the following declaration.
+        if line.starts_with(char::is_whitespace) && trimmed.starts_with("open ") {
+            continue;
+        }
+        if declaration_regex().is_match(line) {
+            local.clear();
+        }
         if trimmed.starts_with("namespace ") {
             scopes.push(Vec::new());
-        } else if trimmed == "section" || trimmed.starts_with("section ") {
-            scopes.push(vec![single_line(trimmed)]);
+        } else if trimmed == "section"
+            || trimmed.starts_with("section ")
+            || trimmed.ends_with(" section")
+        {
+            scopes.push(vec![trimmed.to_owned()]);
         } else if trimmed == "end" || trimmed.starts_with("end ") {
             if scopes.len() > 1 {
                 scopes.pop();
             }
-        } else if ["universe ", "variable ", "include ", "omit "]
+        } else if ["universe ", "variable ", "include ", "omit ", "open "]
             .iter()
-            .any(|prefix| trimmed.starts_with(prefix))
-            && !trimmed.ends_with(" in")
+            .any(|p| trimmed.starts_with(p))
         {
-            scopes
-                .last_mut()
-                .expect("root context scope")
-                .push(single_line(trimmed));
+            let mut command = (*line).to_owned();
+            if trimmed.starts_with("variable ") {
+                for next in &lines[index + 1..] {
+                    // Comments are masked to blank lines; Lean binders may
+                    // continue across both comments and whitespace.
+                    if next.trim().is_empty() {
+                        continue;
+                    }
+                    if next.len() == next.trim_start().len() || declaration_regex().is_match(next) {
+                        break;
+                    }
+                    command.push('\n');
+                    command.push_str(next);
+                }
+            }
+            if command.trim_end().ends_with(" in") {
+                local.push(command);
+            } else {
+                scopes.last_mut().expect("root context scope").push(command);
+            }
         }
     }
     result

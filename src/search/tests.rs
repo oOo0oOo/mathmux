@@ -4300,3 +4300,49 @@ fn fallback_honors_named_argument_queries() {
             .contains("(L : E → F)")
     );
 }
+
+#[test]
+fn source_context_preserves_multiline_binders_and_local_scope() {
+    let source = "namespace Demo\n@[expose] public section\nuniverse u\nvariable {α : Type u}\n  -- continuation comment\n\n    [Inhabited α]\nvariable (α) in\n/-- Own documentation. -/\ndef first : α := default\n\nvariable (α) in\n/-- Neighbor documentation. -/\ndef second : α := default\nend\ndef outside := 0\nend Demo\n";
+    let entries = parse_source(source, "Demo");
+    let first = entries.iter().find(|e| e.name == "Demo.first").unwrap();
+    assert!(first.body.contains("variable {α : Type u}\n    [Inhabited α]"));
+    assert_eq!(first.body.matches("variable (α) in").count(), 1);
+    assert_eq!(first.docs, "Own documentation.");
+    assert!(first.body.ends_with("def first : α := default"));
+    assert!(!first.body.contains("Neighbor"));
+    let outside = entries.iter().find(|e| e.name == "Demo.outside").unwrap();
+    assert!(!outside.body.contains("Inhabited"));
+    assert!(!outside.body.contains("variable (α) in"));
+}
+
+#[test]
+fn source_snapshot_preview_preserves_long_lines_and_reports_continuation() {
+    let mut run = SearchRun {
+        reference: "q9".into(), workspace_ref: "w1".into(), query: String::new(),
+        inference: String::new(), hits: vec![search_hit("Demo.long")], note: None,
+        duration_ms: 0, created_at: 0,
+    };
+    run.inference = "probe-source".into();
+    run.query = "Demo.long source".into();
+    run.hits[0].path = "Demo.lean".into();
+    run.hits[0].line = 10;
+    let long = format!("  -- {}", "λ".repeat(250));
+    run.hits[0].source = Some(format!("-- ambient context\nvariable (n : Nat)\n\ntheorem long : True := by\n{long}\n{}  trivial", "  -- line\n".repeat(60)));
+    let rendered = render_summary(&run);
+    assert!(rendered.contains(&long));
+    assert!(rendered.contains("lines not shown"));
+    assert!(rendered.contains("Demo.lean:55-72"), "{rendered}");
+    assert!(!rendered.contains("\n  trivial"));
+}
+
+#[test]
+fn source_body_excludes_following_commands_and_term_opens_do_not_leak() {
+    let entries = parse_source("def first := 0\n@[simp]\ntheorem second : True := by\n  open Nat in\n  exact True.intro\nexample : True := by trivial\ndef third := 1\n", "Demo");
+    let first = entries.iter().find(|e| e.name == "first").unwrap();
+    assert_eq!(first.body, "def first := 0");
+    let second = entries.iter().find(|e| e.name == "second").unwrap();
+    assert!(!second.body.contains("example"));
+    let third = entries.iter().find(|e| e.name == "third").unwrap();
+    assert!(!third.body.contains("open Nat"));
+}

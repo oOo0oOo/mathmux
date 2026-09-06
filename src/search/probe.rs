@@ -1023,6 +1023,9 @@ impl Searcher {
         if focus == "usages" {
             self.enrich_usage_dossier(workspace, &mut run)?;
         }
+        if focus == "source" && !run.hits.is_empty() {
+            return self.store_query_hit_refinement(workspace, &reference, &run.hits[0], focus);
+        }
         Ok(render_static_probe_summary(&run, focus))
     }
 
@@ -1171,6 +1174,32 @@ impl Searcher {
         self.run_static_probe_query(workspace, cwd, &query, "constructors")
     }
 
+    // Explicit source requests read the current file, not the bounded search preview.
+    // Keep that snapshot under a new reference so --all can recover omitted lines.
+    fn refresh_probe_source(&self, workspace: &Workspace, hit: &mut SearchHit) -> Result<bool> {
+        let Some((path, _, _)) =
+            source_query::resolve_source_path(&workspace.path, &workspace.path, &hit.path)?
+        else {
+            return Ok(false);
+        };
+        let source = fs::read_to_string(&path)?;
+        let entry = source::parse_source_with_limit(&source, &hit.module, usize::MAX)
+            .into_iter()
+            .find(|entry| {
+                entry.name.trim_start_matches("_root_.") == hit.name.trim_start_matches("_root_.")
+                    && (entry.kind == hit.kind || hit.kind == "declaration")
+            });
+        let Some(entry) = entry else {
+            return Ok(false);
+        };
+        hit.line = entry.line;
+        hit.kind = entry.kind;
+        hit.signature = nonempty(entry.signature);
+        hit.doc = nonempty(entry.docs);
+        hit.source = Some(entry.body);
+        Ok(true)
+    }
+
     fn store_query_hit_refinement(
         &self,
         workspace: &Workspace,
@@ -1179,17 +1208,26 @@ impl Searcher {
         focus: &str,
     ) -> Result<String> {
         let mut hit = hit.clone();
-        if matches!(focus, "source" | "outline") || focus.starts_with("find:") {
+        let fresh_source = focus == "source" && self.refresh_probe_source(workspace, &mut hit)?;
+        if !fresh_source && (matches!(focus, "source" | "outline") || focus.starts_with("find:")) {
             let (scopes, _) = self.search_scopes(workspace)?;
             self.enrich_exact_source(&mut hit, &scopes)?;
         }
+        let note = (focus == "source" && hit.source.is_none()).then(|| {
+            "Source unavailable in the current file or index; no completeness claim.".into()
+        });
         let run = SearchRun {
             reference: self.state.next_reference(ReferenceKind::Query)?,
             workspace_ref: workspace.reference.clone(),
             query: format!("{reference} {focus}"),
-            inference: "probe-refinement".into(),
+            inference: if fresh_source {
+                "probe-source"
+            } else {
+                "probe-refinement"
+            }
+            .into(),
             hits: vec![hit],
-            note: None,
+            note,
             duration_ms: 0,
             created_at: now_unix_ms(),
         };
@@ -1509,7 +1547,9 @@ fn render_static_probe_summary(run: &SearchRun, focus: &str) -> String {
             }
         }
         "source" => {
-            run.inference = "probe".into();
+            if run.inference != "probe-source" {
+                run.inference = "probe-source-excerpt".into();
+            }
             run.hits.truncate(1);
             for hit in &mut run.hits {
                 hit.usages.clear();
