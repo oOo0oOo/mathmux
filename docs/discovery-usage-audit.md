@@ -152,3 +152,49 @@ coordinates, nested generated documentation, qualified/multiline aliases, false
 alias matches, and nonrec boundaries. The CLI fixture now puts attributes above a
 long proof and uses a standalone variable command; direct and reference-based
 find/outline still locate the exact final proof line after the preview limit.
+
+
+## Heavy usage campaign: source and early evidence (i15–i20)
+
+Three passes used the dedicated audit workspace without editing formalization
+source: 30 live CLI queries, 22 follow-ups, then one elaborated project-context
+inspection and 32 isolated replays of the changed Searcher. The replay index was
+still partially warming: successful fresh source reads are useful evidence;
+missing candidates and example rankings are not exhaustive search conclusions.
+Local transcripts: `/tmp/mm-heavy-1.jsonl`, `/tmp/mm-heavy-2.jsonl`,
+`/tmp/mm-heavy-final-replay.out`, `/tmp/mm-heavy-round3.out`, `/tmp/mm-heavy-last.out`.
+
+- i15: live q294176/q294196 resolved ambient type variable `E` as a global
+  declaration, surfacing unrelated `EquivLike.subsingleton_dom` evidence.
+  Bound signature/ambient identifiers now suppress that global lookup. The same
+  real source queries no longer show the false warning; known concrete input
+  obstruction evidence remains covered by an integration test.
+- i16: exact `search ... source` omitted an alias generator and silently cut a
+  long declaration, although `probe ... source` handled both. Both now use fresh,
+  bounded source snapshots with explicit continuation and lossless stored detail.
+  The replay recovered `Bornology.IsBounded.exists_norm_le` and reported the 311
+  omitted lines of the long bundle-map declaration, with its next actual range.
+- i17: live q294209 suggested three transformations needing existing Schwartz
+  maps. Automatic examples now prefer candidates without direct subject inputs
+  and label selected candidates that require one. This is a lexical ranking,
+  not proof of independence: aliases, hidden prerequisites, and project-authored
+  selections still need inspection. The repeated query labels both remaining
+  direct-input candidates; generic fixtures verify ordering and labels.
+- i18: a dependency-file Lean experiment previously returned infrastructure
+  failure. It now explains the unavailable context and asks for a project file
+  importing the API. Following that route in the actual project produced q294236,
+  with elaborated premises and axioms for `SchwartzMap.norm_le_seminorm`.
+  Symlinked dependency paths receive the same classification.
+- i19: replaying `SchwartzMap fields` during indexing falsely called it a
+  non-structure. Unknown indexed kinds now retain uncertainty and a source
+  follow-up; warming output asks for a retry. A database integration fixture
+  distinguishes unknown kind from a known non-structure.
+- i20: the next constructor lookup had a near-name suggestion and therefore
+  incorrectly claimed exact absence during warming. Suggestions no longer change
+  that verdict or trigger premature name-repair instructions. Both empty and
+  nonempty suggestion cases have regression coverage.
+
+The final source/static replay took 0–171 ms per query; these timings exclude
+initial indexing and do not establish full-fleet latency. The pinned-Lean CLI
+fixture also verifies that explicit source search retains the final proof line
+beyond its preview. No new grammar or project-specific logic was added.

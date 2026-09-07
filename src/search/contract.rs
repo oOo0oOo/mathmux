@@ -14,6 +14,20 @@ fn identifiers(text: &str) -> Vec<String> {
         .collect()
 }
 
+fn bound_input_names(signature: &str, source: Option<&str>) -> HashSet<String> {
+    static BINDERS: OnceLock<Regex> = OnceLock::new();
+    let binders = BINDERS.get_or_init(|| {
+        Regex::new(r"[({⦃]\s*([^:(){}⦃⦄\[\]\n]+)\s*:").expect("valid binder names")
+    });
+    let mut names = HashSet::new();
+    for text in std::iter::once(signature).chain(source) {
+        for capture in binders.captures_iter(text) {
+            names.extend(identifiers(&capture[1]));
+        }
+    }
+    names
+}
+
 fn mentions(text: &str, name: &str) -> bool {
     let name = name.trim_start_matches("_root_.");
     identifiers(text)
@@ -168,6 +182,16 @@ fn input_heads(signature: &str) -> Vec<String> {
             identifiers(ty).into_iter().next()
         })
         .collect()
+}
+
+fn construction_needs_subject(signature: &str, subject: &str) -> bool {
+    signature_binders(signature).iter().any(|binder| {
+        let first = binder.chars().next().unwrap().len_utf8();
+        let last = binder.chars().last().unwrap().len_utf8();
+        binder[first..binder.len() - last]
+            .split_once(':')
+            .is_some_and(|(_, ty)| direct_subject(ty.trim(), subject))
+    })
 }
 
 fn wrapped_contract_line(label: &str, text: &str) -> String {
@@ -505,7 +529,11 @@ impl Searcher {
                 })
                 .map(|r| {
                     (
-                        10 + r
+                        10 + if construction_needs_subject(&r.signature, name) {
+                            1000
+                        } else {
+                            0
+                        } + r
                             .signature
                             .chars()
                             .filter(|c| matches!(c, '(' | '[' | '{' | '⦃'))
@@ -543,6 +571,18 @@ impl Searcher {
         let mut note = format!(
             "Existing construction candidates for {name}; project selections are advisory.\nRanked by indexed inputs; hidden prerequisites remain. No inhabitability conclusion follows from absence.\nInspect one: mathmux probe {reference}#1 assumptions; test {context} '#check (TERM : EXPECTED_TYPE)'."
         );
+        for (index, hit) in hits.iter().enumerate() {
+            if hit
+                .signature
+                .as_deref()
+                .is_some_and(|s| construction_needs_subject(s, name))
+            {
+                note.push_str(&format!(
+                    "\n{reference}#{} requires an existing {name} input.",
+                    index + 1
+                ));
+            }
+        }
         if hits.is_empty() {
             note = format!(
                 "No construction found in the bounded index for {name}; this is not an inhabitability verdict. Try {context} '#check (TERM : EXPECTED_TYPE)'."
@@ -566,7 +606,9 @@ impl Searcher {
         &self,
         workspace: &Workspace,
         signature: &str,
+        source: Option<&str>,
     ) -> Result<Option<String>> {
+        let bound = bound_input_names(signature, source);
         let (scopes, _) = self.search_scopes(workspace)?;
         let mut seen = HashSet::new();
         for binder in signature_binders(signature)
@@ -580,7 +622,7 @@ impl Searcher {
             let Some(head) = identifiers(ty).into_iter().next() else {
                 continue;
             };
-            if !seen.insert(head.clone()) {
+            if bound.contains(&head) || !seen.insert(head.clone()) {
                 continue;
             }
             let Ok(hit) =
@@ -921,6 +963,33 @@ impl Searcher {
 mod tests {
     use super::*;
     #[test]
+    fn examples_distinguish_existing_subject_inputs_from_other_requirements() {
+        assert!(construction_needs_subject(
+            "(f : Demo.Data Nat) : Demo.Data Nat",
+            "Demo.Data"
+        ));
+        assert!(!construction_needs_subject(
+            "(n : Nat) : Demo.Data Nat",
+            "Demo.Data"
+        ));
+        assert!(!construction_needs_subject(
+            "(f : X → Demo.Data Nat) : Demo.Data Nat",
+            "Demo.Data"
+        ));
+    }
+
+    #[test]
+    fn evidence_does_not_resolve_bound_types_as_global_names() {
+        let bound = bound_input_names(
+            "(m : E) (d : Demo.Data E) : True",
+            Some("-- ambient context\nvariable {E F : Type*}\nvariable [NormedSpace ℝ E]"),
+        );
+        assert!(bound.contains("E") && bound.contains("F") && bound.contains("m"));
+        assert!(!bound.contains("Demo.Data"));
+        assert!(bound_input_names("{Vector : Type} (v : Vector) : True", None).contains("Vector"));
+    }
+
+    #[test]
     fn warming_exact_search_never_claims_absence_or_suggests_name_repair() {
         let run = SearchRun {
             reference: "q1".into(),
@@ -999,7 +1068,7 @@ mod tests {
         let state_dir = dir.path().join("state");
         fs::create_dir_all(&root).unwrap();
         fs::create_dir_all(&state_dir).unwrap();
-        fs::write(root.join("Demo.lean"), "namespace Demo\nstructure Data (n : Nat) where\n  value : Fin n\ntheorem impossible (h : n = 0) : ¬ Nonempty (Data n) := by sorry\ndef construct (h : 0 < n) : Data n := sorry\ntheorem conditional (h : ¬ Nonempty (Data n)) : True := trivial\ninstance : Subsingleton (Data 1) := sorry\nstructure Container where\n  item : Data 1\nend Demo\n").unwrap();
+        fs::write(root.join("Demo.lean"), "namespace Demo\nstructure Data (n : Nat) where\n  value : Fin n\ntheorem impossible (h : n = 0) : ¬ Nonempty (Data n) := by sorry\ndef construct (h : 0 < n) : Data n := sorry\ndef transform (d : Data n) : Data n := d\ntheorem conditional (h : ¬ Nonempty (Data n)) : True := trivial\ninstance : Subsingleton (Data 1) := sorry\nstructure Container where\n  item : Data 1\nend Demo\n").unwrap();
         fs::write(root.join("API.lean"), "namespace ContinuousMap\ntheorem const_apply (b : β) (a : α) : const α b a = b := by sorry\nend ContinuousMap\nnamespace Matrix\ntheorem coe_units_inv (A : (Matrix n n R)ˣ) : ↑A⁻¹ = (A⁻¹ : Matrix n n R) := by sorry\nend Matrix\nnamespace Demo\ntheorem callee (A : Matrix n n R) : True := trivial\nend Demo\n").unwrap();
         let repo = Repo {
             root: root.clone(),
@@ -1050,14 +1119,14 @@ mod tests {
         );
         assert!(detail.contains("not verified applicability"), "{detail}");
         let notice = searcher
-            .input_obstruction_notice(&workspace, "(d : Demo.Data 0) : True")
+            .input_obstruction_notice(&workspace, "(d : Demo.Data 0) : True", None)
             .unwrap()
             .unwrap();
         assert!(notice.contains("Compare the specialization"), "{notice}");
         assert!(notice.contains("Demo.Data"), "{notice}");
         assert!(
             searcher
-                .input_obstruction_notice(&workspace, "(n : Nat) : True")
+                .input_obstruction_notice(&workspace, "(n : Nat) : True", None)
                 .unwrap()
                 .is_none()
         );
@@ -1074,6 +1143,25 @@ mod tests {
             .unwrap();
         assert!(!examples.contains("Container.item"), "{examples}");
         assert!(examples.contains("Demo.construct"), "{examples}");
+        assert!(
+            examples.find("Demo.construct").unwrap() < examples.find("Demo.transform").unwrap(),
+            "{examples}"
+        );
+        assert!(
+            examples.contains("requires an existing Demo.Data input"),
+            "{examples}"
+        );
+        assert!(
+            searcher
+                .input_obstruction_notice(
+                    &workspace,
+                    "(d : Data) : True",
+                    Some("variable {Data : Type}")
+                )
+                .unwrap()
+                .is_none()
+        );
+
         assert!(
             searcher
                 .probe_contract(&workspace, &root, "Missing.Data", "evidence")
@@ -1093,6 +1181,22 @@ mod tests {
         assert!(bundle.contains("ContinuousMap.const_apply"), "{bundle}");
         assert!(bundle.contains("Matrix.coe_units_inv"), "{bundle}");
         assert!(bundle.contains("applicability unverified"), "{bundle}");
+        searcher
+            .open()
+            .unwrap()
+            .execute(
+                "UPDATE search_fts SET kind = 'declaration' WHERE name = 'Demo.Data'",
+                [],
+            )
+            .unwrap();
+        let (scopes, _) = searcher.search_scopes(&workspace).unwrap();
+        let fields = searcher
+            .field_inventory_result("Demo.Data", &scopes, &workspace, None, true)
+            .unwrap()
+            .unwrap();
+        let note = fields.note.unwrap();
+        assert!(note.contains("structural status is unknown"), "{note}");
+        assert!(!note.contains("not a class or structure"), "{note}");
     }
 
     #[test]

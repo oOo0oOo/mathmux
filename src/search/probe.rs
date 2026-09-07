@@ -1178,7 +1178,11 @@ impl Searcher {
 
     // Explicit source requests read the current file, not the bounded search preview.
     // Keep that snapshot under a new reference so --all can recover omitted lines.
-    fn refresh_probe_source(&self, workspace: &Workspace, hit: &mut SearchHit) -> Result<bool> {
+    pub(super) fn refresh_probe_source(
+        &self,
+        workspace: &Workspace,
+        hit: &mut SearchHit,
+    ) -> Result<bool> {
         let Some((path, _, _)) =
             source_query::resolve_source_path(&workspace.path, &workspace.path, &hit.path)?
         else {
@@ -1293,6 +1297,7 @@ impl Searcher {
         let location =
             parse_source_location(&workspace.path, cwd, Some(&self.repo.root), location)?
                 .with_context(|| format!("invalid probe location {location}"))?;
+        ensure_lean_project_context(&workspace.path, &location.path)?;
         let stored_path = location.display_path.clone().unwrap_or_else(|| {
             location
                 .path
@@ -1347,7 +1352,16 @@ impl Searcher {
     ) -> Result<String> {
         let (path, line) = self
             .resolve_probe_context(workspace, cwd, context)
-            .context(crate::protocol::DiscoveryFailure::UnavailableContext)?;
+            .map_err(|error| {
+                if error
+                    .downcast_ref::<crate::protocol::DiscoveryFailure>()
+                    .is_some()
+                {
+                    error
+                } else {
+                    error.context(crate::protocol::DiscoveryFailure::UnavailableContext)
+                }
+            })?;
         let (operation, input) = match directive {
             LeanDirective::Check(input) => ("term", input),
             LeanDirective::Synth(input) => ("synth", input),
@@ -1413,7 +1427,7 @@ impl Searcher {
         cwd: &Path,
         context: ProbeContext,
     ) -> Result<(PathBuf, u64)> {
-        match context {
+        let resolved: Result<(PathBuf, u64)> = match context {
             ProbeContext::Position(location) => {
                 let location =
                     parse_source_location(&workspace.path, cwd, Some(&self.repo.root), &location)?
@@ -1499,8 +1513,21 @@ impl Searcher {
                 .with_context(|| format!("stored context for {reference} is unavailable"))?;
                 Ok((location.path, if positioned { location.line } else { 0 }))
             }
-        }
+        };
+        let (path, line) = resolved?;
+        ensure_lean_project_context(&workspace.path, &path)?;
+        Ok((path, line))
     }
+}
+
+fn ensure_lean_project_context(root: &Path, path: &Path) -> Result<()> {
+    let root = fs::canonicalize(root)?;
+    let path = fs::canonicalize(path)?;
+    if !path.starts_with(&root) {
+        return Err(anyhow::anyhow!("Lean experiments need a project file in this workspace. Use a project FILE:LINE that imports the declaration, then retry the directive. Dependency source remains readable with search or probe NAME source."))
+            .context(crate::protocol::DiscoveryFailure::UnavailableContext);
+    }
+    Ok(())
 }
 
 fn decisive_directive_result(
@@ -2220,6 +2247,27 @@ fn inductive_constructors(name: &str, source: &str) -> Vec<InductiveConstructor>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dependency_probe_context_explains_project_import_requirement() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("workspace");
+        fs::create_dir(&root).unwrap();
+        let external = dir.path().join("Dependency.lean");
+        fs::write(&external, "").unwrap();
+        let link = root.join("Dependency.lean");
+        std::os::unix::fs::symlink(&external, &link).unwrap();
+        let error = ensure_lean_project_context(&root, &link).unwrap_err();
+        assert!(format!("{error:#}").contains("project FILE:LINE"));
+        assert!(
+            error
+                .downcast_ref::<crate::protocol::DiscoveryFailure>()
+                .is_some()
+        );
+        let own = root.join("Own.lean");
+        fs::write(&own, "").unwrap();
+        assert!(ensure_lean_project_context(&root, &own).is_ok());
+    }
 
     #[test]
     fn attributed_source_navigation_uses_attribute_start_line() {

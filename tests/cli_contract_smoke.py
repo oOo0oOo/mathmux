@@ -47,6 +47,10 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         assert '[Inhabited α]' in short and 'Own documentation.' in short, short
         assert 'Neighbor documentation.' not in short, short
         assert 'All source snapshot lines shown.' in short, short
+        searched = run([binary, 'search', 'Demo.longProof source'], ws).stdout
+        assert 'lines not shown' in searched and 'Continue:' in searched, searched
+        searched_ref = next(line.removeprefix('ref: ') for line in searched.splitlines() if line.startswith('ref: '))
+        assert 'exact True.intro' in run([binary, 'show', searched_ref, '--all'], ws).stdout
         detail = probe('Demo.longProof source')
         assert 'lines not shown' in detail and 'Continue:' in detail and '@[simp]' in detail, detail
         assert 'λ' * 250 in detail, detail

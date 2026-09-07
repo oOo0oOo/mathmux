@@ -185,7 +185,8 @@ impl Searcher {
         }
         if notes.is_empty()
             && let Some(signature) = hit.signature.as_deref()
-            && let Ok(Some(notice)) = self.input_obstruction_notice(workspace, signature)
+            && let Ok(Some(notice)) =
+                self.input_obstruction_notice(workspace, signature, hit.source.as_deref())
         {
             notes.push(notice);
         }

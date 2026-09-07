@@ -161,7 +161,11 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
         output.push_str(note);
     }
     if run.inference == "exact-miss" {
-        if !run.hits.is_empty() || !run.note.as_deref().is_some_and(|n| n.contains("index warming")) {
+        if !run
+            .note
+            .as_deref()
+            .is_some_and(|n| n.contains("index warming"))
+        {
             append_exact_miss_hint(&mut output, run);
         }
     } else if run.hits.len() > summary_limit {
@@ -178,7 +182,12 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
 }
 
 fn split_verdict_and_note(run: &SearchRun) -> (String, Option<&str>) {
-    if run.hits.is_empty() && run.note.as_deref().is_some_and(|n| n.contains("index warming")) {
+    if (run.hits.is_empty() || run.inference == "exact-miss")
+        && run
+            .note
+            .as_deref()
+            .is_some_and(|n| n.contains("index warming"))
+    {
         return ("index still warming; no indexed match yet (absence not established)\nRetry this query after indexing completes".into(), None);
     }
     if run.inference == "exact-miss" {

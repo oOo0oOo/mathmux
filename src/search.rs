@@ -783,6 +783,17 @@ impl Searcher {
         self.prioritize_requested_risk(workspace, &mut run)?;
         if let Some(limit) = request.max_results { run.hits.truncate(limit); }
         self.append_discovery_contract(workspace, &mut run);
+        if ok && run.hits.len() == 1
+            && matches!(run.inference.as_str(), "exact" | "exact-batch")
+            && query_requests_proof_body(&run.query)
+        {
+            if self.refresh_probe_source(workspace, &mut run.hits[0])? {
+                run.inference = "probe-source".into();
+                run.hits[0].usages.clear();
+            } else {
+                prepend_search_note(&mut run.note, "Current declaration source unavailable; indexed preview may be incomplete.".into());
+            }
+        }
         self.state.add_search(&run)?;
         self.state.touch_workspace(&workspace.reference)?;
         let rendered = if request.all && !matches!(run.inference.as_str(), "exact" | "exact-batch")
@@ -3216,6 +3227,11 @@ impl Searcher {
             .into_iter()
             .filter(|candidate| matches!(candidate.hit.kind.as_str(), "class" | "structure"))
             .collect::<Vec<_>>();
+        if structural.is_empty() && resolved_kind == "declaration" {
+            return Ok(Some(miss(format!(
+                "Declaration kind is not indexed for {resolved_name}; structural status is unknown. Inspect textual context: mathmux probe {structure} source"
+            ))));
+        }
         if structural.is_empty() {
             return Ok(Some(miss(format!(
                 "{resolved_name} is {resolved_kind}, not a class or structure"
