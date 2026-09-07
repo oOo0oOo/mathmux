@@ -4624,16 +4624,22 @@ fn grouped_structure_fields_preserve_each_name_type_and_line() {
 #[test]
 fn discovery_excludes_private_macro_helpers_but_keeps_explicit_names() {
     let helper = "_private.Demo.BumpFunction.0._aux_Demo_macroRules_term_1";
+    let quoted = "_private.Demo.BumpFunction.0.«_aux_Demo_macroRules_term#_1»";
     let ordinary = "_private.Demo.0.BumpFunction_theorem";
-    let candidates = || vec![helper, ordinary, "Demo.BumpFunction"].into_iter().map(|name| Candidate {
+    let candidates = || vec![helper, quoted, ordinary, "Demo.BumpFunction"].into_iter().map(|name| Candidate {
         hit: search_hit(name), score: 100.0, origins: 0,
     }).collect();
     let (ranked, _) = rank_discovery_candidates(candidates(), "BumpFunction*", &meaningful_query_tokens("BumpFunction*"), false, None);
     assert!(!ranked.iter().any(|c| c.hit.name == helper));
     assert!(ranked.iter().any(|c| c.hit.name == ordinary));
     assert!(ranked.iter().any(|c| c.hit.name == "Demo.BumpFunction"));
-    let (ranked, _) = rank_discovery_candidates(candidates(), helper, &[], true, None);
-    assert!(ranked.iter().any(|c| c.hit.name == helper));
+    let (broad, _) = rank_discovery_candidates(candidates(), "BumpFunction", &[], false, None);
+    assert!(!broad.iter().any(|c| c.hit.name == quoted));
+    assert!(broad.iter().any(|c| c.hit.name == ordinary));
+    for exact in [helper, quoted] {
+        let (ranked, _) = rank_discovery_candidates(candidates(), exact, &[], true, None);
+        assert!(ranked.iter().any(|c| c.hit.name == exact));
+    }
 }
 
 #[test]

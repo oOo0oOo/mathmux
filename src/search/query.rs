@@ -664,6 +664,7 @@ pub(super) fn rank_discovery_candidates(
     candidates.retain(|candidate| {
         let name = candidate.hit.name.trim_start_matches("_root_.");
         let leaf = name.rsplit('.').next().unwrap_or(name);
+        let leaf = leaf.strip_prefix('«').and_then(|leaf| leaf.strip_suffix('»')).unwrap_or(leaf);
         let private_macro_helper = name.starts_with("_private.")
             && leaf.starts_with("_aux_")
             && leaf.contains("_macroRules_");

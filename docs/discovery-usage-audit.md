@@ -902,3 +902,20 @@ warm. Existing output selection yields three displayed results instead of eight.
 Neighboring plain globs, alternations and conceptual queries were also replayed;
 source probing continues to expose both temperate-growth premises. Fixtures copy
 dependency source into isolated repositories; no formalization work is run.
+
+
+## Quoted private macro helpers obey discovery filtering (i64)
+
+Telemetry 150025 exposes a private compiler macro helper whose leaf uses Lean
+identifier quotes. The i60 filter recognized only an unquoted `_aux_` prefix.
+Replay with copied SobolevInequality source and its real ilean artifact confirms
+that the quoted helper can rank first in discovery. Remove one balanced pair of
+identifier quotes solely for helper classification. Keep the stored name and
+fully specified name retrieval unchanged; ordinary private declarations remain.
+
+The extended focused regression and all 127 search tests pass. CLI-backend replay
+excludes the helper from broad discovery and retains it first when its full name
+is supplied. The full-name query already renders ranked results; an initial replay
+assertion incorrectly required exact-declaration classification and was corrected
+to check retained retrieval. No new verbs, help or source-index changes. Other
+hygienic generated declarations seen in this fixture remain a separate audit.
