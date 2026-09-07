@@ -4862,3 +4862,14 @@ fn qualified_completion_precedes_other_namespace_leaf() {
     assert_eq!(hits[0].hit.name, "Demo.derivCLM_apply_apply");
     assert_eq!(hits[1].hit.name, "Other.derivCLM_apply");
 }
+
+#[test]
+fn signatures_exclude_comments_but_preserve_literal_text_and_source() {
+    let source = "theorem Demo.target (n : Nat) -- irrelevant commentary\n    (h : n = 0) /- outer /- nested -/ comment -/ : n = 0 := h\ntheorem Demo.literal : \"-- text /- literal -/\" = \"-- text /- literal -/\" := rfl\n";
+    let entries = parse_source(source, "Demo");
+    assert!(!entries[0].signature.contains("irrelevant commentary"));
+    assert!(!entries[0].signature.contains("outer"));
+    assert!(entries[0].signature.contains("h : n = 0"));
+    assert!(entries[0].body.contains("irrelevant commentary"));
+    assert!(entries[1].signature.contains("-- text /- literal -/"));
+}

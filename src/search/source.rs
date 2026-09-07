@@ -190,7 +190,7 @@ pub(super) fn parse_source_with_limit(
             .map(|name| name.end() - complete.start() - leading)
             .filter(|end| *end <= header.len())
             .unwrap_or(header.len());
-        let mut signature = header[name_end..]
+        let mut signature = mask_comments(&header[name_end..])
             .trim()
             .trim_start_matches(':')
             .trim()

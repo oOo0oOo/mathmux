@@ -1138,3 +1138,10 @@ Validation: 101 search tests pass, including namespace, suffix-bound and exact-r
 The evidence audit reproduced `exact ?_` returning only `internal exception abortTactic`, while a type-mismatch control retained useful detail. Tactic evaluation now uses Lean's non-backtracking catch to expose the error log before propagating an exception; the normal catch restored state and discarded the message. Successful evaluation also checks for logged errors. Failure remains failure, with its original Lean context and goal.
 
 Validation: 35 pinned-Lean cases pass, including placeholder detail, ordinary mismatch and a subsequent genuine proof to check isolation. `/tmp/mm-error-replay.py` verifies actual CLI failure detail and successful follow-up. No public syntax/help/index change.
+
+
+### i88: keep source comments out of signature previews
+
+Telemetry 151469/151470 showed an inline TODO comment flattened into a theorem contract, spending the preview budget before later hypotheses. A generic parser regression failed on the same pattern. Signatures now use the existing comment masker, preserving string literals and keeping original source text unchanged. Index version16 invalidates old cached signatures; public syntax/help unchanged.
+
+Validation: 102 search tests pass, including nested comments, literals, retained premises and unchanged source. `/tmp/mm-comments-replay.py` verifies the signature/source distinction through the CLI.
