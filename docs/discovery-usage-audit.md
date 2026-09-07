@@ -1049,3 +1049,10 @@ Validation: 135 search tests pass, including named forms with options and an unn
 The copied-source `ContDiff.clm_apply assumptions` audit displayed ambient `{x : E}` even though the result binds its own `x` in `fun x => ...`. Selected section context now conservatively excludes simple lambda/quantifier-bound names, alongside the existing explicit-binder exclusion. Free function names remain eligible; the preview still makes no completeness or elaboration claim.
 
 Validation: 10 contract tests pass, including lambda, universal and existential binders with a free-function control. `/tmp/mm-i75-fixed.log` removes the irrelevant ambient `x` and preserves both differentiability premises in the original copied-source workflow. No formalization work or daemon touched.
+
+
+### i76: recover bounded same-namespace suffix completions
+
+Telemetry 150568–150573 showed a guessed `OrthonormalBasis.repr_apply` followed by two long source ranges to reach `repr_apply_apply`. Current-build isolated copied-source replay still omitted that declaration: its extra `_apply` exceeded the typo edit-distance cutoff. Near-name ranking now also admits one underscore-delimited suffix in the explicitly requested namespace, bounded by the requested leaf length. It remains a non-exact suggestion; retrieval limits, three-suggestion budget, exact resolution, and public grammar are unchanged.
+
+Validation: all 136 search tests pass, including root-qualified spelling and unrelated namespace, nested-name, multi-suffix, and oversized-suffix controls. Cold/warm replay now surfaces the theorem and the signature handoff succeeds, preserving `⟪b i, v⟫`; the neighboring refined search remains unchanged. Evidence: `/tmp/mm-basis-recovery-current.log`, `/tmp/mm-i76-fixed.log`. The fixture uses copied dependency sources, not a formalization workspace or daemon.

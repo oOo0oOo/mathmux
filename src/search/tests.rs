@@ -4794,3 +4794,19 @@ fn named_generator_source_accepts_attribute_options() {
     let unnamed = "@[to_additive (attr := simp)]\ntheorem multiplicative : True := by trivial";
     assert!(explicit_generator_source_entry(unnamed, "Demo", "additive").is_none());
 }
+
+#[test]
+fn near_names_keep_bounded_same_namespace_suffix_completions() {
+    let rows = || vec![
+        indexed_row("_root_.Demo.repr_apply_apply"),
+        indexed_row("Other.repr_apply_apply"),
+        indexed_row("Demo.repr_apply_apply_extra"),
+        indexed_row("Demo.repr_apply_verylongsuffix"),
+        indexed_row("Demo.repr_apply.Nested"),
+    ];
+    let hits = rank_near_name_rows("Demo.repr_apply", rows());
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].hit.name, "_root_.Demo.repr_apply_apply");
+    assert_eq!(rank_near_name_rows("_root_.Demo.repr_apply", rows()).len(), 1);
+    assert!(rank_near_name_rows("repr_apply", rows()).is_empty());
+}

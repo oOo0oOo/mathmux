@@ -439,7 +439,22 @@ fn rank_near_name_rows(query: &str, rows: Vec<IndexedRow>) -> Vec<Candidate> {
                 compact_ranked_hit(row),
             )
         })
-        .filter(|(_, distance, _, _, _)| *distance <= leaf.len().max(4) / 2)
+        .filter(|(_, distance, _, name, _)| {
+            if *distance <= leaf.len().max(4) / 2 {
+                return true;
+            }
+            // A single same-namespace suffix is a completion, not a typo.
+            // Keep it bounded and suggestion-only; never relax exact resolution.
+            let query = canonical_declaration_name(query);
+            name.strip_prefix(query).is_some_and(|suffix| {
+                query.contains('.')
+                    && suffix.strip_prefix('_').is_some_and(|tail| {
+                        !tail.is_empty()
+                            && !tail.contains(['_', '.'])
+                            && suffix.chars().count() <= leaf.chars().count()
+                    })
+            })
+        })
         .collect::<Vec<_>>();
     suggestions.sort_by(|left, right| {
         left.0
