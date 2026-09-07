@@ -2539,6 +2539,14 @@ fn source_query_regressions() {
         duplicated_root.0,
         fs::canonicalize(directory.path().join("Demo.lean")).unwrap()
     );
+    assert!(resolve_source_path(directory.path(), directory.path(), "Missing/Elsewhere/Demo.lean").unwrap().is_none());
+    assert!(resolve_source_path(directory.path(), directory.path(), "Missing.Demo").unwrap().is_none());
+    assert!(resolve_source_path(directory.path(), directory.path(), "Demo.lean").unwrap().is_some());
+    let dependency = directory.path().join(".lake/packages/lib/Library/Actual/Demo.lean");
+    fs::create_dir_all(dependency.parent().unwrap()).unwrap();
+    fs::write(&dependency, "def dependency := true\n").unwrap();
+    let resolved = resolve_source_path(directory.path(), directory.path(), "Library/Actual/Demo.lean").unwrap().unwrap();
+    assert_eq!(resolved.0, fs::canonicalize(dependency).unwrap());
     fs::create_dir_all(directory.path().join("Actual/Topology")).unwrap();
     fs::write(
         directory.path().join("Actual/Topology/Unique.lean"),
@@ -2898,15 +2906,13 @@ fn source_query_regressions() {
         recovered.path,
         fs::canonicalize(project.join("Nested.lean")).unwrap()
     );
-    let recovered_guess = parse_source_occurrence_query(
+    let rejected_guess = parse_source_occurrence_query(
         directory.path(),
         directory.path(),
         None,
         "Wrong/Prefix/Nested.lean:4-6",
-    )
-    .unwrap()
-    .unwrap();
-    assert_eq!(recovered_guess.path, recovered.path);
+    ).err().expect("qualified paths must not degrade to a basename");
+    assert!(rejected_guess.to_string().contains("source file not found or ambiguous"));
     let chart = project.join("FredholmFamilyKernelChart.lean");
     fs::write(&chart, &source).unwrap();
     let recovered_components = parse_source_occurrence_query(

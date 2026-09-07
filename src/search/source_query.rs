@@ -1081,9 +1081,6 @@ pub(super) fn resolve_source_path(
             }
             variants.push(suffix);
         }
-        if let Some(file_name) = requested.file_name() {
-            variants.push(PathBuf::from(file_name));
-        }
         variants.dedup();
     }
     let requested_components = requested.components().count();

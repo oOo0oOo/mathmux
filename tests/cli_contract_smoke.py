@@ -71,6 +71,10 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         def probe(q):
             return run([binary, 'probe', q], ws).stdout
 
+        wrong_path = run([binary, 'search', 'Missing/Elsewhere/SourceFixture.lean:1-4'], ws, ok=False)
+        assert wrong_path.returncode and 'source file not found or ambiguous' in wrong_path.stderr, wrong_path
+        assert 'source result' not in wrong_path.stdout, wrong_path.stdout
+
         escaped_name = run([binary, 'probe', r'Demo.identityValue\u0027 source'], ws, ok=False)
         assert escaped_name.returncode and 'literal characters' in escaped_name.stderr, escaped_name
         assert 'source snapshot' not in escaped_name.stdout, escaped_name.stdout

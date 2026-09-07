@@ -865,3 +865,20 @@ replay rejects the escaped selector and retrieves the distinct literal primed
 name. CLI regression checks that malformed input returns an error without a source
 snapshot. No new verbs or index changes. This correction concerns declaration
 probe selectors, not source regex syntax. Audit advanced through telemetry149819.
+
+
+## Qualified source paths cannot collapse to a basename (i62)
+
+Auditing missing dependency path recovery in telemetry149897 exposed a stronger
+fault in a generic fixture: requesting Mathlib/Analysis/Fourier/L2Space.lean returns
+an unrelated project-root L2Space.lean. The resolver appended a bare filename to
+qualified path variants, enabling silent substitution.
+
+Qualified paths no longer gain that bare-filename variant. Bare-name lookup,
+explicit repeated-root shorthand, multi-component suffix recovery and valid
+dependency paths retain coverage. An existing test that endorsed Wrong/Prefix/Nested
+resolving solely by basename was updated to require an error. Other 125 search
+tests passed, and the adjusted source-query regression passes. Expanded pinned-Lean
+CLI smoke passes. Isolated replay rejects the missing qualified dependency while
+still reading the project basename explicitly and the actual nearby dependency.
+No verbs, help or index changes. Nearby-source suggestions remain suggestions.
