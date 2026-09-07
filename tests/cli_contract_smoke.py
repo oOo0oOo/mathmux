@@ -22,6 +22,9 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
     (root / 'Fixture.lean').write_text(source)
     source_fixture = 'import Lean\nnamespace Demo\nvariable\n  {α : Type}\n    [Inhabited α]\nvariable (α) in\n/-- Own documentation. -/\ndef identityValue : α := default\n\n/-- Neighbor documentation. -/\n@[simp]\ntheorem longProof : True := by\n' + ('  -- ' + 'λ' * 250 + '\n') * 70 + '  exact True.intro\nend Demo\n'
     (root / 'SourceFixture.lean').write_text(source_fixture)
+    contract_fixture = "import Lean\nstructure Parent where\n  datum : Nat\nstructure Child extends Parent where\n  good : datum = 0 := by trivial\nstructure InheritedOnly extends Parent\ndef manyInputs {A B C D E F G H I J K L M : Type} (n : Nat) : Nat := n\nexample : True := by trivial\n"
+    (root / 'ContractFixture.lean').write_text(contract_fixture)
+
     run(['git', 'add', '.'])
     run(['git', 'commit', '-m', 'fixture'])
     log = open(pathlib.Path(tmp) / 'daemon.log', 'w+')
@@ -43,6 +46,17 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
 
         def probe(q):
             return run([binary, 'probe', q], ws).stdout
+        for subject in ['Child', 'InheritedOnly']:
+            fields = probe(subject + ' fields')
+            assert 'inherited obligations are omitted' in fields and 'Extends: Parent' in fields, fields
+        constructor = probe('ContractFixture.lean:8 #inspect Child.mk')
+        assert 'data input toParent' in constructor and 'proof assumption good' in constructor, constructor
+        many = probe('ContractFixture.lean:8 #inspect manyInputs')
+        assert 'data input n' in many, many
+        many_ref = next(line.removeprefix('ref: ') for line in many.splitlines() if line.startswith('ref: '))
+        many_full = run([binary, 'show', many_ref, '--all'], ws).stdout
+        assert 'data input M' in many_full and 'additional inputs omitted' not in many_full, many_full
+        assert many_full.index('data input n') < many_full.index('data input A'), many_full
         short = probe('Demo.identityValue source')
         assert '[Inhabited α]' in short and 'Own documentation.' in short, short
         assert 'Neighbor documentation.' not in short, short
@@ -131,7 +145,7 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         assert event['actor_id'] == 'smoke-actor' and event['session_id'] == 'smoke-session', event
         db.close()
         assert (ws / 'Fixture.lean').read_text() == source
-        print('CLI smoke passed: dependency Lean error attribution, complete source snapshots/continuations/freshness, assumptions, source evidence, Lean evidence, inspection, application, cached evidence/invalidation, authored examples/routes, structured empty telemetry/provenance, unchanged source.')
+        print('CLI smoke passed: inherited fields, default constructor inspection, complete stored input lists, dependency Lean error attribution, complete source snapshots/continuations/freshness, assumptions, source evidence, Lean evidence, inspection, application, cached evidence/invalidation, authored examples/routes, structured empty telemetry/provenance, unchanged source.')
     finally:
         try:
             daemon.wait(timeout=15)

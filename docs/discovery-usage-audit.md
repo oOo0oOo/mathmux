@@ -282,3 +282,16 @@ results still warming in the scratch index are not used as absence evidence.
 A pinned-Lean fixture with thirteen implicit type parameters verifies the final
 parameter survives and the explicit value comes first. No formalization edit or
 submission was made.
+
+
+## Audit workspace retirement and independent CLI coverage
+
+The operator retired w67 and reserved w49/w50/w66 for formalization work. Tooling
+smoke work now stays outside those workspaces. Installed product 67c7ae5 was
+verified with a temporary CLI fixture covering inherited-only structures, a
+constructor with a default proof, explicit-first inspection and retrieval of the
+thirteenth implicit input through `show qREF --all`. This supplements the direct
+Lean tests and replaces the planned live-workspace post-install replay. The
+installed binary SHA-256 was
+`f2932d9fdee07ca7dd3e7dfd5b2054f1425a82e11f324a63b1b1a805f7752426`.
+The expanded CLI smoke passed without touching a formalization workspace.
