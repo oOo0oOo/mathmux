@@ -588,3 +588,25 @@ implicit binder. No verbs, grammar, index format, or help contract changed.
 All 120 search tests pass. An isolated pinned-Lean CLI replay verifies a real
 explicit subtype argument survives exact search. The prior installed release's
 scoped-option context was independently checked successfully.
+
+
+## Source ranges stop at actual declaration bodies (i46)
+
+Telemetry 149292 queried Constructions.lean:481-510, starting at the documentation
+for Homeomorph.ofEqSubtypes. Its result incorrectly said it started inside the
+preceding continuousAt_subtype_val theorem. Original dependency-copy replay
+reproduced this label and an inflated count of crossed declarations.
+
+Source spans previously ran to the next declaration header. They now stop at the
+complete textual body, excluding ambient preview lines from the length and keeping
+the next-header boundary as a cap. Documentation/commands between declarations are
+left unowned rather than attributed to the previous theorem. A range beginning in
+a gap still reports the number of actual declarations crossed. Long proof bodies
+are measured without the search-preview character cap.
+
+The regression fails before the fix and covers docs, commands, ambient binders,
+and a thousand-line proof. All 121 search tests pass. No verbs, grammar, stored
+index format, or help contract changed.
+Expanded pinned-Lean CLI smoke passes, including a documentation-start range.
+Original-query replay reports seven crossed declarations without a false owner;
+the neighboring 483-486 range still identifies Homeomorph.ofEqSubtypes correctly.

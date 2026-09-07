@@ -20,7 +20,7 @@ pub(super) struct DeclarationSpan {
 
 pub(super) fn declaration_spans(source: &str, module: &str) -> Vec<DeclarationSpan> {
     let last_line = source.lines().count().max(1) as u64;
-    let mut entries = parse_source(source, module)
+    let mut entries = parse_source_with_limit(source, module, usize::MAX)
         .into_iter()
         .filter(|entry| {
             !matches!(
@@ -47,6 +47,10 @@ pub(super) fn declaration_spans(source: &str, module: &str) -> Vec<DeclarationSp
             end: entries
                 .get(index + 1)
                 .map_or(last_line, |next| next.line.saturating_sub(1))
+                .min(
+                    entry.line + entry.body.lines().count()
+                        .saturating_sub(declaration_source_header_offset(&entry.body) + 1) as u64,
+                )
                 .max(entry.line),
             name: entry.name.clone(),
             kind: entry.kind.clone(),

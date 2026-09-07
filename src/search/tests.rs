@@ -4529,3 +4529,17 @@ fn source_options_retain_scope_without_leaking_proof_local_commands() {
     assert!(!body("Demo.afterProof").contains("pp.all"));
     assert!(!body("outside").contains("set_option"));
 }
+
+#[test]
+fn declaration_spans_exclude_following_docs_and_commands() {
+    let source = "variable (n : Nat)\ndef first : Nat := n\n\n/-- Next definition. -/\ndef second : Nat := 2\nset_option pp.all true\nend Demo\n";
+    let spans = declaration_spans(source, "Demo");
+    assert_eq!(enclosing_declaration_span(&spans, 2).unwrap().name, "first");
+    assert!(enclosing_declaration_span(&spans, 4).is_none());
+    assert_eq!(enclosing_declaration_span(&spans, 5).unwrap().name, "second");
+    assert!(enclosing_declaration_span(&spans, 6).is_none());
+    let long = format!("theorem long : True := by\n{}  trivial\n/-- Next. -/\ndef next := 0\n", "  -- long proof comment\n".repeat(1000));
+    let spans = declaration_spans(&long, "Demo");
+    assert_eq!(enclosing_declaration_span(&spans, 1002).unwrap().name, "long");
+    assert!(enclosing_declaration_span(&spans, 1003).is_none());
+}

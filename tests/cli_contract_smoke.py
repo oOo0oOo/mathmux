@@ -61,6 +61,10 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         notation = run([binary, 'search', 'NotationFixture.positiveValue'], ws).stdout
         assert '(x : {n : Nat // n > 0}) : Nat' in notation, notation
 
+        doc_range = run([binary, 'search', 'SourceFixture.lean:10-12'], ws).stdout
+        assert 'Neighbor documentation' in doc_range and 'theorem longProof' in doc_range, doc_range
+        assert 'identityValue' not in doc_range, doc_range
+
         options = probe('Demo.target source')
         assert 'set_option autoImplicit false' in options, options
         assert 'set_option pp.universes true in' in options, options

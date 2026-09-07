@@ -690,6 +690,8 @@ pub(super) fn source_occurrence_result(
             || {
                 if import_query {
                     format!("{} for {terms_label}", matches.len())
+                } else if covering.len() > 1 {
+                    format!("{line_label}; crosses {} declarations", covering.len())
                 } else {
                     line_label.clone()
                 }
