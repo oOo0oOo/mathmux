@@ -172,7 +172,7 @@ def boundedContractText (text : String) (limit : Nat := 800) : String :=
 
 -- Applied expressions can depend on axioms through arguments or local lets,
 -- not just their head declaration. Include the types of local dependencies too.
-def expressionProvenance (value type : Expr) : MetaM (Array String) := do
+def expressionProvenance (value type : Expr) : MetaM (Array Name × Array String) := do
   let mut expressions := #[value, type]
   let mut locals := collectFVars (collectFVars {} value) type
   let mut localLines := #[]
@@ -204,7 +204,7 @@ def expressionProvenance (value type : Expr) : MetaM (Array String) := do
   lines := lines ++ localLines
   if expressions.any Expr.hasMVar then
     lines := lines.push "Unresolved metavariables remain; this inspection is not a closed proof."
-  return lines
+  return (axioms, lines)
 
 def inspectContract (value : Expr) : MetaM String := do
   let type ← inferType value
@@ -249,7 +249,7 @@ def inspectContract (value : Expr) : MetaM String := do
       lines := lines.push s!"one-step body: {boundedContractText (← ppExpr info.value).pretty}"
     | _ => pure ()
   else
-    lines := lines ++ (← expressionProvenance value type)
+    lines := lines ++ (← expressionProvenance value type).2
   lines := lines.push "Inspection is not a certificate or a mathematical adequacy verdict. Test explicit small cases with #check/#reduce; use #apply at a goal to expose remaining obligations."
   return String.intercalate "\n" lines.toList
 
@@ -349,7 +349,13 @@ def runLocalProbe (snapshot : Language.Lean.InitialSnapshot) (request : Request)
         let action : Tactic.TacticM String := do
           evalTacticText request.input
           let remaining ← Tactic.getUnsolvedGoals
-          if remaining.isEmpty then return "solved"
+          if remaining.isEmpty then
+            for original in mvars do
+              let proof ← instantiateMVars (mkMVar original)
+              let (axioms, _) ← expressionProvenance proof (← inferType proof)
+              if axioms.contains ``sorryAx then
+                return "ADMITTED: goals discharged using sorryAx; this is not a completed proof."
+            return "solved"
           let formats ← liftM (m := MetaM) (remaining.mapM Meta.ppGoal)
           let mut detail := (Std.Format.prefixJoin "\n" formats).pretty
           let mut seen : Std.HashSet Name := {}

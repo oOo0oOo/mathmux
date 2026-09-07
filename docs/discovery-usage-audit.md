@@ -1110,3 +1110,10 @@ The operator-requested audit of unused Lean evidence found that inspecting a bar
 Nonconstant expression inspection now gathers dependencies from the elaborated value, its type, and transitively referenced local declaration types/let values. It reports global axioms, admitted dependencies, and local inputs/assumptions separately; unresolved metavariables are explicitly disclosed. Bare declaration inspection retains its existing contract output. This uses Lean expression dependencies rather than project naming rules and adds no verbs. Help advances to probe-v18.
 
 Validation: 29 pinned-Lean service cases pass, including seven new applied/wrapped axiom, local-let, local-hypothesis, closed-term and nested-sorry controls. The CLI replay checks the original direct/wrapped expression omission; full existing service cases remain covered.
+
+
+### i84: distinguish admitted tactic results from solved proofs
+
+The Lean-evidence audit reproduced `by sorry` and `by exact True.intro` returning the same `solved` response. Tactic probes now inspect discharged goal assignments with the shared expression-provenance collector and label any transitive sorryAx dependency ADMITTED. Normal solved results and remaining-goal output retain their existing behavior. This includes use of an admitted theorem, not merely the spelling of a tactic. No source edits or new verbs; probe-v19 documents the distinction.
+
+Validation: 32 pinned-Lean service cases pass, including direct admission, an admitted theorem and a genuine proof. `/tmp/mm-admission-replay.py` checks both result classes through the actual CLI in an isolated project.

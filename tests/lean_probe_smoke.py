@@ -53,13 +53,17 @@ provenance_start = len(requests)
 source = """import Lean
 axiom unsafeResult : Nat → False
 def wrapped (n : Nat) : False := unsafeResult n
+theorem admittedTruth : True := by sorry
 example (h : False) : True := by
   let hidden := unsafeResult 0
   have keep : False := hidden
   exact False.elim keep
 """
 for term in ['(unsafeResult 0)', '(wrapped 0)', 'h', 'hidden', '(Nat.succ 0)', '(False.elim h : Nat)', '(id (by sorry : Nat))']:
-    request('inspect', term, line=7)
+    request('inspect', term, line=8)
+request('tactic', 'sorry', line=8)
+request('tactic', 'exact admittedTruth', line=8)
+request('tactic', 'exact True.intro', line=8)
 with tempfile.TemporaryDirectory(prefix='mathmux-lean-probe-') as temp:
     setup = pathlib.Path(temp) / 'setup.json'
     setup.write_text(json.dumps(dict(name='ProbeFixture', package=None, isModule=False,
@@ -116,4 +120,7 @@ with tempfile.TemporaryDirectory(prefix='mathmux-lean-probe-') as temp:
     assert 'local assumption' not in response['detail'], response
     response = responses[provenance_start + 6]
     assert response['ok'] and 'sorryAx' in response['detail'] and 'ADMITTED' in response['detail'], response
+    for response in responses[-3:-1]:
+        assert response['ok'] and 'ADMITTED' in response['detail'], response
+    assert responses[-1]['ok'] and responses[-1]['detail'] == 'solved', responses[-1]
     print(f'Lean probe smoke: {len(responses)} cases passed, including expression provenance.')
