@@ -2266,6 +2266,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bodyless_multiline_headers_keep_parameters_and_parents() {
+        let source = "class Parent (n : Nat) : Prop where\n  good : n = n\nclass Child\n  (n : Nat) : Prop\n  extends Parent n\nstructure Empty\n  (n : Nat)\n  deriving Inhabited\naxiom value\n  (n : Nat) :\n  n = n\ninductive Choice\n  (n : Nat)\n  | mk : Choice n\n";
+        let entries = source::parse_source(source, "Fixture");
+        let child = entries.iter().find(|e| e.name == "Child").unwrap();
+        assert!(
+            child.signature.contains("(n : Nat) : Prop"),
+            "{}",
+            child.signature
+        );
+        assert!(
+            child.signature.contains("extends Parent n"),
+            "{}",
+            child.signature
+        );
+        let value = entries.iter().find(|e| e.name == "value").unwrap();
+        assert!(value.signature.contains("n = n"), "{}", value.signature);
+        for name in ["Empty", "Choice"] {
+            let entry = entries.iter().find(|e| e.name == name).unwrap();
+            assert!(entry.signature.contains("(n : Nat)"), "{}", entry.signature);
+            assert!(
+                !entry.signature.contains("deriving") && !entry.signature.contains("| mk"),
+                "{}",
+                entry.signature
+            );
+        }
+        let commented = "theorem target /- where is not syntax here -/ (n : Nat) : n = n := rfl";
+        assert_eq!(
+            &commented[source::declaration_header_end(commented)..],
+            ":= rfl"
+        );
+    }
+
+    #[test]
     fn signature_name_position_ignores_matching_attribute_text() {
         for declaration in [
             "@[trans]\nprotected def trans : Nat := 0",

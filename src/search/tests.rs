@@ -221,8 +221,9 @@ end Demo
         "structure InnerProductSpace.Core extends PreInnerProductSpace.Core where\n  definite : True\n",
         "InnerProductSpace",
     );
-    assert!(structure[0].signature.contains(
-        "generated parent projection: InnerProductSpace.Core.toPreInnerProductSpaceCore"
+    assert_eq!(structure[0].signature, "extends PreInnerProductSpace.Core");
+    assert!(structure[0].docs.contains(
+        "Generated parent projection (textual): InnerProductSpace.Core.toPreInnerProductSpaceCore"
     ));
     let infix_parent = parse_source(
         "structure Homeomorph (X Y : Type*) extends X ≃ Y where\n  continuous_toFun : True\n",
@@ -4251,7 +4252,7 @@ fn fallback_respects_qualified_member_owner_order() {
     assert!(
         hits[0]
             .hit
-            .signature
+            .doc
             .as_deref()
             .unwrap()
             .contains("InnerProductSpace.Core.toPreInnerProductSpaceCore")

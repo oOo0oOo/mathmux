@@ -24,7 +24,7 @@ use clap::ValueEnum;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 const WORKFLOW_HELP: &str = r#"AGENT CONTRACT
-  api       search-v7/probe-v14; reread search/probe help only when this digest changes.
+  api       search-v8/probe-v15; reread search/probe help only when this digest changes.
   scope     Use the preassigned workspace; never run ws or enter main/another workspace.
   discover  Search unknown things; probe known API, exact context, or failures.
             Exact declarations go straight to probe NAME; qREFs store result sets.
@@ -36,7 +36,7 @@ const WORKFLOW_HELP: &str = r#"AGENT CONTRACT
   safety    sorry is tracked; new axioms fail validation. Never edit .lake/generated artifacts."#;
 
 const SEARCH_HELP: &str = r#"SEARCH — find or read unknown things; returns qREF
-API search-v7 — compact discovery; reread only when this digest changes
+API search-v8 — compact discovery; reread only when this digest changes
 FORMS — type one directly; declaration/type/source/compose are labels, not keywords
   declaration  NAME | NAME* | KIND NAME [source|body|proof]
   type/concept TYPE_OR_CONCEPT_TERMS | type:LEAN_TYPE
@@ -57,7 +57,8 @@ RESULT
   Source-only ranges of 48 lines or fewer are complete in compact mode; longer
   ranges name the next non-overlapping range. search --all is accepted only for
   explicit FILE:START-END or FILE:tail reads. Refine grouped searches before expansion.
-  Exact names include full signatures. NAME source/body/proof uses fresh snapshots
+  Exact names include full signatures, including multiline declarations without bodies.
+  NAME source/body/proof uses fresh snapshots
   with explicit continuation and lossless show qREF --all.
 
 NEXT
@@ -76,7 +77,7 @@ RULES
   Sigil what you know; leave inference for what you do not."#;
 
 const PROBE_HELP: &str = r##"PROBE — inspect something known; returns qREF
-API probe-v14 — bounded exact inspection; reread only when this digest changes
+API probe-v15 — bounded exact inspection; reread only when this digest changes
 FORMS — type one directly; there are no API, LEAN, or other category keywords
   NAME [signature|source|outline|apply|fields|constructors|ext|simp|usages|assumptions|evidence|examples]
   NAME find TERM
@@ -1165,7 +1166,7 @@ mod tests {
             .unwrap()
             .render_long_help()
             .to_string();
-        assert!(help.contains("API search-v7"));
+        assert!(help.contains("API search-v8"));
         for form in [
             "type:LEAN_TYPE",
             "FILE:LINE",
@@ -1188,7 +1189,7 @@ mod tests {
             .unwrap()
             .render_long_help()
             .to_string();
-        assert!(probe_help.contains("API probe-v14"));
+        assert!(probe_help.contains("API probe-v15"));
         for contract in [
             "there are no API, LEAN, or other category keywords",
             "NAME [signature|source|outline|apply|fields|constructors|ext|simp|usages|assumptions|evidence|examples]",
@@ -1234,7 +1235,7 @@ mod tests {
     #[test]
     fn workflow_help_prefers_direct_workspace_experimentation() {
         let help = command_line().render_help().to_string();
-        assert!(help.contains("search-v7/probe-v14"));
+        assert!(help.contains("search-v8/probe-v15"));
         assert!(help.contains("Edit intended files -> check -> submit"));
         assert!(help.contains("Exact declarations go straight to probe NAME"));
         assert!(help.contains("Search unknown things; probe known API, exact context"));

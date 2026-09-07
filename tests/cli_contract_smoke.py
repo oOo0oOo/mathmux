@@ -22,7 +22,7 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
     (root / 'Fixture.lean').write_text(source)
     source_fixture = 'import Lean\nnamespace Demo\nvariable\n  {α : Type}\n    [Inhabited α]\nvariable (α) in\n/-- Own documentation. -/\ndef identityValue : α := default\n\n/-- Neighbor documentation. -/\n@[simp]\ntheorem longProof : True := by\n' + ('  -- ' + 'λ' * 250 + '\n') * 70 + '  exact True.intro\nend Demo\n'
     (root / 'SourceFixture.lean').write_text(source_fixture)
-    contract_fixture = "import Lean\nstructure Parent where\n  datum : Nat\nstructure Child extends Parent where\n  good : datum = 0 := by trivial\nstructure InheritedOnly extends Parent\ndef manyInputs {A B C D E F G H I J K L M : Type} (n : Nat) : Nat := n\nexample : True := by trivial\n"
+    contract_fixture = "import Lean\nstructure Parent where\n  datum : Nat\nstructure Child extends Parent where\n  good : datum = 0 := by trivial\nstructure InheritedOnly\n  extends Parent\ndef manyInputs {A B C D E F G H I J K L M : Type} (n : Nat) : Nat := n\nexample : True := by trivial\n"
     (root / 'ContractFixture.lean').write_text(contract_fixture)
     (root / 'AttributeFixture.lean').write_text('import Lean\nnamespace AttributeFixture\n@[simp]\ntheorem simp (n : Nat) : n = n := rfl\nend AttributeFixture\n')
 
@@ -50,9 +50,12 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         for subject in ['Child', 'InheritedOnly']:
             fields = probe(subject + ' fields')
             assert 'inherited obligations are omitted' in fields and 'Extends: Parent' in fields, fields
-        constructor = probe('ContractFixture.lean:8 #inspect Child.mk')
+        inherited_signature = probe('InheritedOnly signature')
+        assert 'extends Parent' in inherited_signature and 'generated parent projection' not in inherited_signature.lower(), inherited_signature
+
+        constructor = probe('ContractFixture.lean:9 #inspect Child.mk')
         assert 'data input toParent' in constructor and 'proof assumption good' in constructor, constructor
-        many = probe('ContractFixture.lean:8 #inspect manyInputs')
+        many = probe('ContractFixture.lean:9 #inspect manyInputs')
         assert 'data input n' in many, many
         many_ref = next(line.removeprefix('ref: ') for line in many.splitlines() if line.startswith('ref: '))
         many_full = run([binary, 'show', many_ref, '--all'], ws).stdout

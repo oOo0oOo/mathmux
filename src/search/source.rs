@@ -217,10 +217,16 @@ pub(super) fn parse_source_with_limit(
             None if namespace.is_empty() => format!("instance@{line}"),
             None => format!("{}.instance@{line}", namespace.join(".")),
         };
+        let mut docs = preceding_doc(source, complete.start()).unwrap_or_default();
         if matches!(kind, "class" | "structure")
             && let Some(projection) = generated_parent_projection(&name, &signature)
         {
-            signature.push_str(&format!("; generated parent projection: {projection}"));
+            if !docs.is_empty() {
+                docs.push('\n');
+            }
+            docs.push_str(&format!(
+                "Generated parent projection (textual): {projection}"
+            ));
         }
         let context = contexts
             .get(line.saturating_sub(1))
@@ -236,7 +242,7 @@ pub(super) fn parse_source_with_limit(
             name,
             kind: kind.to_owned(),
             signature: single_line(&signature),
-            docs: preceding_doc(source, complete.start()).unwrap_or_default(),
+            docs,
             body: body.chars().take(body_limit).collect(),
         });
         if matches!(kind, "class" | "structure") {
@@ -612,12 +618,31 @@ pub(super) fn declaration_source_header_offset(source: &str) -> usize {
 }
 
 pub(super) fn declaration_header_end(block: &str) -> usize {
+    let code = mask_comments(block);
     let mut delimiters = Vec::new();
-    for (index, character) in block.char_indices() {
+    for (index, character) in code.char_indices() {
         match character {
             '(' | '[' | '{' => delimiters.push(character),
             ')' | ']' | '}' => {
                 delimiters.pop();
+            }
+            '|' if delimiters.is_empty()
+                && code[..index]
+                    .rsplit('\n')
+                    .next()
+                    .is_some_and(|line| line.trim().is_empty()) =>
+            {
+                return index;
+            }
+            'd' if delimiters.is_empty()
+                && code[index..].starts_with("deriving")
+                && code[..index]
+                    .rsplit('\n')
+                    .next()
+                    .is_some_and(|line| line.trim().is_empty())
+                && code[index + 8..].starts_with(char::is_whitespace) =>
+            {
+                return index;
             }
             ':' if delimiters.is_empty() && block[index..].starts_with(":=") => return index,
             'w' if delimiters.is_empty()
@@ -636,7 +661,7 @@ pub(super) fn declaration_header_end(block: &str) -> usize {
             _ => {}
         }
     }
-    block.find('\n').unwrap_or(block.len())
+    block.len()
 }
 
 pub(super) fn declaration_block(block: &str) -> &str {

@@ -341,3 +341,28 @@ correct signatures while retaining their attributes in source. The installed-CLI
 smoke fixture now includes a theorem whose name matches its simplifier attribute.
 The expanded CLI suite, 259 Rust tests and baseline clippy passed. These checks
 use temporary repositories and do not alter formalization source.
+
+
+## Complete multiline declarations without bodies (i31–i32)
+
+Telemetry q294407/q294411 exposed an IsManifold signature ending after its first
+line. Read-only inspection of the shared dependency source confirmed that this
+class has multiline parameters and an inherited HasGroupoid requirement, with no
+`where` token. No retained formalization workspace was entered or used for smoke.
+
+- i31: header parsing now retains the whole declaration when there is no body
+  delimiter, stopping at constructor alternatives and deriving clauses. Comments
+  do not terminate a header. Regressions include multiline classes, structures,
+  axioms, inductives and a comment containing `where`.
+- i32: the replay exposed a generated-parent-projection hint appended directly to
+  the type signature. That hint now belongs to documentation. Signatures and
+  inherited-parent types contain declaration syntax, not tool-generated prose.
+  Existing fallback tests verify that the documentation hint remains available.
+
+The recorded dependency header was copied into an isolated textual replay:
+`signature` now includes I/n/M, `fields` identifies HasGroupoid, and `source`
+retains the complete header (`/tmp/mm-round10-replay-final.out`). This source-only
+fixture is not a Lean adequacy check. The generic installed-CLI fixture separately
+uses a valid multiline inherited-only structure and checks clean signatures.
+260 Rust tests, baseline clippy and the expanded pinned-Lean CLI smoke pass.
+Index version 12 invalidates previously truncated headers and contaminated types.
