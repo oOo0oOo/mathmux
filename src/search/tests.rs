@@ -196,7 +196,8 @@ end Demo
         "/-- Multiplicative support. -/\n@[to_additive /-- Additive support around zero. -/]\ntheorem mulSupportFact : True := trivial\n",
         "Demo",
     );
-    assert_eq!(additive_doc[0].docs, "Additive support around zero.");
+    // The nested to_additive doc belongs to the generated additive theorem.
+    assert_eq!(additive_doc[0].docs, "Multiplicative support.");
 
     let priority_instance = parse_source(
         "namespace VectorBundle\ninstance (priority := 100) trivialization_linear [VectorBundle R F E] : e.IsLinear R := inferInstance\nend VectorBundle\n",
@@ -4354,4 +4355,15 @@ fn bare_variable_commands_preserve_binders_and_end_previous_body() {
         "theorem first : True := by trivial");
     let value = entries.iter().find(|e| e.name == "value").unwrap();
     assert!(value.body.contains("variable\n  {α : Type}\n  [Inhabited α]"));
+}
+
+#[test]
+fn source_keeps_preceding_attributes_with_true_start_line() {
+    let source = "namespace Demo\n/-- Own documentation. -/\n@[simp]\n@[inline]\ndef value := 0\nend Demo\n";
+    let entries = parse_source(source, "Demo");
+    let value = entries.iter().find(|e| e.name == "Demo.value").unwrap();
+    assert_eq!(value.line, 3);
+    assert!(value.body.starts_with("@[simp]\n@[inline]\ndef value"));
+    assert_eq!(value.docs, "Own documentation.");
+    assert_eq!(declaration_source_header_offset(&value.body), 0);
 }

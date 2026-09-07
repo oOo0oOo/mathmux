@@ -194,7 +194,7 @@ pub(super) fn parse_source_with_limit(
         {
             signature = format!(":= {}", value.trim());
         }
-        if block.lines().next().is_some_and(|line| {
+        if block[..header_end].lines().any(|line| {
             line.split_whitespace()
                 .take_while(|word| *word != kind)
                 .any(|word| word == "private")
@@ -460,10 +460,16 @@ pub(super) fn declaration_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
         Regex::new(
-            r"(?m)^[ \t]*(?:@\[[^\n]*\][ \t]*)*(?:(?:public|private|protected|noncomputable|unsafe|partial|scoped|local)[ \t]+)*(?P<kind>theorem|lemma|def|abbrev|opaque|axiom|structure|class|inductive|instance)\s+(?:\([ \t]*priority[ \t]*:=[^\n)]*\)[ \t]+)?(?P<name>[\p{L}_][\p{L}\p{N}\p{M}_'.]*)?",
+            r"(?m)^[ \t]*(?:@\[[^\n]*\][ \t]*(?:\n[ \t]*)*)*(?:(?:public|private|protected|noncomputable|unsafe|partial|scoped|local)[ \t]+)*(?P<kind>theorem|lemma|def|abbrev|opaque|axiom|structure|class|inductive|instance)\s+(?:\([ \t]*priority[ \t]*:=[^\n)]*\)[ \t]+)?(?P<name>[\p{L}_][\p{L}\p{N}\p{M}_'.]*)?",
         )
         .expect("valid declaration regex")
     })
+}
+
+pub(super) fn declaration_source_header_offset(source: &str) -> usize {
+    declaration_regex()
+        .find(source)
+        .map_or(0, |m| source[..m.start()].lines().count())
 }
 
 pub(super) fn declaration_header_end(block: &str) -> usize {
@@ -496,10 +502,14 @@ pub(super) fn declaration_header_end(block: &str) -> usize {
 
 pub(super) fn declaration_block(block: &str) -> &str {
     let code = mask_comments(block);
+    let header_end = declaration_regex().find(&code).map_or(0, |m| m.end());
     let end = block
         .match_indices('\n')
         .map(|(i, _)| i + 1)
         .find(|start| {
+            if *start < header_end {
+                return false;
+            }
             let line = block[*start..].lines().next().unwrap_or_default();
             let masked = code[*start..].lines().next().unwrap_or_default();
             if line.len() != line.trim_start().len() {

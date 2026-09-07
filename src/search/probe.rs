@@ -1646,10 +1646,7 @@ fn declaration_find_from_hit(
     reference: &str,
 ) -> String {
     let lines = source.lines().collect::<Vec<_>>();
-    let header = lines
-        .iter()
-        .position(|line| is_declaration_header(line))
-        .unwrap_or(0);
+    let header = source::declaration_source_header_offset(source);
     let matches = lines
         .iter()
         .enumerate()
@@ -1686,10 +1683,7 @@ fn declaration_find_from_hit(
 
 fn declaration_outline_from_hit(source: &str, declaration_line: u64, kind: &str) -> String {
     let lines = source.lines().collect::<Vec<_>>();
-    let header = lines
-        .iter()
-        .position(|line| is_declaration_header(line))
-        .unwrap_or(0);
+    let header = source::declaration_source_header_offset(source);
     let proof_steps = [
         "let ",
         "letI ",
@@ -1716,6 +1710,7 @@ fn declaration_outline_from_hit(source: &str, declaration_line: u64, kind: &str)
             let trimmed = line.trim_start();
             let indent = line.len().saturating_sub(trimmed.len());
             let structural = index == header
+                || is_declaration_header(line)
                 || match kind {
                     "class" | "structure" => {
                         indent <= 4 && (trimmed.contains(" : ") || trimmed.starts_with("extends "))
@@ -2222,6 +2217,18 @@ fn inductive_constructors(name: &str, source: &str) -> Vec<InductiveConstructor>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attributed_source_navigation_uses_attribute_start_line() {
+        let source = "-- ambient context\nvariable (n : Nat)\n\n@[simp]\ntheorem target : True := by\n  trivial";
+        assert_eq!(
+            declaration_find_from_hit(source, 10, "trivial", "q1"),
+            "   12    trivial"
+        );
+        let outline = declaration_outline_from_hit(source, 10, "theorem");
+        assert!(outline.contains("   10  @[simp]"));
+        assert!(outline.contains("   11  theorem target"));
+    }
 
     #[test]
     fn declaration_find_uses_file_coordinates_and_labels_ambient_matches() {
