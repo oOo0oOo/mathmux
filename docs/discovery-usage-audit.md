@@ -834,3 +834,19 @@ All 124 search tests pass, including both alias directions and a different-digit
 control. Replay removes the spurious warning while retaining the source name and
 signature. The CLI regression covers a qualified subscript-bearing wildcard.
 No new verbs, index or help changes. Audit advanced through telemetry 149741.
+
+
+## Broad discovery skips private macro helpers (i60)
+
+Telemetry 149793 returns a private compiler macro helper for BumpFunction*, with a
+long unusable source handoff. Copying the actual source and ilean artifact into an
+isolated replay reproduces the helper ranked first both cold and warm. The name is
+in compiled decls, rather than the generated-alias reference path.
+
+Discovery ranking now excludes private names whose leaf is an auxiliary macroRules
+helper. Exact full-name requests remain available; ordinary private declarations
+are retained. The compiled index itself is unchanged. No new verbs or index changes.
+All 125 search tests pass, including broad discovery, ordinary private declarations
+and explicit helper requests. Replay of the original artifact now shows module
+context first and still resolves the exact helper name. Full release gates remain
+with the release owner.

@@ -661,6 +661,14 @@ pub(super) fn rank_discovery_candidates(
 ) -> (Vec<Candidate>, bool) {
     // Candidate producers perform retrieval and base scoring. The bottleneck below
     // deliberately keeps the remaining rules in one stable, inspectable order.
+    candidates.retain(|candidate| {
+        let name = candidate.hit.name.trim_start_matches("_root_.");
+        let leaf = name.rsplit('.').next().unwrap_or(name);
+        let private_macro_helper = name.starts_with("_private.")
+            && leaf.starts_with("_aux_")
+            && leaf.contains("_macroRules_");
+        !private_macro_helper || query.trim().trim_start_matches("_root_.") == name
+    });
     let glob_name_miss = apply_declaration_glob(&mut candidates, query);
     apply_context_scores(&mut candidates, import_context);
     let mut ranked = sort_and_merge_candidates(candidates);

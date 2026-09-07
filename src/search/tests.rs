@@ -4614,3 +4614,18 @@ fn grouped_structure_fields_preserve_each_name_type_and_line() {
         ("Demo.f", "Nat → (Nat × Nat)", 13), ("Demo.g", "Nat → (Nat × Nat)", 13),
     ]);
 }
+
+#[test]
+fn discovery_excludes_private_macro_helpers_but_keeps_explicit_names() {
+    let helper = "_private.Demo.BumpFunction.0._aux_Demo_macroRules_term_1";
+    let ordinary = "_private.Demo.0.BumpFunction_theorem";
+    let candidates = || vec![helper, ordinary, "Demo.BumpFunction"].into_iter().map(|name| Candidate {
+        hit: search_hit(name), score: 100.0, origins: 0,
+    }).collect();
+    let (ranked, _) = rank_discovery_candidates(candidates(), "BumpFunction*", &meaningful_query_tokens("BumpFunction*"), false, None);
+    assert!(!ranked.iter().any(|c| c.hit.name == helper));
+    assert!(ranked.iter().any(|c| c.hit.name == ordinary));
+    assert!(ranked.iter().any(|c| c.hit.name == "Demo.BumpFunction"));
+    let (ranked, _) = rank_discovery_candidates(candidates(), helper, &[], true, None);
+    assert!(ranked.iter().any(|c| c.hit.name == helper));
+}
