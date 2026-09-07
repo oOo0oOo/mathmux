@@ -1,5 +1,5 @@
 """Isolated end-to-end CLI smoke. Arguments: mathmux binary, pinned lean binary."""
-import json, os, pathlib, sqlite3, subprocess, tempfile, time, shutil, sys
+import json, os, pathlib, sqlite3, subprocess, tempfile, time, shutil, sys, shlex
 binary = str(pathlib.Path(sys.argv[1]).resolve())
 leanbin = str(pathlib.Path(sys.argv[2]).resolve().parent)
 with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
@@ -49,6 +49,14 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
 
         def probe(q):
             return run([binary, 'probe', q], ws).stdout
+        navigation = run([binary, 'search', '/Own documentation/'], ws).stdout
+        for _ in range(2):
+            next_command = next(line.removeprefix('next: ') for line in navigation.splitlines() if line.startswith('next: '))
+            args = shlex.split(next_command)
+            assert args[:2] == ['mathmux', 'search'], next_command
+            navigation = run([binary, *args[1:]], ws).stdout
+        assert 'Demo.identityValue' in navigation, navigation
+
         for subject in ['Child', 'InheritedOnly']:
             fields = probe(subject + ' fields')
             assert 'inherited obligations are omitted' in fields and 'Extends: Parent' in fields, fields

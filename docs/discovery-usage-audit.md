@@ -414,3 +414,20 @@ Three identical inspections now succeed. A local declaration defined after the
 header remains unavailable there, and the existing out-of-range test still
 fails. The direct Lean suite now covers 22 cases; CLI smoke also repeats the
 import-header inspection three times. All work uses isolated temporary fixtures.
+
+
+## Source-match handoffs use executable locations (i36)
+
+Telemetry 149060/q294509 recommended probing the display label `source match
+at …:2` as a declaration. An isolated regex search reproduced the hint and its
+invalid-focus failure. Searching a line before the first declaration exposed a
+second fabricated subject, `source`, in the next outline hint.
+
+Source groups now point to `search FILE:LINE`; location results point to
+`search FILE outline`. Paths use the existing shell-argument quoting. Replay
+completed regex match → source location → declaration outline. The CLI smoke
+follows both emitted commands through the real parser and checks the final
+declaration, rather than merely checking hint wording.
+
+An additional i35 neighbor audit shifted the import header by a comment and a
+blank line between requests: initial and repeated inspections still succeeded.

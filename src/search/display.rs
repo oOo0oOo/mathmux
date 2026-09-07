@@ -338,9 +338,13 @@ fn append_single_result_hint(output: &mut String, run: &SearchRun, proof_body_re
         ));
     } else if let Some(hit) = run.hits.first() {
         match hit.kind.as_str() {
-            "source-group" | "location" | "location-expanded" => output.push_str(&format!(
-                "\nnext: mathmux probe {} outline",
-                shell_argument(probe_name(&hit.name))
+            "source-group" => output.push_str(&format!(
+                "\nnext: mathmux search {}",
+                shell_argument(&format!("{}:{}", hit.path, hit.line))
+            )),
+            "location" | "location-expanded" => output.push_str(&format!(
+                "\nnext: mathmux search {} outline",
+                shell_argument(&hit.path)
             )),
             "proof-outline" | "declaration-outline" => output.push_str(&format!(
                 "\nnext: mathmux probe {} source",
