@@ -1042,3 +1042,10 @@ Telemetry 150398 and current copied `Group/Basic.lean` plus `.ilean` replay repo
 Explicit generator recovery now accepts bounded, nonnested parenthesized options around the target name. Unnamed generation remains unavailable; no generated name, proof, or signature is inferred. Existing generator labeling and importing-file inspection guidance are preserved.
 
 Validation: 135 search tests pass, including named forms with options and an unnamed negative control. `/tmp/mm-i74-fixed.log` follows the deprecated alias to the correctly labeled generator and original declaration. Initial test assertions were corrected for the existing capitalized label and canonical `_root_` spelling. No formalization workspaces or daemons used.
+
+
+### i75: exclude local statement binders from section previews
+
+The copied-source `ContDiff.clm_apply assumptions` audit displayed ambient `{x : E}` even though the result binds its own `x` in `fun x => ...`. Selected section context now conservatively excludes simple lambda/quantifier-bound names, alongside the existing explicit-binder exclusion. Free function names remain eligible; the preview still makes no completeness or elaboration claim.
+
+Validation: 10 contract tests pass, including lambda, universal and existential binders with a free-function control. `/tmp/mm-i75-fixed.log` removes the irrelevant ambient `x` and preserves both differentiability premises in the original copied-source workflow. No formalization work or daemon touched.

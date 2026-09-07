@@ -262,6 +262,15 @@ fn selected_section_binders(signature: &str, source: Option<&str>) -> Vec<String
     let ambient = source.split_once("\n\n").map_or(source, |(context, _)| context);
     let referenced = identifiers(signature).into_iter().collect::<HashSet<_>>();
     let mut seen = bound_input_names(signature, None);
+    // Local binders in the statement do not refer to ambient variables with
+    // the same spelling. Conservatively omit those names from this preview.
+    static LOCAL_BINDERS: OnceLock<Regex> = OnceLock::new();
+    let locals = LOCAL_BINDERS.get_or_init(|| Regex::new(
+        r"(?:\bfun|∀|∃)\s+([\p{L}\p{N}_' \t]+)\s*(?:=>|↦|,|:)"
+    ).expect("valid local binder regex"));
+    for capture in locals.captures_iter(signature) {
+        seen.extend(identifiers(&capture[1]));
+    }
     let mut commands = Vec::new();
     let mut command = String::new();
     let mut active = false;
@@ -1442,6 +1451,12 @@ mod section_context_tests {
         let bounded = section_context_note(": a+b+c+d+e+f+g+h = 0", Some(many), "Demo.rule");
         assert_eq!(bounded.lines().filter(|l| l.starts_with("context:")).count(), 6);
         assert!(bounded.contains("Additional section binders omitted"));
+        let local_source = "-- ambient context\nvariable {x y : Nat} {g : Nat → Nat}\n\ntheorem rule := by trivial";
+        for signature in [": (fun x => g x) = g", ": ∀ x, g x = 0", ": ∃ x : Nat, g x = 0"] {
+            let selected = selected_section_binders(signature, Some(local_source));
+            assert!(!selected.iter().any(|b| b.starts_with("{x ")));
+            assert!(selected.iter().any(|b| b.starts_with("{g ")));
+        }
         let note = section_context_note(signature, Some(source), "Demo.rule");
         assert!(note.contains("textual, not elaborated"));
         assert!(note.contains("mathmux probe Demo.rule source"));
