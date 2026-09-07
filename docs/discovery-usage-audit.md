@@ -664,3 +664,22 @@ Help is search-v12/probe-v17; no new verbs or index changes.
 All 123 search tests, 8 help tests, and expanded pinned-Lean CLI smoke pass.
 Generic dotted and slash-path replay return identical outlines. The original query
 against a copied Sobolev module returns its 24 declarations and a source handoff.
+
+
+## Regex-result source probes load the complete declaration (i50)
+
+Telemetry 149481/q294837 requested source for a named regex result and received
+only matched lines, labeled as an incomplete excerpt. A generic theorem replay
+reproduced the failure; probing the same declaration by name loaded the full proof.
+The current-file refresh rejected its source-group metadata as a declaration-kind
+mismatch even though the exact declaration name matched.
+
+Named source-group hits now use the same exact-name current-file refresh as generic
+compiled hits. The refreshed kind/signature/body come from the authored declaration.
+Unowned line matches have no matching declaration name and remain excerpts; no
+proof or source completeness is inferred. No verbs, help contract, or index changed.
+The regression fails before the fix; all 123 search tests pass.
+Expanded pinned-Lean CLI smoke passes with a regex-to-qREF-source full-proof
+regression. Generic replay confirms parity with direct-name source; an unowned
+comment control remains an incomplete excerpt. The prior installed dotted-module
+outline fix was independently verified.

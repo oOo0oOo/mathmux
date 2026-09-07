@@ -41,6 +41,8 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
     (root / 'ModuleFixture').mkdir()
     (root / 'ModuleFixture/Facts.lean').write_text('namespace ModuleFixture\ndef first : Nat := 1\nend ModuleFixture\n')
 
+    (root / 'GroupFixture.lean').write_text('namespace GroupFixture\ntheorem target : True := by\n  have useful : True := True.intro\n  exact useful\nend GroupFixture\n')
+
     run(['git', 'add', '.'])
     run(['git', 'commit', '-m', 'fixture'])
     log = open(pathlib.Path(tmp) / 'daemon.log', 'w+')
@@ -80,6 +82,12 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
 
         module_outline = run([binary, 'search', 'ModuleFixture.Facts outline'], ws).stdout
         assert '1 declarations across' in module_outline and 'ModuleFixture.first' in module_outline, module_outline
+
+        grouped = run([binary, 'search', 'GroupFixture.lean /target/'], ws).stdout
+        grouped_ref = next(line.removeprefix('ref: ') for line in grouped.splitlines() if line.startswith('ref: '))
+        full_group = probe(grouped_ref + '#1 source')
+        assert 'source snapshot (textual context; not elaborated)' in full_group, full_group
+        assert 'have useful : True' in full_group and 'exact useful' in full_group, full_group
 
         options = probe('Demo.target source')
         assert 'set_option autoImplicit false' in options, options

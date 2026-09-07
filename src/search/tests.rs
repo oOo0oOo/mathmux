@@ -4443,6 +4443,11 @@ fn generated_index_metadata_does_not_hide_exact_authored_source() {
     assert!(searcher.refresh_probe_source(&workspace, &mut hit).unwrap());
     assert_eq!(hit.kind, "def");
     assert!(hit.source.as_deref().unwrap().contains("def Map :="));
+    hit.kind = "source-group".into();
+    hit.source = Some("> 2 | def Map".into());
+    assert!(searcher.refresh_probe_source(&workspace, &mut hit).unwrap());
+    assert_eq!(hit.kind, "def");
+    assert!(hit.source.as_deref().unwrap().contains("Nat → Nat"));
     hit.name = "Demo.actuallyGenerated".into();
     hit.kind = "generated".into();
     hit.source = None;
