@@ -28,6 +28,8 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
 
     (root / 'HomFixture.lean').write_text('namespace HomFixture\ndef Data := Nat\nabbrev Hom (A B : Type) := A → B\ninfixr:10 " ⟶ " => Hom\ntheorem hom_unique : Subsingleton (Data ⟶ Unit) := inferInstance\nend HomFixture\n')
 
+    (root / 'LocalFixture.lean').write_text('namespace LocalFixture\nlocal instance defaultSeven : Inhabited Nat := ⟨7⟩\ndef chosen : Nat := default\nend LocalFixture\ndef outside : Nat := default\nexample : True := by trivial\n')
+
     run(['git', 'add', '.'])
     run(['git', 'commit', '-m', 'fixture'])
     log = open(pathlib.Path(tmp) / 'daemon.log', 'w+')
@@ -56,6 +58,13 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
             assert args[:2] == ['mathmux', 'search'], next_command
             navigation = run([binary, *args[1:]], ws).stdout
         assert 'Demo.identityValue' in navigation, navigation
+
+        local_source = probe('LocalFixture.chosen source')
+        assert 'local instance declared at source line 2' in local_source, local_source
+        assert 'Inhabited Nat := ⟨7⟩' in local_source, local_source
+        assert 'defaultSeven' not in probe('outside source')
+        reduced = probe('LocalFixture.lean:6 #reduce LocalFixture.chosen')
+        assert '\n7\n' in reduced, reduced
 
         for subject in ['Child', 'InheritedOnly']:
             fields = probe(subject + ' fields')

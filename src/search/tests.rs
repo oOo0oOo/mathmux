@@ -4443,3 +4443,21 @@ fn generated_index_metadata_does_not_hide_exact_authored_source() {
     assert!(!searcher.refresh_probe_source(&workspace, &mut hit).unwrap());
     assert!(hit.source.is_none());
 }
+
+
+#[test]
+fn source_context_retains_local_instances_without_scope_leaks() {
+    let source = "namespace Demo\nlocal instance defaultSeven : Inhabited Nat := ⟨7⟩\ndef chosen : Nat := default\nend Demo\ndef outside : Nat := default\n";
+    let entries = parse_source(source, "Demo");
+    let chosen = entries.iter().find(|entry| entry.name == "Demo.chosen").unwrap();
+    assert!(chosen.body.contains("local instance declared at source line 2"), "{}", chosen.body);
+    assert!(chosen.body.contains("Inhabited Nat := ⟨7⟩"), "{}", chosen.body);
+    assert_eq!(chosen.line, 3);
+    let outside = entries.iter().find(|entry| entry.name == "outside").unwrap();
+    assert!(!outside.body.contains("defaultSeven"));
+    let long = format!("section\nlocal instance longInstance : Inhabited Nat := by\n{}  exact ⟨7⟩\ndef chosen : Nat := default\nend\n", "  skip\n".repeat(20));
+    let entries = parse_source(&long, "Demo");
+    let chosen = entries.iter().find(|entry| entry.name == "chosen").unwrap();
+    assert!(chosen.body.contains("instance preview truncated; inspect source line 2"));
+    assert!(!chosen.body.contains("exact ⟨7⟩"));
+}

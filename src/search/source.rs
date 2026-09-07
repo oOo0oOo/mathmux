@@ -157,7 +157,7 @@ pub(super) fn parse_source_with_limit(
     let matches = declaration.captures_iter(&code).collect::<Vec<_>>();
     let lines = line_starts(source);
     let namespaces = namespaces_by_line(&code);
-    let contexts = ambient_contexts_by_line(&code);
+    let contexts = ambient_contexts_by_line(&code, &matches);
     let mut entries = Vec::new();
     for (index, capture) in matches.iter().enumerate() {
         let complete = capture.get(0).expect("declaration match");
@@ -740,8 +740,43 @@ pub(super) fn namespaces_by_line(source: &str) -> Vec<Vec<String>> {
     result
 }
 
-pub(super) fn ambient_contexts_by_line(source: &str) -> Vec<Vec<String>> {
+fn ambient_contexts_by_line(
+    source: &str,
+    declarations: &[regex::Captures<'_>],
+) -> Vec<Vec<String>> {
     let lines = source.lines().collect::<Vec<_>>();
+    let starts = line_starts(source);
+    let mut local_instances = HashMap::new();
+    for (index, capture) in declarations.iter().enumerate() {
+        let kind = capture.name("kind").expect("declaration kind");
+        let complete = capture.get(0).expect("declaration match");
+        if kind.as_str() != "instance"
+            || !source[complete.start()..kind.start()]
+                .split_whitespace()
+                .any(|word| word == "local")
+        {
+            continue;
+        }
+        let end = declarations
+            .get(index + 1)
+            .and_then(|next| next.get(0))
+            .map_or(source.len(), |next| next.start());
+        let block = declaration_block(&source[complete.start()..end]);
+        let preview = block.lines().take(4).collect::<Vec<_>>().join("\n");
+        let preview = preview.chars().take(500).collect::<String>();
+        let line = offset_line(&starts, kind.start());
+        let mut note =
+            format!("-- local instance declared at source line {line} (textual context)\n");
+        for line in preview.lines() {
+            note.push_str(&format!("-- {line}\n"));
+        }
+        if preview.len() < block.len() {
+            note.push_str(&format!(
+                "-- instance preview truncated; inspect source line {line}\n"
+            ));
+        }
+        local_instances.insert(line, note.trim_end().to_owned());
+    }
     let mut scopes = vec![Vec::<String>::new()];
     let mut local = Vec::<String>::new();
     let mut result = Vec::new();
@@ -770,6 +805,12 @@ pub(super) fn ambient_contexts_by_line(source: &str) -> Vec<Vec<String>> {
         }
         if declaration_regex().is_match(line) {
             local.clear();
+        }
+        if let Some(instance) = local_instances.get(&(index + 1)) {
+            scopes
+                .last_mut()
+                .expect("root context scope")
+                .push(instance.clone());
         }
         if trimmed.starts_with("namespace ") {
             scopes.push(Vec::new());

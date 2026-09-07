@@ -446,3 +446,23 @@ first reproduced the rejection, then exercised a stored result → `probe source
 workflow against a real temporary source file. A generated name absent from
 that same file still receives no invented source. All 114 search tests pass.
 No source-index or help grammar change is required.
+
+
+## Local instances are visible in source context (i38)
+
+Telemetry 149136's source snapshot omitted a local Fact instance visible in
+149138's file range. An isolated Lean fixture made the consequence concrete:
+`local instance defaultSeven : Inhabited Nat := ⟨7⟩` changes a following
+`def chosen : Nat := default` to 7, while the old snapshot showed only the def.
+
+Source context now records local-instance declarations within their lexical
+scope. Each preview is limited to four lines and 500 characters, with the
+original source line and an explicit truncation marker when needed. Previews
+are comments so source navigation cannot mistake them for the selected
+declaration. The existing sixteen-command ambient budget still applies.
+They disappear when their namespace or section ends.
+
+The original replay now shows the value-bearing instance; `find` labels it as
+ambient context. Regressions cover scope exit and long-body truncation, and the
+CLI fixture checks the snapshot alongside Lean reduction to 7. All 115 search
+tests pass. Index version 13 refreshes stored context; help is probe-v16.
