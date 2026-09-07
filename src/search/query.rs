@@ -911,6 +911,14 @@ pub(super) fn missing_hit_terms(hits: &[SearchHit], terms: &[String]) -> Vec<Str
         .collect()
 }
 
+pub(super) fn distributed_coverage_note(hits: &[SearchHit], terms: &[String]) -> Option<String> {
+    (terms.len() >= 2
+        && hits.len() >= 2
+        && uncovered_hit_terms(hits, terms).is_empty()
+        && hits.iter().all(|hit| !uncovered_hit_terms(std::slice::from_ref(hit), terms).is_empty()))
+        .then(|| "query terms are spread across results; no single result matches all terms".into())
+}
+
 pub(super) fn weak_coverage_note(hits: &[SearchHit], terms: &[String]) -> Option<String> {
     let missing = uncovered_hit_terms(hits, terms);
     if missing.is_empty() {

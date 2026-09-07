@@ -4673,3 +4673,17 @@ fn discovery_keeps_public_generated_names_but_filters_hygienic_helpers() {
     let (explicit, _) = rank_discovery_candidates(candidates(), helper, &[], true, None);
     assert!(explicit.iter().any(|c| c.hit.name == helper));
 }
+
+#[test]
+fn distributed_coverage_qualifies_only_disjoint_textual_matches() {
+    let terms = vec!["elliptic".into(), "estimate".into()];
+    let hits = vec![search_hit("Elliptic.symbol"), search_hit("Valuation.estimate")];
+    assert!(distributed_coverage_note(&hits, &terms).unwrap().contains("no single result"));
+    assert_eq!(weak_coverage_note(&hits, &terms), None);
+    assert_eq!(distributed_coverage_note(&[search_hit("Elliptic.estimate")], &terms), None);
+    assert_eq!(distributed_coverage_note(&hits, &["missing".into(), "estimate".into()]), None);
+    let mut documented = hits.clone();
+    documented[0].doc = Some("elliptic estimate".into());
+    assert_eq!(distributed_coverage_note(&documented, &terms), None);
+    assert_eq!(distributed_coverage_note(&hits, &["elliptic".into()]), None);
+}

@@ -935,3 +935,22 @@ broad query and returns the fully specified helper as its single result. The
 replay assertion initially expected a numbered row; single-result rendering has
 no #1 label, so validation checks the actual single-result output instead.
 Remaining file matches are not claimed to answer the missing postcomposition API.
+
+
+## Explain distributed query-term coverage (i66)
+
+Telemetry 150081 searches for an elliptic estimate and receives separate elliptic
+and estimate-related results. A generic two-file fixture reproduces this cold and
+warm. Aggregate coverage intentionally remains complete, but previously supplied
+no qualification that the terms were distributed across individual results.
+
+Discovery now adds one sentence when returned results collectively cover all
+query terms but no individual result does. This is textual matching, not a claim
+about mathematical applicability or nonexistence. Ranking, retrieval and existing
+weak-coverage semantics are unchanged. Exact/name/type requests and alternatives
+are excluded from this qualification. No public verbs, help or index changes.
+
+All 129 search tests pass. Focused cases cover split results, a complete individual
+result, documentation coverage, missing terms and single-term queries. Isolated
+replay verifies the note cold and warm and its absence for exact/alternative
+controls. Formalization files and daemons remain untouched.

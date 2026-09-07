@@ -2434,6 +2434,12 @@ impl Searcher {
                 prepend_search_note(&mut note, coverage);
             }
         }
+        if !type_search && !name_search && explicit_declaration.is_none() && !query.contains('|') {
+            let hits = ranked.iter().map(|candidate| candidate.hit.clone()).collect::<Vec<_>>();
+            if let Some(coverage) = distributed_coverage_note(&hits, &coverage_tokens) {
+                prepend_search_note(&mut note, coverage);
+            }
+        }
         if let Some(fallback) = structural_type_fallback {
             prepend_search_note(&mut note, fallback.into());
         }
