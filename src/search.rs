@@ -711,6 +711,16 @@ impl Searcher {
             "search --all is only for explicit FILE:START-END or FILE:tail reads; use compact discovery, then `mathmux show qREF --all`"
         );
         let query = planned.query.as_str();
+        // A usage request for a recognizable API belongs to the existing
+        // probe dossier, not to lexical refinement by the word "usages".
+        if forced_plan.is_none()
+            && matches!(planned.plan, SearchPlan::Text(TextSearchPlan::ExactFirst))
+            && let Some((anchor, _)) = query.rsplit_once(char::is_whitespace)
+            && query.trim_end().ends_with(" usages")
+            && anchored_api_query(query).is_some()
+        {
+            return self.probe(workspace, cwd, &format!("{} usages", anchor.trim()));
+        }
         let reference = self.state.next_reference(ReferenceKind::Query)?;
         let result = match planned.plan {
             SearchPlan::StoredContext => SearchResult {

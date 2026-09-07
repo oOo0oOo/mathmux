@@ -65,6 +65,11 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         assert 'Neighbor documentation' in doc_range and 'theorem longProof' in doc_range, doc_range
         assert 'identityValue' not in doc_range, doc_range
 
+        usage_search = run([binary, 'search', 'Demo.identityValue usages'], ws).stdout
+        assert 'Demo.identityValue' in usage_search, usage_search
+        assert 'weak coverage' not in usage_search, usage_search
+        assert 'indexed usages' in usage_search or 'used in' in usage_search, usage_search
+
         options = probe('Demo.target source')
         assert 'set_option autoImplicit false' in options, options
         assert 'set_option pp.universes true in' in options, options

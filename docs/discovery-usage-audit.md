@@ -610,3 +610,23 @@ index format, or help contract changed.
 Expanded pinned-Lean CLI smoke passes, including a documentation-start range.
 Original-query replay reports seven crossed declarations without a false owner;
 the neighboring 483-486 range still identifies Homeomorph.ofEqSubtypes correctly.
+
+
+## API usage requests keep their intended target (i47)
+
+Telemetry 149352/q294740 searched `exists_isSubordinate usages` and received
+unrelated declarations plus a missing-usages coverage warning. A current generic
+replay of `Demo.exists_target usages` returned unrelated_usages and a file-body
+match, while `probe Demo.exists_target usages` stayed on the target.
+
+Recognizable API usage requests in the existing exact text-search plan now route
+to that existing probe dossier. Source-file searches and explicit type queries
+retain their own plans. This adds no verbs or probe capability. The exact anchor
+is resolved by the usual probe flow; missing or ambiguous names retain its usual
+outcomes instead of becoming concept searches for usages.
+Help is search-v10/probe-v17; indexes remain valid.
+All 121 search tests, 8 help tests, and expanded pinned-Lean CLI smoke pass.
+Generic cold/warm replay covers the target, missing target, ordinary concept, and
+source-file find controls. Original-query replay against a copied dependency
+returns the two actual exists_isSubordinate candidates with warming uncertainty,
+instead of unrelated quadratic declarations; qualification remains necessary.
