@@ -431,3 +431,18 @@ declaration, rather than merely checking hint wording.
 
 An additional i35 neighbor audit shifted the import header by a comment and a
 blank line between requests: initial and repeated inspections still succeeded.
+
+
+## Authored source survives generated metadata (i37)
+
+Telemetry 149055/q294505 reported current source unavailable for ContMDiffMap.
+The saved hit had kind `generated`, while the source file contains an ordinary
+`def ContMDiffMap`. Generated metadata is a compiled-index fallback category;
+it does not prove the absence of an authored declaration.
+
+Fresh source lookup now permits that category when the normalized, fully
+qualified declaration name exactly matches the parsed source. A regression
+first reproduced the rejection, then exercised a stored result → `probe source`
+workflow against a real temporary source file. A generated name absent from
+that same file still receives no invented source. All 114 search tests pass.
+No source-index or help grammar change is required.

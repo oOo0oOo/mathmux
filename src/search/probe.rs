@@ -1195,7 +1195,8 @@ impl Searcher {
             .into_iter()
             .find(|entry| {
                 entry.name.trim_start_matches("_root_.") == hit.name.trim_start_matches("_root_.")
-                    && (entry.kind == hit.kind || hit.kind == "declaration")
+                    && (entry.kind == hit.kind
+                        || matches!(hit.kind.as_str(), "declaration" | "generated"))
             })
             .or_else(|| source::alias_source_entry(&source, &hit.name))
             .or_else(|| source::explicit_generator_source_entry(&source, &hit.module, &hit.name));

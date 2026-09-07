@@ -4392,3 +4392,54 @@ fn nonrec_declarations_retain_source_and_do_not_extend_previous_body() {
     assert_eq!(target.body, "nonrec theorem target : True := by trivial");
     assert_eq!(entries.iter().find(|e| e.name == "Demo.first").unwrap().body, "def first := 0");
 }
+
+
+#[test]
+fn generated_index_metadata_does_not_hide_exact_authored_source() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("root");
+    let state_dir = directory.path().join("state");
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(&state_dir).unwrap();
+    fs::write(root.join("Demo.lean"), "namespace Demo\ndef Map := { f : Nat → Nat // True }\nend Demo\n").unwrap();
+    let repo = Repo {
+        root: root.clone(),
+        common_git_dir: directory.path().join("git"),
+        state_dir: state_dir.clone(),
+        socket_path: state_dir.join("daemon.sock"),
+        db_path: state_dir.join("state.sqlite3"),
+        search_db_path: state_dir.join("search.sqlite3"),
+        log_path: state_dir.join("daemon.log"),
+        cache_dir: state_dir.join("cache"),
+        integration_lock: state_dir.join("integration.lock"),
+        validation_lock: state_dir.join("validation.lock"),
+        startup_lock: state_dir.join("startup.lock"),
+    };
+    let state = State::new(repo.db_path.clone()).unwrap();
+    let checker = Arc::new(Checker::new(repo.clone(), state.clone(), None).unwrap());
+    let searcher = Searcher::new(repo, state, checker, None).unwrap();
+    let workspace = Workspace {
+        reference: "w1".into(), name: "demo".into(), path: root,
+        branch: "demo".into(), model: None,
+    };
+    let mut hit = search_hit("_root_.Demo.Map");
+    hit.kind = "generated".into();
+    searcher.state.add_workspace(&workspace).unwrap();
+    let reference = searcher.state.next_reference(ReferenceKind::Query).unwrap();
+    searcher.state.add_search(&SearchRun {
+        reference: reference.clone(), workspace_ref: workspace.reference.clone(),
+        query: "Demo.Map".into(), inference: "exact".into(), hits: vec![hit.clone()],
+        note: None, duration_ms: 0, created_at: 0,
+    }).unwrap();
+    let output = searcher.probe(&workspace, &workspace.path, &format!("{reference}#1 source")).unwrap();
+    assert!(output.contains("def Map :="), "{output}");
+    assert!(!output.contains("source unavailable"), "{output}");
+    assert!(searcher.refresh_probe_source(&workspace, &mut hit).unwrap());
+    assert_eq!(hit.kind, "def");
+    assert!(hit.source.as_deref().unwrap().contains("def Map :="));
+    hit.name = "Demo.actuallyGenerated".into();
+    hit.kind = "generated".into();
+    hit.source = None;
+    assert!(!searcher.refresh_probe_source(&workspace, &mut hit).unwrap());
+    assert!(hit.source.is_none());
+}
