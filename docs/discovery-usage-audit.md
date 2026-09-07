@@ -1,4 +1,4 @@
-# Discovery usage audit: probe-v6 through probe-v8
+# Discovery usage audit: probe-v6 through probe-v9
 
 2026-09-07. The operator requested repeated hands-on rounds focused on preventing
 formalization mistakes early. MathMux issues belong in MathMux's tracker and are
@@ -113,3 +113,42 @@ no-match/capped-match responses, and direct/reference find plus outline beyond t
 48-line preview. The expanded pinned-Lean CLI smoke passes. No formalization source
 was changed. The previous probe-v7 development release was independently verified
 before this follow-up was landed.
+
+
+## Four further usage rounds: probe-v9 (MathMux i11–i14)
+
+The next sample used recent fleet source requests e147368/q293331,
+e147366/q293329, and e147499/q293425, plus nearby declaration forms in their
+source modules. All replays used the isolated audit workspace and scratch state.
+
+- **Bare variable commands (i11).** `HasMFDerivAt.comp` and
+  `ContMDiff.mdifferentiable` still lost their fundamental manifold binders because
+  the command was written as `variable` on its own line. The parser now collects
+  the following binders, including comments and whitespace, and keeps such a command
+  out of the preceding declaration body.
+- **Preceding attributes (i12).** `writtenInExtChartAt_model_space` dropped its
+  `@[simp, mfld_simps]` line. Source now includes preceding attributes and reports
+  their actual starting line. Find and outline use that same start, preserving
+  coordinates. This also fixes an old documentation test that attached a nested
+  `to_additive` docstring to the original multiplicative theorem. Source enrichment
+  recognizes an exact canonical name when compiled locations point past attributes.
+- **Alias generators (i13).** `HasFDerivAt.hasMFDerivAt` reported unavailable source,
+  although its alias command explicitly names it. Source now recovers the matching
+  generator and points to its referenced declaration for premises. It does not
+  fabricate an elaborated proof or signature. Exact generated names and namespaces
+  are checked; unknown aliases retain the unavailable-source response.
+- **Nonrec declarations (i14).** A nearby replay of
+  `UniqueMDiffWithinAt.mono_nhds` exposed an unsupported `nonrec` modifier. It is now
+  parsed normally, retaining its source and separating it from its predecessor.
+
+The corrected warm replay recovered the alias generator (scratch q96), all missing
+manifold binders, and the simplifier attributes. Its seven requests took 8–44 ms.
+The nonrec replay also recovered the actual theorem body. Cold index warming was
+allowed to finish before assessing results; the source index advances once for
+this batch. No formalization source was edited or submitted.
+
+Generic regression fixtures cover bare variable commands, attributes and source
+coordinates, nested generated documentation, qualified/multiline aliases, false
+alias matches, and nonrec boundaries. The CLI fixture now puts attributes above a
+long proof and uses a standalone variable command; direct and reference-based
+find/outline still locate the exact final proof line after the preview limit.

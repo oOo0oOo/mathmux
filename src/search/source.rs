@@ -460,7 +460,7 @@ pub(super) fn declaration_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
         Regex::new(
-            r"(?m)^[ \t]*(?:@\[[^\n]*\][ \t]*(?:\n[ \t]*)*)*(?:(?:public|private|protected|noncomputable|unsafe|partial|scoped|local)[ \t]+)*(?P<kind>theorem|lemma|def|abbrev|opaque|axiom|structure|class|inductive|instance)\s+(?:\([ \t]*priority[ \t]*:=[^\n)]*\)[ \t]+)?(?P<name>[\p{L}_][\p{L}\p{N}\p{M}_'.]*)?",
+            r"(?m)^[ \t]*(?:@\[[^\n]*\][ \t]*(?:\n[ \t]*)*)*(?:(?:public|private|protected|noncomputable|nonrec|unsafe|partial|scoped|local)[ \t]+)*(?P<kind>theorem|lemma|def|abbrev|opaque|axiom|structure|class|inductive|instance)\s+(?:\([ \t]*priority[ \t]*:=[^\n)]*\)[ \t]+)?(?P<name>[\p{L}_][\p{L}\p{N}\p{M}_'.]*)?",
         )
         .expect("valid declaration regex")
     })

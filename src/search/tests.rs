@@ -4381,3 +4381,13 @@ fn alias_source_requires_exact_generated_name_and_exposes_origin() {
     let entries = parse_source(source, "Demo");
     assert!(!entries.iter().find(|e| e.name == "Demo.base").unwrap().body.contains("alias"));
 }
+
+#[test]
+fn nonrec_declarations_retain_source_and_do_not_extend_previous_body() {
+    let source = "namespace Demo\ndef first := 0\nnonrec theorem target : True := by trivial\nend Demo\n";
+    let entries = parse_source(source, "Demo");
+    let target = entries.iter().find(|e| e.name == "Demo.target").unwrap();
+    assert_eq!(target.line, 3);
+    assert_eq!(target.body, "nonrec theorem target : True := by trivial");
+    assert_eq!(entries.iter().find(|e| e.name == "Demo.first").unwrap().body, "def first := 0");
+}
