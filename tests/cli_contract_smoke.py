@@ -92,6 +92,12 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         case_recovery = run([binary, 'search', 'FindFixture.lean /[Cc]ompact|[Rr]ellich/'], ws).stdout
         assert 'closest declarations for literals: compact rellich' in case_recovery, case_recovery
 
+        past_end = run([binary, 'search', 'FindFixture.lean:140-187'], ws).stdout
+        assert 'file has 2 lines' in past_end, past_end
+        assert 'mathmux search FindFixture.lean:tail' in past_end, past_end
+        recovered_tail = run([binary, 'search', 'FindFixture.lean:tail'], ws).stdout
+        assert 'def target : Nat := 1' in recovered_tail, recovered_tail
+
         options = probe('Demo.target source')
         assert 'set_option autoImplicit false' in options, options
         assert 'set_option pp.universes true in' in options, options

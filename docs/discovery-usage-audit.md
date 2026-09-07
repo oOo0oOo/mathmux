@@ -699,3 +699,19 @@ The extended regression fails on the old extractor; all 123 search tests pass.
 Expanded pinned-Lean CLI smoke passes. The original regex shape now reports full
 compact/rellich recovery words, and a neighboring genuine case-pair regex still
 returns its exact source match.
+
+
+## Out-of-range reads give a concrete recovery (i52)
+
+Telemetry 149550/q294895 requested lines 140-187 and received only “no source lines
+in range”; the next read guessed 85-132. A generic short-file replay confirms the
+same lack of a useful boundary or handoff.
+
+An empty range now reports the current file's line count and suggests the existing
+FILE:tail read. Empty files say they are empty without suggesting another empty
+read. The earlier stale-workspace/main comparison retains precedence and still
+requests sync. No verbs, help contract, or index changes.
+All 123 search tests, including the existing stale-workspace regression, and
+expanded pinned-Lean CLI smoke pass. Generic short-file read follows the suggested
+tail successfully; empty-file replay has no retry. Installed prior regex recovery
+was independently verified.

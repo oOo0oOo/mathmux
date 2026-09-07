@@ -771,7 +771,14 @@ pub(super) fn source_occurrence_result(
             Some("workspace source is stale; run mathmux sync".into())
         } else if matches.is_empty() {
             Some(if query.terms.is_empty() {
-                "no source lines in range".into()
+                if source_lines == 0 {
+                    "no source lines in range; file is empty".into()
+                } else {
+                    format!(
+                        "no source lines in range; file has {source_lines} lines\nnext: mathmux search {}",
+                        super::shell_argument(&format!("{continuation_path}:tail")),
+                    )
+                }
             } else {
                 "no literal source matches".into()
             })
