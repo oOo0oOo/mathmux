@@ -30,6 +30,8 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
 
     (root / 'LocalFixture.lean').write_text('namespace LocalFixture\nlocal instance defaultSeven : Inhabited Nat := ⟨7⟩\ndef chosen : Nat := default\nend LocalFixture\ndef outside : Nat := default\nexample : True := by trivial\n')
 
+    (root / 'RootFixture.lean').write_text('namespace Outer\ntheorem _root_.Canonical.target : True := by trivial\nend Outer\n')
+
     run(['git', 'add', '.'])
     run(['git', 'commit', '-m', 'fixture'])
     log = open(pathlib.Path(tmp) / 'daemon.log', 'w+')
@@ -84,6 +86,11 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         many_full = run([binary, 'show', many_ref, '--all'], ws).stdout
         assert 'data input M' in many_full and 'additional inputs omitted' not in many_full, many_full
         assert many_full.index('data input n') < many_full.index('data input A'), many_full
+        rooted = probe('Canonical.target source')
+        assert 'theorem _root_.Canonical.target' in rooted, rooted
+        ordinary = probe('_root_.AttributeFixture.simp source')
+        assert 'theorem simp (n : Nat)' in ordinary, ordinary
+
         attribute_signature = probe('AttributeFixture.simp signature')
         assert '(n : Nat) : n = n' in attribute_signature and '] theorem simp' not in attribute_signature, attribute_signature
         short = probe('Demo.identityValue source')

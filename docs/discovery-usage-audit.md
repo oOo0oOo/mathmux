@@ -478,3 +478,20 @@ from the display's probeable-kind list.
 It now receives the existing `probe NAME source` handoff. The exact-summary
 regression reproduced the silent dead end with no signature or source, then
 passed with the new hint. This adds no query syntax or unverified type claims.
+
+
+## Exact source lookup respects root qualification (i40)
+
+The signature-less result in telemetry 149177/q294591 led to an isolated replay
+of the dependency source. After indexing completed, `Continuous.ae_eq_iff_eq`
+was rejected while `_root_.Continuous.ae_eq_iff_eq` succeeded. The miss suggested
+the original failing query. Source metadata existed but the SQL prefilter
+excluded it before the canonical-name matcher could run.
+
+Exact retrieval now canonicalizes the query before the full-text lookup and
+admits either stored root spelling in the qualified SQL comparison. It retains
+namespace restrictions. Regression cases cover both spellings in both
+directions, unrelated namespaces, and a root-only query. All 116 search tests
+pass. The actual source replay now completes search → signature → source with
+its premises present, including on a cold index. The CLI fixture also exercises
+both spelling directions. Existing indexes remain valid; no grammar change.

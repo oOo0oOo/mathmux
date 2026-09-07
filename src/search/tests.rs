@@ -4467,3 +4467,27 @@ fn source_context_retains_local_instances_without_scope_leaks() {
     assert!(chosen.body.contains("instance preview truncated; inspect source line 2"));
     assert!(!chosen.body.contains("exact ⟨7⟩"));
 }
+
+
+#[test]
+fn exact_lookup_canonicalizes_root_prefix_before_sql_filtering() {
+    let connection = Connection::open_in_memory().unwrap();
+    connection.execute_batch("CREATE VIRTUAL TABLE search_fts USING fts5(owner UNINDEXED, origin UNINDEXED, file UNINDEXED, module UNINDEXED, line UNINDEXED, name, kind UNINDEXED, signature, docs, body);").unwrap();
+    for name in ["_root_.Demo.explicitRoot", "Demo.ordinary", "Other.Demo.explicitRoot", "RootOnly", "Other.RootOnly"] {
+        connection.execute("INSERT INTO search_fts VALUES ('workspace:w1', 'Demo.lean', 'Demo.lean', 'Demo', 1, ?1, 'theorem', 'True', '', '')", [name]).unwrap();
+    }
+    let scopes = HashSet::from(["workspace:w1".into()]);
+    for (query, expected) in [
+        ("Demo.explicitRoot", "_root_.Demo.explicitRoot"),
+        ("_root_.Demo.explicitRoot", "_root_.Demo.explicitRoot"),
+        ("Demo.ordinary", "Demo.ordinary"),
+        ("_root_.Demo.ordinary", "Demo.ordinary"),
+        ("_root_.RootOnly", "RootOnly"),
+    ] {
+        connection.execute_batch("DROP TABLE IF EXISTS temp.active_search_scopes").unwrap();
+        let rows = exact_candidates_from_connection(&connection, query, &scopes, 8).unwrap();
+        assert_eq!(rows.iter().map(|row| row.name.as_str()).collect::<Vec<_>>(), vec![expected], "{query}");
+    }
+    connection.execute_batch("DROP TABLE temp.active_search_scopes").unwrap();
+    assert!(exact_candidates_from_connection(&connection, "Missing.explicitRoot", &scopes, 8).unwrap().is_empty());
+}

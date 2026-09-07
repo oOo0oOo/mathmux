@@ -342,8 +342,10 @@ fn exact_candidates_from_connection(
     limit: usize,
 ) -> Result<Vec<IndexedRow>> {
     install_active_scopes(connection, scopes)?;
-    let name_condition = if query.contains('.') {
-        "lower(name) = lower(?2)"
+    let qualified = query.contains('.');
+    let query = canonical_declaration_name(query);
+    let name_condition = if qualified {
+        "(lower(name) = lower(?2) OR lower(name) = ('_root_.' || lower(?2)))"
     } else {
         "(lower(name) = lower(?2)
           OR lower(substr(name, -(length(?2) + 1))) = ('.' || lower(?2)))"
