@@ -3436,7 +3436,8 @@ impl Searcher {
         let Some(row) = rows.into_iter().find(|row| {
             scopes.contains(&row.owner)
                 && row.module == hit.module
-                && row.line == hit.line
+                && (row.line == hit.line
+                    || row.name.trim_start_matches("_root_.") == hit.name.trim_start_matches("_root_."))
                 && row.name.rsplit('.').next() == Some(leaf)
                 && (!row.body.is_empty() || !row.signature.is_empty())
         }) else {

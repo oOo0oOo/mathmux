@@ -4367,3 +4367,17 @@ fn source_keeps_preceding_attributes_with_true_start_line() {
     assert_eq!(value.docs, "Own documentation.");
     assert_eq!(declaration_source_header_offset(&value.body), 0);
 }
+
+#[test]
+fn alias_source_requires_exact_generated_name_and_exposes_origin() {
+    let source = "namespace Demo\ntheorem base : True ↔ True := Iff.rfl\nalias ⟨forward,\n  backward⟩ := base\nalias single := forward\n-- alias fake := base\nend Demo\n";
+    let entry = alias_source_entry(source, "_root_.Demo.backward").unwrap();
+    assert_eq!(entry.line, 3);
+    assert_eq!(entry.body, "alias ⟨forward,\n  backward⟩ := base");
+    assert!(entry.docs.contains("probe base source"));
+    assert!(alias_source_entry(source, "Demo.single").is_some());
+    assert!(alias_source_entry(source, "Other.backward").is_none());
+    assert!(alias_source_entry(source, "Demo.fake").is_none());
+    let entries = parse_source(source, "Demo");
+    assert!(!entries.iter().find(|e| e.name == "Demo.base").unwrap().body.contains("alias"));
+}

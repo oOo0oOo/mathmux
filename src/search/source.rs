@@ -466,6 +466,57 @@ pub(super) fn declaration_regex() -> &'static Regex {
     })
 }
 
+// Aliases have a generator command rather than a separately written proof body.
+// Only recover commands that explicitly name the requested declaration.
+pub(super) fn alias_source_entry(source: &str, requested: &str) -> Option<SourceEntry> {
+    static ALIAS: OnceLock<Regex> = OnceLock::new();
+    let alias = ALIAS.get_or_init(|| Regex::new(
+        r"(?m)^[ \t]*alias[ \t]+(?P<names>⟨[^⟩]+⟩|[\p{L}_][\p{L}\p{N}\p{M}_'.]*)[ \t]*:=[ \t\r\n]*(?P<origin>[\p{L}_][\p{L}\p{N}\p{M}_'.]*)"
+    ).expect("valid alias regex"));
+    let code = mask_comments(source);
+    let starts = line_starts(source);
+    let namespaces = namespaces_by_line(&code);
+    for capture in alias.captures_iter(&code) {
+        let command = capture.get(0)?;
+        let line = offset_line(&starts, command.start());
+        let namespace = namespaces
+            .get(line - 1)
+            .cloned()
+            .unwrap_or_default()
+            .join(".");
+        let names = capture
+            .name("names")?
+            .as_str()
+            .trim_start_matches('⟨')
+            .trim_end_matches('⟩');
+        let matched = names.split(',').map(str::trim).any(|name| {
+            let qualified = if name.starts_with("_root_.") || namespace.is_empty() {
+                name.to_owned()
+            } else {
+                format!("{namespace}.{name}")
+            };
+            name != "_"
+                && qualified.trim_start_matches("_root_.")
+                    == requested.trim_start_matches("_root_.")
+        });
+        if !matched {
+            continue;
+        }
+        let origin = capture.name("origin")?.as_str();
+        return Some(SourceEntry {
+            line: line as u64,
+            name: requested.to_owned(),
+            kind: "alias".into(),
+            signature: String::new(),
+            docs: format!(
+                "Alias generator. Inspect the referenced declaration's premises: mathmux probe {origin} source (relative names use the file's namespace)."
+            ),
+            body: source[command.start()..command.end()].trim().to_owned(),
+        });
+    }
+    None
+}
+
 pub(super) fn declaration_source_header_offset(source: &str) -> usize {
     declaration_regex()
         .find(source)
@@ -529,6 +580,7 @@ pub(super) fn declaration_block(block: &str) -> &str {
                     "include ",
                     "omit ",
                     "attribute ",
+                    "alias ",
                     "@[",
                     "example ",
                     "#check ",

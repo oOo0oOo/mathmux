@@ -1190,13 +1190,16 @@ impl Searcher {
             .find(|entry| {
                 entry.name.trim_start_matches("_root_.") == hit.name.trim_start_matches("_root_.")
                     && (entry.kind == hit.kind || hit.kind == "declaration")
-            });
+            })
+            .or_else(|| source::alias_source_entry(&source, &hit.name));
         let Some(entry) = entry else {
             return Ok(false);
         };
         hit.line = entry.line;
+        if entry.kind != "alias" || hit.signature.is_none() {
+            hit.signature = nonempty(entry.signature);
+        }
         hit.kind = entry.kind;
-        hit.signature = nonempty(entry.signature);
         hit.doc = nonempty(entry.docs);
         hit.source = Some(entry.body);
         Ok(true)

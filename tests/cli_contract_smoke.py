@@ -20,7 +20,7 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
     (root / 'lakefile.toml').write_text('name = "probe_fixture"\nversion = "0.1.0"\n[[lean_lib]]\nname = "Fixture"\n')
     source = 'import Lean\nstructure Impossible where\n  witness : False\ntheorem a_admitted_empty : ¬ Nonempty Impossible := by sorry\ntheorem impossible_empty : ¬ Nonempty Impossible := by\n  intro h\n  cases h with | intro x => exact x.witness\ndef forgetInput (_n : Nat) : Nat := 0\ntheorem needsHypothesis (n : Nat) (h : n = 0) : n + 0 = 0 := by simpa using h\nexample (n : Nat) : n + 0 = 0 := by\n  sorry\n'
     (root / 'Fixture.lean').write_text(source)
-    source_fixture = 'import Lean\nnamespace Demo\nvariable {α : Type}\n    [Inhabited α]\nvariable (α) in\n/-- Own documentation. -/\ndef identityValue : α := default\n\n/-- Neighbor documentation. -/\ntheorem longProof : True := by\n' + ('  -- ' + 'λ' * 250 + '\n') * 70 + '  exact True.intro\nend Demo\n'
+    source_fixture = 'import Lean\nnamespace Demo\nvariable\n  {α : Type}\n    [Inhabited α]\nvariable (α) in\n/-- Own documentation. -/\ndef identityValue : α := default\n\n/-- Neighbor documentation. -/\n@[simp]\ntheorem longProof : True := by\n' + ('  -- ' + 'λ' * 250 + '\n') * 70 + '  exact True.intro\nend Demo\n'
     (root / 'SourceFixture.lean').write_text(source_fixture)
     run(['git', 'add', '.'])
     run(['git', 'commit', '-m', 'fixture'])
@@ -48,7 +48,7 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         assert 'Neighbor documentation.' not in short, short
         assert 'All source snapshot lines shown.' in short, short
         detail = probe('Demo.longProof source')
-        assert 'lines not shown' in detail and 'Continue:' in detail, detail
+        assert 'lines not shown' in detail and 'Continue:' in detail and '@[simp]' in detail, detail
         assert 'λ' * 250 in detail, detail
         source_ref = next(line.removeprefix('ref: ') for line in detail.splitlines() if line.startswith('ref: '))
         full = run([binary, 'show', source_ref, '--all'], ws).stdout
@@ -62,11 +62,11 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         (ws / 'SourceFixture.lean').write_text(source_fixture)
         for query in ['Demo.longProof find exact', source_ref + ' find exact']:
             found = probe(query)
-            assert '   81    exact True.intro' in found, found
+            assert '   83    exact True.intro' in found, found
         found = probe('Demo.longProof find nonexistentNeedle')
         assert 'No literal matches' in found, found
         outline = probe('Demo.longProof outline')
-        assert '   81    exact True.intro' in outline, outline
+        assert '   83    exact True.intro' in outline, outline
         assert 'premises retained' in probe('Impossible assumptions')
         assert 'obstruction candidate' in probe('Impossible evidence')
         detail = probe('Fixture.lean:11 #inspect forgetInput')
