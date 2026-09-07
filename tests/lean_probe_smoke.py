@@ -17,12 +17,13 @@ theorem impossible_empty : ¬ Nonempty Impossible := by
   cases h with | intro x => exact x.witness
 def forgetInput (_n : Nat) : Nat := 0
 theorem admitted_empty : ¬ Nonempty Nat := by sorry
+def implicitInput {α : Type} [Inhabited α] [Subsingleton α] : α := default
 theorem needsHypothesis (n : Nat) (h : n = 0) : n + 0 = 0 := by simpa using h
 example (n : Nat) : n + 0 = 0 := by
   sorry
 '''
 requests = []
-def request(operation, term, line=11):
+def request(operation, term, line=12):
     requests.append(dict(operation=operation, source=source, file_name='ProbeFixture.lean',
                          version=len(requests)+1, line=line, column=0, input=term, names=[]))
 request('inspect', 'impossible_empty')
@@ -40,6 +41,7 @@ request('inspect', 'needsHypothesis')
 request('inspect_evidence', 'impossible_empty')
 request('inspect_evidence', 'admitted_empty')
 request('inspect_evidence', 'needsHypothesis')
+request('inspect', 'implicitInput')
 with tempfile.TemporaryDirectory(prefix='mathmux-lean-probe-') as temp:
     setup = pathlib.Path(temp) / 'setup.json'
     setup.write_text(json.dumps(dict(name='ProbeFixture', package=None, isModule=False,
@@ -72,4 +74,8 @@ with tempfile.TemporaryDirectory(prefix='mathmux-lean-probe-') as temp:
     assert 'sorryAx' in admitted['axioms'], admitted
     ordinary = json.loads(responses[14]['detail'])
     assert ordinary.get('subject') is None and len(ordinary['premises']) == 2, ordinary
-    print('Lean probe smoke: 15 cases passed (obstruction, fields, unused input, axioms, application, small cases, failures, goal isolation, premise roles).')
+    assert responses[15]['ok'], responses[15]
+    assert 'instance input' in responses[15]['detail'], responses[15]
+    assert 'instance assumption' in responses[15]['detail'], responses[15]
+    assert '_hyg' not in responses[15]['detail'] and '._@.' not in responses[15]['detail'], responses[15]
+    print('Lean probe smoke: 16 cases passed (obstruction, fields, unused input, axioms, application, small cases, failures, goal isolation, premise roles).')

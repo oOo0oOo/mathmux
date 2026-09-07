@@ -1195,12 +1195,13 @@ impl Searcher {
                 entry.name.trim_start_matches("_root_.") == hit.name.trim_start_matches("_root_.")
                     && (entry.kind == hit.kind || hit.kind == "declaration")
             })
-            .or_else(|| source::alias_source_entry(&source, &hit.name));
+            .or_else(|| source::alias_source_entry(&source, &hit.name))
+            .or_else(|| source::explicit_generator_source_entry(&source, &hit.module, &hit.name));
         let Some(entry) = entry else {
             return Ok(false);
         };
         hit.line = entry.line;
-        if entry.kind != "alias" || hit.signature.is_none() {
+        if !matches!(entry.kind.as_str(), "alias" | "generator") || hit.signature.is_none() {
             hit.signature = nonempty(entry.signature);
         }
         hit.kind = entry.kind;
@@ -1574,6 +1575,22 @@ fn abbreviation_target(hit: &SearchHit) -> Option<&str> {
 fn render_static_probe_summary(run: &SearchRun, focus: &str) -> String {
     let mut run = run.clone();
     match focus {
+        "constructors" => {
+            if let Some(hit) = run.hits.first().filter(|hit| hit.signature.is_none()) {
+                let name = hit.name.trim_start_matches("_root_.");
+                let fields = name
+                    .strip_suffix(".mk")
+                    .map(|parent| format!("mathmux probe {} fields; ", shell_argument(parent)))
+                    .unwrap_or_default();
+                prepend_search_note(
+                    &mut run.note,
+                    format!(
+                        "Constructor signature is not indexed. Inspect obligations: {fields}mathmux probe FILE:LINE {} in a project file importing it.",
+                        shell_argument(&format!("#inspect {name}"))
+                    ),
+                );
+            }
+        }
         "signature" | "apply" => {
             run.inference = if focus == "signature" {
                 "signature".into()
@@ -2247,6 +2264,65 @@ fn inductive_constructors(name: &str, source: &str) -> Vec<InductiveConstructor>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_generated_source_retains_origin_without_fabricating_signature() {
+        let source = "namespace Demo\n@[simp]\n@[to_additive additive]\ntheorem multiplicative (n : Nat) : n = n := rfl\nend Demo\n";
+        let hit =
+            source::explicit_generator_source_entry(source, "Fixture", "Demo.additive").unwrap();
+        assert_eq!(hit.kind, "generator");
+        assert!(hit.signature.is_empty());
+        assert!(hit.docs.contains("not its generated proof"));
+        assert!(hit.body.contains("theorem multiplicative"));
+        assert!(
+            source::explicit_generator_source_entry(source, "Fixture", "Other.additive").is_none()
+        );
+        assert!(
+            source::explicit_generator_source_entry(
+                "-- @[to_additive additive]\ntheorem multiplicative : True := trivial",
+                "Fixture",
+                "additive"
+            )
+            .is_none()
+        );
+        assert!(
+            source::explicit_generator_source_entry(
+                "@[to_additive]\ntheorem multiplicative : True := trivial",
+                "Fixture",
+                "additive"
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn unsigned_constructor_result_gives_obligation_followup() {
+        let run = SearchRun {
+            reference: "q1".into(),
+            workspace_ref: "w1".into(),
+            query: "Demo.Data.mk".into(),
+            inference: "exact".into(),
+            hits: vec![SearchHit {
+                name: "Demo.Data.mk".into(),
+                kind: "declaration".into(),
+                signature: None,
+                module: "Demo".into(),
+                path: "Demo.lean".into(),
+                line: 1,
+                doc: None,
+                source: None,
+                usages: vec![],
+                applicable: false,
+                required_import: None,
+            }],
+            note: None,
+            duration_ms: 0,
+            created_at: 0,
+        };
+        let detail = render_static_probe_summary(&run, "constructors");
+        assert!(detail.contains("probe Demo.Data fields"), "{detail}");
+        assert!(detail.contains("#inspect Demo.Data.mk"), "{detail}");
+    }
 
     #[test]
     fn dependency_probe_context_explains_project_import_requirement() {

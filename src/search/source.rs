@@ -502,7 +502,7 @@ pub(super) fn alias_source_entry(source: &str, requested: &str) -> Option<Source
         if !matched {
             continue;
         }
-        let origin = capture.name("origin")?.as_str();
+        let origin = shell_argument(capture.name("origin")?.as_str());
         return Some(SourceEntry {
             line: line as u64,
             name: requested.to_owned(),
@@ -513,6 +513,67 @@ pub(super) fn alias_source_entry(source: &str, requested: &str) -> Option<Source
             ),
             body: source[command.start()..command.end()].trim().to_owned(),
         });
+    }
+    None
+}
+
+// Recover only explicitly named generation; never infer transformed names or proofs.
+pub(super) fn explicit_generator_source_entry(
+    source: &str,
+    module: &str,
+    requested: &str,
+) -> Option<SourceEntry> {
+    static GENERATED: OnceLock<Regex> = OnceLock::new();
+    let pattern = GENERATED.get_or_init(|| {
+        Regex::new(
+            r"(?m)^[ \t]*@\[to_additive[ \t]+(?P<name>[\p{L}_][\p{L}\p{N}\p{M}_'.]*)[ \t]*\]",
+        )
+        .expect("valid explicit generator regex")
+    });
+    let namespaces = namespaces_by_line(&mask_comments(source));
+    for mut entry in parse_source_with_limit(source, module, usize::MAX) {
+        if !matches!(entry.kind.as_str(), "theorem" | "lemma" | "def" | "abbrev") {
+            continue;
+        }
+        let masked_body = mask_comments(&entry.body);
+        let Some(declaration) = declaration_regex().captures(&masked_body) else {
+            continue;
+        };
+        let attributes = &entry.body[..declaration.name("kind")?.start()];
+        let code = mask_comments(attributes);
+        let Some(capture) = pattern.captures(&code) else {
+            continue;
+        };
+        let target = capture.name("name")?.as_str();
+        let namespace = namespaces
+            .get(entry.line.saturating_sub(1) as usize)
+            .cloned()
+            .unwrap_or_default()
+            .join(".");
+        // A qualified original name can change attribute namespace resolution.
+        // Leave that case unavailable unless the generated name is explicit too.
+        if !target.contains('.')
+            && entry.name.rsplit_once('.').map_or("", |(prefix, _)| prefix) != namespace
+        {
+            continue;
+        }
+        let qualified = if target.starts_with("_root_.") || namespace.is_empty() {
+            target.to_owned()
+        } else {
+            format!("{namespace}.{target}")
+        };
+        if qualified.trim_start_matches("_root_.") != requested.trim_start_matches("_root_.") {
+            continue;
+        }
+        entry.docs = format!(
+            "Generator source for {requested}, not its generated proof or signature. Original declaration: mathmux probe {} source. Inspect the generated contract in a project context: mathmux probe FILE:LINE {}.",
+            shell_argument(&entry.name),
+            shell_argument(&format!("#inspect {requested}"))
+        );
+        entry.name = requested.to_owned();
+        entry.kind = "generator".into();
+        entry.signature.clear();
+        return Some(entry);
     }
     None
 }

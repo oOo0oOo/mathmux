@@ -168,8 +168,11 @@ def inspectContract (value : Expr) : MetaM String := do
     let mut details := #[]
     for arg in args[:12] do
       let decl ← arg.fvarId!.getDecl
-      let role := if ← isProp decl.type then "proof assumption" else "data input"
-      details := details.push s!"{role} {decl.userName}: {boundedContractText (← ppExpr decl.type).pretty}"
+      let proof ← isProp decl.type
+      let role := if decl.binderInfo.isInstImplicit then
+        if proof then "instance assumption" else "instance input"
+        else if proof then "proof assumption" else "data input"
+      details := details.push s!"{role} {(← ppExpr arg).pretty}: {boundedContractText (← ppExpr decl.type).pretty}"
     if args.size > 12 then details := details.push s!"{args.size - 12} additional inputs omitted"
     details := details.push s!"result: {boundedContractText (← ppExpr result).pretty}"
     if result.isAppOfArity ``Not 1 && (result.getArg! 0).isAppOfArity ``Nonempty 1 then
@@ -192,7 +195,7 @@ def inspectContract (value : Expr) : MetaM String := do
         let mut absent := #[]
         for arg in args[:12] do
           if !body.containsFVar arg.fvarId! then
-            absent := absent.push (← arg.fvarId!.getDecl).userName.toString
+            absent := absent.push (← ppExpr arg).pretty
         return absent
       if !absent.isEmpty then
         lines := lines.push s!"parameters absent from definition body (syntactic only): {String.intercalate ", " absent.toList}"
@@ -216,7 +219,7 @@ def inspectEvidence (value : Expr) : MetaM ContractEvidence := do
   let (subject, conclusion, premises) ← forallTelescope type fun args result => do
     let premises ← args.mapM fun arg => do
       let decl ← arg.fvarId!.getDecl
-      return s!"{decl.userName}: {(← ppExpr decl.type).pretty}"
+      return s!"{(← ppExpr arg).pretty}: {(← ppExpr decl.type).pretty}"
     let mut subject := none
     if result.isAppOfArity ``Not 1 && (result.getArg! 0).isAppOfArity ``Nonempty 1 then
       if let .const head _ := ((result.getArg! 0).getArg! 0).getAppFn then
