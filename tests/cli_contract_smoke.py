@@ -55,6 +55,10 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         inherited_signature = probe('InheritedOnly signature')
         assert 'extends Parent' in inherited_signature and 'generated parent projection' not in inherited_signature.lower(), inherited_signature
 
+        for _ in range(3):
+            imported = probe('ContractFixture.lean:1 #inspect Nat.add')
+            assert 'Nat → Nat → Nat' in imported, imported
+
         constructor = probe('ContractFixture.lean:9 #inspect Child.mk')
         assert 'data input toParent' in constructor and 'proof assumption good' in constructor, constructor
         many = probe('ContractFixture.lean:9 #inspect manyInputs')

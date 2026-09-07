@@ -46,6 +46,9 @@ request('inspect_evidence', 'needsHypothesis')
 request('inspect', 'implicitInput')
 request('inspect', 'defaultProof')
 request('inspect', 'manyInputs')
+for _ in range(3):
+    request('inspect', 'Nat.add', line=1)
+request('inspect', 'manyInputs', line=1)
 with tempfile.TemporaryDirectory(prefix='mathmux-lean-probe-') as temp:
     setup = pathlib.Path(temp) / 'setup.json'
     setup.write_text(json.dumps(dict(name='ProbeFixture', package=None, isModule=False,
@@ -87,4 +90,7 @@ with tempfile.TemporaryDirectory(prefix='mathmux-lean-probe-') as temp:
     assert responses[17]['detail'].find('data input n') < responses[17]['detail'].find('data input A'), responses[17]
     assert 'data input M' in responses[17]['detail'], responses[17]
     assert 'additional inputs omitted' not in responses[17]['detail'], responses[17]
-    print('Lean probe smoke: 18 cases passed (obstruction, fields, unused input, axioms, application, small cases, failures, goal isolation, premise roles).')
+    for response in responses[18:21]:
+        assert response['ok'] and 'Nat → Nat → Nat' in response['detail'], response
+    assert not responses[21]['ok'] and 'Unknown identifier' in str(responses[21]), responses[21]
+    print('Lean probe smoke: 22 cases passed (obstruction, fields, unused input, axioms, application, small cases, failures, goal isolation, premise roles).')

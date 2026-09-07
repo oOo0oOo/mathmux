@@ -132,15 +132,24 @@ partial def contextInSnapshotTree (tree : Language.SnapshotTree) (fileMap : File
       return some ctx
   return none
 
-def contextAtPosition (tree : Language.SnapshotTree) (fileMap : FileMap)
+def contextAtPosition (snapshot : Language.Lean.InitialSnapshot)
     (line column : Nat) : BaseIO (Option (ContextInfo × LocalContext)) := do
   if line == 0 then return none
+  let fileMap := snapshot.ictx.fileMap
   let zeroLine := line - 1
   let start := fileMap.ofPosition {line := zeroLine, column := column - 1}
-  if column > 0 then
-    return ← contextInSnapshotTree tree fileMap start.byteIdx start.byteIdx
-  let stop := fileMap.ofPosition {line := zeroLine + 1, column := 0}
-  contextInSnapshotTree tree fileMap start.byteIdx stop.byteIdx
+  let stop := if column > 0 then start else
+    fileMap.ofPosition {line := zeroLine + 1, column := 0}
+  if let some ctx ← contextInSnapshotTree (Language.toSnapshotTree snapshot) fileMap
+      start.byteIdx stop.byteIdx then
+    return some ctx
+  -- Incrementally reused import headers omit their info tree from the snapshot
+  -- metadata, but retain it in the processed header state. Query its original
+  -- source range; never substitute the final environment for a missing context.
+  let some header := snapshot.result? | return none
+  let some processed := header.processedSnap.get.result? | return none
+  return contextBetweenOffsets processed.cmdState.infoState.trees.toArray
+    start.byteIdx stop.byteIdx
 
 def parseCategory (category : Name) (source : String) : CoreM Syntax := do
   match Parser.runParserCategory (← getEnv) category source with
@@ -324,7 +333,7 @@ def runLocalProbe (snapshot : Language.Lean.InitialSnapshot) (request : Request)
           mvar.withContext do
             (inspectTerm request.operation request.input {}).run' {}
       | none =>
-        let some (ctx, lctx) ← contextAtPosition tree fileMap request.line request.column
+        let some (ctx, lctx) ← contextAtPosition snapshot request.line request.column
           | throw <| IO.userError s!"no elaboration context at {request.file_name}:{request.line}{sourceContextHint request}"
         ctx.runMetaM lctx do
           Meta.withLocalInstances (lctx.decls.toArray.toList.filterMap id) do

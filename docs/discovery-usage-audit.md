@@ -396,3 +396,21 @@ filtering. Individual usage paths continue to show their origin.
 This is a display correction; no indexing or query semantics changed. The
 existing 15 probe tests pass. The earlier source-only fixture did not produce
 compiled usage records, so it is not claimed as an end-to-end usage replay.
+
+
+## Repeated inspection retains import-header context (i35)
+
+Telemetry 149035/q294482 inspected an imported declaration at line 1; the
+identical query 149036/q294483 then lost its elaboration context. Isolated
+installed-CLI replay and direct Lean-service replay reproduced the transition
+on unchanged source. Three inspections of `Nat.add` at an import header went
+from success to two context failures.
+
+Lean's incremental processor retains the header info tree in the processed
+header state while omitting it from reused snapshot metadata. Context lookup
+now falls back to that retained tree using the requested source range. It does
+not substitute the file's final environment or restart/re-elaborate the file.
+Three identical inspections now succeed. A local declaration defined after the
+header remains unavailable there, and the existing out-of-range test still
+fails. The direct Lean suite now covers 22 cases; CLI smoke also repeats the
+import-header inspection three times. All work uses isolated temporary fixtures.
