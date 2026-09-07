@@ -38,6 +38,10 @@ fn mentions(text: &str, name: &str) -> bool {
 /// Top-level declaration result, retaining arrows so hypotheses cannot be
 /// mistaken for a negative conclusion. This is deliberately conservative.
 fn conclusion(signature: &str) -> &str {
+    let signature = signature
+        .strip_prefix("[private]")
+        .unwrap_or(signature)
+        .trim_start();
     let mut depth = 0i32;
     for (i, c) in signature.char_indices() {
         match c {
@@ -214,9 +218,21 @@ fn wrapped_contract_line(label: &str, text: &str) -> String {
 }
 
 fn assumption_signature(signature: &str) -> String {
+    let (visibility, signature) =
+        signature
+            .strip_prefix("[private]")
+            .map_or(("", signature), |signature| {
+                (
+                    "visibility: private; not a public API in importing modules.\n",
+                    signature.trim_start(),
+                )
+            });
     let binders = signature_binders(signature);
     if binders.is_empty() {
-        return wrapped_contract_line("signature (premises retained):", signature);
+        return format!(
+            "{visibility}{}",
+            wrapped_contract_line("signature (premises retained):", signature)
+        );
     }
     let result = conclusion(signature);
     let mut detail = if result == signature.trim() {
@@ -224,6 +240,7 @@ fn assumption_signature(signature: &str) -> String {
     } else {
         wrapped_contract_line("result (indexed):", result)
     };
+    detail.push_str(visibility);
     detail.push_str("signature (premises retained); explicit inputs first:\n");
     for binder in binders.iter().filter(|b| b.starts_with('(')) {
         detail.push_str(&wrapped_contract_line("input:", binder));
@@ -529,7 +546,11 @@ impl Searcher {
                 })
                 .map(|r| {
                     (
-                        10 + if construction_needs_subject(&r.signature, name) {
+                        10 + if r.signature.starts_with("[private]") {
+                            2000
+                        } else {
+                            0
+                        } + if construction_needs_subject(&r.signature, name) {
                             1000
                         } else {
                             0
@@ -572,6 +593,13 @@ impl Searcher {
             "Existing construction candidates for {name}; project selections are advisory.\nRanked by indexed inputs; hidden prerequisites remain. No inhabitability conclusion follows from absence.\nInspect one: mathmux probe {reference}#1 assumptions; test {context} '#check (TERM : EXPECTED_TYPE)'."
         );
         for (index, hit) in hits.iter().enumerate() {
+            if hit
+                .signature
+                .as_deref()
+                .is_some_and(|s| s.starts_with("[private]"))
+            {
+                note.push_str(&format!("\n{reference}#{} is private: inspect its source for a public construction; its displayed name is not a public API in importing modules.", index + 1));
+            }
             if hit
                 .signature
                 .as_deref()
@@ -1068,7 +1096,7 @@ mod tests {
         let state_dir = dir.path().join("state");
         fs::create_dir_all(&root).unwrap();
         fs::create_dir_all(&state_dir).unwrap();
-        fs::write(root.join("Demo.lean"), "namespace Demo\nstructure Data (n : Nat) where\n  value : Fin n\ntheorem impossible (h : n = 0) : ¬ Nonempty (Data n) := by sorry\ndef construct (h : 0 < n) : Data n := sorry\ndef transform (d : Data n) : Data n := d\ntheorem conditional (h : ¬ Nonempty (Data n)) : True := trivial\ninstance : Subsingleton (Data 1) := sorry\nstructure Container where\n  item : Data 1\nend Demo\n").unwrap();
+        fs::write(root.join("Demo.lean"), "namespace Demo\nstructure Data (n : Nat) where\n  value : Fin n\ntheorem impossible (h : n = 0) : ¬ Nonempty (Data n) := by sorry\ndef construct (h : 0 < n) : Data n := sorry\ndef transform (d : Data n) : Data n := d\nprivate def hidden : Data n := sorry\ntheorem conditional (h : ¬ Nonempty (Data n)) : True := trivial\ninstance : Subsingleton (Data 1) := sorry\nstructure Container where\n  item : Data 1\nend Demo\n").unwrap();
         fs::write(root.join("API.lean"), "namespace ContinuousMap\ntheorem const_apply (b : β) (a : α) : const α b a = b := by sorry\nend ContinuousMap\nnamespace Matrix\ntheorem coe_units_inv (A : (Matrix n n R)ˣ) : ↑A⁻¹ = (A⁻¹ : Matrix n n R) := by sorry\nend Matrix\nnamespace Demo\ntheorem callee (A : Matrix n n R) : True := trivial\nend Demo\n").unwrap();
         let repo = Repo {
             root: root.clone(),
@@ -1151,6 +1179,22 @@ mod tests {
             examples.contains("requires an existing Demo.Data input"),
             "{examples}"
         );
+        assert!(
+            examples.find("Demo.transform").unwrap() < examples.find("Demo.hidden").unwrap(),
+            "{examples}"
+        );
+        assert!(
+            examples.contains("is private: inspect its source"),
+            "{examples}"
+        );
+        let private = assumption_signature("[private] (n : Nat) : Data n");
+        assert!(private.contains("visibility: private"), "{private}");
+        assert!(
+            !private.contains("implicit/context: [private]"),
+            "{private}"
+        );
+        assert!(private.contains("input: (n : Nat)"), "{private}");
+
         assert!(
             searcher
                 .input_obstruction_notice(

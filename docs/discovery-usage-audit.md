@@ -226,3 +226,27 @@ chain and checked neighboring source reads. Scratch constructor/field misses
 were still warming and are not evidence of absence; constructor fallback output
 has a focused Rust regression and is checked again after installation. All fixes
 apply to generic Lean/Mathlib usage; no formalization files were edited.
+
+
+## Example usability across module boundaries (i24)
+
+The live workflow q294341 → q294342 → q294343 → q294344 selected the first
+SchwartzMap example, inspected its premises, found an importing module, and ran
+`#check` there. Lean rejected `AtiyahSinger.unitPeriodPoissonOutput`: it is private.
+The assumptions dossier also incorrectly listed `[private]` as implicit context.
+
+Automatic example ranking now prefers public candidates; authored selections keep
+priority and selected private candidates receive explicit source/public-API
+follow-up guidance. Visibility is displayed separately from Lean binders. Metadata
+is stripped before result classification, including private constants with no
+explicit arguments. Generic integration coverage verifies ordering, private
+warnings, preserved real inputs, and concrete input obstruction evidence.
+
+Four isolated replays (`/tmp/mm-round5-replay.out`) confirmed that the SchwartzMap
+result begins with public candidates and that its private implementation has a
+visibility line instead of a fake premise. These public candidates still require
+existing Schwartz maps, which remains explicitly labeled; this is not an initial
+construction claim. No formalization source was edited.
+
+The replacement first candidate also passed a real positioned Lean `#check`
+(q294348), confirming its function type in its project context.
