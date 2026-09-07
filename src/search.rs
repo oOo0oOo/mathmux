@@ -3584,7 +3584,16 @@ impl Searcher {
 }
 
 fn regex_recovery_terms(pattern: &str) -> Vec<String> {
-    let mut terms = pattern
+    static CASE_PAIR: OnceLock<Regex> = OnceLock::new();
+    let case_pair = CASE_PAIR.get_or_init(|| Regex::new(r"\[([A-Za-z])([A-Za-z])\]").unwrap());
+    let normalized = case_pair.replace_all(pattern, |capture: &regex::Captures<'_>| {
+        if capture[1].eq_ignore_ascii_case(&capture[2]) {
+            capture[1].to_ascii_lowercase()
+        } else {
+            capture[0].to_owned()
+        }
+    });
+    let mut terms = normalized
         .split(|character: char| {
             !character.is_alphanumeric() && character != '_' && character != '.'
         })

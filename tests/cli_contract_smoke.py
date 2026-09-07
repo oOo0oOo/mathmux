@@ -89,6 +89,9 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         assert 'source snapshot (textual context; not elaborated)' in full_group, full_group
         assert 'have useful : True' in full_group and 'exact useful' in full_group, full_group
 
+        case_recovery = run([binary, 'search', 'FindFixture.lean /[Cc]ompact|[Rr]ellich/'], ws).stdout
+        assert 'closest declarations for literals: compact rellich' in case_recovery, case_recovery
+
         options = probe('Demo.target source')
         assert 'set_option autoImplicit false' in options, options
         assert 'set_option pp.universes true in' in options, options

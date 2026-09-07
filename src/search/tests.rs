@@ -2440,6 +2440,9 @@ fn bare_lean_paths_require_explicit_source_context() {
 
 #[test]
 fn source_query_regressions() {
+    assert_eq!(regex_recovery_terms("[Cc]ompact|[Rr]ellich|IsCompactOperator"),
+        vec!["IsCompactOperator", "compact", "rellich"]);
+    assert_eq!(regex_recovery_terms("[CR]ompact|[a-z]word"), vec!["ompact", "word"]);
     assert_eq!(edit_distance("compp", "comp"), 1);
     assert_eq!(
         regex_recovery_terms(r"AtiyahSinger\..*pullbackCompHom"),

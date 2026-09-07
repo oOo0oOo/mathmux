@@ -683,3 +683,19 @@ Expanded pinned-Lean CLI smoke passes with a regex-to-qREF-source full-proof
 regression. Generic replay confirms parity with direct-name source; an unowned
 comment control remains an incomplete excerpt. The prior installed dotted-module
 outline fix was independently verified.
+
+
+## Regex case-pair recovery keeps complete words (i51)
+
+Telemetry 149528/q294889 reports fallback literals ompact and ellich for a query
+containing `[Cc]ompact` and `[Rr]ellich`. Isolated replay confirms the same malformed
+recovery terms. This weakens the existing declaration recovery after zero regex hits.
+
+Recovery extraction now normalizes same-letter ASCII case-pair classes to one
+lowercase letter before extracting words. The regex matcher is unchanged; general
+classes and ranges retain their previous recovery behavior. Results remain explicitly
+closest declarations rather than regex matches. No verbs, help contract, or index changed.
+The extended regression fails on the old extractor; all 123 search tests pass.
+Expanded pinned-Lean CLI smoke passes. The original regex shape now reports full
+compact/rellich recovery words, and a neighboring genuine case-pair regex still
+returns its exact source match.
