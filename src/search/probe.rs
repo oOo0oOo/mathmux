@@ -66,6 +66,10 @@ impl ProbeRequest {
         let mut parts = query.split_whitespace();
         let first = parts.next().unwrap();
         let context = parse_context(first);
+        ensure!(
+            context.is_some() || first.starts_with("type:") || !first.contains('\\'),
+            "declaration names require literal characters, not backslash escapes; use the literal apostrophe or Unicode character"
+        );
         if let Some((path, start)) = source_range_context(first) {
             bail!(
                 "source ranges are a search form, not a probe context; use `mathmux search {first}` for source or `mathmux probe {path}:{start} goal` for Lean context"
@@ -2338,6 +2342,14 @@ mod tests {
                 entry.signature
             );
         }
+    }
+
+    #[test]
+    fn declaration_probe_rejects_escaped_names_without_rewriting_them() {
+        let error = ProbeRequest::parse(r"Demo.mono\u0027 source").unwrap_err();
+        assert!(error.to_string().contains("literal characters"));
+        assert!(ProbeRequest::parse("Demo.mono' source").is_ok());
+        assert!(ProbeRequest::parse(r"Demo.lean:3 #check s \ t").is_ok());
     }
 
     #[test]

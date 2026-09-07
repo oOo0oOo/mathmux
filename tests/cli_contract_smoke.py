@@ -71,6 +71,10 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         def probe(q):
             return run([binary, 'probe', q], ws).stdout
 
+        escaped_name = run([binary, 'probe', r'Demo.identityValue\u0027 source'], ws, ok=False)
+        assert escaped_name.returncode and 'literal characters' in escaped_name.stderr, escaped_name
+        assert 'source snapshot' not in escaped_name.stdout, escaped_name.stdout
+
         subscript = run([binary, 'search', 'SubscriptFixture.inv_le_inv₀*'], ws).stdout
         assert 'SubscriptFixture.inv_le_inv₀' in subscript and 'weak coverage' not in subscript, subscript
 

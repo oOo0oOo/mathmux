@@ -850,3 +850,18 @@ All 125 search tests pass, including broad discovery, ordinary private declarati
 and explicit helper requests. Replay of the original artifact now shows module
 context first and still resolves the exact helper name. Full release gates remain
 with the release owner.
+
+
+## Escaped probe names cannot select another theorem (i61)
+
+Telemetry 149819 passes a literal backslash-u0027 suffix and receives the unprimed
+MemLp.mono declaration. Generic replay with differently typed mono and mono-prime
+confirms the incorrect selection. Declaration probes now reject backslash escapes
+before lookup and require literal name characters. They do not decode or rewrite
+an ambiguous selector. Contextual Lean terms and forced type forms remain accepted.
+
+The 125 existing search tests and new focused parser regression pass. Generic
+replay rejects the escaped selector and retrieves the distinct literal primed
+name. CLI regression checks that malformed input returns an error without a source
+snapshot. No new verbs or index changes. This correction concerns declaration
+probe selectors, not source regex syntax. Audit advanced through telemetry149819.
