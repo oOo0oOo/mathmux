@@ -38,6 +38,8 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
 
     (root / 'FindFixture.lean').write_text('-- find a neighborhood\ndef target : Nat := 1\n')
 
+    signature_inputs = ' '.join(f'InputType{i}' for i in range(30))
+    (root / 'SignatureFixture.lean').write_text('def SignatureFixture.longInputs {' + signature_inputs + ' : Type} (n : Nat) : Nat := n\n')
     (root / 'AliasFixture.lean').write_text('namespace AliasFixture\ntheorem current : True := True.intro\n@[deprecated (since := "2026-03-05")] alias old :=\n  current\nend AliasFixture\n')
     (root / 'FileHitFixture.lean').write_text('-- unique file sentinel phrase\nnamespace FileHitFixture\ndef first : Nat := 1\nend FileHitFixture\n')
     (root / 'ModuleFixture').mkdir()
@@ -82,10 +84,17 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
 
         signature_preview = probe('manyInputs signature')
         assert '(n : Nat) : Nat' in signature_preview, signature_preview
-        assert 'Full signature/context: mathmux show ' in signature_preview, signature_preview
+        assert '{A B C D E F G H I J K L M : Type}' in signature_preview, signature_preview
+        assert 'Full signature/context:' not in signature_preview, signature_preview
         signature_ref = next(line.removeprefix('ref: ') for line in signature_preview.splitlines() if line.startswith('ref: '))
         signature_full = run([binary, 'show', signature_ref, '--all'], ws).stdout
         assert '{A B C D E F G H I J K L M : Type}' in signature_full, signature_full
+
+        long_signature = probe('SignatureFixture.longInputs signature')
+        assert '(n : Nat) : Nat [context: 1 implicit/typeclass]' in long_signature, long_signature
+        long_ref = next(line.removeprefix('ref: ') for line in long_signature.splitlines() if line.startswith('ref: '))
+        assert f'Full signature/context: mathmux show {long_ref} --all' in long_signature, long_signature
+        assert signature_inputs in run([binary, 'show', long_ref, '--all'], ws).stdout
 
         notation = run([binary, 'search', 'NotationFixture.positiveValue'], ws).stdout
         assert '(x : {n : Nat // n > 0}) : Nat' in notation, notation

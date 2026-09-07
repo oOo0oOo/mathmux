@@ -85,7 +85,11 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
                 output.push_str(&compact_signature_preview(signature));
             } else if run.inference == "signature" {
                 let complete = single_line(signature);
-                let preview = truncate_line(&compact_signature_preview(signature), 240);
+                let preview = if complete.chars().count() <= 240 {
+                    complete.clone()
+                } else {
+                    truncate_line(&compact_signature_preview(signature), 240)
+                };
                 shortened_signature |= preview != complete;
                 output.push_str(&preview);
             } else {

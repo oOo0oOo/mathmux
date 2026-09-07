@@ -767,3 +767,20 @@ help changes. All 123 search tests and expanded pinned-Lean CLI smoke pass.
 Both the generic CLI fixture and copied original workflow model a compiled alias
 hit in isolated stored results, then follow source recovery to the origin. They
 do not claim source-only indexing generates aliases or that Mathlib was recompiled.
+
+
+## Preserve complete signatures when they fit (i56)
+
+Following telemetry 149629-149641 through the convex integral and average theorems
+exposed an i54 regression: compaction hid IsProbabilityMeasure even though the
+complete signature fit the existing 240-character budget. The average theorem's
+IsFiniteMeasure and NeZero assumptions were similarly unnecessary omissions.
+
+Signature probes now retain the complete signature whenever it fits. Only longer
+signatures use context compaction and the full-context handoff. The same copied
+workflow displays all three measure assumptions immediately; the neighboring long
+compact-operator theorem still exposes explicit hypotheses and conclusion.
+All 123 search tests pass. CLI coverage checks both full short inputs and a long
+implicit-input signature whose handoff retrieves every stored input. No verbs,
+index or help changes. The audit advanced through telemetry 149641; source probes
+retain ambient assumptions and comment searches remain labeled source matches.
