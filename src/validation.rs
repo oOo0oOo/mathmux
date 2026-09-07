@@ -731,6 +731,7 @@ mod tests {
                 validation_status: ValidationStatus::Queued,
                 validation_detail: None,
                 build_output: None,
+                build_summary: None,
                 axioms: Vec::new(),
                 sorries: Vec::new(),
                 validation_duration_ms: None,

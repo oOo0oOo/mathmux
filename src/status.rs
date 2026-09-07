@@ -1214,6 +1214,7 @@ mod tests {
             validation_status: status.parse().unwrap(),
             validation_detail: detail.map(str::to_owned),
             build_output: None,
+            build_summary: None,
             axioms: Vec::new(),
             sorries: Vec::new(),
             validation_duration_ms: None,

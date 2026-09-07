@@ -10,6 +10,8 @@ use crate::reference::{Reference, ReferenceKind};
 use crate::util::{now_unix_ms, run_output};
 
 mod display;
+mod build_logs;
+pub use build_logs::BuildLogSummary;
 use display::{render_check_run, render_search_run, render_submission};
 
 const SEARCH_HISTORY_LIMIT: i64 = 50_000;
@@ -163,6 +165,8 @@ pub struct Submission {
     pub validation_status: ValidationStatus,
     pub validation_detail: Option<String>,
     pub build_output: Option<String>,
+    #[serde(default)]
+    pub build_summary: Option<BuildLogSummary>,
     pub axioms: Vec<String>,
     pub sorries: Vec<String>,
     pub validation_duration_ms: Option<u64>,
@@ -388,6 +392,10 @@ impl State {
                 validation_duration_ms INTEGER,
                 validated_by TEXT,
                 created_at INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS build_log_summaries (
+                submission_ref TEXT PRIMARY KEY REFERENCES submissions(ref),
+                summary_json TEXT NOT NULL
              );
              CREATE INDEX IF NOT EXISTS submissions_validation
                 ON submissions(validation_status, created_at);
@@ -1006,7 +1014,8 @@ impl State {
             .query_row(
                 "SELECT ref, workspace_ref, workspace_commit, main_commit, base_commit, checks_json,
                         validation_status, validation_detail, build_output, axioms_json,
-                        sorries_json, validation_duration_ms, validated_by, created_at
+                        sorries_json, validation_duration_ms, validated_by, created_at,
+                        (SELECT summary_json FROM build_log_summaries WHERE submission_ref = submissions.ref)
                  FROM submissions WHERE ref = ?1",
                 [reference],
                 submission_from_row,
@@ -1047,7 +1056,8 @@ impl State {
             .query_row(
                 "SELECT ref, workspace_ref, workspace_commit, main_commit, base_commit, checks_json,
                         validation_status, validation_detail, build_output, axioms_json,
-                        sorries_json, validation_duration_ms, validated_by, created_at
+                        sorries_json, validation_duration_ms, validated_by, created_at,
+                        (SELECT summary_json FROM build_log_summaries WHERE submission_ref = submissions.ref)
                  FROM submissions WHERE ref = ?1",
                 [reference],
                 submission_from_row,
@@ -1061,7 +1071,8 @@ impl State {
         let mut statement = connection.prepare(
             "SELECT ref, workspace_ref, workspace_commit, main_commit, base_commit, checks_json,
                     validation_status, validation_detail, build_output, axioms_json,
-                    sorries_json, validation_duration_ms, validated_by, created_at
+                    sorries_json, validation_duration_ms, validated_by, created_at,
+                        (SELECT summary_json FROM build_log_summaries WHERE submission_ref = submissions.ref)
              FROM submissions WHERE validation_status IN ('queued', 'running')
              ORDER BY CASE validation_status WHEN 'running' THEN 0 ELSE 1 END,
                       created_at, CAST(substr(ref, 2) AS INTEGER)",
@@ -1090,7 +1101,8 @@ impl State {
             .query_row(
                 "SELECT ref, workspace_ref, workspace_commit, main_commit, base_commit, checks_json,
                         validation_status, validation_detail, build_output, axioms_json,
-                        sorries_json, validation_duration_ms, validated_by, created_at
+                        sorries_json, validation_duration_ms, validated_by, created_at,
+                        (SELECT summary_json FROM build_log_summaries WHERE submission_ref = submissions.ref)
                  FROM submissions WHERE ref = ?1",
                 [reference],
                 submission_from_row,
@@ -1131,7 +1143,8 @@ impl State {
             .query_row(
                 "SELECT ref, workspace_ref, workspace_commit, main_commit, base_commit, checks_json,
                         validation_status, validation_detail, build_output, axioms_json,
-                        sorries_json, validation_duration_ms, validated_by, created_at
+                        sorries_json, validation_duration_ms, validated_by, created_at,
+                        (SELECT summary_json FROM build_log_summaries WHERE submission_ref = submissions.ref)
                  FROM submissions WHERE validation_status = 'queued'
                  ORDER BY created_at DESC,
                           CAST(substr(ref, 2) AS INTEGER) DESC
@@ -1161,7 +1174,9 @@ impl State {
     pub fn finish_validation(&self, reference: &str, report: &ValidationReport) -> Result<()> {
         let _write_guard = self.write_guard();
         let status = if report.passed { "passed" } else { "failed" };
-        self.open()?.execute(
+        let mut connection = self.open()?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
             "UPDATE submissions
              SET validation_status = ?2, validation_detail = ?3, build_output = ?4,
                  axioms_json = ?5, sorries_json = ?6, sorry_audit_version = ?7,
@@ -1170,7 +1185,7 @@ impl State {
             params![
                 reference,
                 status,
-                report.detail,
+                crate::util::enriched_validation_detail(Some(&report.detail), Some(&report.build_output)),
                 report.build_output,
                 serde_json::to_string(&report.axioms)?,
                 serde_json::to_string(&report.sorries)?,
@@ -1178,6 +1193,12 @@ impl State {
                 report.duration_ms,
             ],
         )?;
+        transaction.execute("INSERT INTO build_log_summaries VALUES (?1, ?2)
+            ON CONFLICT(submission_ref) DO UPDATE SET summary_json = excluded.summary_json",
+            params![reference, serde_json::to_string(&BuildLogSummary::from_output(&report.build_output))?])?;
+        transaction.commit()?;
+        drop(_write_guard);
+        self.prune_build_logs()?;
         Ok(())
     }
 
@@ -1610,6 +1631,7 @@ fn submission_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Submission> 
         validation_status: row.get(6)?,
         validation_detail: row.get(7)?,
         build_output: row.get(8)?,
+        build_summary: row.get::<_, Option<String>>(14)?.map(|s| serde_json::from_str(&s)).transpose().map_err(|e| rusqlite::Error::FromSqlConversionFailure(14, Type::Text, Box::new(e)))?,
         axioms: json_column(row, 9)?,
         sorries: json_column(row, 10)?,
         validation_duration_ms: row.get(11)?,
@@ -1825,6 +1847,7 @@ mod tests {
                     validation_status: ValidationStatus::Passed,
                     validation_detail: None,
                     build_output: None,
+                    build_summary: None,
                     axioms: Vec::new(),
                     sorries: Vec::new(),
                     validation_duration_ms: Some(1),
@@ -2134,6 +2157,7 @@ mod tests {
             checks: vec!["c1".into()],
             validation_status: ValidationStatus::Passed,
             validation_detail: Some("build passed; axioms clean (1 modules)".into()),
+            build_summary: None,
             build_output: Some(
                 "warning: first warning\n  detail\nwarning: second warning\n  detail".into(),
             ),
@@ -2196,6 +2220,7 @@ mod tests {
                 validation_status: ValidationStatus::Passed,
                 validation_detail: None,
                 build_output: None,
+                build_summary: None,
                 axioms: Vec::new(),
                 sorries: Vec::new(),
                 validation_duration_ms: Some(1),
@@ -2222,6 +2247,7 @@ mod tests {
                     validation_status: status.parse().unwrap(),
                     validation_detail: None,
                     build_output: None,
+                    build_summary: None,
                     axioms: Vec::new(),
                     sorries: Vec::new(),
                     validation_duration_ms: Some(1),
@@ -2309,6 +2335,7 @@ mod tests {
                 validation_status: ValidationStatus::Queued,
                 validation_detail: None,
                 build_output: None,
+                build_summary: None,
                 axioms: Vec::new(),
                 sorries: Vec::new(),
                 validation_duration_ms: None,
@@ -2346,6 +2373,7 @@ mod tests {
                     validation_status: ValidationStatus::Queued,
                     validation_detail: None,
                     build_output: None,
+                    build_summary: None,
                     axioms: Vec::new(),
                     sorries: Vec::new(),
                     validation_duration_ms: None,
@@ -2414,6 +2442,7 @@ mod tests {
                 validation_status: ValidationStatus::Queued,
                 validation_detail: None,
                 build_output: None,
+                build_summary: None,
                 axioms: Vec::new(),
                 sorries: Vec::new(),
                 validation_duration_ms: None,

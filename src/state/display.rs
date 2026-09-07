@@ -403,6 +403,15 @@ pub(super) fn render_submission(
     {
         output.push_str(&format!("\n{detail}"));
     }
+    if submission.build_output.is_none()
+        && let Some(summary) = &submission.build_summary
+    {
+        output.push_str(&format!("\nbuild warnings: {}\nraw build output expired; retained diagnostic summary (original {} bytes)", summary.warnings, summary.original_bytes));
+        if !summary.diagnostics.is_empty() {
+            output.push_str("\noutput summary:\n");
+            output.push_str(&summary.diagnostics);
+        }
+    }
     if let Some(build_output) = &submission.build_output
         && !build_output.trim().is_empty()
     {

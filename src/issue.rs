@@ -333,6 +333,8 @@ fn default_issue_path(data_home: Option<&Path>) -> Result<PathBuf> {
 }
 
 impl TelemetryStore {
+    pub(crate) fn database_path(&self) -> &Path { &self.path }
+
     pub fn global() -> Result<Self> {
         let issues = IssueStore::global()?;
         Self::new(issues.path)
@@ -368,11 +370,7 @@ impl TelemetryStore {
         Ok(before.saturating_sub(after) as usize)
     }
 
-    pub(crate) fn checkpoint(&self) -> Result<()> {
-        let connection = open_db(&self.path)?;
-        connection.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()))?;
-        Ok(())
-    }
+
 
     fn migrate(&self) -> Result<()> {
         if let Some(parent) = self.path.parent() {

@@ -206,16 +206,24 @@ pub(crate) fn run_gc(
         }
     }
 
-    let (search_rows, telemetry_rows) = if dry_run {
-        (0, 0)
+    let mut database_notes = Vec::new();
+    let (search_rows, telemetry_rows, build_logs) = if dry_run {
+        for path in [&repo.db_path, &repo.search_db_path] {
+            database_notes.push(database_compaction(path, true, 64 * 1024 * 1024)?);
+        }
+        (0, 0, 0)
     } else {
         let search_rows = state.prune_search_history()?;
         let telemetry = TelemetryStore::global_for_repo(repo)?;
         let telemetry_rows = telemetry.prune_history()?;
-        checkpoint(&repo.db_path)?;
-        checkpoint(&repo.search_db_path)?;
-        telemetry.checkpoint()?;
-        (search_rows, telemetry_rows)
+        let build_logs = state.prune_build_logs()?;
+        for path in [&repo.db_path, &repo.search_db_path, telemetry.database_path()] {
+            match database_compaction(path, false, 64 * 1024 * 1024) {
+                Ok(note) => database_notes.push(note),
+                Err(error) => database_notes.push(format!("SQLite {}: compaction not completed: {error:#}", path.display())),
+            }
+        }
+        (search_rows, telemetry_rows, build_logs)
     };
 
     let action = if dry_run {
@@ -270,9 +278,10 @@ pub(crate) fn run_gc(
         output.push_str("\nhistory: unchanged by dry run");
     } else {
         output.push_str(&format!(
-            "\nsearch history rows pruned: {search_rows}\ntelemetry rows pruned: {telemetry_rows}\nSQLite: passive checkpoint complete"
+            "\nsearch history rows pruned: {search_rows}\ntelemetry rows pruned: {telemetry_rows}\nraw build logs expired: {build_logs}"
         ));
     }
+    for note in database_notes { output.push_str(&format!("\n{note}")); }
     if hard && !dry_run {
         let removed = hard_plan
             .unregistered_worktrees
@@ -638,14 +647,33 @@ fn in_use_lean_service_generations(repo: &Repo) -> impl Iterator<Item = String> 
     generations.into_iter()
 }
 
-fn checkpoint(path: &Path) -> Result<()> {
-    if !path.is_file() {
-        return Ok(());
+fn database_compaction(path: &Path, dry_run: bool, min_free_bytes: u64) -> Result<String> {
+    if !path.is_file() { return Ok(format!("SQLite {}: absent", path.display())); }
+    let connection = Connection::open_with_flags(path, if dry_run {
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+    } else { rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE })?;
+    connection.busy_timeout(Duration::from_secs(5))?;
+    let page_size: u64 = connection.query_row("PRAGMA page_size", [], |r| r.get(0))?;
+    let pages: u64 = connection.query_row("PRAGMA page_count", [], |r| r.get(0))?;
+    let free: u64 = connection.query_row("PRAGMA freelist_count", [], |r| r.get(0))?;
+    let free_bytes = free * page_size;
+    let compact = free_bytes >= min_free_bytes && (free >= pages / 10 || free_bytes >= 1024 * 1024 * 1024);
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    if dry_run {
+        return Ok(format!("SQLite {name}: {} free pages{}", format_bytes(free_bytes), if compact { "; would compact" } else { "; below compaction threshold" }));
     }
-    let connection = Connection::open(path)?;
-    connection.busy_timeout(std::time::Duration::from_secs(60))?;
-    connection.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()))?;
-    Ok(())
+    if !compact {
+        connection.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()))?;
+        return Ok(format!("SQLite {name}: checkpointed; {} free pages (below compaction threshold)", format_bytes(free_bytes)));
+    }
+    ensure!(fs2::available_space(path.parent().context("database has no parent")?)? >= pages.saturating_mul(page_size).saturating_mul(2),
+        "insufficient temporary disk space for compaction");
+    let before = size_many(&database_paths(&[&path.to_path_buf()]))?;
+    connection.execute_batch("VACUUM")?;
+    let busy: i64 = connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))?;
+    let after = size_many(&database_paths(&[&path.to_path_buf()]))?;
+    Ok(format!("SQLite {name}: compacted; {} reclaimed{}", format_bytes(before.saturating_sub(after)),
+        if busy != 0 { "; WAL truncation deferred by active connections" } else { "" }))
 }
 
 fn database_paths(databases: &[&PathBuf]) -> Vec<PathBuf> {
@@ -1062,4 +1090,22 @@ mod tests {
             .expect_err("missing root should not be visited");
         assert!(tolerate_missing::<()>(Err(error)).unwrap().is_none());
     }
+    #[test]
+    fn gc_compacts_free_pages_and_dry_run_preserves_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("compact.db");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE items (id INTEGER PRIMARY KEY, data BLOB); INSERT INTO items VALUES(1, zeroblob(1048576)),(2, zeroblob(1048576)); DELETE FROM items WHERE id=2; PRAGMA wal_checkpoint(TRUNCATE)").unwrap();
+        connection.execute_batch("CREATE VIRTUAL TABLE terms USING fts5(value); INSERT INTO terms(rowid, value) VALUES(42, 'retained theorem');").unwrap();
+        let before = fs::metadata(&path).unwrap().len();
+        assert!(database_compaction(&path, true, 1).unwrap().contains("would compact"));
+        assert_eq!(fs::metadata(&path).unwrap().len(), before);
+        assert!(database_compaction(&path, false, 1).unwrap().contains("compacted"));
+        assert!(fs::metadata(&path).unwrap().len() < before);
+        assert_eq!(connection.query_row("SELECT length(data) FROM items WHERE id=1", [], |r| r.get::<_, i64>(0)).unwrap(), 1048576);
+        assert_eq!(connection.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0)).unwrap(), "ok");
+        assert_eq!(connection.query_row("SELECT rowid FROM terms WHERE terms MATCH 'theorem'", [], |r| r.get::<_, i64>(0)).unwrap(), 42);
+        assert!(database_compaction(&path, false, 1).unwrap().contains("below compaction threshold"));
+    }
+
 }

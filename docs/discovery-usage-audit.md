@@ -1084,3 +1084,11 @@ Validation: 137 search tests pass, including stored-coordinate/note assertions a
 Telemetry 150849 and 150862 showed source-prefix misuse. Current isolated replay confirmed `source FILE` searches the literal word `source` and returned an unhelpful miss. Empty searches for this sole term now offer the existing `FILE:outline` command. Successful literal matches and other missing terms are unchanged; no grammar is added.
 
 Validation: 138 search tests pass, including successful literal-source and unrelated-miss controls. `/tmp/mm-i80-replay.log` verifies the original miss and suggested outline, which returns 35 declarations from copied dependency source.
+
+### i81: bound raw validation logs and reclaim SQLite free pages
+
+Operator storage audit found 16.6 GiB in submission records (recent raw build output averaged 10.36 MiB) and 2.08 GiB of free search-database pages. Completed validation now preserves a compact structured summary and expires raw logs outside the latest 10 completed submissions plus latest 10 failures, with a combined 256 MiB raw-log ceiling. Oversized logs can expire even within that window. Certification fields, commits, duration, axioms and sorry evidence remain unchanged; expired logs are explicit in `show`. Summaries retain warning counts, original size and at most roughly 8 KiB of diagnostic context. An additive summary table supports legacy submissions; GC backfills them one log/transaction at a time before expiry.
+
+Normal and hard GC both enforce retention, then compact state, search and telemetry databases when free pages total at least 64 MiB and either 10% of pages or 1 GiB. Smaller databases only checkpoint. Dry runs inspect free pages without compacting; estimates exclude space newly freed by retention. No new idle-system gate or CLI syntax is added. Compaction checks temporary disk headroom, reports failures instead of undoing completed cleanup, and reports deferred WAL truncation when readers prevent it.
+
+Validation covers legacy summaries and metadata, latest/failure windows, automatic expiry after validation, byte ceilings, UTF-8 diagnostic bounds, dry-run immutability, SQLite integrity, and FTS rowid/search preservation through compaction.
