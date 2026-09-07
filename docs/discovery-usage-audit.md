@@ -1117,3 +1117,10 @@ Validation: 29 pinned-Lean service cases pass, including seven new applied/wrapp
 The Lean-evidence audit reproduced `by sorry` and `by exact True.intro` returning the same `solved` response. Tactic probes now inspect discharged goal assignments with the shared expression-provenance collector and label any transitive sorryAx dependency ADMITTED. Normal solved results and remaining-goal output retain their existing behavior. This includes use of an admitted theorem, not merely the spelling of a tactic. No source edits or new verbs; probe-v19 documents the distinction.
 
 Validation: 32 pinned-Lean service cases pass, including direct admission, an admitted theorem and a genuine proof. `/tmp/mm-admission-replay.py` checks both result classes through the actual CLI in an isolated project.
+
+
+### i85: require assigned proofs before reporting solved
+
+A generic custom-tactic replay (`run_tac Lean.Elab.Tactic.setGoals []`) emptied the tactic goal list without assigning the proof, yet the service reported solved. Completion now checks instantiated original proof terms for unresolved metavariables and returns INCOMPLETE if any remain. This complements admission detection without classifying tactics by their names.
+
+Validation: 33 pinned-Lean service cases pass, including the unassigned-proof regression, admitted proofs and a genuine solved control. Probe-v20 documents the result distinction; no new syntax.

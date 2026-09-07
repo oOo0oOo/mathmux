@@ -352,6 +352,8 @@ def runLocalProbe (snapshot : Language.Lean.InitialSnapshot) (request : Request)
           if remaining.isEmpty then
             for original in mvars do
               let proof ← instantiateMVars (mkMVar original)
+              if proof.hasMVar then
+                return "INCOMPLETE: no active tactic goals, but the proof still contains unresolved metavariables."
               let (axioms, _) ← expressionProvenance proof (← inferType proof)
               if axioms.contains ``sorryAx then
                 return "ADMITTED: goals discharged using sorryAx; this is not a completed proof."

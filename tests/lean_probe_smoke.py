@@ -61,6 +61,7 @@ example (h : False) : True := by
 """
 for term in ['(unsafeResult 0)', '(wrapped 0)', 'h', 'hidden', '(Nat.succ 0)', '(False.elim h : Nat)', '(id (by sorry : Nat))']:
     request('inspect', term, line=8)
+request('tactic', 'run_tac Lean.Elab.Tactic.setGoals []', line=8)
 request('tactic', 'sorry', line=8)
 request('tactic', 'exact admittedTruth', line=8)
 request('tactic', 'exact True.intro', line=8)
@@ -120,6 +121,7 @@ with tempfile.TemporaryDirectory(prefix='mathmux-lean-probe-') as temp:
     assert 'local assumption' not in response['detail'], response
     response = responses[provenance_start + 6]
     assert response['ok'] and 'sorryAx' in response['detail'] and 'ADMITTED' in response['detail'], response
+    assert responses[-4]['ok'] and 'INCOMPLETE' in responses[-4]['detail'], responses[-4]
     for response in responses[-3:-1]:
         assert response['ok'] and 'ADMITTED' in response['detail'], response
     assert responses[-1]['ok'] and responses[-1]['detail'] == 'solved', responses[-1]
