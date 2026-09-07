@@ -401,6 +401,7 @@ fn is_probeable_declaration(hit: &SearchHit) -> bool {
         "abbrev"
             | "class"
             | "def"
+            | "declaration"
             | "generated"
             | "inductive"
             | "instance"

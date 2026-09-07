@@ -466,3 +466,15 @@ The original replay now shows the value-bearing instance; `find` labels it as
 ambient context. Regressions cover scope exit and long-body truncation, and the
 CLI fixture checks the snapshot alongside Lean reduction to 7. All 115 search
 tests pass. Index version 13 refreshes stored context; help is probe-v16.
+
+
+## Generic compiled declarations retain a source handoff (i39)
+
+Telemetry 149151/q294572 and 149167/q294582 returned an exact declaration name
+and path without its signature or a next action. The stored kind was
+`declaration`, the compiled index's generic fallback. That valid kind was absent
+from the display's probeable-kind list.
+
+It now receives the existing `probe NAME source` handoff. The exact-summary
+regression reproduced the silent dead end with no signature or source, then
+passed with the new hint. This adds no query syntax or unverified type claims.

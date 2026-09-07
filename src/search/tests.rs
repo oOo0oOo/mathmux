@@ -1227,7 +1227,7 @@ fn compact_search_summary_suggests_a_targeted_probe() {
 
 #[test]
 fn exact_search_summary_is_signature_only_and_has_probe_next_action() {
-    let summary = render_summary(&SearchRun {
+    let mut run = SearchRun {
         reference: "q-exact".into(),
         workspace_ref: "w1".into(),
         query: "Demo.target".into(),
@@ -1248,11 +1248,17 @@ fn exact_search_summary_is_signature_only_and_has_probe_next_action() {
         note: None,
         duration_ms: 1,
         created_at: 0,
-    });
+    };
+    let summary = render_summary(&run);
     assert!(summary.contains("_root_.Demo.target : Nat → Nat"));
     assert!(!summary.contains("source:"));
     assert!(!summary.contains(":= id"));
     assert!(summary.contains("next: mathmux probe Demo.target source"));
+    run.hits[0].kind = "declaration".into();
+    run.hits[0].signature = None;
+    run.hits[0].source = None;
+    let summary = render_summary(&run);
+    assert!(summary.contains("next: mathmux probe Demo.target source"), "{summary}");
 }
 
 #[test]
