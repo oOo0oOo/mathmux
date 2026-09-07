@@ -315,7 +315,11 @@ def inspectTerm (operation source : String) : Term.TermElabM String := do
 def evalTacticText (source : String) : Tactic.TacticM Unit := do
   let stx ← parseCategory `term s!"by {source}"
   match stx with
-  | `(term| by $tactics:tacticSeq) => Tactic.evalTactic tactics
+  | `(term| by $tactics:tacticSeq) =>
+    Tactic.tryCatch (Tactic.evalTactic tactics) fun error => do
+      throwLoggedErrors
+      throw error
+    throwLoggedErrors
   | _ => throwError "invalid tactic sequence"
 
 def probeFailure (detail : String) (version : Nat) : Response :=

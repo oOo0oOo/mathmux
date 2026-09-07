@@ -1131,3 +1131,10 @@ Validation: 33 pinned-Lean service cases pass, including the unassigned-proof re
 Telemetry 151256 suggested a SchwartzMap derivative API first for an explicitly TemperedDistribution query; the agent selected the second, same-namespace `_apply` completion in 151257. A generic Demo/Other fixture reproduced the wrong first suggestion in the current CLI and a failing unit test. Existing bounded single-suffix completions now rank ahead of cross-namespace leaf matches. The same helper governs eligibility and ranking, preserving exact resolution, retrieval bounds and all other tie-breakers.
 
 Validation: 101 search tests pass, including namespace, suffix-bound and exact-repair neighbors. `/tmp/mm-qualified-replay.py` checks cold/repeated fallback ordering and the exact signature handoff. The isolated fixture remained in index-warming state during bounded polling; no warm-index timing claim is made. No new syntax or additional candidate classes.
+
+
+### i87: retain Lean's logged tactic error before abort
+
+The evidence audit reproduced `exact ?_` returning only `internal exception abortTactic`, while a type-mismatch control retained useful detail. Tactic evaluation now uses Lean's non-backtracking catch to expose the error log before propagating an exception; the normal catch restored state and discarded the message. Successful evaluation also checks for logged errors. Failure remains failure, with its original Lean context and goal.
+
+Validation: 35 pinned-Lean cases pass, including placeholder detail, ordinary mismatch and a subsequent genuine proof to check isolation. `/tmp/mm-error-replay.py` verifies actual CLI failure detail and successful follow-up. No public syntax/help/index change.
