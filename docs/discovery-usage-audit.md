@@ -1124,3 +1124,10 @@ Validation: 32 pinned-Lean service cases pass, including direct admission, an ad
 A generic custom-tactic replay (`run_tac Lean.Elab.Tactic.setGoals []`) emptied the tactic goal list without assigning the proof, yet the service reported solved. Completion now checks instantiated original proof terms for unresolved metavariables and returns INCOMPLETE if any remain. This complements admission detection without classifying tactics by their names.
 
 Validation: 33 pinned-Lean service cases pass, including the unassigned-proof regression, admitted proofs and a genuine solved control. Probe-v20 documents the result distinction; no new syntax.
+
+
+### i86: respect explicit namespaces when ranking name completions
+
+Telemetry 151256 suggested a SchwartzMap derivative API first for an explicitly TemperedDistribution query; the agent selected the second, same-namespace `_apply` completion in 151257. A generic Demo/Other fixture reproduced the wrong first suggestion in the current CLI and a failing unit test. Existing bounded single-suffix completions now rank ahead of cross-namespace leaf matches. The same helper governs eligibility and ranking, preserving exact resolution, retrieval bounds and all other tie-breakers.
+
+Validation: 101 search tests pass, including namespace, suffix-bound and exact-repair neighbors. `/tmp/mm-qualified-replay.py` checks cold/repeated fallback ordering and the exact signature handoff. The isolated fixture remained in index-warming state during bounded polling; no warm-index timing claim is made. No new syntax or additional candidate classes.

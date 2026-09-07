@@ -420,6 +420,18 @@ fn indexed_candidate(
     }
 }
 
+fn same_namespace_completion(query: &str, name: &str) -> bool {
+    let query = canonical_declaration_name(query);
+    let name = canonical_declaration_name(name);
+    let leaf = query.rsplit('.').next().unwrap_or(query);
+    name.strip_prefix(query).is_some_and(|suffix| {
+        query.contains('.') && suffix.strip_prefix('_').is_some_and(|tail| {
+            !tail.is_empty() && !tail.contains(['_', '.'])
+                && suffix.chars().count() <= leaf.chars().count()
+        })
+    })
+}
+
 fn rank_near_name_rows(query: &str, rows: Vec<IndexedRow>) -> Vec<Candidate> {
     let leaf = query.rsplit('.').next().unwrap_or(query).to_lowercase();
     let mut suggestions = rows
@@ -445,20 +457,13 @@ fn rank_near_name_rows(query: &str, rows: Vec<IndexedRow>) -> Vec<Candidate> {
             }
             // A single same-namespace suffix is a completion, not a typo.
             // Keep it bounded and suggestion-only; never relax exact resolution.
-            let query = canonical_declaration_name(query);
-            name.strip_prefix(query).is_some_and(|suffix| {
-                query.contains('.')
-                    && suffix.strip_prefix('_').is_some_and(|tail| {
-                        !tail.is_empty()
-                            && !tail.contains(['_', '.'])
-                            && suffix.chars().count() <= leaf.chars().count()
-                    })
-            })
+            same_namespace_completion(query, name)
         })
         .collect::<Vec<_>>();
     suggestions.sort_by(|left, right| {
-        left.0
-            .cmp(&right.0)
+        same_namespace_completion(query, &right.3)
+            .cmp(&same_namespace_completion(query, &left.3))
+            .then_with(|| left.0.cmp(&right.0))
             .then_with(|| left.1.cmp(&right.1))
             .then_with(|| left.2.cmp(&right.2))
             .then_with(|| left.3.cmp(&right.3))

@@ -4852,3 +4852,13 @@ fn literal_source_miss_offers_outline_without_changing_matches() {
         if text.contains("source") { assert!(!result.hits.is_empty()); }
     }
 }
+
+#[test]
+fn qualified_completion_precedes_other_namespace_leaf() {
+    let hits = rank_near_name_rows("Demo.derivCLM_apply", vec![
+        indexed_row("Other.derivCLM_apply"),
+        indexed_row("Demo.derivCLM_apply_apply"),
+    ]);
+    assert_eq!(hits[0].hit.name, "Demo.derivCLM_apply_apply");
+    assert_eq!(hits[1].hit.name, "Other.derivCLM_apply");
+}
