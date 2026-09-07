@@ -4543,3 +4543,19 @@ fn declaration_spans_exclude_following_docs_and_commands() {
     assert_eq!(enclosing_declaration_span(&spans, 1002).unwrap().name, "long");
     assert!(enclosing_declaration_span(&spans, 1003).is_none());
 }
+
+#[test]
+fn source_find_selector_is_not_a_literal_search_term() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(directory.path().join("Find.lean"), "-- find a neighborhood\ndef target := 1\n").unwrap();
+    for (query, expected) in [
+        ("Find.lean find target", vec!["target"]),
+        ("Find.lean find find", vec!["find"]),
+        ("Find.lean find", vec!["find"]),
+        ("Find.lean 'find' target", vec!["find", "target"]),
+        ("Find.lean target find", vec!["target", "find"]),
+    ] {
+        let parsed = parse_source_occurrence_query(directory.path(), directory.path(), None, query).unwrap().unwrap();
+        assert_eq!(parsed.terms, expected, "{query}");
+    }
+}

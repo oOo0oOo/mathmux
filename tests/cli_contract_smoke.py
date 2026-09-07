@@ -36,6 +36,8 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
 
     (root / 'NotationFixture.lean').write_text('namespace NotationFixture\ndef positiveValue (x : {n : Nat // n > 0}) : Nat := x.val\nend NotationFixture\n')
 
+    (root / 'FindFixture.lean').write_text('-- find a neighborhood\ndef target : Nat := 1\n')
+
     run(['git', 'add', '.'])
     run(['git', 'commit', '-m', 'fixture'])
     log = open(pathlib.Path(tmp) / 'daemon.log', 'w+')
@@ -69,6 +71,9 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         assert 'Demo.identityValue' in usage_search, usage_search
         assert 'weak coverage' not in usage_search, usage_search
         assert 'indexed usages' in usage_search or 'used in' in usage_search, usage_search
+
+        find_result = run([binary, 'search', 'FindFixture.lean find missing_token_xyz'], ws).stdout
+        assert 'no results' in find_result, find_result
 
         options = probe('Demo.target source')
         assert 'set_option autoImplicit false' in options, options

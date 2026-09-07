@@ -464,10 +464,14 @@ pub(super) fn parse_source_occurrence_query(
         _ => 0,
     };
     let target = parts[target_index];
+    let find_selector = parts.get(target_index + 1) == Some(&"find")
+        && parts.get(target_index + 2).is_some();
     let terms = parts
         .iter()
         .enumerate()
-        .filter(|(index, _)| *index != target_index)
+        .filter(|(index, _)| {
+            *index != target_index && !(find_selector && *index == target_index + 1)
+        })
         .map(|(_, part)| *part)
         .flat_map(|part| part.split('|'))
         .map(|term| term.trim_matches(['\'', '"']))

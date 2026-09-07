@@ -630,3 +630,20 @@ Generic cold/warm replay covers the target, missing target, ordinary concept, an
 source-file find controls. Original-query replay against a copied dependency
 returns the two actual exists_isSubordinate candidates with warming uncertainty,
 instead of unrelated quadratic declarations; qualification remains necessary.
+
+
+## Source find selectors do not create false matches (i48)
+
+Telemetry 149377/q294756 searched a file for tsupport_sum using `FILE find TERM`
+and returned comments containing “find a neighbourhood”. The parser treated find
+as a literal OR term. Current copied-dependency replay reproduced both false lines.
+
+An unquoted find immediately after the source target and before another term now
+acts as the selector. A lone find, quoted find, and a later find term stay literal.
+The requested terms otherwise retain their existing matching rules. The regression
+fails on the old parser and covers each distinction. Help documents `[find] TERMS`
+as search-v11/probe-v17; no new verbs or index changes.
+All 122 search tests, 8 help tests, and expanded pinned-Lean CLI smoke pass.
+Original dependency-copy replay now reports no literal source matches for the
+absent term; a real theorem query matches its declaration and lone find retains
+the comment matches. Installed prior API-usage routing independently passes.
