@@ -4728,3 +4728,19 @@ fn glob_suffix_retry_requires_retrieved_declaration_evidence() {
     non_decl[0].hit.name = "_private.Demo.tsupport_lineDerivOp_subset".into();
     assert_eq!(declaration_glob_suffix_retry(&non_decl, "tsupport.*lineDeriv"), None);
 }
+
+#[test]
+fn near_names_merge_root_aliases_and_keep_signature() {
+    let plain = indexed_row("Demo.subset_closedBall");
+    let mut rich = indexed_row("_root_.Demo.subset_closedBall");
+    rich.signature = "(h : IsBounded s) (c : α) : ∃ r, s ⊆ closedBall c r".into();
+    let other = indexed_row("Other.subset_closedBall");
+    let neighbor = indexed_row("Demo.subset_closedBall_lt");
+    let hits = rank_near_name_rows("Demo.subset_closedBal", vec![plain, rich, other, neighbor]);
+    assert_eq!(hits.len(), 3);
+    let same = hits.iter().filter(|c| canonical_declaration_name(&c.hit.name) == "Demo.subset_closedBall").collect::<Vec<_>>();
+    assert_eq!(same.len(), 1);
+    assert!(same[0].hit.signature.as_deref().unwrap().contains("IsBounded"));
+    assert!(hits.iter().any(|c| c.hit.name == "Other.subset_closedBall"));
+    assert!(hits.iter().any(|c| c.hit.name == "Demo.subset_closedBall_lt"));
+}

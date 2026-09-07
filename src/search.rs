@@ -422,6 +422,45 @@ fn indexed_candidate(
     }
 }
 
+fn rank_near_name_rows(query: &str, rows: Vec<IndexedRow>) -> Vec<Candidate> {
+    let leaf = query.rsplit('.').next().unwrap_or(query).to_lowercase();
+    let mut suggestions = rows
+        .into_iter()
+        .filter(|row| !matches!(row.kind.as_str(), "file" | "imports"))
+        .map(|row| {
+            let candidate_leaf = row.name.rsplit('.').next().unwrap_or(&row.name);
+            let distance = edit_distance(&leaf, &candidate_leaf.to_lowercase());
+            let same_owner = query
+                .rsplit_once('.')
+                .is_some_and(|(owner, _)| row.module.eq_ignore_ascii_case(owner));
+            (
+                std::cmp::Reverse(qualified_suffix_segments(query, &row.name)),
+                distance,
+                !same_owner,
+                canonical_declaration_name(&row.name).to_owned(),
+                compact_ranked_hit(row),
+            )
+        })
+        .filter(|(_, distance, _, _, _)| *distance <= leaf.len().max(4) / 2)
+        .collect::<Vec<_>>();
+    suggestions.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.cmp(&right.1))
+            .then_with(|| left.2.cmp(&right.2))
+            .then_with(|| left.3.cmp(&right.3))
+            .then_with(|| right.4.hit.signature.is_some().cmp(&left.4.hit.signature.is_some()))
+    });
+    let mut seen = HashSet::new();
+    suggestions
+        .into_iter()
+        .filter_map(|(_, _, _, _, candidate)| {
+            seen.insert(canonical_declaration_name(&candidate.hit.name).to_owned()).then_some(candidate)
+        })
+        .take(3)
+        .collect()
+}
+
 fn declaration_glob_candidates_from_connection(
     connection: &Connection,
     query: &str,
@@ -2824,40 +2863,7 @@ impl Searcher {
         // Exact misses must stay bounded: FTS prefix retrieval avoids scanning every
         // indexed declaration just to find a few typo/near-name candidates.
         let rows = near_name_prefix_candidates(&connection, &leaf)?;
-        let mut suggestions = rows
-            .into_iter()
-            .filter(|row| !matches!(row.kind.as_str(), "file" | "imports"))
-            .map(|row| {
-                let candidate_leaf = row.name.rsplit('.').next().unwrap_or(&row.name);
-                let distance = edit_distance(&leaf, &candidate_leaf.to_lowercase());
-                let same_owner = query
-                    .rsplit_once('.')
-                    .is_some_and(|(owner, _)| row.module.eq_ignore_ascii_case(owner));
-                (
-                    std::cmp::Reverse(qualified_suffix_segments(query, &row.name)),
-                    distance,
-                    !same_owner,
-                    row.name.clone(),
-                    compact_ranked_hit(row),
-                )
-            })
-            .filter(|(_, distance, _, _, _)| *distance <= leaf.len().max(4) / 2)
-            .collect::<Vec<_>>();
-        suggestions.sort_by(|left, right| {
-            left.0
-                .cmp(&right.0)
-                .then_with(|| left.1.cmp(&right.1))
-                .then_with(|| left.2.cmp(&right.2))
-                .then_with(|| left.3.cmp(&right.3))
-        });
-        let mut seen = HashSet::new();
-        Ok(suggestions
-            .into_iter()
-            .filter_map(|(_, _, _, _, candidate)| {
-                seen.insert(candidate.hit.name.clone()).then_some(candidate)
-            })
-            .take(3)
-            .collect())
+        Ok(rank_near_name_rows(query, rows))
     }
 
     fn finish_exact(

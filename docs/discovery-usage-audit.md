@@ -997,3 +997,12 @@ Telemetry 150200–150226 contains empty declaration-pattern searches. A current
 Search now offers the trailing-star retry only after a name-pattern miss and only when an already retrieved declaration matches that extension. Single patterns already ending in `*`, alternatives, files, private/compiler helpers, and unsupported extensions produce no new hint. Matching semantics, retrieval, successful output, and public verbs are unchanged. The recovery matcher compiles once per eligible query.
 
 Validation: 131 search tests pass, including evidence/empty/alternative/private/file controls. Fresh isolated replay (`/tmp/mm-i69-final.log`) preserves warming uncertainty, returns the retry on the original miss, retrieves the two declarations with the suggested query, and follows the selected declaration to its full source assumptions. A successful exact-ending pattern and unrelated `smulLeftCLM.*lineDeriv` miss remain unchanged. Debug replay timings after compiling once were comparable to baseline (213 ms versus 222 ms for the warmed original query); these are observations, not a benchmark claim. No formalization workspace or daemon was used.
+
+
+### i70: deduplicate rooted near-name suggestions
+
+Telemetry 150314 showed the same `Bornology.IsBounded.subset_closedBall` declaration twice in a three-slot suggestion list, once unsigned and once with its source signature under `_root_`. A current isolated copy of `Bounded.lean` and its `.ilean` reproduces both the original partial-name query and a one-character typo (`/tmp/mm-bound-name.log`).
+
+Near-name ranking now uses the canonical declaration name for ordering and deduplication, preferring a signature-bearing row among otherwise tied representations. Distinct namespaces and neighboring names remain distinct. Retrieval limits, exact resolution, warming uncertainty, and public verbs are unchanged.
+
+Validation: 132 search tests pass, including a rooted/artifact/source duplicate fixture with distinct-namespace and neighboring-name controls. Fresh copied-source/artifact replay (`/tmp/mm-i70-fixed.log`) returns one signature-bearing suggestion per declaration for both original and typo queries, then retains full source context and exact leaf lookup. The compound-name recovery from i68 also passes (`/tmp/mm-i70-neighbor.log`). Formalization files and daemons were untouched.
