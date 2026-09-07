@@ -1056,3 +1056,10 @@ Validation: 10 contract tests pass, including lambda, universal and existential 
 Telemetry 150568–150573 showed a guessed `OrthonormalBasis.repr_apply` followed by two long source ranges to reach `repr_apply_apply`. Current-build isolated copied-source replay still omitted that declaration: its extra `_apply` exceeded the typo edit-distance cutoff. Near-name ranking now also admits one underscore-delimited suffix in the explicitly requested namespace, bounded by the requested leaf length. It remains a non-exact suggestion; retrieval limits, three-suggestion budget, exact resolution, and public grammar are unchanged.
 
 Validation: all 136 search tests pass, including root-qualified spelling and unrelated namespace, nested-name, multi-suffix, and oversized-suffix controls. Cold/warm replay now surfaces the theorem and the signature handoff succeeds, preserving `⟪b i, v⟫`; the neighboring refined search remains unchanged. Evidence: `/tmp/mm-basis-recovery-current.log`, `/tmp/mm-i76-fixed.log`. The fixture uses copied dependency sources, not a formalization workspace or daemon.
+
+
+### i77: skip unavailable-source detours for missing signatures
+
+Telemetry 150689–150691 showed `HasCompactSupport.mono signature` directing an agent to unavailable generated source before offering Lean inspection. Missing-signature responses now give the importing-file `#inspect` route immediately and retain source as optional textual context. No declaration type or generated proof is inferred; file-outline guidance and indexed signatures are unchanged.
+
+Validation: 17 probe tests pass; the missing-signature regression checks both routes and their order. Isolated copied-source/artifact replay `/tmp/mm-i77-replay.log` confirms the generated declaration gets the direct inspection route and the authored multiplicative theorem keeps its existing complete signature.

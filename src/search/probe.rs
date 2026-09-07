@@ -1707,7 +1707,8 @@ fn render_static_probe_summary(run: &SearchRun, focus: &str) -> String {
             )
         } else {
             format!(
-                "Signature is not indexed; inspect textual context: mathmux probe {} source",
+                "Signature is not indexed; inspect the contract in an importing project file: mathmux probe FILE:LINE {}\nTextual context, when available: mathmux probe {} source",
+                shell_argument(&format!("#inspect {name}")),
                 shell_argument(name)
             )
         };
@@ -2442,6 +2443,8 @@ mod tests {
         let output = render_static_probe_summary(&run, "signature");
         assert!(output.contains("Signature is not indexed"), "{output}");
         assert!(output.contains("mathmux probe Demo.target source"), "{output}");
+        assert!(output.contains("mathmux probe FILE:LINE \"#inspect Demo.target\""), "{output}");
+        assert!(output.find("#inspect").unwrap() < output.find("Demo.target source").unwrap());
         let mut file = run.clone();
         file.hits[0].kind = "file".into();
         file.hits[0].path = "Demo Facts.lean".into();
