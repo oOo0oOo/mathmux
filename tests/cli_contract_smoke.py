@@ -38,6 +38,7 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
 
     (root / 'FindFixture.lean').write_text('-- find a neighborhood\ndef target : Nat := 1\n')
 
+    (root / 'FileHitFixture.lean').write_text('-- unique file sentinel phrase\nnamespace FileHitFixture\ndef first : Nat := 1\nend FileHitFixture\n')
     (root / 'ModuleFixture').mkdir()
     (root / 'ModuleFixture/Facts.lean').write_text('namespace ModuleFixture\ndef first : Nat := 1\nend ModuleFixture\n')
 
@@ -82,6 +83,14 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
 
         module_outline = run([binary, 'search', 'ModuleFixture.Facts outline'], ws).stdout
         assert '1 declarations across' in module_outline and 'ModuleFixture.first' in module_outline, module_outline
+
+        file_hit = run([binary, 'search', 'unique file sentinel phrase'], ws).stdout
+        file_ref = next(line.removeprefix('ref: ') for line in file_hit.splitlines() if line.startswith('ref: '))
+        file_signature = probe(file_ref + '#1 signature')
+        assert 'File result has no declaration signature' in file_signature, file_signature
+        assert 'mathmux search FileHitFixture.lean outline' in file_signature, file_signature
+        file_outline = run([binary, 'search', 'FileHitFixture.lean outline'], ws).stdout
+        assert 'FileHitFixture.first' in file_outline, file_outline
 
         grouped = run([binary, 'search', 'GroupFixture.lean /target/'], ws).stdout
         grouped_ref = next(line.removeprefix('ref: ') for line in grouped.splitlines() if line.startswith('ref: '))

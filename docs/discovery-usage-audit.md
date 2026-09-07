@@ -715,3 +715,19 @@ All 123 search tests, including the existing stale-workspace regression, and
 expanded pinned-Lean CLI smoke pass. Generic short-file read follows the suggested
 tail successfully; empty-file replay has no retry. Installed prior regex recovery
 was independently verified.
+
+
+## File signature probes select declarations instead (i53)
+
+Telemetry 149593 probes the signature of q294903#1, a file fallback with no
+signature. A later source probe reads the whole module. Isolated comment-match
+replay reproduces the current misleading “Signature is not indexed” message and
+whole-file source handoff.
+
+A single file hit now explicitly has no declaration signature and directs the
+agent to the existing file outline, where named declarations can be selected.
+Unsigned declaration hits retain their source recovery; signed hits retain their
+signature. No verbs, help contract, or index changes. The extended renderer
+regression includes a quoted path; all 123 search tests pass. Generic replay
+follows the outline to the actual declaration. The CLI regression exercises the
+comment-only file hit and its outline handoff in an isolated fixture.

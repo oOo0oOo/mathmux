@@ -1690,13 +1690,18 @@ fn render_static_probe_summary(run: &SearchRun, focus: &str) -> String {
         && let Some(hit) = run.hits.first().filter(|hit| hit.signature.is_none())
     {
         let name = hit.name.trim_start_matches("_root_.");
-        prepend_search_note(
-            &mut run.note,
+        let guidance = if hit.kind == "file" {
+            format!(
+                "File result has no declaration signature; choose a declaration: mathmux search {} outline",
+                shell_argument(&hit.path)
+            )
+        } else {
             format!(
                 "Signature is not indexed; inspect textual context: mathmux probe {} source",
                 shell_argument(name)
-            ),
-        );
+            )
+        };
+        prepend_search_note(&mut run.note, guidance);
     }
     render_summary_without_hints(&run)
 }
@@ -2419,6 +2424,14 @@ mod tests {
         let output = render_static_probe_summary(&run, "signature");
         assert!(output.contains("Signature is not indexed"), "{output}");
         assert!(output.contains("mathmux probe Demo.target source"), "{output}");
+        let mut file = run.clone();
+        file.hits[0].kind = "file".into();
+        file.hits[0].path = "Demo Facts.lean".into();
+        let output = render_static_probe_summary(&file, "signature");
+        assert!(output.contains("File result has no declaration signature"), "{output}");
+        assert!(output.contains("mathmux search \"Demo Facts.lean\" outline"), "{output}");
+        assert!(!output.contains("not indexed"), "{output}");
+        assert!(!output.contains("mathmux probe"), "{output}");
         let mut signed = run;
         signed.hits[0].signature = Some("Nat".into());
         let output = render_static_probe_summary(&signed, "signature");
