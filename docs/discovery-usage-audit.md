@@ -1070,3 +1070,10 @@ Validation: 17 probe tests pass; the missing-signature regression checks both ro
 Telemetry 150752 motivated a generic cross-API replay: searching `extendValue coefficientAction` returned a file excerpt first, individual definitions second/third, and the theorem whose statement connected both fourth. When overall coverage ties, unqualified multiword searches now prefer declarations covering every requested word in their name/signature over matches relying on file body or surrounding context. Qualified queries retain their existing ranking; no retrieval, output-budget, or grammar changes.
 
 Validation: 137 search tests pass including a connecting-statement regression. `/tmp/mm-i78-replay-0.log` shows the theorem first cold/warm and exact-name/signature followups intact. `/tmp/mm-i78-neighbor-final.log` verifies the existing qualified basis query ranking is preserved. An initial broader tie-break changed that neighbor, so final scope excludes qualified queries.
+
+
+### i79: give tail fallback a real source coordinate
+
+Historical point navigation beyond EOF (150806) motivated an isolated replay: `Facts.lean:99` on a six-line file displayed the tail while retaining nonexistent line 99 in the result. Point-source results now store the actual last line and explain the requested line and file length. Existing source notes are preserved; valid point requests and explicit tail requests are unchanged.
+
+Validation: 137 search tests pass, including stored-coordinate/note assertions added to the location regression. `/tmp/mm-i79-replay.log` verifies the original out-of-range request, valid theorem location, and explicit tail. No new syntax or formalization workspace use.

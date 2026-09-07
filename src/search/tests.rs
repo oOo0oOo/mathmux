@@ -3060,6 +3060,13 @@ fn source_only_location_results_are_successful() {
     assert_eq!(result.inference, "source-only");
     assert_eq!(result.note.as_deref(), Some("source only"));
     assert_eq!(result.hits[0].name, "target");
+    let beyond = SourceLocation { path: location.path.clone(), display_path: None, line: 99, tail: false, expanded: false };
+    let tail = source_location_result(&workspace, &beyond,
+        "def before := true\ndef target := true\n", Some("source only"), true);
+    assert_eq!(tail.hits[0].line, 2);
+    assert!(tail.note.as_deref().unwrap().contains("requested line 99"));
+    assert!(tail.note.as_deref().unwrap().contains("source only"));
+    assert!(tail.hits[0].source.as_deref().unwrap().contains("def target"));
     assert_eq!(
         result.hits[0].signature.as_deref(),
         Some("inside def lines 2-2; showing 1-2")

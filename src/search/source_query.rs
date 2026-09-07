@@ -1273,6 +1273,15 @@ pub(super) fn source_location_result(
         LOCATION_PREVIEW_LINES
     };
     let (shown_start, shown_end) = location_excerpt_bounds(source, location.line, line_limit);
+    let line_count = source.lines().count() as u64;
+    let beyond_end = line_count > 0 && location.line > line_count;
+    let mut result_note = note.map(str::to_owned);
+    if beyond_end {
+        prepend_search_note(&mut result_note, format!(
+            "requested line {} is beyond the file's {line_count} lines; showing the tail",
+            location.line
+        ));
+    }
     SearchResult {
         hits: vec![SearchHit {
             name: enclosing
@@ -1295,7 +1304,7 @@ pub(super) fn source_location_result(
             )),
             module: String::new(),
             path: relative,
-            line: location.line,
+            line: if beyond_end { line_count } else { location.line },
             doc: None,
             source: nonempty(location_source_excerpt(source, location.line, line_limit)),
             usages: Vec::new(),
@@ -1303,7 +1312,7 @@ pub(super) fn source_location_result(
             required_import: None,
         }],
         inference: if source_only { "source-only" } else { "source" }.into(),
-        note: note.map(Into::into),
+        note: result_note,
         ok: true,
     }
 }
