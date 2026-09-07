@@ -495,7 +495,8 @@ pub(super) fn parse_source_occurrence_query(
         return Ok(None);
     }
     let requested_path = path;
-    let inferred_outline_path = Path::new(path).extension().is_none()
+    let inferred_outline_path = Path::new(path).extension().is_none_or(|ext| ext != "lean")
+        && source_request_path(path).is_some()
         && terms.len() == 1
         && matches!(
             terms[0].to_ascii_lowercase().as_str(),
@@ -505,7 +506,10 @@ pub(super) fn parse_source_occurrence_query(
         bail!("FILE is a help placeholder; replace it with a Lean source path");
     }
     let resolved_path = if inferred_outline_path {
-        format!("{path}.lean")
+        source_request_path(path)
+            .expect("checked source path")
+            .to_string_lossy()
+            .into_owned()
     } else {
         path.to_owned()
     };

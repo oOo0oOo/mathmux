@@ -647,3 +647,20 @@ All 122 search tests, 8 help tests, and expanded pinned-Lean CLI smoke pass.
 Original dependency-copy replay now reports no literal source matches for the
 absent term; a real theorem query matches its declaration and lone find retains
 the comment matches. Installed prior API-usage routing independently passes.
+
+
+## Dotted module outlines reach source resolution (i49)
+
+Telemetry 149464/q294813 requested a dotted module outline but received lexical
+results and file-body excerpts. A generic Demo.Facts replay reproduces the mismatch
+with the equivalent Demo/Facts.lean outline. The source resolver already supports
+dotted modules; the outline parser rejected their apparent filename extension first.
+
+Inferred outline/declarations targets now use that existing path conversion and
+resolver. Only a resolved file becomes an outline; a missing file leaves declaration
+lookup available. Explicit Lean paths retain their handling. The regression fails
+before the change and covers dotted/module-path equivalents and missing-file fallback.
+Help is search-v12/probe-v17; no new verbs or index changes.
+All 123 search tests, 8 help tests, and expanded pinned-Lean CLI smoke pass.
+Generic dotted and slash-path replay return identical outlines. The original query
+against a copied Sobolev module returns its 24 declarations and a source handoff.

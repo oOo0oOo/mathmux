@@ -4559,3 +4559,15 @@ fn source_find_selector_is_not_a_literal_search_term() {
         assert_eq!(parsed.terms, expected, "{query}");
     }
 }
+
+#[test]
+fn dotted_module_outline_uses_existing_source_resolution() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::create_dir(directory.path().join("Demo")).unwrap();
+    fs::write(directory.path().join("Demo/Facts.lean"), "def first := 1\n").unwrap();
+    for query in ["Demo.Facts outline", "Demo.Facts declarations", "Demo/Facts outline"] {
+        let parsed = parse_source_occurrence_query(directory.path(), directory.path(), None, query).unwrap().unwrap();
+        assert_eq!(parsed.path, directory.path().join("Demo/Facts.lean"));
+    }
+    assert!(parse_source_occurrence_query(directory.path(), directory.path(), None, "Demo.missing outline").unwrap().is_none());
+}

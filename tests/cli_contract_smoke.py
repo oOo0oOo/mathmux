@@ -38,6 +38,9 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
 
     (root / 'FindFixture.lean').write_text('-- find a neighborhood\ndef target : Nat := 1\n')
 
+    (root / 'ModuleFixture').mkdir()
+    (root / 'ModuleFixture/Facts.lean').write_text('namespace ModuleFixture\ndef first : Nat := 1\nend ModuleFixture\n')
+
     run(['git', 'add', '.'])
     run(['git', 'commit', '-m', 'fixture'])
     log = open(pathlib.Path(tmp) / 'daemon.log', 'w+')
@@ -74,6 +77,9 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
 
         find_result = run([binary, 'search', 'FindFixture.lean find missing_token_xyz'], ws).stdout
         assert 'no results' in find_result, find_result
+
+        module_outline = run([binary, 'search', 'ModuleFixture.Facts outline'], ws).stdout
+        assert '1 declarations across' in module_outline and 'ModuleFixture.first' in module_outline, module_outline
 
         options = probe('Demo.target source')
         assert 'set_option autoImplicit false' in options, options
