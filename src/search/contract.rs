@@ -254,6 +254,68 @@ fn assumption_signature(signature: &str) -> String {
     detail
 }
 
+/// Selected lexical context, never an elaborated list of implicit arguments.
+fn selected_section_binders(signature: &str, source: Option<&str>) -> Vec<String> {
+    let Some(source) = source.and_then(|s| s.strip_prefix("-- ambient context\n")) else {
+        return Vec::new();
+    };
+    let ambient = source.split_once("\n\n").map_or(source, |(context, _)| context);
+    let referenced = identifiers(signature).into_iter().collect::<HashSet<_>>();
+    let mut seen = bound_input_names(signature, None);
+    let mut commands = Vec::new();
+    let mut command = String::new();
+    let mut active = false;
+    for line in ambient.lines() {
+        let trimmed = line.trim();
+        if trimmed == "variable" || trimmed.starts_with("variable ") {
+            if !command.is_empty() { commands.push(std::mem::take(&mut command)); }
+            active = true;
+            command.push_str(trimmed.strip_prefix("variable").unwrap().trim());
+        } else if line.starts_with(char::is_whitespace) && active {
+            command.push(' ');
+            command.push_str(trimmed);
+        } else if active {
+            active = false;
+            commands.push(std::mem::take(&mut command));
+        }
+    }
+    if !command.is_empty() { commands.push(command); }
+    let mut selected = Vec::new();
+    for command in commands.iter().rev() {
+        for binder in signature_binders(command).into_iter().rev() {
+            let start = binder.chars().next().unwrap();
+            if start == '[' { continue; }
+            let end = binder.chars().last().unwrap();
+            let interior = &binder[start.len_utf8()..binder.len() - end.len_utf8()];
+            let Some((names, ty)) = interior.split_once(':') else { continue; };
+            for name in identifiers(names) {
+                if referenced.contains(&name) && seen.insert(name.clone()) {
+                    selected.push(format!("{start}{name} : {}{end}", ty.trim()));
+                }
+            }
+        }
+    }
+    selected.reverse();
+    selected
+}
+
+fn section_context_note(signature: &str, source: Option<&str>, name: &str) -> String {
+    let selected = selected_section_binders(signature, source);
+    if selected.is_empty() { return String::new(); }
+    let mut note = String::from("selected section binders (textual, not elaborated):\n");
+    let mut count = 0;
+    let mut bytes = 0;
+    for (index, binder) in selected.iter().take(6).enumerate() {
+        if bytes + binder.len() > 600 { break; }
+        note.push_str(&wrapped_contract_line("context:", binder));
+        count = index + 1;
+        bytes += binder.len();
+    }
+    if count < selected.len() { note.push_str("Additional section binders omitted.\n"); }
+    note.push_str(&format!("Full lexical context: mathmux probe {name} source\n"));
+    note
+}
+
 fn contract_exact_hit(
     rows: Vec<IndexedRow>,
     subject: &str,
@@ -425,6 +487,9 @@ impl Searcher {
         if focus == "assumptions" {
             detail.push_str(&assumption_signature(
                 hit.signature.as_deref().unwrap_or("unavailable"),
+            ));
+            detail.push_str(&section_context_note(
+                hit.signature.as_deref().unwrap_or(""), hit.source.as_deref(), name,
             ));
         } else {
             detail.push_str(&format!(
@@ -1355,5 +1420,30 @@ mod tests {
             relation(": ¬ Nonempty (Demo.Database X)", "Demo.Data"),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod section_context_tests {
+    use super::*;
+    #[test]
+    fn selected_context_respects_shadowing_and_keeps_type_restrictions() {
+        let source = "-- ambient context\nvariable {A : Type} {g : A → Bool}\nvariable {g : A → Nat} {unused : Bool}\n\ntheorem rule := by trivial";
+        let signature = "(x : A) (h : g x = 0) : g x = 0";
+        let selected = selected_section_binders(signature, Some(source));
+        assert!(selected.contains(&"{g : A → Nat}".into()));
+        assert!(!selected.iter().any(|s| s.contains("Bool") || s.contains("unused")));
+        let overridden = selected_section_binders("(g : A → Int) : g x = 0", Some(source));
+        assert!(!overridden.iter().any(|s| s.starts_with("{g ")));
+        assert!(selected_section_binders(signature, None).is_empty());
+        let multiline = "-- ambient context\nvariable\n  {A : Type}\n  {g : A → Nat}\nopen Nat\n\ntheorem rule := by trivial";
+        assert!(selected_section_binders(signature, Some(multiline)).contains(&"{g : A → Nat}".into()));
+        let many = "-- ambient context\nvariable {a b c d e f g h : Nat}\n\ntheorem rule := by trivial";
+        let bounded = section_context_note(": a+b+c+d+e+f+g+h = 0", Some(many), "Demo.rule");
+        assert_eq!(bounded.lines().filter(|l| l.starts_with("context:")).count(), 6);
+        assert!(bounded.contains("Additional section binders omitted"));
+        let note = section_context_note(signature, Some(source), "Demo.rule");
+        assert!(note.contains("textual, not elaborated"));
+        assert!(note.contains("mathmux probe Demo.rule source"));
     }
 }

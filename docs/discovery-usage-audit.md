@@ -1006,3 +1006,12 @@ Telemetry 150314 showed the same `Bornology.IsBounded.subset_closedBall` declara
 Near-name ranking now uses the canonical declaration name for ordering and deduplication, preferring a signature-bearing row among otherwise tied representations. Distinct namespaces and neighboring names remain distinct. Retrieval limits, exact resolution, warming uncertainty, and public verbs are unchanged.
 
 Validation: 132 search tests pass, including a rooted/artifact/source duplicate fixture with distinct-namespace and neighboring-name controls. Fresh copied-source/artifact replay (`/tmp/mm-i70-fixed.log`) returns one signature-bearing suggestion per declaration for both original and typo queries, then retains full source context and exact leaf lookup. The compound-name recovery from i68 also passes (`/tmp/mm-i70-neighbor.log`). Formalization files and daemons were untouched.
+
+
+### i71: show relevant textual section binders in assumptions
+
+Telemetry 150342 records a vector-valued use of a scalar-only composition lemma. Its indexed assumptions mention `g` but do not show the section restriction `g : M → 𝕜`. Full source contains that restriction among many unrelated ambient variables. An isolated generic theorem with `{g : A → Nat}` reproduces the same omission (`/tmp/mm-ambient-contract-baseline.log`).
+
+The assumptions facet now selects typed, named section binders referenced in the indexed signature from its refreshed source snapshot. Later declarations shadow earlier ones, explicit signature binders take precedence, and unrelated names and anonymous instance binders are excluded. The addition is explicitly textual, capped at six binders and 600 binder bytes, and links to full source; `#inspect` remains the elaborated-contract route. It does not infer implicit arguments or transitive typeclass requirements.
+
+Validation: 133 search tests pass, including missing source, shadowing, multiline/bare variable, irrelevant-name and output-limit controls. The final focused contract tests also pass. Generic and original copied-source replays (`/tmp/mm-i71-0.log`, `/tmp/mm-i71-1.log`) expose the missing codomain while preserving explicit premises and source inspection. No public verb or matching change, and no formalization files or daemons touched.
