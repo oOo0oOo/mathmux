@@ -1051,11 +1051,13 @@ impl Searcher {
             .hits
             .into_iter()
             .find(|candidate| matches!(candidate.kind.as_str(), "lemma" | "theorem"));
+        let mut seen_consumers = HashSet::new();
         let consumers = hit
             .usages
             .iter()
             .filter_map(|usage| usage.context.as_deref())
-            .filter(|context| context != &subject)
+            .filter(|context| context.trim_start_matches("_root_.") != subject)
+            .filter(|context| seen_consumers.insert(context.trim_start_matches("_root_.")))
             .take(2)
             .collect::<Vec<_>>();
         let excerpt = hit.usages.first().and_then(|usage| {
@@ -1083,7 +1085,7 @@ impl Searcher {
             ));
         }
         if !consumers.is_empty() {
-            dossier.push(format!("project consumers: {}", consumers.join(", ")));
+            dossier.push(format!("indexed consumers: {}", consumers.join(", ")));
         }
         if let Some(excerpt) = excerpt {
             dossier.push(format!("usage excerpt: {excerpt}"));

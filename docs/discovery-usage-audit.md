@@ -383,3 +383,16 @@ hom-space parameters still permit direct evidence about the outer type.
 The focused contract suite covers all four classifications; isolated CLI smoke
 checks that the misleading candidate disappears and its original source stays
 available. No source-index or help grammar change is needed.
+
+
+## Accurate consumer scope in usage dossiers (i34)
+
+Telemetry 149014/q294467 and 149020/q294469 show dependency-only usages followed
+by a `project consumers` summary. The dossier draws from all indexed scopes;
+its label now says `indexed consumers`. Names are deduplicated before the
+two-consumer budget, with `_root_.` normalized for identity and self-reference
+filtering. Individual usage paths continue to show their origin.
+
+This is a display correction; no indexing or query semantics changed. The
+existing 15 probe tests pass. The earlier source-only fixture did not produce
+compiled usage records, so it is not claimed as an end-to-end usage replay.
