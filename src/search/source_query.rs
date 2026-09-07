@@ -779,6 +779,11 @@ pub(super) fn source_occurrence_result(
                         super::shell_argument(&format!("{continuation_path}:tail")),
                     )
                 }
+            } else if query.terms.len() == 1 && query.terms[0] == "source" {
+                format!(
+                    "no literal source matches for `source`; to inspect this file: mathmux search {}",
+                    super::shell_argument(&format!("{continuation_path}:outline")),
+                )
             } else {
                 "no literal source matches".into()
             })

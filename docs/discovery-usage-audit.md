@@ -1077,3 +1077,10 @@ Validation: 137 search tests pass including a connecting-statement regression. `
 Historical point navigation beyond EOF (150806) motivated an isolated replay: `Facts.lean:99` on a six-line file displayed the tail while retaining nonexistent line 99 in the result. Point-source results now store the actual last line and explain the requested line and file length. Existing source notes are preserved; valid point requests and explicit tail requests are unchanged.
 
 Validation: 137 search tests pass, including stored-coordinate/note assertions added to the location regression. `/tmp/mm-i79-replay.log` verifies the original out-of-range request, valid theorem location, and explicit tail. No new syntax or formalization workspace use.
+
+
+### i80: recover from empty literal `source FILE` searches
+
+Telemetry 150849 and 150862 showed source-prefix misuse. Current isolated replay confirmed `source FILE` searches the literal word `source` and returned an unhelpful miss. Empty searches for this sole term now offer the existing `FILE:outline` command. Successful literal matches and other missing terms are unchanged; no grammar is added.
+
+Validation: 138 search tests pass, including successful literal-source and unrelated-miss controls. `/tmp/mm-i80-replay.log` verifies the original miss and suggested outline, which returns 35 declarations from copied dependency source.

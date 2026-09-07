@@ -4833,3 +4833,22 @@ fn connecting_statement_outranks_file_body_coverage() {
         &["extendvalue".into(), "coefficientaction".into()], false, None);
     assert_eq!(ranked[0].hit.name, "Demo.interaction");
 }
+
+#[test]
+fn literal_source_miss_offers_outline_without_changing_matches() {
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = Workspace { reference: "w1".into(), name: "demo".into(),
+        path: directory.path().to_path_buf(), branch: "demo".into(), model: None };
+    for (text, needle, hint) in [
+        ("def target := 1\n", "source", true),
+        ("-- source context\ndef target := 1\n", "source", false),
+        ("def target := 1\n", "missing", false),
+    ] {
+        fs::write(directory.path().join("Facts.lean"), text).unwrap();
+        let query = parse_source_occurrence_query(directory.path(), directory.path(), None,
+            &format!("{needle} Facts.lean")).unwrap().unwrap();
+        let result = source_occurrence_result(&workspace, query, false).unwrap();
+        assert_eq!(result.note.as_deref().unwrap_or_default().contains("Facts.lean:outline"), hint);
+        if text.contains("source") { assert!(!result.hits.is_empty()); }
+    }
+}
