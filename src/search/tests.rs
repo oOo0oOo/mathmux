@@ -4491,3 +4491,16 @@ fn exact_lookup_canonicalizes_root_prefix_before_sql_filtering() {
     connection.execute_batch("DROP TABLE temp.active_search_scopes").unwrap();
     assert!(exact_candidates_from_connection(&connection, "Missing.explicitRoot", &scopes, 8).unwrap().is_empty());
 }
+
+
+#[test]
+fn coverage_recognizes_exact_concept_aliases_without_fuzzy_prefixes() {
+    for (concept, signature) in [("continuity", "Continuous f"), ("injection", "Function.Injective f"), ("composition", "f.comp g")] {
+        let mut hit = search_hit("Demo.result");
+        hit.signature = Some(signature.into());
+        assert_eq!(weak_coverage_note(&[hit], &[concept.into()]), None);
+    }
+    let hit = search_hit("Demo.compact");
+    assert!(weak_coverage_note(&[hit], &["composition".into()]).unwrap().contains("missing composition"));
+    assert!(meaningful_query_tokens("Signal injection Lp").contains(&"injective".into()));
+}

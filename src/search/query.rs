@@ -834,6 +834,19 @@ pub(super) fn exact_plan(query: &str, type_search: bool) -> Option<ExactPlan> {
     })
 }
 
+fn concept_alias(token: &str) -> Option<&'static str> {
+    match token {
+        "addition" => Some("add"),
+        "composition" => Some("comp"),
+        "continuity" => Some("continuous"),
+        "injection" => Some("injective"),
+        "multiplication" => Some("mul"),
+        "projection" => Some("proj"),
+        "scaling" => Some("smul"),
+        _ => None,
+    }
+}
+
 fn uncovered_hit_terms(hits: &[SearchHit], terms: &[String]) -> Vec<String> {
     let searchable = hits
         .iter()
@@ -851,7 +864,12 @@ fn uncovered_hit_terms(hits: &[SearchHit], terms: &[String]) -> Vec<String> {
         .to_lowercase();
     terms
         .iter()
-        .filter(|term| !searchable.contains(term.as_str()))
+        .filter(|term| {
+            !searchable.contains(term.as_str())
+                && !concept_alias(term).is_some_and(|alias| {
+                    searchable.split(|c: char| !c.is_alphanumeric()).any(|word| word == alias)
+                })
+        })
         .cloned()
         .collect()
 }
@@ -949,15 +967,7 @@ pub(super) fn meaningful_query_tokens(query: &str) -> Vec<String> {
     }
     let aliases = tokens
         .iter()
-        .filter_map(|token| match token.as_str() {
-            "addition" => Some("add"),
-            "composition" => Some("comp"),
-            "continuity" => Some("continuous"),
-            "multiplication" => Some("mul"),
-            "projection" => Some("proj"),
-            "scaling" => Some("smul"),
-            _ => None,
-        })
+        .filter_map(|token| concept_alias(token))
         .map(str::to_owned)
         .collect::<Vec<_>>();
     tokens.extend(aliases);

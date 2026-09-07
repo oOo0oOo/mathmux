@@ -495,3 +495,19 @@ directions, unrelated namespaces, and a root-only query. All 116 search tests
 pass. The actual source replay now completes search → signature → source with
 its premises present, including on a cold index. The CLI fixture also exercises
 both spelling directions. Existing indexes remain valid; no grammar change.
+
+
+## Coverage notices agree with bounded concept aliases (i41)
+
+Telemetry 149190/q294605 returned an injectivity result while reporting
+`missing injection`. Controlled usage kept the desired result first, so there
+was no evidence for changing ranking weights. A neighboring continuity query
+reproduced the underlying inconsistency: search expands continuity to continuous,
+but its coverage notice still required the original literal word.
+
+Coverage now recognizes the same finite alias table used by query expansion,
+with injection → injective added from the observed query. Alias evidence must
+be a complete word/identifier segment; compact does not satisfy composition.
+Cold and warm continuity/injection replays retain the desired result first
+without false missing-concept warnings. An unrelated compact query still warns.
+All 117 search tests pass. No new verbs or grammar are introduced.
