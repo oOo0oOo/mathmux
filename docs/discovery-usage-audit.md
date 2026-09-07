@@ -1101,3 +1101,12 @@ Telemetry 150886, 150896 and 150898 showed failed checks flattening long typecla
 The meta review rejected dropping hypotheses based on guessed relevance: deciding applicability requires those assumptions. This change improves ordering rather than claiming a compact response contains every fact an agent might need. Existing truncation disclosure and full-result retrieval remain essential.
 
 Validation: nine daemon tests pass, including multiline goals, preserved hypotheses, multi-branch fallback, and existing truncation/error/source behavior. `/tmp/mm-goal-replay.py` reproduces the installed baseline and verifies the changed pinned-Lean CLI output plus retained full diagnostics.
+
+
+### i83: preserve axiom provenance for inspected expressions
+
+The operator-requested audit of unused Lean evidence found that inspecting a bare axiom-backed declaration reported its axioms, while applying it to an argument silently omitted that provenance. `/tmp/mm-evidence-audit.py` reproduced both direct and wrapped applications in an isolated Lean-only project.
+
+Nonconstant expression inspection now gathers dependencies from the elaborated value, its type, and transitively referenced local declaration types/let values. It reports global axioms, admitted dependencies, and local inputs/assumptions separately; unresolved metavariables are explicitly disclosed. Bare declaration inspection retains its existing contract output. This uses Lean expression dependencies rather than project naming rules and adds no verbs. Help advances to probe-v18.
+
+Validation: 29 pinned-Lean service cases pass, including seven new applied/wrapped axiom, local-let, local-hypothesis, closed-term and nested-sorry controls. The CLI replay checks the original direct/wrapped expression omission; full existing service cases remain covered.

@@ -49,6 +49,17 @@ request('inspect', 'manyInputs')
 for _ in range(3):
     request('inspect', 'Nat.add', line=1)
 request('inspect', 'manyInputs', line=1)
+provenance_start = len(requests)
+source = """import Lean
+axiom unsafeResult : Nat → False
+def wrapped (n : Nat) : False := unsafeResult n
+example (h : False) : True := by
+  let hidden := unsafeResult 0
+  have keep : False := hidden
+  exact False.elim keep
+"""
+for term in ['(unsafeResult 0)', '(wrapped 0)', 'h', 'hidden', '(Nat.succ 0)', '(False.elim h : Nat)', '(id (by sorry : Nat))']:
+    request('inspect', term, line=7)
 with tempfile.TemporaryDirectory(prefix='mathmux-lean-probe-') as temp:
     setup = pathlib.Path(temp) / 'setup.json'
     setup.write_text(json.dumps(dict(name='ProbeFixture', package=None, isModule=False,
@@ -93,4 +104,16 @@ with tempfile.TemporaryDirectory(prefix='mathmux-lean-probe-') as temp:
     for response in responses[18:21]:
         assert response['ok'] and 'Nat → Nat → Nat' in response['detail'], response
     assert not responses[21]['ok'] and 'Unknown identifier' in str(responses[21]), responses[21]
-    print('Lean probe smoke: 22 cases passed (obstruction, fields, unused input, axioms, application, small cases, failures, goal isolation, premise roles).')
+
+    for offset in [0, 1, 3]:
+        response = responses[provenance_start + offset]
+        assert response['ok'] and 'axioms: unsafeResult' in response['detail'], response
+    for offset in [2, 5]:
+        response = responses[provenance_start + offset]
+        assert response['ok'] and 'local assumption h: False' in response['detail'], response
+    response = responses[provenance_start + 4]
+    assert response['ok'] and 'axioms: none' in response['detail'], response
+    assert 'local assumption' not in response['detail'], response
+    response = responses[provenance_start + 6]
+    assert response['ok'] and 'sorryAx' in response['detail'] and 'ADMITTED' in response['detail'], response
+    print(f'Lean probe smoke: {len(responses)} cases passed, including expression provenance.')

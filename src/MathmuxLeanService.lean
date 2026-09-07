@@ -170,6 +170,42 @@ def boundedContractText (text : String) (limit : Nat := 800) : String :=
     (text.take limit).toString ++ " … [truncated; inspect selected declaration source]"
   else text
 
+-- Applied expressions can depend on axioms through arguments or local lets,
+-- not just their head declaration. Include the types of local dependencies too.
+def expressionProvenance (value type : Expr) : MetaM (Array String) := do
+  let mut expressions := #[value, type]
+  let mut locals := collectFVars (collectFVars {} value) type
+  let mut localLines := #[]
+  let mut next := 0
+  while next < locals.fvarIds.size do
+    let id := locals.fvarIds[next]!
+    next := next + 1
+    let decl ← id.getDecl
+    expressions := expressions.push decl.type
+    locals := collectFVars locals decl.type
+    if let some body := decl.value? then
+      expressions := expressions.push body
+      locals := collectFVars locals body
+    let proof ← isProp decl.type
+    let role := if decl.value?.isSome then "local definition" else
+      if proof then "local assumption" else "local input"
+    localLines := localLines.push s!"{role} {(← ppExpr (mkFVar id)).pretty}: {boundedContractText (← ppExpr decl.type).pretty}"
+  let mut axioms : Array Name := #[]
+  let mut seen : NameSet := {}
+  for expression in expressions do
+    for name in expression.getUsedConstants do
+      if !seen.contains name then
+        seen := seen.insert name
+        for ax in ← collectAxioms name do
+          if !axioms.contains ax then axioms := axioms.push ax
+  let mut lines := #[s!"axioms: {if axioms.isEmpty then "none" else String.intercalate ", " (axioms.toList.map Name.toString)}"]
+  if axioms.contains ``sorryAx then
+    lines := lines.push "ADMITTED: this expression depends on sorryAx; do not treat it as a proved obstruction."
+  lines := lines ++ localLines
+  if expressions.any Expr.hasMVar then
+    lines := lines.push "Unresolved metavariables remain; this inspection is not a closed proof."
+  return lines
+
 def inspectContract (value : Expr) : MetaM String := do
   let type ← inferType value
   let mut lines := #["inputs (explicit first):"]
@@ -212,6 +248,8 @@ def inspectContract (value : Expr) : MetaM String := do
         lines := lines.push s!"parameters absent from definition body (syntactic only): {String.intercalate ", " absent.toList}"
       lines := lines.push s!"one-step body: {boundedContractText (← ppExpr info.value).pretty}"
     | _ => pure ()
+  else
+    lines := lines ++ (← expressionProvenance value type)
   lines := lines.push "Inspection is not a certificate or a mathematical adequacy verdict. Test explicit small cases with #check/#reduce; use #apply at a goal to expose remaining obligations."
   return String.intercalate "\n" lines.toList
 
