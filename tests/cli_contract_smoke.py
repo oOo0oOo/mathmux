@@ -26,6 +26,8 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
     (root / 'ContractFixture.lean').write_text(contract_fixture)
     (root / 'AttributeFixture.lean').write_text('import Lean\nnamespace AttributeFixture\n@[simp]\ntheorem simp (n : Nat) : n = n := rfl\nend AttributeFixture\n')
 
+    (root / 'HomFixture.lean').write_text('namespace HomFixture\ndef Data := Nat\nabbrev Hom (A B : Type) := A → B\ninfixr:10 " ⟶ " => Hom\ntheorem hom_unique : Subsingleton (Data ⟶ Unit) := inferInstance\nend HomFixture\n')
+
     run(['git', 'add', '.'])
     run(['git', 'commit', '-m', 'fixture'])
     log = open(pathlib.Path(tmp) / 'daemon.log', 'w+')
@@ -93,6 +95,10 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         assert '   83    exact True.intro' in outline, outline
         assert 'premises retained' in probe('Impossible assumptions')
         assert 'obstruction candidate' in probe('Impossible evidence')
+        detail = probe('HomFixture.Data evidence')
+        assert 'subsingleton candidate' not in detail, detail
+        detail = probe('HomFixture.hom_unique source')
+        assert 'Subsingleton (Data ⟶ Unit)' in detail, detail
         detail = probe('Fixture.lean:11 #inspect forgetInput')
         assert 'absent from definition body' in detail, detail
         detail = probe('Fixture.lean:11 #apply needsHypothesis n')

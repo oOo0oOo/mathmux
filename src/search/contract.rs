@@ -60,7 +60,7 @@ fn top_level_relation(result: &str) -> bool {
         match c {
             '(' | '[' | '{' | '⦃' => depth += 1,
             ')' | ']' | '}' | '⦄' => depth -= 1,
-            '→' | '↔' | '≃' | '≅' | '↪' | '×' | '=' | '<' | '>' if depth == 0 => {
+            '→' | '⟶' | '↔' | '≃' | '≅' | '↪' | '×' | '=' | '<' | '>' if depth == 0 => {
                 return true;
             }
             _ => (),
@@ -1054,6 +1054,10 @@ mod tests {
         for signature in [
             "¬ Nonempty (Wrapper Demo.Data)",
             "Subsingleton (Demo.Data → Nat)",
+            "Subsingleton (Demo.Data ⟶ Other)",
+            "¬ Nonempty (Demo.Data ⟶ Other)",
+            "IsEmpty (Demo.Data ⟶ Other)",
+            "Demo.Data ⟶ Other",
             "Demo.Data →+ ℤ",
             "Demo.Data ≃+ Other",
             "Demo.Data = Other",
@@ -1070,6 +1074,10 @@ mod tests {
         );
         assert_eq!(
             relation("Subsingleton (Demo.Data PUnit)", "Demo.Data"),
+            Some("subsingleton candidate")
+        );
+        assert_eq!(
+            relation("Subsingleton (Demo.Data (X ⟶ Y))", "Demo.Data"),
             Some("subsingleton candidate")
         );
         assert_eq!(

@@ -366,3 +366,20 @@ fixture is not a Lean adequacy check. The generic installed-CLI fixture separate
 uses a valid multiline inherited-only structure and checks clean signatures.
 260 Rust tests, baseline clippy and the expanded pinned-Lean CLI smoke pass.
 Index version 12 invalidates previously truncated headers and contaminated types.
+
+
+## Hom-space evidence is not evidence about its domain (i33)
+
+Telemetry 148991/q294445 suggested `IsTerminal.subsingleton_to` as evidence
+about an input type. Its actual conclusion is `Subsingleton (I ⟶ A)`:
+a statement about a hom-space, not the object I. The current build reproduced
+this independently with a Lean-checked generic function-space fixture and
+`probe Demo.Data evidence`.
+
+The source classifier now treats the top-level hom arrow like the existing
+function arrow. Such conclusions remain related laws rather than direct
+construction, emptiness, or subsingleton candidates for their domains. Nested
+hom-space parameters still permit direct evidence about the outer type.
+The focused contract suite covers all four classifications; isolated CLI smoke
+checks that the misleading candidate disappears and its original source stays
+available. No source-index or help grammar change is needed.
