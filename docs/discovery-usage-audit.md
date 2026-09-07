@@ -882,3 +882,23 @@ tests passed, and the adjusted source-query regression passes. Expanded pinned-L
 CLI smoke passes. Isolated replay rejects the missing qualified dependency while
 still reading the project basename explicitly and the actual nearby dependency.
 No verbs, help or index changes. Nearby-source suggestions remain suggestions.
+
+
+## Prefer matching names in case-pair wildcard discovery (i63)
+
+Telemetry 149984 uses ContinuousLinearMap.*[Tt]emperateGrowth. Independent
+cold and warm replay against clean main ranks Function.HasTemperateGrowth.mul
+first and the matching bilinear theorem fifth. Redundant case pairs prevent
+ordinary name-glob recognition, leaving generic relevance in control.
+
+Ranking now recognizes same-letter ASCII case pairs in otherwise ordinary globs
+and stably promotes matching declaration names. Retrieval and fallback candidates
+are preserved; arbitrary character classes are not reinterpreted as name globs.
+No public verbs, query grammar, help digest or source-index changes.
+
+The focused regression and all 127 search tests pass. Separate fresh indexes for
+baseline and fixed builds reproduce the fifth-to-first improvement both cold and
+warm. Existing output selection yields three displayed results instead of eight.
+Neighboring plain globs, alternations and conceptual queries were also replayed;
+source probing continues to expose both temperate-growth premises. Fixtures copy
+dependency source into isolated repositories; no formalization work is run.

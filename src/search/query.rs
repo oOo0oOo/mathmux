@@ -676,6 +676,24 @@ pub(super) fn rank_discovery_candidates(
     if !explicit_declaration {
         diversify_ranked_candidates(&mut ranked, query, query_tokens);
     }
+    // Agents also use redundant case pairs in otherwise ordinary name globs.
+    // Prefer those name matches without changing retrieval or discarding fallback hits.
+    if query.contains('[') {
+        static CASE_PAIR: OnceLock<Regex> = OnceLock::new();
+        let pairs = CASE_PAIR.get_or_init(|| Regex::new(r"\[([A-Za-z])([A-Za-z])\]").unwrap());
+        let normalized = pairs.replace_all(query, |captures: &regex::Captures<'_>| {
+            if captures[1].eq_ignore_ascii_case(&captures[2]) {
+                captures[1].to_owned()
+            } else {
+                captures[0].to_owned()
+            }
+        });
+        if normalized != query && declaration_glob_query(&normalized) {
+            ranked.sort_by_key(|candidate| {
+                !declaration_alternative_matches(&candidate.hit.name, &normalized)
+            });
+        }
+    }
     (ranked, glob_name_miss)
 }
 

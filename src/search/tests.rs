@@ -4635,3 +4635,21 @@ fn discovery_excludes_private_macro_helpers_but_keeps_explicit_names() {
     let (ranked, _) = rank_discovery_candidates(candidates(), helper, &[], true, None);
     assert!(ranked.iter().any(|c| c.hit.name == helper));
 }
+
+#[test]
+fn case_pair_name_globs_promote_matches_without_dropping_fallbacks() {
+    let candidates = || vec![
+        Candidate { hit: search_hit("Function.HasTemperateGrowth.mul"), score: 100.0, origins: 0 },
+        Candidate { hit: search_hit("_root_.ContinuousLinearMap.bilinear_hasTemperateGrowth"), score: 1.0, origins: 0 },
+    ];
+    let query = "ContinuousLinearMap.*[Tt]emperateGrowth";
+    let (ranked, miss) = rank_discovery_candidates(candidates(), query, &meaningful_query_tokens(query), false, None);
+    assert!(ranked[0].hit.name.contains("bilinear_hasTemperateGrowth"));
+    assert_eq!(ranked.len(), 2);
+    assert!(!miss);
+    for query in ["ContinuousLinearMap.*[TR]emperateGrowth", "ContinuousLinearMap.*[a-z]emperateGrowth"] {
+        let (ranked, _) = rank_discovery_candidates(candidates(), query, &[], false, None);
+        assert_eq!(ranked[0].hit.name, "Function.HasTemperateGrowth.mul");
+        assert_eq!(ranked.len(), 2);
+    }
+}
