@@ -4659,3 +4659,17 @@ fn case_pair_name_globs_promote_matches_without_dropping_fallbacks() {
         assert_eq!(ranked.len(), 2);
     }
 }
+
+#[test]
+fn discovery_keeps_public_generated_names_but_filters_hygienic_helpers() {
+    let helper = "Demo.definition._@.Demo.Facts.123._hygCtx._hyg.2";
+    let candidates = || [helper, "Demo.mk", "Demo._hyg", "Demo.Facts"].into_iter()
+        .map(|name| Candidate { hit: search_hit(name), score: 100.0, origins: 0 }).collect();
+    let (broad, _) = rank_discovery_candidates(candidates(), "Demo", &[], false, None);
+    assert!(!broad.iter().any(|c| c.hit.name == helper));
+    for name in ["Demo.mk", "Demo._hyg", "Demo.Facts"] {
+        assert!(broad.iter().any(|c| c.hit.name == name));
+    }
+    let (explicit, _) = rank_discovery_candidates(candidates(), helper, &[], true, None);
+    assert!(explicit.iter().any(|c| c.hit.name == helper));
+}

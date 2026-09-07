@@ -668,7 +668,9 @@ pub(super) fn rank_discovery_candidates(
         let private_macro_helper = name.starts_with("_private.")
             && leaf.starts_with("_aux_")
             && leaf.contains("_macroRules_");
-        !private_macro_helper || query.trim().trim_start_matches("_root_.") == name
+        let hygienic_helper = name.contains("._@.") && name.contains("._hygCtx._hyg.");
+        !(private_macro_helper || hygienic_helper)
+            || query.trim().trim_start_matches("_root_.") == name
     });
     let glob_name_miss = apply_declaration_glob(&mut candidates, query);
     apply_context_scores(&mut candidates, import_context);

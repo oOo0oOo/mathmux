@@ -919,3 +919,19 @@ is supplied. The full-name query already renders ranked results; an initial repl
 assertion incorrectly required exact-declaration classification and was corrected
 to check retained retrieval. No new verbs, help or source-index changes. Other
 hygienic generated declarations seen in this fixture remain a separate audit.
+
+
+## Exclude compiler hygiene implementation names from discovery (i65)
+
+Replaying the telemetry 150025 discovery query with real copied source and ilean
+reveals several `definition._@...._hygCtx._hyg.N` names ahead of usable declarations.
+These have no indexed signature, and their source probes report unavailable.
+Names carrying both compiler hygiene markers now follow the existing helper
+filter: excluded from broad discovery, retained when fully specified. Public
+generated names and ordinary `_hyg` names remain eligible. No index/help changes.
+
+All 128 search tests pass. Real artifact replay removes hygiene names from the
+broad query and returns the fully specified helper as its single result. The
+replay assertion initially expected a numbered row; single-result rendering has
+no #1 label, so validation checks the actual single-result output instead.
+Remaining file matches are not claimed to answer the missing postcomposition API.
