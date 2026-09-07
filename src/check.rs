@@ -1599,7 +1599,7 @@ impl Checker {
         }
             .with_context(|| {
                 format!(
-                    "lake setup-file for {} failed; install the project's Lean toolchain and dependencies",
+                    "dependency preparation for {} did not complete; the target was not elaborated",
                     target.display()
                 )
             })?;
@@ -3049,7 +3049,7 @@ mod tests {
     fn dependency_setup_timeout_kills_the_child_process_group() {
         let started = Instant::now();
         let mut command = Command::new("sh");
-        command.args(["-c", "sleep 30 & wait"]);
+        command.args(["-c", "echo 'Building Demo.Dependency' >&2; sleep 30 & wait"]);
         let error =
             run_command_with_timeout(command, Duration::from_millis(50), "dependency setup")
                 .expect_err("dependency setup should time out");
@@ -3061,6 +3061,7 @@ mod tests {
                         && timeout.timeout == Duration::from_millis(50)
                 })
         );
+        assert!(format!("{error:#}").contains("Building Demo.Dependency"));
         assert!(
             started.elapsed() < Duration::from_secs(2),
             "timed-out setup child was not cleaned up promptly"

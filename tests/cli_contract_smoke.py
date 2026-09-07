@@ -98,6 +98,19 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         (ws / 'Fixture.lean').write_text(source)
         detail = probe('Fixture.lean:11 #inspect needsHypothesis')
         assert 'proof assumption h' in detail, detail
+        (ws / 'Fixture').mkdir(exist_ok=True)
+        (ws / 'Fixture/BadDependency.lean').write_text('def broken : Nat := "not a Nat"\n')
+        (ws / 'Fixture/DependencyGuard.lean').write_text('import Fixture.BadDependency\ntheorem guard : True := by trivial\n')
+        run(['git', 'add', 'Fixture/BadDependency.lean', 'Fixture/DependencyGuard.lean'], ws)
+        run(['git', 'commit', '-m', 'isolated dependency error fixture'], ws)
+        dependency_check = run([binary, 'check', 'Fixture/DependencyGuard.lean'], ws, ok=False)
+        assert dependency_check.returncode != 0, dependency_check.stdout
+        import re
+        check_ref = re.search(r'\bc[0-9]+\b', dependency_check.stdout + dependency_check.stderr).group(0)
+        dependency_detail = run([binary, 'show', check_ref], ws).stdout
+        assert 'blocked target: Fixture/DependencyGuard.lean' in dependency_detail, dependency_detail
+        assert 'Dependency Lean error' in dependency_detail and 'target not elaborated' in dependency_detail, dependency_detail
+        assert 'Fixture/BadDependency.lean:' in dependency_detail, dependency_detail
         output = run([binary, 'search', 'DefinitelyAbsentName*'], ws).stdout
         reference = next(line.removeprefix('ref: ') for line in output.splitlines() if line.startswith('ref: '))
         db = sqlite3.connect(env['MATHMUX_ISSUE_DB'])
@@ -114,7 +127,7 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         assert event['actor_id'] == 'smoke-actor' and event['session_id'] == 'smoke-session', event
         db.close()
         assert (ws / 'Fixture.lean').read_text() == source
-        print('CLI smoke passed: complete source snapshots/continuations/freshness, assumptions, source evidence, Lean evidence, inspection, application, cached evidence/invalidation, authored examples/routes, structured empty telemetry/provenance, unchanged source.')
+        print('CLI smoke passed: dependency Lean error attribution, complete source snapshots/continuations/freshness, assumptions, source evidence, Lean evidence, inspection, application, cached evidence/invalidation, authored examples/routes, structured empty telemetry/provenance, unchanged source.')
     finally:
         try:
             daemon.wait(timeout=15)

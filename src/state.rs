@@ -1639,6 +1639,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn dependency_lean_errors_label_blocked_target_in_historical_results() {
+        let run = CheckRun {
+            reference: "c1".into(), workspace_ref: "w1".into(), status: CheckStatus::Failed,
+            files: vec!["Demo/Guard.lean".into()], passed: vec![], failed: Some("Demo/Guard.lean".into()),
+            not_checked: vec![], warnings: vec![], linters: vec![], suggestions: vec![],
+            diagnostics: vec![Diagnostic { kind: "lean.dependency".into(), text: "Demo/Base.lean:12:1: unexpected token".into(), context: None }],
+            profile: None, duration_ms: 5, created_at: 0,
+        };
+        let output = render_check_run(&run, false);
+        assert!(output.contains("blocked target: Demo/Guard.lean"));
+        assert!(output.contains("Dependency Lean error"));
+        assert!(output.contains("target not elaborated"));
+        assert!(output.contains("Demo/Base.lean:12:1"));
+        assert!(!output.contains("\nfailed:"));
+    }
+
+    #[test]
     fn oversized_profiles_keep_phase_totals_without_trace_payloads() {
         let profile = CheckProfile {
             planning_ms: 3,

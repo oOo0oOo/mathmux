@@ -200,7 +200,11 @@ pub(super) fn render_search_run(run: &SearchRun, all: bool) -> String {
         if all || index < 3 {
             if let Some(doc) = &hit.doc {
                 let full_doc = all && run.inference == "probe-source";
-                for line in doc.trim().lines().take(if full_doc { usize::MAX } else { 3 }) {
+                for line in doc
+                    .trim()
+                    .lines()
+                    .take(if full_doc { usize::MAX } else { 3 })
+                {
                     let line = if full_doc {
                         line.to_owned()
                     } else {
@@ -294,8 +298,17 @@ pub(super) fn render_check_run(run: &CheckRun, all: bool) -> String {
             output.push_str(&format!("\n  {file}"));
         }
     }
+    let dependency_lean_error = run.diagnostics.iter().any(|d| d.kind == "lean.dependency");
     if let Some(failed) = &run.failed {
-        output.push_str(&format!("\nfailed: {failed}"));
+        let label = if dependency_lean_error {
+            "blocked target"
+        } else {
+            "failed"
+        };
+        output.push_str(&format!("\n{label}: {failed}"));
+    }
+    if dependency_lean_error {
+        output.push_str("\nDependency Lean error during import preparation; target not elaborated. Fix the reported dependency error before retrying.");
     }
     if all && !run.not_checked.is_empty() {
         output.push_str("\nnot checked:");

@@ -13,6 +13,7 @@ use anyhow::{Context, Result, anyhow, bail};
 pub(crate) struct CommandTimeout {
     pub(crate) phase: &'static str,
     pub(crate) timeout: Duration,
+    last_output: String,
 }
 
 impl std::fmt::Display for CommandTimeout {
@@ -35,7 +36,15 @@ impl std::fmt::Display for CommandTimeout {
                 "{} exceeded {duration}; child process group terminated",
                 self.phase
             )
+        }?;
+        if !self.last_output.is_empty() {
+            write!(
+                formatter,
+                "\nLast {} output:\n{}",
+                self.phase, self.last_output
+            )?;
         }
+        Ok(())
     }
 }
 
@@ -115,8 +124,28 @@ pub(crate) fn run_command_with_timeout_cancelable(
             Ok(None) if Instant::now() >= deadline => {
                 kill_process_group(&mut child);
                 let _ = stdout_reader.join();
-                let _ = stderr_reader.join();
-                return Err(CommandTimeout { phase, timeout }.into());
+                let stderr = stderr_reader
+                    .join()
+                    .ok()
+                    .and_then(Result::ok)
+                    .unwrap_or_default();
+                let recent = String::from_utf8_lossy(&stderr)
+                    .lines()
+                    .filter(|line| !line.trim().is_empty())
+                    .rev()
+                    .take(8)
+                    .map(|line| truncate_line(line, 240))
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                return Err(CommandTimeout {
+                    phase,
+                    timeout,
+                    last_output: recent,
+                }
+                .into());
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(20)),
             Err(error) => {
