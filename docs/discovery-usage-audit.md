@@ -545,3 +545,26 @@ The focused regression fails on the old output; all 16 probe tests pass.
 The fixed CLI replay follows that exact name-based source command successfully,
 then verifies stored-reference source recovery. The real episode later used the
 same source focus (149240–149241), supporting this handoff rather than a new API.
+
+
+## Option context in source snapshots (i44)
+
+Telemetry 149240/q294658 showed a source snapshot of a dependency declaration
+preceded by `set_option backward.isDefEq.respectTransparency false in` and
+`variable (F) in`. Only the variable command survived in its ambient context.
+A standalone fixture accepted by pinned Lean reproduced missing persistent and
+declaration-local options. This can obscure why copied source elaborates differently.
+
+The existing ambient collector now retains top-level `set_option` commands using
+its existing namespace/section and next-declaration scope handling. Indented
+proof-local options are excluded from subsequent declaration context, as term-local
+opens already are. Source remains explicitly textual, not an elaborated environment.
+The same 16-command context budget applies; no verbs or grammar were added.
+
+The regression failed before the fix. All 120 search tests pass; the standalone
+replay retains the target option, removes it from the next declaration, and removes
+namespace options after its end. CLI smoke covers the option-plus-variable chain.
+Index version 14 refreshes cached source context; help is search-v9/probe-v17.
+The expanded pinned-Lean CLI smoke and 8 help tests pass. Replaying the original
+query against an isolated copy of TemperedDistribution.lean retains the option
+only for its intended declaration, not the following apply lemma.

@@ -798,9 +798,11 @@ fn ambient_contexts_by_line(
         flattened.extend(local.iter().cloned());
         result.push(flattened);
         let trimmed = line.trim();
-        // A term-local `open ... in` inside a proof is not ambient context
+        // A term-local open or option inside a proof is not ambient context
         // for the following declaration.
-        if line.starts_with(char::is_whitespace) && trimmed.starts_with("open ") {
+        if line.starts_with(char::is_whitespace)
+            && (trimmed.starts_with("open ") || trimmed.starts_with("set_option "))
+        {
             continue;
         }
         if declaration_regex().is_match(line) {
@@ -824,7 +826,7 @@ fn ambient_contexts_by_line(
                 scopes.pop();
             }
         } else if trimmed == "variable"
-            || ["universe ", "variable ", "include ", "omit ", "open "]
+            || ["universe ", "variable ", "include ", "omit ", "open ", "set_option "]
                 .iter()
                 .any(|p| trimmed.starts_with(p))
         {

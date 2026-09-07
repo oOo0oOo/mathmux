@@ -32,6 +32,8 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
 
     (root / 'RootFixture.lean').write_text('namespace Outer\ntheorem _root_.Canonical.target : True := by trivial\nend Outer\n')
 
+    (root / 'Options.lean').write_text('namespace Demo\nset_option autoImplicit false\nset_option pp.universes true in\nvariable (n : Nat) in\ndef target : Nat := n\ndef later : Nat := 2\ntheorem proofOption : True := by\n  set_option pp.all true in\n    exact True.intro\nend Demo\ndef outside : Nat := 3\n')
+
     run(['git', 'add', '.'])
     run(['git', 'commit', '-m', 'fixture'])
     log = open(pathlib.Path(tmp) / 'daemon.log', 'w+')
@@ -53,6 +55,14 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
 
         def probe(q):
             return run([binary, 'probe', q], ws).stdout
+
+        options = probe('Demo.target source')
+        assert 'set_option autoImplicit false' in options, options
+        assert 'set_option pp.universes true in' in options, options
+        assert 'variable (n : Nat) in' in options, options
+        later_options = probe('Demo.later source')
+        assert 'set_option autoImplicit false' in later_options, later_options
+        assert 'pp.universes' not in later_options, later_options
         navigation = run([binary, 'search', '/Own documentation/'], ws).stdout
         for _ in range(2):
             next_command = next(line.removeprefix('next: ') for line in navigation.splitlines() if line.startswith('next: '))

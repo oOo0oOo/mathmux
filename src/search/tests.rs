@@ -4516,3 +4516,16 @@ fn signature_modifier_keeps_api_anchor_exact() {
     assert!(exact_plan("function signature", false).is_none());
     assert!(exact_plan("Demo.continuous_target signature", true).is_none());
 }
+
+#[test]
+fn source_options_retain_scope_without_leaking_proof_local_commands() {
+    let entries = parse_source("namespace Demo\nset_option autoImplicit false\nset_option pp.universes true in\nvariable (n : Nat) in\ndef target : Nat := n\ndef later : Nat := 2\ntheorem proofOption : True := by\n  set_option pp.all true in\n    exact True.intro\ndef afterProof : Nat := 4\nend Demo\ndef outside : Nat := 3\n", "Options");
+    let body = |name| &entries.iter().find(|e| e.name == name).unwrap().body;
+    assert!(body("Demo.target").contains("set_option autoImplicit false"));
+    assert!(body("Demo.target").contains("set_option pp.universes true in"));
+    assert!(body("Demo.target").contains("variable (n : Nat) in"));
+    assert!(body("Demo.later").contains("set_option autoImplicit false"));
+    assert!(!body("Demo.later").contains("pp.universes"));
+    assert!(!body("Demo.afterProof").contains("pp.all"));
+    assert!(!body("outside").contains("set_option"));
+}
