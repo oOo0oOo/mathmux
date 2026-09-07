@@ -1024,3 +1024,12 @@ Telemetry 150366 records confusing `ContinuousOn` with the stronger `Continuous`
 Exact refinement acceptance now requires all requested terms in the name/signature/documentation, excluding proof bodies and file paths. Expanded retrieval terms remain available for discovery. Family promotion includes underscore-named variants as well as namespace members, so a supported variant is offered first rather than leaving the insufficient anchor first. Exact unrefined lookup is unchanged; this remains textual discovery, not verified applicability.
 
 Validation: 134 search tests pass, including a database-backed full refined-search regression, proof-only/path-only controls, and existing namespace-family cases. Fresh isolated cold/warm replays (`/tmp/mm-i72-final.log`) rank the requested continuity-on variant first, retain exact lookup and the covered `continuous` refinement, and expose the selected variant's premises through assumptions. No formalization files or daemons touched.
+
+
+### i73: give a valid retry for multi-name probe mistakes
+
+Telemetry 150377 followed by 150379 shows an invalid probe containing multiple declarations being retried with another invalid multi-name command suggested by the error itself. Current isolated reproduction confirmed the loop.
+
+When an unpositioned declaration probe contains more than two remaining terms after parsing its focus, the error now explains one declaration per call and suggests the first declaration with `signature`. Existing single-name focus errors and contextual Lean directives keep their handling. No batch grammar or public verbs are added.
+
+Validation: 17 probe tests pass, including multi-name errors with and without a trailing focus and parsing the suggested retry. `/tmp/mm-i73-replay.log` follows the rejected multi-name request to its suggested valid signature probe successfully in an isolated copied-source/artifact fixture. No formalization files or daemons touched.

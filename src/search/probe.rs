@@ -218,8 +218,12 @@ impl ProbeRequest {
             && !terms.first().is_some_and(|term| term.starts_with("type:"))
             && terms.len() > 1
         {
+            if terms.len() > 2 {
+                let name = terms[0];
+                bail!("inspect one declaration per probe; try `probe {name} signature`, then probe the other names separately");
+            }
             let requested = unquote(terms.last().copied().unwrap_or_default());
-            let name = terms[..terms.len() - 1].join(" ");
+            let name = terms[0];
             match requested {
                 "type" => bail!("declaration types use `probe {name} signature`"),
                 "body" | "proof" => {
@@ -2769,6 +2773,13 @@ mod tests {
                 .to_string(),
             "unknown declaration focus `Fiber`; try `probe Demo.foo signature`, `probe Demo.foo source`, or `probe Demo.foo usages`"
         );
+        for query in ["Demo.first Demo.second Demo.third", "Demo.first Demo.second Demo.third signature"] {
+            let error = ProbeRequest::parse(query).unwrap_err().to_string();
+            assert!(error.contains("one declaration per probe"));
+            assert!(error.contains("probe Demo.first signature"));
+            let retry = ProbeRequest::parse("Demo.first signature").unwrap();
+            assert_eq!(retry.subject.as_deref(), Some("Demo.first"));
+        }
         let quoted_focus = ProbeRequest::parse("Demo.foo 'source'").unwrap();
         assert_eq!(quoted_focus.subject.as_deref(), Some("Demo.foo"));
         assert_eq!(quoted_focus.focus.as_deref(), Some("source"));
