@@ -508,6 +508,7 @@ pub(super) fn declaration_block(block: &str) -> &str {
             (masked.trim().is_empty() && (line.starts_with("/--") || line.starts_with("/-!")))
                 || masked == "end"
                 || masked == "section"
+                || masked == "variable"
                 || [
                     "end ",
                     "section ",
@@ -606,12 +607,13 @@ pub(super) fn ambient_contexts_by_line(source: &str) -> Vec<Vec<String>> {
             if scopes.len() > 1 {
                 scopes.pop();
             }
-        } else if ["universe ", "variable ", "include ", "omit ", "open "]
-            .iter()
-            .any(|p| trimmed.starts_with(p))
+        } else if trimmed == "variable"
+            || ["universe ", "variable ", "include ", "omit ", "open "]
+                .iter()
+                .any(|p| trimmed.starts_with(p))
         {
             let mut command = (*line).to_owned();
-            if trimmed.starts_with("variable ") {
+            if trimmed == "variable" || trimmed.starts_with("variable ") {
                 for next in &lines[index + 1..] {
                     // Comments are masked to blank lines; Lean binders may
                     // continue across both comments and whitespace.

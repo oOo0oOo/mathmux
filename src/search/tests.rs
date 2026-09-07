@@ -4346,3 +4346,12 @@ fn source_body_excludes_following_commands_and_term_opens_do_not_leak() {
     let third = entries.iter().find(|e| e.name == "third").unwrap();
     assert!(!third.body.contains("open Nat"));
 }
+
+#[test]
+fn bare_variable_commands_preserve_binders_and_end_previous_body() {
+    let entries = parse_source("theorem first : True := by trivial\nvariable\n  {α : Type}\n  -- binders continue\n  [Inhabited α]\ndef value : α := default\n", "Demo");
+    assert_eq!(entries.iter().find(|e| e.name == "first").unwrap().body,
+        "theorem first : True := by trivial");
+    let value = entries.iter().find(|e| e.name == "value").unwrap();
+    assert!(value.body.contains("variable\n  {α : Type}\n  [Inhabited α]"));
+}
