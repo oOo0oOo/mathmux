@@ -38,6 +38,7 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
 
     (root / 'FindFixture.lean').write_text('-- find a neighborhood\ndef target : Nat := 1\n')
 
+    (root / 'AliasFixture.lean').write_text('namespace AliasFixture\ntheorem current : True := True.intro\n@[deprecated (since := "2026-03-05")] alias old :=\n  current\nend AliasFixture\n')
     (root / 'FileHitFixture.lean').write_text('-- unique file sentinel phrase\nnamespace FileHitFixture\ndef first : Nat := 1\nend FileHitFixture\n')
     (root / 'ModuleFixture').mkdir()
     (root / 'ModuleFixture/Facts.lean').write_text('namespace ModuleFixture\ndef first : Nat := 1\nend ModuleFixture\n')
@@ -65,6 +66,19 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
 
         def probe(q):
             return run([binary, 'probe', q], ws).stdout
+
+        alias_seed = run([binary, 'search', 'AliasFixture.current'], ws).stdout
+        alias_ref = next(line.removeprefix('ref: ') for line in alias_seed.splitlines() if line.startswith('ref: '))
+        # Model a compiled alias hit; source-only indexes do not generate aliases.
+        with sqlite3.connect(root / '.git/mathmux/state.sqlite3') as alias_db:
+            alias_hits = json.loads(alias_db.execute('select hits_json from searches where ref=?', (alias_ref,)).fetchone()[0])
+            alias_hits[0].update(name='AliasFixture.old', kind='generated', signature=None, source=None, line=3)
+            alias_db.execute('update searches set hits_json=? where ref=?', (json.dumps(alias_hits), alias_ref))
+        alias_source = probe(alias_ref + '#1 source')
+        assert '@[deprecated (since := "2026-03-05")] alias old :=' in alias_source, alias_source
+        assert 'mathmux probe current source' in alias_source, alias_source
+        assert 'AliasFixture.lean:3' in alias_source, alias_source
+        assert 'theorem current : True' in probe('AliasFixture.current source')
 
         signature_preview = probe('manyInputs signature')
         assert '(n : Nat) : Nat' in signature_preview, signature_preview

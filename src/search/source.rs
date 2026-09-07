@@ -508,7 +508,7 @@ pub(super) fn declaration_regex() -> &'static Regex {
 pub(super) fn alias_source_entry(source: &str, requested: &str) -> Option<SourceEntry> {
     static ALIAS: OnceLock<Regex> = OnceLock::new();
     let alias = ALIAS.get_or_init(|| Regex::new(
-        r"(?m)^[ \t]*alias[ \t]+(?P<names>⟨[^⟩]+⟩|[\p{L}_][\p{L}\p{N}\p{M}_'.]*)[ \t]*:=[ \t\r\n]*(?P<origin>[\p{L}_][\p{L}\p{N}\p{M}_'.]*)"
+        r"(?m)^[ \t]*(?:@\[[^\n]*\][ \t]*(?:\n[ \t]*)*)*alias[ \t]+(?P<names>⟨[^⟩]+⟩|[\p{L}_][\p{L}\p{N}\p{M}_'.]*)[ \t]*:=[ \t\r\n]*(?P<origin>[\p{L}_][\p{L}\p{N}\p{M}_'.]*)"
     ).expect("valid alias regex"));
     let code = mask_comments(source);
     let starts = line_starts(source);

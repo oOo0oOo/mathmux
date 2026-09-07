@@ -750,3 +750,20 @@ context, long explicit inputs, and unchanged short signatures. The CLI regressio
 follows the full-signature handoff and checks every authored implicit input.
 The original compact-operator replay now exposes both hypotheses and the conclusion.
 Installed i53 file-outline behavior was independently verified.
+
+
+## Attributed alias source preserves the replacement route (i55)
+
+Telemetry 149617 cannot recover IsCompactOperator.finiteDimensional's source;
+149618 reads the file instead. The declaration is an inline `@[deprecated] alias`.
+The alias recognizer accepted only a bare alias at line start. A focused regression
+fails on this exact attribute shape before the fix.
+
+Alias recovery now accepts the same leading attribute syntax as the declaration
+recognizer. The source snapshot includes the attribute, alias command and origin;
+its existing origin handoff exposes the replacement theorem's premises. Exact
+namespace matching and comment masking remain enforced. No new verbs, index or
+help changes. All 123 search tests and expanded pinned-Lean CLI smoke pass.
+Both the generic CLI fixture and copied original workflow model a compiled alias
+hit in isolated stored results, then follow source recovery to the origin. They
+do not claim source-only indexing generates aliases or that Mathlib was recompiled.

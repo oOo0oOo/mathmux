@@ -4386,6 +4386,14 @@ fn alias_source_requires_exact_generated_name_and_exposes_origin() {
     assert_eq!(entry.body, "alias ⟨forward,\n  backward⟩ := base");
     assert!(entry.docs.contains("probe base source"));
     assert!(alias_source_entry(source, "Demo.single").is_some());
+    let attributed = "namespace Demo\n@[deprecated (since := \"2026-03-05\")] alias old :=\n  current\nend Demo\n";
+    let entry = alias_source_entry(attributed, "Demo.old").unwrap();
+    assert_eq!(entry.line, 2);
+    assert!(entry.body.starts_with("@[deprecated"));
+    assert!(entry.body.contains("alias old :=\n  current"));
+    assert!(entry.docs.contains("mathmux probe current source"));
+    assert!(alias_source_entry(attributed, "Other.old").is_none());
+
     assert!(alias_source_entry(source, "Other.backward").is_none());
     assert!(alias_source_entry(source, "Demo.fake").is_none());
     let entries = parse_source(source, "Demo");
