@@ -368,25 +368,43 @@ fn compact_signature_preview(signature: &str) -> String {
     let signature = single_line(signature);
     let mut output = String::new();
     let mut context_binders = 0;
-    let mut depth = 0usize;
-    let mut opening = None;
-    for character in signature.chars() {
-        match character {
-            '{' | '[' if depth == 0 => {
-                depth = 1;
-                opening = Some(character);
-                context_binders += 1;
+    let mut remaining = signature.trim();
+    // Only the leading binder sequence is context. Brackets in explicit
+    // argument types or the conclusion belong to the mathematical statement.
+    while let Some(opening @ ('(' | '{' | '[' | '⦃')) = remaining.chars().next() {
+        let mut stack = Vec::new();
+        let mut end = None;
+        for (index, character) in remaining.char_indices() {
+            match character {
+                '(' => stack.push(')'),
+                '{' => stack.push('}'),
+                '[' => stack.push(']'),
+                '⦃' => stack.push('⦄'),
+                ')' | '}' | ']' | '⦄' => {
+                    if stack.pop() != Some(character) {
+                        break;
+                    }
+                    if stack.is_empty() {
+                        end = Some(index + character.len_utf8());
+                        break;
+                    }
+                }
+                _ => {}
             }
-            '{' | '[' if depth > 0 => depth += 1,
-            '}' if depth > 0 && opening == Some('{') => depth -= 1,
-            ']' if depth > 0 && opening == Some('[') => depth -= 1,
-            _ if depth == 0 => output.push(character),
-            _ => {}
         }
-        if depth == 0 {
-            opening = None;
+        let Some(end) = end else { break };
+        if opening == '(' {
+            output.push_str(&remaining[..end]);
+            output.push(' ');
+        } else {
+            context_binders += 1;
         }
+        remaining = remaining[end..].trim_start();
     }
+    if context_binders > 0 && !remaining.starts_with(':') {
+        return signature;
+    }
+    output.push_str(remaining);
     let output = output.split_whitespace().collect::<Vec<_>>().join(" ");
     if context_binders == 0 {
         output
@@ -583,6 +601,19 @@ mod tests {
             "(f : X → X) : Continuous f [context: 2 implicit/typeclass]"
         );
         assert_eq!(compact_signature_preview("Nat → Nat"), "Nat → Nat");
+        for signature in [
+            "(hf : MemLp f p μ) (hg : MemLp g p μ) : hf.toLp f = hg.toLp g ↔ f =ᵐ[μ] g",
+            "(f : E →L[𝕜] F) : f ∈ {g | Continuous g}",
+            "(f : {x : Nat // x > 0} → Nat) : f ⟨1, by decide⟩ = 1",
+            "E →L[𝕜] F",
+            "{x : Nat // x > 0} → Nat",
+        ] {
+            assert_eq!(compact_signature_preview(signature), signature);
+        }
+        assert_eq!(
+            compact_signature_preview("{X : Type} [Inhabited {x : X // True}] (x : X) : x ∈ {y | True}"),
+            "(x : X) : x ∈ {y | True} [context: 2 implicit/typeclass]"
+        );
     }
 
     #[test]

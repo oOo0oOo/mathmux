@@ -568,3 +568,23 @@ Index version 14 refreshes cached source context; help is search-v9/probe-v17.
 The expanded pinned-Lean CLI smoke and 8 help tests pass. Replaying the original
 query against an isolated copy of TemperedDistribution.lean retains the option
 only for its intended declaration, not the following apply lemma.
+
+
+## Preserve mathematical notation in compact signatures (i45)
+
+Telemetry 149262/q294680 displayed `f =ᵐ g` where the actual conclusion was
+`f =ᵐ[μ] g`; μ was incorrectly counted as an implicit/typeclass binder. Replaying
+the exact query against an isolated copy of LpSpace/Basic.lean reproduced the
+corruption while the source probe retained the correct statement.
+
+Compaction now considers only the leading outer binder sequence before the
+result colon. Explicit argument types and conclusions retain their bracket/brace
+notation. Mixed nested delimiters in actual context binders are balanced;
+ambiguous input without the result colon is preserved rather than stripped.
+Regression cases cover measure notation, continuous linear maps, set predicates,
+subtype arguments/results, and nested subtype instances. The old formatter fails
+the regression. Original-query replay now preserves μ and counts only the genuine
+implicit binder. No verbs, grammar, index format, or help contract changed.
+All 120 search tests pass. An isolated pinned-Lean CLI replay verifies a real
+explicit subtype argument survives exact search. The prior installed release's
+scoped-option context was independently checked successfully.

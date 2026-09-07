@@ -34,6 +34,8 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
 
     (root / 'Options.lean').write_text('namespace Demo\nset_option autoImplicit false\nset_option pp.universes true in\nvariable (n : Nat) in\ndef target : Nat := n\ndef later : Nat := 2\ntheorem proofOption : True := by\n  set_option pp.all true in\n    exact True.intro\nend Demo\ndef outside : Nat := 3\n')
 
+    (root / 'NotationFixture.lean').write_text('namespace NotationFixture\ndef positiveValue (x : {n : Nat // n > 0}) : Nat := x.val\nend NotationFixture\n')
+
     run(['git', 'add', '.'])
     run(['git', 'commit', '-m', 'fixture'])
     log = open(pathlib.Path(tmp) / 'daemon.log', 'w+')
@@ -55,6 +57,9 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
 
         def probe(q):
             return run([binary, 'probe', q], ws).stdout
+
+        notation = run([binary, 'search', 'NotationFixture.positiveValue'], ws).stdout
+        assert '(x : {n : Nat // n > 0}) : Nat' in notation, notation
 
         options = probe('Demo.target source')
         assert 'set_option autoImplicit false' in options, options
