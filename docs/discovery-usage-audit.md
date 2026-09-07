@@ -731,3 +731,22 @@ signature. No verbs, help contract, or index changes. The extended renderer
 regression includes a quoted path; all 123 search tests pass. Generic replay
 follows the outline to the actual declaration. The CLI regression exercises the
 comment-only file hit and its outline handoff in an isolated fixture.
+
+
+## Signature probes expose the statement before context (i54)
+
+Telemetry 149610 requests isCompactOperator_of_tendsto's signature; the preview
+ends among typeclass binders, before either explicit hypothesis or the conclusion.
+The next request reads a broad source range. Copying the dependency source into
+an isolated replay reproduces this on the current build.
+
+Signature probes now use the existing balanced-binder preview before applying the
+same 240-character budget. Explicit premises and conclusion come first; elided
+implicit/typeclass context is counted. Whenever the preview differs from the full
+signature, an explicit `show qREF --all` handoff exposes the stored context. Short
+complete signatures gain no extra line. The full stored signature is unchanged.
+No new verbs or index changes. All 123 search tests pass, including shortened
+context, long explicit inputs, and unchanged short signatures. The CLI regression
+follows the full-signature handoff and checks every authored implicit input.
+The original compact-operator replay now exposes both hypotheses and the conclusion.
+Installed i53 file-outline behavior was independently verified.

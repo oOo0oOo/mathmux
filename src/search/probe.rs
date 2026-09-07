@@ -2437,6 +2437,17 @@ mod tests {
         let output = render_static_probe_summary(&signed, "signature");
         assert!(!output.contains("not indexed"), "{output}");
         assert!(!output.contains("warming"), "{output}");
+        assert!(!output.contains("Full signature/context"), "{output}");
+        signed.hits[0].signature = Some(
+            "{X : Type} [TopologicalSpace X] (f : X → X) (hf : Continuous f) : Continuous f".into(),
+        );
+        let output = render_static_probe_summary(&signed, "signature");
+        assert!(output.contains("(hf : Continuous f) : Continuous f"), "{output}");
+        assert!(output.contains("[context: 2 implicit/typeclass]"), "{output}");
+        assert!(output.contains("Full signature/context: mathmux show q1 --all"), "{output}");
+        signed.hits[0].signature = Some(format!("(hyp : {}) : True", "Nat → ".repeat(60)));
+        let output = render_static_probe_summary(&signed, "signature");
+        assert!(output.contains("Full signature/context: mathmux show q1 --all"), "{output}");
     }
 
     #[test]

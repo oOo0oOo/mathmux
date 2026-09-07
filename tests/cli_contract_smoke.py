@@ -66,6 +66,13 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         def probe(q):
             return run([binary, 'probe', q], ws).stdout
 
+        signature_preview = probe('manyInputs signature')
+        assert '(n : Nat) : Nat' in signature_preview, signature_preview
+        assert 'Full signature/context: mathmux show ' in signature_preview, signature_preview
+        signature_ref = next(line.removeprefix('ref: ') for line in signature_preview.splitlines() if line.startswith('ref: '))
+        signature_full = run([binary, 'show', signature_ref, '--all'], ws).stdout
+        assert '{A B C D E F G H I J K L M : Type}' in signature_full, signature_full
+
         notation = run([binary, 'search', 'NotationFixture.positiveValue'], ws).stdout
         assert '(x : {n : Nat // n > 0}) : Nat' in notation, notation
 

@@ -33,6 +33,7 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
         SUMMARY_LIMIT
     };
     let mut previous_hit_path = None;
+    let mut shortened_signature = false;
     for (index, hit) in run.hits.iter().take(summary_limit).enumerate() {
         output.push('\n');
         if run.hits.len() > 1 {
@@ -82,6 +83,11 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
             output.push_str(" : ");
             if matches!(run.inference.as_str(), "exact" | "exact-batch") {
                 output.push_str(&compact_signature_preview(signature));
+            } else if run.inference == "signature" {
+                let complete = single_line(signature);
+                let preview = truncate_line(&compact_signature_preview(signature), 240);
+                shortened_signature |= preview != complete;
+                output.push_str(&preview);
             } else {
                 output.push_str(&truncate_line(&single_line(signature), 240));
             }
@@ -159,6 +165,12 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
     {
         output.push('\n');
         output.push_str(note);
+    }
+    if shortened_signature {
+        output.push_str(&format!(
+            "\nFull signature/context: mathmux show {} --all",
+            run.reference
+        ));
     }
     if run.inference == "exact-miss" {
         if !run
