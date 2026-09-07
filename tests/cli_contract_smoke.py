@@ -39,6 +39,7 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
     (root / 'FindFixture.lean').write_text('-- find a neighborhood\ndef target : Nat := 1\n')
 
     (root / 'GroupedFixture.lean').write_text('structure GroupedFixture where\n  (inner outer : Nat)\n  ordered : inner < outer\n')
+    (root / 'SubscriptFixture.lean').write_text('theorem SubscriptFixture.inv_le_inv₀ (n : Nat) : n = n := rfl\n')
     signature_inputs = ' '.join(f'InputType{i}' for i in range(30))
     (root / 'SignatureFixture.lean').write_text('def SignatureFixture.longInputs {' + signature_inputs + ' : Type} (n : Nat) : Nat := n\n')
     (root / 'AliasFixture.lean').write_text('namespace AliasFixture\ntheorem current : True := True.intro\n@[deprecated (since := "2026-03-05")] alias old :=\n  current\nend AliasFixture\n')
@@ -69,6 +70,9 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
 
         def probe(q):
             return run([binary, 'probe', q], ws).stdout
+
+        subscript = run([binary, 'search', 'SubscriptFixture.inv_le_inv₀*'], ws).stdout
+        assert 'SubscriptFixture.inv_le_inv₀' in subscript and 'weak coverage' not in subscript, subscript
 
         grouped_fields = probe('GroupedFixture fields')
         assert 'inner : Nat' in grouped_fields and 'outer : Nat' in grouped_fields, grouped_fields

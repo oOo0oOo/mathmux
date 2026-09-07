@@ -862,10 +862,11 @@ fn uncovered_hit_terms(hits: &[SearchHit], terms: &[String]) -> Vec<String> {
         .collect::<Vec<_>>()
         .join(" ")
         .to_lowercase();
+    let searchable = ascii_numeric_spelling(&searchable);
     terms
         .iter()
         .filter(|term| {
-            !searchable.contains(term.as_str())
+            !searchable.contains(&ascii_numeric_spelling(term))
                 && !concept_alias(term).is_some_and(|alias| {
                     searchable.split(|c: char| !c.is_alphanumeric()).any(|word| word == alias)
                 })

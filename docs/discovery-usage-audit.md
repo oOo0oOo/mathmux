@@ -819,3 +819,18 @@ All 124 search tests pass. Copied original source with a modeled compiled result
 confirms the exact-name handoff without inventing a source snapshot. CLI coverage
 uses a real generated constructor and follows inspection to its datum obligation.
 Installed grouped-field behavior was independently verified.
+
+
+## Coverage uses consistent numeric spellings (i59)
+
+Telemetry 149736 finds inv_le_inv₀ but warns that inv_le_inv0 is missing. Generic
+isolated replay reproduces the false weak-coverage warning: query concepts include
+a numeric alias that the coverage checker compares against unnormalized hit text.
+
+Coverage now applies the existing ASCII numeric spelling normalization to both
+hit text and requested terms. Exact declaration resolution, wildcard matching,
+and displayed names are unchanged. Different digits still count as missing.
+All 124 search tests pass, including both alias directions and a different-digit
+control. Replay removes the spurious warning while retaining the source name and
+signature. The CLI regression covers a qualified subscript-bearing wildcard.
+No new verbs, index or help changes. Audit advanced through telemetry 149741.

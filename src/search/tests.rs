@@ -4527,6 +4527,10 @@ fn coverage_recognizes_exact_concept_aliases_without_fuzzy_prefixes() {
         hit.signature = Some(signature.into());
         assert_eq!(weak_coverage_note(&[hit], &[concept.into()]), None);
     }
+    for (name, term) in [("Demo.inv_le_inv₀", "inv_le_inv0"), ("Demo.value12", "value₁₂")] {
+        assert_eq!(weak_coverage_note(&[search_hit(name)], &[term.into()]), None);
+    }
+    assert!(weak_coverage_note(&[search_hit("Demo.value₁")], &["value2".into()]).is_some());
     let hit = search_hit("Demo.compact");
     assert!(weak_coverage_note(&[hit], &["composition".into()]).unwrap().contains("missing composition"));
     assert!(meaningful_query_tokens("Signal injection Lp").contains(&"injective".into()));
