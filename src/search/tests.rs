@@ -4687,3 +4687,18 @@ fn distributed_coverage_qualifies_only_disjoint_textual_matches() {
     assert_eq!(distributed_coverage_note(&documented, &terms), None);
     assert_eq!(distributed_coverage_note(&hits, &["elliptic".into()]), None);
 }
+
+#[test]
+fn multiword_owner_member_prefers_the_complete_name_at_equal_coverage() {
+    let query = "HasTemperateGrowth mul";
+    let mut broad = search_hit("Demo.growth_excerpt");
+    broad.source = Some("HasTemperateGrowth mul has temperate growth".into());
+    let candidates = vec![
+        Candidate { hit: broad, score: 1000.0, origins: 0 },
+        Candidate { hit: search_hit("Complex.hasTemperateGrowth_exp_mul_I"), score: 900.0, origins: 0 },
+        Candidate { hit: search_hit("Function.HasTemperateGrowth.mul"), score: 10.0, origins: 0 },
+    ];
+    let (ranked, _) = rank_discovery_candidates(candidates, query, &meaningful_query_tokens(query), false, None);
+    assert_eq!(ranked[0].hit.name, "Function.HasTemperateGrowth.mul");
+    assert_eq!(ranked.len(), 3);
+}

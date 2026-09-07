@@ -743,7 +743,7 @@ fn diversify_ranked_candidates(ranked: &mut Vec<Candidate>, query: &str, query_t
     if !query.contains('|') {
         promote_result_context(ranked, query, query_tokens);
         if !declaration_name_query(query) {
-            promote_strongest_query_coverage(ranked, query_tokens);
+            promote_strongest_query_coverage(ranked, query, query_tokens);
         }
     }
     if let Some(anchor) = qualified_anchor
@@ -756,21 +756,28 @@ fn diversify_ranked_candidates(ranked: &mut Vec<Candidate>, query: &str, query_t
     }
 }
 
-fn promote_strongest_query_coverage(ranked: &mut Vec<Candidate>, tokens: &[String]) {
+fn promote_strongest_query_coverage(ranked: &mut Vec<Candidate>, query: &str, tokens: &[String]) {
     if ranked.len() <= 1 || tokens.len() <= 1 {
         return;
     }
-    let top_coverage = hit_query_coverage(&ranked[0].hit, tokens).0;
+    // Use original words: expanded tokens also contain identifier parts and aliases.
+    let joined_name = query.split_whitespace().collect::<Vec<_>>().join(".");
+    let coverage = |hit: &SearchHit| {
+        (hit_query_coverage(hit, tokens).0,
+         !matches!(hit.kind.as_str(), "file" | "imports")
+             && qualified_name_matches(&hit.name, &joined_name))
+    };
+    let top_coverage = coverage(&ranked[0].hit);
     let Some((position, best_coverage)) = ranked
         .iter()
         .enumerate()
         .skip(1)
-        .map(|(position, candidate)| (position, hit_query_coverage(&candidate.hit, tokens).0))
+        .map(|(position, candidate)| (position, coverage(&candidate.hit)))
         .max_by_key(|(_, coverage)| *coverage)
     else {
         return;
     };
-    if best_coverage >= 2 && best_coverage > top_coverage {
+    if best_coverage.0 >= 2 && best_coverage > top_coverage {
         let candidate = ranked.remove(position);
         ranked.insert(0, candidate);
     }

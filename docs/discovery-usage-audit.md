@@ -954,3 +954,22 @@ All 129 search tests pass. Focused cases cover split results, a complete individ
 result, documentation coverage, missing terms and single-term queries. Isolated
 replay verifies the note cold and warm and its absence for exact/alternative
 controls. Formalization files and daemons remain untouched.
+
+
+## Preserve owner/member name matches in coverage ranking (i67)
+
+Telemetry 150167 searches HasTemperateGrowth mul and then resorts to the fully
+qualified declaration. Isolated cold/warm replay reproduces unrelated top results.
+Temporary candidate tracing confirms the intended theorem was retrieved with all
+five expanded tokens covered; the loss occurs in ranking, not indexing.
+
+At equal textual coverage, prefer a declaration whose qualified name matches the
+original query words joined by dots. Use original words rather than expanded
+identifier parts/aliases. Better textual coverage retains precedence; retrieval,
+result count and public grammar are unchanged. No help/index changes.
+
+All 130 search tests pass, including a regression with an excerpt and a longer
+name containing the same words. Real source replay returns the intended theorem
+first cold and warm; neighboring smul and mul_right lookups also return their
+matching declarations. Earlier name-token-only tuning promoted an unrelated
+longer name and was discarded. No diagnostic tracing remains in the product.
