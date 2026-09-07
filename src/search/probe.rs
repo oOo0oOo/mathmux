@@ -1686,6 +1686,18 @@ fn render_static_probe_summary(run: &SearchRun, focus: &str) -> String {
     {
         run.note = None;
     }
+    if focus == "signature" && run.hits.len() == 1
+        && let Some(hit) = run.hits.first().filter(|hit| hit.signature.is_none())
+    {
+        let name = hit.name.trim_start_matches("_root_.");
+        prepend_search_note(
+            &mut run.note,
+            format!(
+                "Signature is not indexed; inspect textual context: mathmux probe {} source",
+                shell_argument(name)
+            ),
+        );
+    }
     render_summary_without_hints(&run)
 }
 
@@ -2378,6 +2390,40 @@ mod tests {
         let detail = render_static_probe_summary(&run, "constructors");
         assert!(detail.contains("probe Demo.Data fields"), "{detail}");
         assert!(detail.contains("#inspect Demo.Data.mk"), "{detail}");
+    }
+
+    #[test]
+    fn missing_signature_routes_to_source_without_implying_a_type() {
+        let run = SearchRun {
+            reference: "q1".into(),
+            workspace_ref: "w1".into(),
+            query: "Demo.target".into(),
+            inference: "exact".into(),
+            hits: vec![SearchHit {
+                name: "_root_.Demo.target".into(),
+                kind: "declaration".into(),
+                signature: None,
+                module: "Demo".into(),
+                path: "Demo.lean".into(),
+                line: 1,
+                doc: None,
+                source: None,
+                usages: vec![],
+                applicable: false,
+                required_import: None,
+            }],
+            note: Some("source index warming".into()),
+            duration_ms: 0,
+            created_at: 0,
+        };
+        let output = render_static_probe_summary(&run, "signature");
+        assert!(output.contains("Signature is not indexed"), "{output}");
+        assert!(output.contains("mathmux probe Demo.target source"), "{output}");
+        let mut signed = run;
+        signed.hits[0].signature = Some("Nat".into());
+        let output = render_static_probe_summary(&signed, "signature");
+        assert!(!output.contains("not indexed"), "{output}");
+        assert!(!output.contains("warming"), "{output}");
     }
 
     #[test]

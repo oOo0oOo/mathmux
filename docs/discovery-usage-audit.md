@@ -527,3 +527,21 @@ their existing interpretation. Cold/warm replay returns one exact declaration;
 a missing anchor produces its exact miss instead of signature-related results.
 All 118 search tests pass, with a real CLI regression for the observed form.
 Help is search-v9/probe-v16; existing indexes remain valid.
+
+
+## Missing signature recovery (i43)
+
+Telemetry 149235/q294653 and 149236/q294654 requested bare probes of known
+APIs but received only names, paths, and usage counts. With no indexed signature,
+the signature renderer removed the warming note and supplied no recovery route.
+An isolated CLI replay with the observed missing-signature metadata reproduced
+that dead end; the existing source probe recovered the authored definition.
+
+A single unsigned signature result now explicitly says its signature is not
+indexed and gives the existing `probe NAME source` command for textual context.
+Complete signatures stay compact. This does not claim source is an elaborated
+type or introduce new verbs, grammar, indexing, or a Lean process.
+The focused regression fails on the old output; all 16 probe tests pass.
+The fixed CLI replay follows that exact name-based source command successfully,
+then verifies stored-reference source recovery. The real episode later used the
+same source focus (149240–149241), supporting this handoff rather than a new API.
