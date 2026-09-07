@@ -258,8 +258,6 @@ fn exact_refinement_score(hit: &SearchHit, tokens: &[String]) -> usize {
         hit.name.as_str(),
         hit.signature.as_deref().unwrap_or_default(),
         hit.doc.as_deref().unwrap_or_default(),
-        hit.source.as_deref().unwrap_or_default(),
-        hit.path.as_str(),
     ]
     .join(" ")
     .to_ascii_lowercase();
@@ -2615,6 +2613,12 @@ impl Searcher {
             > 1;
         let mut ranked = ranked_exact_candidates(rows, name, workspace);
         if !plan.refinement_tokens.is_empty() {
+            // Expanded retrieval tokens must not stand in for the requested
+            // condition (for example Continuous versus ContinuousOn).
+            ranked.retain(|candidate| {
+                exact_refinement_score(&candidate.hit, &plan.requested_terms)
+                    == plan.requested_terms.len()
+            });
             ranked.sort_by(|left, right| {
                 exact_refinement_score(&right.hit, &plan.refinement_tokens)
                     .cmp(&exact_refinement_score(&left.hit, &plan.refinement_tokens))

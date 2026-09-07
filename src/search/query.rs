@@ -1404,6 +1404,7 @@ pub(super) fn promote_family_candidates(
         "{}.",
         canonical_declaration_name(anchor).to_ascii_lowercase()
     );
+    let variant_prefix = format!("{}_", canonical_declaration_name(anchor).to_ascii_lowercase());
     let prefer_apply = requested_terms
         .iter()
         .any(|term| term.eq_ignore_ascii_case("apply"));
@@ -1415,9 +1416,8 @@ pub(super) fn promote_family_candidates(
             .iter()
             .enumerate()
             .filter(|(_, candidate)| {
-                canonical_declaration_name(&candidate.hit.name)
-                    .to_ascii_lowercase()
-                    .starts_with(&prefix)
+                let name = canonical_declaration_name(&candidate.hit.name).to_ascii_lowercase();
+                name.starts_with(&prefix) || name.starts_with(&variant_prefix)
             })
             .map(|(position, candidate)| {
                 let name_matched = requested_terms

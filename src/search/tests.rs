@@ -3611,6 +3611,23 @@ fn anchored_query_with_uncovered_refinements_discovers_member_family() {
             .as_deref()
             .is_some_and(|note| note.starts_with("exact declaration"))
     );
+    for (name, signature) in [
+        ("Demo.image", "(hf : Continuous f) : IsCompact (f '' s)"),
+        ("Demo.image_of_continuousOn", "(hf : ContinuousOn f s) : IsCompact (f '' s)"),
+    ] {
+        connection.execute(
+            "INSERT INTO search_fts(owner,origin,file,module,line,name,kind,signature,docs,body)
+             VALUES ('workspace:w1','Demo.lean','Demo.lean','Demo',1,?1,'theorem',?2,'','')",
+            params![name, signature],
+        ).unwrap();
+    }
+    let query = "Demo.image continuousOn";
+    let result = searcher.execute_text_search(
+        &workspace, query, TextSearchPlan::ExactFirst,
+        TextSearchContext { scopes: &scopes, base_warming: false, import_target: None, show_all: false },
+    ).unwrap();
+    assert_eq!(result.hits[0].name, "Demo.image_of_continuousOn");
+
 }
 
 #[test]
@@ -4743,4 +4760,24 @@ fn near_names_merge_root_aliases_and_keep_signature() {
     assert!(same[0].hit.signature.as_deref().unwrap().contains("IsBounded"));
     assert!(hits.iter().any(|c| c.hit.name == "Other.subset_closedBall"));
     assert!(hits.iter().any(|c| c.hit.name == "Demo.subset_closedBall_lt"));
+}
+
+#[test]
+fn exact_refinements_do_not_stop_on_proof_only_mentions() {
+    let mut anchor = search_hit("Demo.image");
+    anchor.signature = Some("(hf : Continuous f) : IsCompact (f '' s)".into());
+    anchor.source = Some("by exact image_of_continuousOn hf.continuousOn".into());
+    anchor.path = "ContinuousOn.lean".into();
+    let terms = vec!["continuouson".into()];
+    assert_eq!(exact_refinement_score(&anchor, &terms), 0);
+    assert!(exact_refinement_score(&anchor, &["continuous".into()]) > 0);
+    anchor.signature = Some("(hf : ContinuousOn f s) : IsCompact (f '' s)".into());
+    assert_eq!(exact_refinement_score(&anchor, &terms), 1);
+    let mut ranked = vec![
+        Candidate { hit: search_hit("Demo.image"), score: 100.0, origins: 0 },
+        Candidate { hit: search_hit("Demo.image_of_continuousOn"), score: 1.0, origins: 0 },
+    ];
+    promote_family_candidates(&mut ranked, "Demo.image", &terms);
+    assert_eq!(ranked[0].hit.name, "Demo.image_of_continuousOn");
+
 }

@@ -1015,3 +1015,12 @@ Telemetry 150342 records a vector-valued use of a scalar-only composition lemma.
 The assumptions facet now selects typed, named section binders referenced in the indexed signature from its refreshed source snapshot. Later declarations shadow earlier ones, explicit signature binders take precedence, and unrelated names and anonymous instance binders are excluded. The addition is explicitly textual, capped at six binders and 600 binder bytes, and links to full source; `#inspect` remains the elaborated-contract route. It does not infer implicit arguments or transitive typeclass requirements.
 
 Validation: 133 search tests pass, including missing source, shadowing, multiline/bare variable, irrelevant-name and output-limit controls. The final focused contract tests also pass. Generic and original copied-source replays (`/tmp/mm-i71-0.log`, `/tmp/mm-i71-1.log`) expose the missing codomain while preserving explicit premises and source inspection. No public verb or matching change, and no formalization files or daemons touched.
+
+
+### i72: continue discovery when an anchor lacks the requested condition
+
+Telemetry 150366 records confusing `ContinuousOn` with the stronger `Continuous` premise. Current isolated `IsCompact.image continuousOn` stops at `IsCompact.image` and says no nearby match despite `IsCompact.image_of_continuousOn` being present (`/tmp/mm-compact-image.log`). Both proof-body mentions and expanded refinement tokens could make the anchor appear sufficient.
+
+Exact refinement acceptance now requires all requested terms in the name/signature/documentation, excluding proof bodies and file paths. Expanded retrieval terms remain available for discovery. Family promotion includes underscore-named variants as well as namespace members, so a supported variant is offered first rather than leaving the insufficient anchor first. Exact unrefined lookup is unchanged; this remains textual discovery, not verified applicability.
+
+Validation: 134 search tests pass, including a database-backed full refined-search regression, proof-only/path-only controls, and existing namespace-family cases. Fresh isolated cold/warm replays (`/tmp/mm-i72-final.log`) rank the requested continuity-on variant first, retain exact lookup and the covered `continuous` refinement, and expose the selected variant's premises through assumptions. No formalization files or daemons touched.
