@@ -784,3 +784,20 @@ All 123 search tests pass. CLI coverage checks both full short inputs and a long
 implicit-input signature whose handoff retrieves every stored input. No verbs,
 index or help changes. The audit advanced through telemetry 149641; source probes
 retain ambient assumptions and comment searches remain labeled source matches.
+
+
+## Grouped data fields are part of field probes (i57)
+
+Telemetry 149667 omits ContDiffBump's rIn/rOut data fields and shows only their
+proof obligations. Source probe 149669 reveals `(rIn rOut : ℝ)`. A generic grouped
+Nat-field fixture reproduces the omission on the current build.
+
+The field parser now recognizes parenthesized grouped names and creates a field
+entry for each name with the shared type and source line. The group participates
+in field boundaries, so preceding fields do not absorb its source. Nested type
+parentheses remain intact. Index version advances to 15 so persisted source
+indexes regenerate the missing entries. No new verbs or help changes.
+All 124 search tests pass, including grouped types, dependent fields and line
+coordinates. Copied original source now yields both radii before their obligations.
+The CLI regression checks generic grouped data and its dependent proof field.
+Installed i56 short-signature and full long-context recovery passed independently.

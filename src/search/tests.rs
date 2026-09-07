@@ -4587,3 +4587,15 @@ fn dotted_module_outline_uses_existing_source_resolution() {
     }
     assert!(parse_source_occurrence_query(directory.path(), directory.path(), None, "Demo.missing outline").unwrap().is_none());
 }
+
+#[test]
+fn grouped_structure_fields_preserve_each_name_type_and_line() {
+    let fields = parse_structure_fields(
+        "structure Demo where\n  (inner outer : Nat)\n  ordered : inner < outer\n  (f g : Nat → (Nat × Nat))\n", "Demo", 10,
+    );
+    assert_eq!(fields.iter().map(|f| (f.name.as_str(), f.signature.as_str(), f.line)).collect::<Vec<_>>(), vec![
+        ("Demo.inner", "Nat", 11), ("Demo.outer", "Nat", 11),
+        ("Demo.ordered", "inner < outer", 12),
+        ("Demo.f", "Nat → (Nat × Nat)", 13), ("Demo.g", "Nat → (Nat × Nat)", 13),
+    ]);
+}

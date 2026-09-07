@@ -331,7 +331,7 @@ pub(super) fn parse_structure_fields(
     fields
         .iter()
         .enumerate()
-        .map(|(index, (offset, _, name_end, name))| {
+        .flat_map(|(index, (offset, _, name_end, name))| {
             let end = fields
                 .get(index + 1)
                 .map(|(offset, _, _, _)| *offset)
@@ -348,14 +348,19 @@ pub(super) fn parse_structure_fields(
                 .trim()
                 .trim_start_matches(':')
                 .trim();
-            SourceEntry {
+            let signature = if field.trim_start().starts_with('(') {
+                signature.strip_suffix(')').unwrap_or(signature).trim_end()
+            } else {
+                signature
+            };
+            name.split_whitespace().map(|name| SourceEntry {
                 line: structure_line + block[..*offset].matches('\n').count() as u64,
                 name: format!("{structure}.{name}"),
                 kind: "field".into(),
                 signature: single_line(signature),
                 docs: preceding_doc(block, *offset).unwrap_or_default(),
                 body: field.to_owned(),
-            }
+            }).collect::<Vec<_>>()
         })
         .collect()
 }
@@ -374,6 +379,18 @@ pub(super) fn structure_field_header(line: &str) -> Option<(usize, usize, &str)>
         start = line.len() - rest.len();
     }
     let rest = &line[start..];
+    if let Some(group) = rest.strip_prefix('(') {
+        let colon = group.find(':')?;
+        let names = group[..colon].trim();
+        if names.is_empty() || !names.split_whitespace().all(|name| {
+            let mut chars = name.chars();
+            chars.next().is_some_and(|c| c.is_alphabetic() || c == '_')
+                && chars.all(|c| c.is_alphanumeric() || matches!(c, '_' | '\''))
+        }) {
+            return None;
+        }
+        return Some((indent, start + 1 + colon, names));
+    }
     let mut characters = rest.char_indices();
     let (_, first) = characters.next()?;
     if !(first.is_alphabetic() || first == '_') {
