@@ -511,3 +511,19 @@ be a complete word/identifier segment; compact does not satisfy composition.
 Cold and warm continuity/injection replays retain the desired result first
 without false missing-concept warnings. An unrelated compact query still warns.
 All 117 search tests pass. No new verbs or grammar are introduced.
+
+
+## Signature requests stay on their API anchor (i42)
+
+Telemetry 149216/q294623 used `search HasCompactSupport.of_compactSpace signature`
+and received unrelated compactness declarations. A warm generic replay returned
+both the named theorem and an unrelated theorem containing signature in its name.
+The existing API-anchor parser treated signature as a refinement concept.
+
+For the recognizable API anchors already handled by that parser, signature now
+selects the exact lookup without refinement terms. No verb is added. Ordinary
+`function signature` remains a concept query, and explicit type queries retain
+their existing interpretation. Cold/warm replay returns one exact declaration;
+a missing anchor produces its exact miss instead of signature-related results.
+All 118 search tests pass, with a real CLI regression for the observed form.
+Help is search-v9/probe-v16; existing indexes remain valid.

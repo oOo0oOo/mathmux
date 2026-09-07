@@ -91,6 +91,10 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         ordinary = probe('_root_.AttributeFixture.simp source')
         assert 'theorem simp (n : Nat)' in ordinary, ordinary
 
+        searched_signature = run([binary, 'search', 'AttributeFixture.simp signature'], ws).stdout
+        assert searched_signature.startswith('exact declaration\n'), searched_signature
+        assert 'AttributeFixture.simp : (n : Nat) : n = n' in searched_signature, searched_signature
+
         attribute_signature = probe('AttributeFixture.simp signature')
         assert '(n : Nat) : n = n' in attribute_signature and '] theorem simp' not in attribute_signature, attribute_signature
         short = probe('Demo.identityValue source')

@@ -775,7 +775,7 @@ pub(super) fn anchored_api_query(query: &str) -> Option<(&str, Vec<String>, Vec<
         return None;
     }
     let refinement_lower = refinement.trim().to_ascii_lowercase();
-    if refinement_lower == "declarations"
+    if matches!(refinement_lower.as_str(), "declarations" | "signature")
         || matches!(
             refinement_lower.as_str(),
             "body" | "implementation" | "implementation body" | "proof" | "proof body" | "source"

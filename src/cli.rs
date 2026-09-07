@@ -24,7 +24,7 @@ use clap::ValueEnum;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 const WORKFLOW_HELP: &str = r#"AGENT CONTRACT
-  api       search-v8/probe-v16; reread search/probe help only when this digest changes.
+  api       search-v9/probe-v16; reread search/probe help only when this digest changes.
   scope     Use the preassigned workspace; never run ws or enter main/another workspace.
   discover  Search unknown things; probe known API, exact context, or failures.
             Exact declarations go straight to probe NAME; qREFs store result sets.
@@ -36,7 +36,7 @@ const WORKFLOW_HELP: &str = r#"AGENT CONTRACT
   safety    sorry is tracked; new axioms fail validation. Never edit .lake/generated artifacts."#;
 
 const SEARCH_HELP: &str = r#"SEARCH — find or read unknown things; returns qREF
-API search-v8 — compact discovery; reread only when this digest changes
+API search-v9 — compact discovery; reread only when this digest changes
 FORMS — type one directly; declaration/type/source/compose are labels, not keywords
   declaration  NAME | NAME* | KIND NAME [source|body|proof]
   type/concept TYPE_OR_CONCEPT_TERMS | type:LEAN_TYPE
@@ -50,6 +50,7 @@ KIND = abbrev|class|def|inductive|instance|lemma|structure|theorem
 
 RESULT
   Exact declarations show signature, path, imports, and a usage count.
+  Recognizable API names also accept trailing signature to keep the lookup exact.
   Regex and source-term matches group by enclosing declaration. qREF metadata is last.
   Use probe NAME source|outline|usages for focused detail. qREFs retain stored result sets;
   show qREF --all expands genuine multi-result or source-range searches.
@@ -1167,7 +1168,7 @@ mod tests {
             .unwrap()
             .render_long_help()
             .to_string();
-        assert!(help.contains("API search-v8"));
+        assert!(help.contains("API search-v9"));
         for form in [
             "type:LEAN_TYPE",
             "FILE:LINE",
@@ -1236,7 +1237,7 @@ mod tests {
     #[test]
     fn workflow_help_prefers_direct_workspace_experimentation() {
         let help = command_line().render_help().to_string();
-        assert!(help.contains("search-v8/probe-v16"));
+        assert!(help.contains("search-v9/probe-v16"));
         assert!(help.contains("Edit intended files -> check -> submit"));
         assert!(help.contains("Exact declarations go straight to probe NAME"));
         assert!(help.contains("Search unknown things; probe known API, exact context"));

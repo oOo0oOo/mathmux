@@ -4504,3 +4504,15 @@ fn coverage_recognizes_exact_concept_aliases_without_fuzzy_prefixes() {
     assert!(weak_coverage_note(&[hit], &["composition".into()]).unwrap().contains("missing composition"));
     assert!(meaningful_query_tokens("Signal injection Lp").contains(&"injective".into()));
 }
+
+
+#[test]
+fn signature_modifier_keeps_api_anchor_exact() {
+    let plan = exact_plan("Demo.continuous_target signature", false).unwrap();
+    assert_eq!(plan.anchor, "Demo.continuous_target");
+    assert!(plan.refinement_tokens.is_empty());
+    assert!(plan.requested_terms.is_empty());
+    assert!(!plan.source_requested);
+    assert!(exact_plan("function signature", false).is_none());
+    assert!(exact_plan("Demo.continuous_target signature", true).is_none());
+}
