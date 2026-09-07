@@ -2154,6 +2154,13 @@ fn name_prefix_candidates_use_fts_and_respect_scopes() {
         hits.into_iter().map(|hit| hit.name).collect::<Vec<_>>(),
         ["Demo.prefixAlphaSuffix"]
     );
+    let recovered = near_name_prefix_candidates(&connection, "prefix_alpha_suffix").unwrap();
+    assert!(recovered.iter().any(|hit| hit.name == "Demo.prefixAlphaSuffix"));
+    assert!(!recovered.iter().any(|hit| hit.name == "Demo.prefixGammaSuffix"));
+    assert!(near_name_prefix_candidates(&connection, "pr_missing").unwrap().is_empty());
+    let unchanged = near_name_prefix_candidates(&connection, "prefixAlpha").unwrap();
+    assert_eq!(unchanged.len(), 1);
+    assert_eq!(unchanged[0].name, "Demo.prefixAlphaSuffix");
     let hits = name_prefix_candidates(&connection, "prefix").unwrap();
     assert_eq!(
         hits.into_iter().map(|hit| hit.name).collect::<Vec<_>>(),

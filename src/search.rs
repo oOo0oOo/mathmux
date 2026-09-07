@@ -578,6 +578,17 @@ fn name_prefix_candidates(connection: &Connection, token: &str) -> Result<Vec<In
         .map_err(Into::into)
 }
 
+fn near_name_prefix_candidates(connection: &Connection, leaf: &str) -> Result<Vec<IndexedRow>> {
+    let rows = name_prefix_candidates(connection, leaf)?;
+    if rows.is_empty()
+        && let Some((prefix, _)) = leaf.split_once('_')
+        && prefix.chars().count() >= 3
+    {
+        return name_prefix_candidates(connection, prefix);
+    }
+    Ok(rows)
+}
+
 fn module_context_candidates(
     connection: &Connection,
     query: &str,
@@ -2806,7 +2817,7 @@ impl Searcher {
         install_active_scopes(&connection, scopes)?;
         // Exact misses must stay bounded: FTS prefix retrieval avoids scanning every
         // indexed declaration just to find a few typo/near-name candidates.
-        let rows = name_prefix_candidates(&connection, &leaf)?;
+        let rows = near_name_prefix_candidates(&connection, &leaf)?;
         let mut suggestions = rows
             .into_iter()
             .filter(|row| !matches!(row.kind.as_str(), "file" | "imports"))

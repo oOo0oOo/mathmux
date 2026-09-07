@@ -973,3 +973,18 @@ name containing the same words. Real source replay returns the intended theorem
 first cold and warm; neighboring smul and mul_right lookups also return their
 matching declarations. Earlier name-token-only tuning promoted an unrelated
 longer name and was discarded. No diagnostic tracing remains in the product.
+
+
+## Recover nearby compound names after an empty prefix lookup (i68)
+
+Telemetry 150219 guesses Function.not_mem_support. Real source/ilean replay shows
+Function.notMem_support exists, but full-prefix FTS rejects it before edit-distance
+ranking. Empty near-name retrieval now retries the first underscore-delimited
+component when at least three characters long. This uses the same scope and row
+limits; successful initial retrieval and exact resolution remain unchanged.
+
+All 130 search tests pass. Extended retrieval regression covers the shorter
+prefix, inactive-workspace exclusion, short-prefix refusal and unchanged successful
+lookup. Real artifact replay suggests the camel-case declaration first, explicitly
+not exact, and retains direct lookup. No new verbs, help or index changes. This is
+bounded recovery, not exhaustive fuzzy search or automatic selector rewriting.
