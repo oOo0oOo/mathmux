@@ -4709,3 +4709,22 @@ fn multiword_owner_member_prefers_the_complete_name_at_equal_coverage() {
     assert_eq!(ranked[0].hit.name, "Function.HasTemperateGrowth.mul");
     assert_eq!(ranked.len(), 3);
 }
+
+#[test]
+fn glob_suffix_retry_requires_retrieved_declaration_evidence() {
+    let candidates = vec![Candidate {
+        hit: search_hit("Demo.tsupport_lineDerivOp_subset"), score: 1.0, origins: 0,
+    }];
+    assert_eq!(declaration_glob_suffix_retry(&candidates, "tsupport.*lineDeriv"),
+        Some("tsupport.*lineDeriv*".into()));
+    for query in ["tsupport.*lineDeriv*", "tsupport.*missing", "lineDeriv", "tsupport.*lineDeriv|Other.*"] {
+        assert_eq!(declaration_glob_suffix_retry(&candidates, query), None);
+    }
+    assert_eq!(declaration_glob_suffix_retry(&[], "tsupport.*lineDeriv"), None);
+    let mut non_decl = candidates.clone();
+    non_decl[0].hit.kind = "file".into();
+    assert_eq!(declaration_glob_suffix_retry(&non_decl, "tsupport.*lineDeriv"), None);
+    non_decl[0].hit.kind = "declaration".into();
+    non_decl[0].hit.name = "_private.Demo.tsupport_lineDerivOp_subset".into();
+    assert_eq!(declaration_glob_suffix_retry(&non_decl, "tsupport.*lineDeriv"), None);
+}

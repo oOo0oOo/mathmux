@@ -446,6 +446,21 @@ pub(super) fn declaration_glob_fts_query(query: &str) -> Option<String> {
     })
 }
 
+pub(super) fn declaration_glob_suffix_retry(candidates: &[Candidate], query: &str) -> Option<String> {
+    if !declaration_glob_query(query) || query.contains('|') || query.ends_with('*') {
+        return None;
+    }
+    let retry = format!("{query}*");
+    let pattern = declaration_glob_regex(&retry).ok()?;
+    candidates.iter().any(|candidate| {
+        let hit = &candidate.hit;
+        !matches!(hit.kind.as_str(), "file" | "imports")
+            && !hit.name.starts_with("_private.")
+            && !hit.name.contains("._@.")
+            && pattern.is_match(&hit.name)
+    }).then_some(retry)
+}
+
 pub(super) fn apply_declaration_glob(candidates: &mut Vec<Candidate>, query: &str) -> bool {
     if !declaration_glob_query(query) {
         return false;
@@ -466,6 +481,10 @@ pub(super) fn declaration_alternative_matches(name: &str, query: &str) -> bool {
 }
 
 pub(super) fn declaration_glob_matches(name: &str, query: &str) -> bool {
+    declaration_glob_regex(query).is_ok_and(|pattern| pattern.is_match(name))
+}
+
+fn declaration_glob_regex(query: &str) -> Result<Regex, regex::Error> {
     let characters = query.chars().collect::<Vec<_>>();
     let pattern = characters
         .iter()
@@ -488,7 +507,7 @@ pub(super) fn declaration_glob_matches(name: &str, query: &str) -> bool {
     } else {
         r"(?:^|\.)"
     };
-    Regex::new(&format!(r"(?i){prefix}{pattern}$")).is_ok_and(|pattern| pattern.is_match(name))
+    Regex::new(&format!(r"(?i){prefix}{pattern}$"))
 }
 
 pub(super) fn declaration_glob_leaf_matches(name: &str, query: &str) -> bool {

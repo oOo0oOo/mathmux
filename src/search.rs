@@ -2368,6 +2368,7 @@ impl Searcher {
             });
         }
         let finish_started = Instant::now();
+        let glob_suffix_retry = declaration_glob_suffix_retry(&ranked, query);
         let (mut ranked, glob_name_miss) = rank_discovery_candidates(
             ranked,
             query,
@@ -2429,6 +2430,11 @@ impl Searcher {
         };
         if glob_name_miss {
             prepend_search_note(&mut note, "no name match".into());
+            if let Some(retry) = glob_suffix_retry {
+                prepend_search_note(&mut note, format!(
+                    "name pattern requires an exact ending; to include suffixes, try: mathmux search {retry}"
+                ));
+            }
         }
         if exact_name_miss {
             prepend_search_note(&mut note, "related results (no exact match)".into());

@@ -988,3 +988,12 @@ prefix, inactive-workspace exclusion, short-prefix refusal and unchanged success
 lookup. Real artifact replay suggests the camel-case declaration first, explicitly
 not exact, and retains direct lookup. No new verbs, help or index changes. This is
 bounded recovery, not exhaustive fuzzy search or automatic selector rewriting.
+
+
+### i69: recover an end-anchored declaration-pattern miss
+
+Telemetry 150200–150226 contains empty declaration-pattern searches. A current isolated copy of Mathlib distribution sources reproduces `tsupport.*lineDeriv` returning only `no name match`, while `tsupport.*lineDeriv*` retrieves both support-containment declarations. The exact-ending behavior is correct, but the empty result leaves a recoverable spelling boundary unexplained.
+
+Search now offers the trailing-star retry only after a name-pattern miss and only when an already retrieved declaration matches that extension. Single patterns already ending in `*`, alternatives, files, private/compiler helpers, and unsupported extensions produce no new hint. Matching semantics, retrieval, successful output, and public verbs are unchanged. The recovery matcher compiles once per eligible query.
+
+Validation: 131 search tests pass, including evidence/empty/alternative/private/file controls. Fresh isolated replay (`/tmp/mm-i69-final.log`) preserves warming uncertainty, returns the retry on the original miss, retrieves the two declarations with the suggested query, and follows the selected declaration to its full source assumptions. A successful exact-ending pattern and unrelated `smulLeftCLM.*lineDeriv` miss remain unchanged. Debug replay timings after compiling once were comparable to baseline (213 ms versus 222 ms for the warmed original query); these are observations, not a benchmark claim. No formalization workspace or daemon was used.
