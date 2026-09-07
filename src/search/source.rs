@@ -580,7 +580,7 @@ pub(super) fn explicit_generator_source_entry(
     static GENERATED: OnceLock<Regex> = OnceLock::new();
     let pattern = GENERATED.get_or_init(|| {
         Regex::new(
-            r"(?m)^[ \t]*@\[to_additive[ \t]+(?P<name>[\p{L}_][\p{L}\p{N}\p{M}_'.]*)[ \t]*\]",
+            r"(?m)^[ \t]*@\[to_additive(?:[ \t]+\([^()\n]*\))*[ \t]+(?P<name>[\p{L}_][\p{L}\p{N}\p{M}_'.]*)(?:[ \t]+\([^()\n]*\))*[ \t]*\]",
         )
         .expect("valid explicit generator regex")
     });

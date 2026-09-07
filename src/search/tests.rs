@@ -4781,3 +4781,16 @@ fn exact_refinements_do_not_stop_on_proof_only_mentions() {
     assert_eq!(ranked[0].hit.name, "Demo.image_of_continuousOn");
 
 }
+
+#[test]
+fn named_generator_source_accepts_attribute_options() {
+    for attr in ["to_additive (attr := simp) additive", "to_additive additive (attr := simp)"] {
+        let source = format!("namespace Demo\n@[{attr}]\ntheorem multiplicative : True := by trivial\nend Demo\n");
+        let entry = explicit_generator_source_entry(&source, "Demo", "Demo.additive").unwrap();
+        assert!(entry.body.contains("multiplicative"));
+        assert_eq!(entry.kind, "generator");
+        assert!(entry.docs.contains("not its generated proof or signature"));
+    }
+    let unnamed = "@[to_additive (attr := simp)]\ntheorem multiplicative : True := by trivial";
+    assert!(explicit_generator_source_entry(unnamed, "Demo", "additive").is_none());
+}

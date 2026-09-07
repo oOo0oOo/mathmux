@@ -1033,3 +1033,12 @@ Telemetry 150377 followed by 150379 shows an invalid probe containing multiple d
 When an unpositioned declaration probe contains more than two remaining terms after parsing its focus, the error now explains one declaration per call and suggests the first declaration with `signature`. Existing single-name focus errors and contextual Lean directives keep their handling. No batch grammar or public verbs are added.
 
 Validation: 17 probe tests pass, including multi-name errors with and without a trailing focus and parsing the suggested retry. `/tmp/mm-i73-replay.log` follows the rejected multi-name request to its suggested valid signature probe successfully in an isolated copied-source/artifact fixture. No formalization files or daemons touched.
+
+
+### i74: recover explicitly named generators with attribute options
+
+Telemetry 150398 and current copied `Group/Basic.lean` plus `.ilean` replay report unavailable source for `ofReal_norm`, although its explicit `to_additive` generator is present with `(attr := simp)` before the target name. The prior pattern accepted only the bare named form.
+
+Explicit generator recovery now accepts bounded, nonnested parenthesized options around the target name. Unnamed generation remains unavailable; no generated name, proof, or signature is inferred. Existing generator labeling and importing-file inspection guidance are preserved.
+
+Validation: 135 search tests pass, including named forms with options and an unnamed negative control. `/tmp/mm-i74-fixed.log` follows the deprecated alias to the correctly labeled generator and original declaration. Initial test assertions were corrected for the existing capitalized label and canonical `_root_` spelling. No formalization workspaces or daemons used.
