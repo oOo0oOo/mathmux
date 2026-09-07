@@ -4810,3 +4810,19 @@ fn near_names_keep_bounded_same_namespace_suffix_completions() {
     assert_eq!(rank_near_name_rows("_root_.Demo.repr_apply", rows()).len(), 1);
     assert!(rank_near_name_rows("repr_apply", rows()).is_empty());
 }
+
+#[test]
+fn connecting_statement_outranks_file_body_coverage() {
+    let mut file = search_hit("Facts");
+    file.kind = "file".into();
+    file.source = Some("extendValue coefficientAction".into());
+    let mut theorem = search_hit("Demo.interaction");
+    theorem.signature = Some("(n : Nat) : extendValue n = coefficientAction n".into());
+    let candidates = vec![file, search_hit("Demo.extendValue"), search_hit("Demo.coefficientAction"), theorem];
+    let candidates = candidates.into_iter().enumerate().map(|(i, hit)| Candidate {
+        hit, score: 100.0 - i as f64, origins: 0,
+    }).collect();
+    let (ranked, _) = rank_discovery_candidates(candidates, "extendValue coefficientAction",
+        &["extendvalue".into(), "coefficientaction".into()], false, None);
+    assert_eq!(ranked[0].hit.name, "Demo.interaction");
+}

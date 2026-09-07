@@ -781,10 +781,18 @@ fn promote_strongest_query_coverage(ranked: &mut Vec<Candidate>, query: &str, to
     }
     // Use original words: expanded tokens also contain identifier parts and aliases.
     let joined_name = query.split_whitespace().collect::<Vec<_>>().join(".");
+    let requested = query.split_whitespace().map(str::to_lowercase).collect::<Vec<_>>();
     let coverage = |hit: &SearchHit| {
+        let declaration = !matches!(hit.kind.as_str(), "file" | "imports");
+        let signature = hit.signature.as_deref().unwrap_or_default().to_lowercase();
+        let full_interface = declaration && requested.len() >= 2
+            && !requested.iter().any(|token| token.contains('.'))
+            && requested.iter().all(|token| {
+            hit_name_matches(&hit.name, token) || text_matches_token(&signature, token)
+        });
         (hit_query_coverage(hit, tokens).0,
-         !matches!(hit.kind.as_str(), "file" | "imports")
-             && qualified_name_matches(&hit.name, &joined_name))
+         declaration && qualified_name_matches(&hit.name, &joined_name),
+         full_interface)
     };
     let top_coverage = coverage(&ranked[0].hit);
     let Some((position, best_coverage)) = ranked

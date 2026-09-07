@@ -1063,3 +1063,10 @@ Validation: all 136 search tests pass, including root-qualified spelling and unr
 Telemetry 150689–150691 showed `HasCompactSupport.mono signature` directing an agent to unavailable generated source before offering Lean inspection. Missing-signature responses now give the importing-file `#inspect` route immediately and retain source as optional textual context. No declaration type or generated proof is inferred; file-outline guidance and indexed signatures are unchanged.
 
 Validation: 17 probe tests pass; the missing-signature regression checks both routes and their order. Isolated copied-source/artifact replay `/tmp/mm-i77-replay.log` confirms the generated declaration gets the direct inspection route and the authored multiplicative theorem keeps its existing complete signature.
+
+
+### i78: promote connecting statements in unqualified multiword searches
+
+Telemetry 150752 motivated a generic cross-API replay: searching `extendValue coefficientAction` returned a file excerpt first, individual definitions second/third, and the theorem whose statement connected both fourth. When overall coverage ties, unqualified multiword searches now prefer declarations covering every requested word in their name/signature over matches relying on file body or surrounding context. Qualified queries retain their existing ranking; no retrieval, output-budget, or grammar changes.
+
+Validation: 137 search tests pass including a connecting-statement regression. `/tmp/mm-i78-replay-0.log` shows the theorem first cold/warm and exact-name/signature followups intact. `/tmp/mm-i78-neighbor-final.log` verifies the existing qualified basis query ranking is preserved. An initial broader tie-break changed that neighbor, so final scope excludes qualified queries.
