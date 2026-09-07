@@ -3276,7 +3276,8 @@ impl Searcher {
                 .then_some(row)
             })
             .collect::<Vec<_>>();
-        if fields.is_empty() {
+        let inherited = parent.hit.signature.as_deref().and_then(source::structure_parent_types);
+        if fields.is_empty() && inherited.is_none() {
             return Ok(Some(miss(format!(
                 "{} has no indexed fields",
                 parent.hit.name
@@ -3294,6 +3295,10 @@ impl Searcher {
             })
             .collect::<Vec<_>>()
             .join("\n");
+        let inheritance_note = inherited.map(|parents| format!(
+            "Direct indexed fields only; inherited obligations are omitted. Extends: {parents}. Full constructor contract: mathmux probe FILE:LINE {} in a project context.",
+            shell_argument(&format!("#inspect {}.mk", parent.hit.name))
+        ));
         let hit = SearchHit {
             name: format!("{} fields", parent.hit.name),
             kind: "fields".into(),
@@ -3307,7 +3312,9 @@ impl Searcher {
             applicable: false,
             required_import: parent.hit.required_import,
         };
-        Ok(Some(exact_search_result(vec![hit], base_warming)))
+        let mut result = exact_search_result(vec![hit], base_warming);
+        if let Some(note) = inheritance_note { prepend_search_note(&mut result.note, note); }
+        Ok(Some(result))
     }
 
     #[allow(dead_code)]

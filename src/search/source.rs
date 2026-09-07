@@ -439,6 +439,29 @@ pub(super) fn parse_notations(
         .collect()
 }
 
+pub(super) fn structure_parent_types(signature: &str) -> Option<String> {
+    let mut depth = 0usize;
+    for (index, c) in signature.char_indices() {
+        match c {
+            '(' | '[' | '{' | '⦃' => depth += 1,
+            ')' | ']' | '}' | '⦄' => depth = depth.saturating_sub(1),
+            'e' if depth == 0
+                && signature[index..].starts_with("extends")
+                && (index == 0 || signature[..index].ends_with(char::is_whitespace))
+                && signature[index + 7..].starts_with(char::is_whitespace) =>
+            {
+                let parents = signature[index + 7..]
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                return (!parents.is_empty()).then_some(parents);
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 pub(super) fn generated_parent_projection(name: &str, signature: &str) -> Option<String> {
     let extension = signature.split_once("extends ")?.1.trim_start();
     let parent = extension

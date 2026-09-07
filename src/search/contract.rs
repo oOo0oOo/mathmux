@@ -1096,7 +1096,7 @@ mod tests {
         let state_dir = dir.path().join("state");
         fs::create_dir_all(&root).unwrap();
         fs::create_dir_all(&state_dir).unwrap();
-        fs::write(root.join("Demo.lean"), "namespace Demo\nstructure Data (n : Nat) where\n  value : Fin n\ntheorem impossible (h : n = 0) : ¬ Nonempty (Data n) := by sorry\ndef construct (h : 0 < n) : Data n := sorry\ndef transform (d : Data n) : Data n := d\nprivate def hidden : Data n := sorry\ntheorem conditional (h : ¬ Nonempty (Data n)) : True := trivial\ninstance : Subsingleton (Data 1) := sorry\nstructure Container where\n  item : Data 1\nend Demo\n").unwrap();
+        fs::write(root.join("Demo.lean"), "namespace Demo\nstructure Data (n : Nat) where\n  value : Fin n\ntheorem impossible (h : n = 0) : ¬ Nonempty (Data n) := by sorry\ndef construct (h : 0 < n) : Data n := sorry\ndef transform (d : Data n) : Data n := d\nprivate def hidden : Data n := sorry\ntheorem conditional (h : ¬ Nonempty (Data n)) : True := trivial\ninstance : Subsingleton (Data 1) := sorry\nstructure Container where\n  item : Data 1\nstructure Derived extends Container where\n  good : True\nstructure InheritedOnly extends Container\nend Demo\n").unwrap();
         fs::write(root.join("API.lean"), "namespace ContinuousMap\ntheorem const_apply (b : β) (a : α) : const α b a = b := by sorry\nend ContinuousMap\nnamespace Matrix\ntheorem coe_units_inv (A : (Matrix n n R)ˣ) : ↑A⁻¹ = (A⁻¹ : Matrix n n R) := by sorry\nend Matrix\nnamespace Demo\ntheorem callee (A : Matrix n n R) : True := trivial\nend Demo\n").unwrap();
         let repo = Repo {
             root: root.clone(),
@@ -1211,6 +1211,17 @@ mod tests {
                 .probe_contract(&workspace, &root, "Missing.Data", "evidence")
                 .is_err()
         );
+        for name in ["Demo.Derived", "Demo.InheritedOnly"] {
+            let output = searcher
+                .search(&workspace, &root, &format!("{name} fields"), None, false)
+                .unwrap();
+            assert!(
+                output.contains("inherited obligations are omitted"),
+                "{output}"
+            );
+            assert!(output.contains("Extends: Container"), "{output}");
+            assert!(output.contains(&format!("#inspect {name}.mk")), "{output}");
+        }
         let assumptions = searcher
             .probe_contract(&workspace, &root, "Demo.Data", "assumptions")
             .unwrap();

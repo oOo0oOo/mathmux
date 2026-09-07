@@ -163,22 +163,24 @@ def boundedContractText (text : String) (limit : Nat := 800) : String :=
 
 def inspectContract (value : Expr) : MetaM String := do
   let type ← inferType value
-  let mut lines := #[s!"elaborated type: {boundedContractText (← ppExpr type).pretty}"]
+  let mut lines := #["inputs (explicit first):"]
   let premises ← forallTelescope type fun args result => do
     let mut details := #[]
-    for arg in args[:12] do
+    let explicit ← args.filterM fun arg => return (← arg.fvarId!.getDecl).binderInfo.isExplicit
+    let implicit ← args.filterM fun arg => return !(← arg.fvarId!.getDecl).binderInfo.isExplicit
+    for arg in explicit ++ implicit do
       let decl ← arg.fvarId!.getDecl
       let proof ← isProp decl.type
       let role := if decl.binderInfo.isInstImplicit then
         if proof then "instance assumption" else "instance input"
         else if proof then "proof assumption" else "data input"
       details := details.push s!"{role} {(← ppExpr arg).pretty}: {boundedContractText (← ppExpr decl.type).pretty}"
-    if args.size > 12 then details := details.push s!"{args.size - 12} additional inputs omitted"
     details := details.push s!"result: {boundedContractText (← ppExpr result).pretty}"
     if result.isAppOfArity ``Not 1 && (result.getArg! 0).isAppOfArity ``Nonempty 1 then
       details := details.push s!"negative existence result under the inputs above: {boundedContractText (← ppExpr ((result.getArg! 0).getArg! 0)).pretty}"
     return details
   lines := lines ++ premises
+  lines := lines.push s!"elaborated type: {boundedContractText (← ppExpr type).pretty}"
   if let .const name _ := value then
     let info ← getConstInfo name
     let axioms ← collectAxioms name
@@ -193,7 +195,7 @@ def inspectContract (value : Expr) : MetaM String := do
     | .defnInfo info =>
       let absent ← lambdaTelescope info.value fun args body => do
         let mut absent := #[]
-        for arg in args[:12] do
+        for arg in args do
           if !body.containsFVar arg.fvarId! then
             absent := absent.push (← ppExpr arg).pretty
         return absent
@@ -236,6 +238,9 @@ def inspectEvidence (value : Expr) : MetaM ContractEvidence := do
 
 def inspectTerm (operation source : String) : Term.TermElabM String := do
   let stx ← parseCategory `term source
+  let stx ← if (operation == "inspect" || operation == "inspect_evidence") && stx.isIdent then
+    parseCategory `term ("@" ++ source)
+    else pure stx
   if operation == "synth" then
     let type ← Term.elabType stx
     Term.synthesizeSyntheticMVarsNoPostponing

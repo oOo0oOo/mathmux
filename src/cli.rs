@@ -24,7 +24,7 @@ use clap::ValueEnum;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 const WORKFLOW_HELP: &str = r#"AGENT CONTRACT
-  api       search-v5/probe-v12; reread search/probe help only when this digest changes.
+  api       search-v5/probe-v13; reread search/probe help only when this digest changes.
   scope     Use the preassigned workspace; never run ws or enter main/another workspace.
   discover  Search unknown things; probe known API, exact context, or failures.
             Exact declarations go straight to probe NAME; qREFs store result sets.
@@ -75,7 +75,7 @@ RULES
   Sigil what you know; leave inference for what you do not."#;
 
 const PROBE_HELP: &str = r##"PROBE — inspect something known; returns qREF
-API probe-v12 — bounded exact inspection; reread only when this digest changes
+API probe-v13 — bounded exact inspection; reread only when this digest changes
 FORMS — type one directly; there are no API, LEAN, or other category keywords
   NAME [signature|source|outline|apply|fields|constructors|ext|simp|usages|assumptions|evidence|examples]
   NAME find TERM
@@ -112,6 +112,9 @@ RESULT
   project sources/configuration invalidates that evidence. Authored routes are advisory.
   Exact discovery can flag specialized evidence about an explicit input type.
   cREF context adds type differences, import-aware laws and one usage to the failure.
+  Field inventories label omitted inherited obligations and show parent types.
+  #inspect lists explicit inputs first; show qREF --all retains every input.
+  Bare-name inspection preserves implicit/default binders instead of applying them.
   #inspect uses readable input names and labels instance inputs/assumptions.
   Constructor probes without indexed signatures point to fields or Lean inspection.
   #inspect inspects elaborated inputs/result, constructors or a definition body;
@@ -1183,7 +1186,7 @@ mod tests {
             .unwrap()
             .render_long_help()
             .to_string();
-        assert!(probe_help.contains("API probe-v12"));
+        assert!(probe_help.contains("API probe-v13"));
         for contract in [
             "there are no API, LEAN, or other category keywords",
             "NAME [signature|source|outline|apply|fields|constructors|ext|simp|usages|assumptions|evidence|examples]",
@@ -1229,7 +1232,7 @@ mod tests {
     #[test]
     fn workflow_help_prefers_direct_workspace_experimentation() {
         let help = command_line().render_help().to_string();
-        assert!(help.contains("search-v5/probe-v12"));
+        assert!(help.contains("search-v5/probe-v13"));
         assert!(help.contains("Edit intended files -> check -> submit"));
         assert!(help.contains("Exact declarations go straight to probe NAME"));
         assert!(help.contains("Search unknown things; probe known API, exact context"));

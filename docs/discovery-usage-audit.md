@@ -250,3 +250,35 @@ construction claim. No formalization source was edited.
 
 The replacement first candidate also passed a real positioned Lean `#check`
 (q294348), confirming its function type in its project context.
+
+
+## Inherited fields and constructor contracts (i25–i27)
+
+Ten source/field/example requests followed the previous input-API guidance
+(`/tmp/mm-round6.jsonl`). ContinuousLinearMap, LinearIsometryEquiv and Homeomorph
+field dossiers (q294372/q294375/q294378) showed only locally declared fields,
+without mentioning inherited linear-map/equivalence obligations.
+
+- i25: field inventories now label omitted inherited obligations, show the
+  indexed `extends` types and offer a positioned constructor inspection. A generic
+  integration fixture covers a child with direct fields and a child with only an
+  inherited parent. Non-inheriting inventories retain their compact form.
+- i26: following the constructor route revealed q294383: inspecting bare
+  ContinuousLinearMap.mk tried to synthesize its default continuity proof and
+  failed. Explicit `@ContinuousLinearMap.mk` succeeded (q294384). Bare identifiers
+  in inspection now elaborate with implicit application disabled before defaults
+  can fire; applied expressions retain normal elaboration. Generic Lean coverage
+  includes a constructor-like function with a default proof parameter.
+- i27: the successful workaround still dropped the constructor's main inputs
+  behind twelve implicit binders. Inspection now orders explicit inputs first and
+  retains every input in stored detail. The UI keeps its compact budget and
+  `show qREF --all` expansion. The full type remains after the inputs. Syntactically
+  unused-parameter inspection likewise examines every parameter.
+
+The changed service replay q196 succeeded on the originally failing bare query
+and immediately displayed `toLinearMap` and the continuity proof obligation.
+Five replay requests also checked the surrounding field route; dependency field
+results still warming in the scratch index are not used as absence evidence.
+A pinned-Lean fixture with thirteen implicit type parameters verifies the final
+parameter survives and the explicit value comes first. No formalization edit or
+submission was made.

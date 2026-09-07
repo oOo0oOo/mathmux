@@ -19,11 +19,13 @@ def forgetInput (_n : Nat) : Nat := 0
 theorem admitted_empty : ¬ Nonempty Nat := by sorry
 def implicitInput {α : Type} [Inhabited α] [Subsingleton α] : α := default
 theorem needsHypothesis (n : Nat) (h : n = 0) : n + 0 = 0 := by simpa using h
+def defaultProof (n : Nat) (h : n = 0 := by trivial) : Nat := n
+def manyInputs {A B C D E F G H I J K L M : Type} (n : Nat) : Nat := n
 example (n : Nat) : n + 0 = 0 := by
   sorry
 '''
 requests = []
-def request(operation, term, line=12):
+def request(operation, term, line=14):
     requests.append(dict(operation=operation, source=source, file_name='ProbeFixture.lean',
                          version=len(requests)+1, line=line, column=0, input=term, names=[]))
 request('inspect', 'impossible_empty')
@@ -42,6 +44,8 @@ request('inspect_evidence', 'impossible_empty')
 request('inspect_evidence', 'admitted_empty')
 request('inspect_evidence', 'needsHypothesis')
 request('inspect', 'implicitInput')
+request('inspect', 'defaultProof')
+request('inspect', 'manyInputs')
 with tempfile.TemporaryDirectory(prefix='mathmux-lean-probe-') as temp:
     setup = pathlib.Path(temp) / 'setup.json'
     setup.write_text(json.dumps(dict(name='ProbeFixture', package=None, isModule=False,
@@ -78,4 +82,9 @@ with tempfile.TemporaryDirectory(prefix='mathmux-lean-probe-') as temp:
     assert 'instance input' in responses[15]['detail'], responses[15]
     assert 'instance assumption' in responses[15]['detail'], responses[15]
     assert '_hyg' not in responses[15]['detail'] and '._@.' not in responses[15]['detail'], responses[15]
-    print('Lean probe smoke: 16 cases passed (obstruction, fields, unused input, axioms, application, small cases, failures, goal isolation, premise roles).')
+    assert responses[16]['ok'] and 'proof assumption h' in responses[16]['detail'], responses[16]
+    assert responses[17]['ok'], responses[17]
+    assert responses[17]['detail'].find('data input n') < responses[17]['detail'].find('data input A'), responses[17]
+    assert 'data input M' in responses[17]['detail'], responses[17]
+    assert 'additional inputs omitted' not in responses[17]['detail'], responses[17]
+    print('Lean probe smoke: 18 cases passed (obstruction, fields, unused input, axioms, application, small cases, failures, goal isolation, premise roles).')
