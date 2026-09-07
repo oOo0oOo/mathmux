@@ -295,3 +295,23 @@ Lean tests and replaces the planned live-workspace post-install replay. The
 installed binary SHA-256 was
 `f2932d9fdee07ca7dd3e7dfd5b2054f1425a82e11f324a63b1b1a805f7752426`.
 The expanded CLI smoke passed without touching a formalization workspace.
+
+
+## Exact-miss follow-ups must make progress (i28)
+
+Read-only telemetry review found event 148808 / q294292 from the orchestrator:
+`search eLpNorm_two` failed, then recommended exactly `search eLpNorm_two`.
+No retained formalization workspace was entered to investigate this case.
+
+A no-suggestion unqualified miss now offers a shell-quoted `NAME*` pattern.
+Qualified misses first try their leaf; explicit declaration-kind forms extract
+the actual name rather than suggesting the kind keyword. Root-qualified and
+apostrophe-bearing names have regression coverage. Existing near-name and
+index-warming behavior is retained.
+
+In an isolated repository, the completed replay was: exact `eLpNorm_two` miss →
+suggested `eLpNorm_two*` → a longer fixture declaration found. A qualified missing
+name progressed through its leaf and pattern, then stopped with no results.
+`/tmp/mm-round7-warm-replay.out` records this six-request warm replay. The earlier
+cold replay was not used as evidence of absence. These are navigation checks,
+not a claim that the fixture theorem exists in Mathlib.

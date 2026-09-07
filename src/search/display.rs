@@ -232,18 +232,24 @@ fn append_exact_miss_hint(output: &mut String, run: &SearchRun) {
             output.push_str(&format!("\nnext: mathmux probe {name} signature"));
         }
     } else {
-        let query = run
-            .query
-            .split_whitespace()
-            .next()
-            .unwrap_or(run.query.as_str());
+        let query = explicit_declaration_name(&run.query).unwrap_or_else(|| {
+            run.query
+                .split_whitespace()
+                .next()
+                .unwrap_or(run.query.as_str())
+        });
         let query = query.strip_prefix("name:").unwrap_or(query);
         let leaf = query
             .trim_start_matches('@')
             .rsplit('.')
             .next()
             .unwrap_or(query);
-        output.push_str(&format!("\nnext: mathmux search {}", shell_argument(leaf)));
+        let next = if leaf == query.trim_start_matches('@').trim_start_matches("_root_.") {
+            format!("{leaf}*")
+        } else {
+            leaf.to_owned()
+        };
+        output.push_str(&format!("\nnext: mathmux search {}", shell_argument(&next)));
     }
 }
 
@@ -572,6 +578,34 @@ mod tests {
             "(f : X → X) : Continuous f [context: 2 implicit/typeclass]"
         );
         assert_eq!(compact_signature_preview("Nat → Nat"), "Nat → Nat");
+    }
+
+    #[test]
+    fn exact_miss_followup_progresses_past_the_failed_name() {
+        for (query, next) in [
+            ("eLpNorm_two", "\"eLpNorm_two*\""),
+            ("eLpNorm_two source", "\"eLpNorm_two*\""),
+            ("Demo.missing source", "missing"),
+            ("theorem Demo.missing source", "missing"),
+            ("declaration theorem missing proof", "\"missing*\""),
+            ("name:missing", "\"missing*\""),
+            ("@_root_.missing", "\"missing*\""),
+            ("missing'", "\"missing'*\""),
+        ] {
+            let run = SearchRun {
+                reference: "q1".into(),
+                workspace_ref: "w1".into(),
+                query: query.into(),
+                inference: "exact-miss".into(),
+                hits: vec![],
+                note: None,
+                duration_ms: 0,
+                created_at: 0,
+            };
+            let mut output = String::new();
+            append_exact_miss_hint(&mut output, &run);
+            assert_eq!(output, format!("\nnext: mathmux search {next}"), "{query}");
+        }
     }
 
     #[test]
