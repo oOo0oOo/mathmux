@@ -74,6 +74,18 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         assert 'inner : Nat' in grouped_fields and 'outer : Nat' in grouped_fields, grouped_fields
         assert 'ordered : inner < outer' in grouped_fields, grouped_fields
 
+        generated_seed = run([binary, 'search', 'Parent'], ws).stdout
+        generated_ref = next(line.removeprefix('ref: ') for line in generated_seed.splitlines() if line.startswith('ref: '))
+        with sqlite3.connect(root / '.git/mathmux/state.sqlite3') as generated_db:
+            generated_hits = json.loads(generated_db.execute('select hits_json from searches where ref=?', (generated_ref,)).fetchone()[0])
+            generated_hits[0].update(name='Parent.mk', kind='generated', signature=None, source=None)
+            generated_db.execute('update searches set hits_json=? where ref=?', (json.dumps(generated_hits), generated_ref))
+        unavailable = probe(generated_ref + '#1 source')
+        assert 'Source unavailable' in unavailable and '#inspect Parent.mk' in unavailable, unavailable
+        assert 'importing project file' in unavailable, unavailable
+        inspected_generated = probe('ContractFixture.lean:9 #inspect Parent.mk')
+        assert 'datum' in inspected_generated, inspected_generated
+
         alias_seed = run([binary, 'search', 'AliasFixture.current'], ws).stdout
         alias_ref = next(line.removeprefix('ref: ') for line in alias_seed.splitlines() if line.startswith('ref: '))
         # Model a compiled alias hit; source-only indexes do not generate aliases.

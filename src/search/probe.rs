@@ -1229,11 +1229,13 @@ impl Searcher {
         }
         let note = (source_focus && !fresh_source).then(|| {
             if hit.source.is_none() {
-                "Source unavailable in the current file or index; no completeness claim."
+                format!(
+                    "Source unavailable in the current file or index; no completeness claim.\nInspect the declaration contract in an importing project file: mathmux probe FILE:LINE {}",
+                    shell_argument(&format!("#inspect {}", hit.name.trim_start_matches("_root_.")))
+                )
             } else {
-                "Indexed source excerpt; completeness unavailable."
+                "Indexed source excerpt; completeness unavailable.".into()
             }
-            .into()
         });
         let run = SearchRun {
             reference: self.state.next_reference(ReferenceKind::Query)?,

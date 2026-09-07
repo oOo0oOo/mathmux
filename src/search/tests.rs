@@ -4464,6 +4464,17 @@ fn generated_index_metadata_does_not_hide_exact_authored_source() {
     hit.source = None;
     assert!(!searcher.refresh_probe_source(&workspace, &mut hit).unwrap());
     assert!(hit.source.is_none());
+    let reference = searcher.state.next_reference(ReferenceKind::Query).unwrap();
+    searcher.state.add_search(&SearchRun {
+        reference: reference.clone(), workspace_ref: workspace.reference.clone(),
+        query: hit.name.clone(), inference: "exact".into(), hits: vec![hit],
+        note: None, duration_ms: 0, created_at: 0,
+    }).unwrap();
+    let output = searcher.probe(&workspace, &workspace.path, &format!("{reference}#1 source")).unwrap();
+    assert!(output.contains("Source unavailable"), "{output}");
+    assert!(output.contains("importing project file"), "{output}");
+    assert!(output.contains("#inspect Demo.actuallyGenerated"), "{output}");
+    assert!(!output.contains("source snapshot"), "{output}");
 }
 
 

@@ -801,3 +801,21 @@ All 124 search tests pass, including grouped types, dependent fields and line
 coordinates. Copied original source now yields both radii before their obligations.
 The CLI regression checks generic grouped data and its dependent proof field.
 Installed i56 short-signature and full long-context recovery passed independently.
+
+
+## Unavailable source has a contract-recovery handoff (i58)
+
+Telemetry 149700-149702 repeatedly requests source for generated additive support
+declarations. Their authors used unnamed to_additive generation, so recovering a
+separate authored body or inferring the generator name would be unreliable. The
+existing no-source response correctly withholds a completeness claim but gives no
+next action.
+
+An unavailable-source response now suggests existing project-context #inspect for
+the exact requested declaration, explicitly requiring an importing project file.
+It still makes no source or mathematical completeness claim. Indexed excerpts
+retain their existing treatment. No new verbs, index or help changes.
+All 124 search tests pass. Copied original source with a modeled compiled result
+confirms the exact-name handoff without inventing a source snapshot. CLI coverage
+uses a real generated constructor and follows inspection to its datum obligation.
+Installed grouped-field behavior was independently verified.
