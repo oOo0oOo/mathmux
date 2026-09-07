@@ -544,6 +544,32 @@ fn show_reference(
     }
 }
 
+// Reorder only an unambiguous single Lean goal. Keep hypotheses available rather
+// than guessing which ones matter to the proof.
+fn goal_first_diagnostic(text: &str) -> Option<String> {
+    let lines = text.lines().collect::<Vec<_>>();
+    if !lines.first()?.contains("unsolved goals") {
+        return None;
+    }
+    let goals = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.trim_start().starts_with('⊢'))
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let [start] = goals.as_slice() else {
+        return None;
+    };
+    let context = lines[1..*start].join("\n");
+    let goal = lines[*start..].join("\n");
+    Some(format!(
+        "{}\n{}\nlocal context: {}",
+        lines[0],
+        goal,
+        clean_line(&context)
+    ))
+}
+
 fn check_summary(outcome: &CheckOutcome) -> String {
     let mut output = format!("{} {}ms", outcome.reference, outcome.elapsed_ms);
     if outcome.ok {
@@ -574,7 +600,8 @@ fn check_summary(outcome: &CheckOutcome) -> String {
     }
     if !outcome.ok {
         if let Some(diagnostic) = outcome.diagnostics.first() {
-            let detail = clean_line(&diagnostic.text);
+            let detail = goal_first_diagnostic(&diagnostic.text)
+                .unwrap_or_else(|| clean_line(&diagnostic.text));
             output.push_str(&format!(
                 "\n{}",
                 truncate_middle(&detail, CHECK_DIAGNOSTIC_CHARS)
@@ -818,6 +845,22 @@ mod tests {
         assert!(summary.contains(">    3 | failing tactic"));
         assert!(summary.contains("full diagnostic: show c1"));
         assert!(summary.contains("repeated blocker: 3 checks (c8..c1, previous c9); search c1"));
+    }
+
+    #[test]
+    fn single_goal_precedes_its_preserved_context() {
+        let text = "Demo:3:1: error: unsolved goals\nα : Type\nx : α\nh : P x\n⊢ P x ∧\n    True";
+        let rendered = goal_first_diagnostic(text).unwrap();
+        assert!(rendered.starts_with("Demo:3:1: error: unsolved goals\n⊢ P x ∧\n    True"));
+        assert!(rendered.ends_with("local context: α : Type x : α h : P x"));
+        assert!(
+            goal_first_diagnostic(
+                "error: unsolved goals\ncase left\nh : P\n⊢ P\ncase right\nh : Q\n⊢ Q"
+            )
+            .is_none()
+        );
+        assert!(goal_first_diagnostic("error: type mismatch\n⊢ P").is_none());
+        assert!(goal_first_diagnostic("error: unsolved goals").is_none());
     }
 
     #[test]

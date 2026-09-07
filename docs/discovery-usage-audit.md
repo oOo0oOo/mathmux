@@ -1092,3 +1092,12 @@ Operator storage audit found 16.6 GiB in submission records (recent raw build ou
 Normal and hard GC both enforce retention, then compact state, search and telemetry databases when free pages total at least 64 MiB and either 10% of pages or 1 GiB. Smaller databases only checkpoint. Dry runs inspect free pages without compacting; estimates exclude space newly freed by retention. No new idle-system gate or CLI syntax is added. Compaction checks temporary disk headroom, reports failures instead of undoing completed cleanup, and reports deferred WAL truncation when readers prevent it.
 
 Validation covers legacy summaries and metadata, latest/failure windows, automatic expiry after validation, byte ceilings, UTF-8 diagnostic bounds, dry-run immutability, SQLite integrity, and FTS rowid/search preservation through compaction.
+
+
+### i82: put single unsolved goals before their local context
+
+Telemetry 150886, 150896 and 150898 showed failed checks flattening long typeclass and hypothesis contexts before the actual obligation. An isolated pinned-Lean fixture with 30 local variables reproduced the same layout without any formalization source or daemon. Check summaries now place an unambiguous single goal immediately after the diagnostic location and retain the local context afterward, within the existing output budget. Multiple-goal and other diagnostics retain their existing behavior; full stored evidence remains available through show. No verbs or project-specific rules were added.
+
+The meta review rejected dropping hypotheses based on guessed relevance: deciding applicability requires those assumptions. This change improves ordering rather than claiming a compact response contains every fact an agent might need. Existing truncation disclosure and full-result retrieval remain essential.
+
+Validation: nine daemon tests pass, including multiline goals, preserved hypotheses, multi-branch fallback, and existing truncation/error/source behavior. `/tmp/mm-goal-replay.py` reproduces the installed baseline and verifies the changed pinned-Lean CLI output plus retained full diagnostics.
