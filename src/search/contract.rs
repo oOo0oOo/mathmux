@@ -650,7 +650,12 @@ impl Searcher {
             let Some(head) = identifiers(ty).into_iter().next() else {
                 continue;
             };
-            if bound.contains(&head) || !seen.insert(head.clone()) {
+            let context_incomplete =
+                source.is_none_or(|source| source.contains("earlier ambient commands omitted"));
+            if (context_incomplete && !head.contains('.'))
+                || bound.contains(&head)
+                || !seen.insert(head.clone())
+            {
                 continue;
             }
             let Ok(hit) =
@@ -1146,6 +1151,17 @@ mod tests {
             "{detail}"
         );
         assert!(detail.contains("not verified applicability"), "{detail}");
+        for source in [
+            None,
+            Some("-- 2 earlier ambient commands omitted\ndef f (d : Data 0) : True := trivial"),
+        ] {
+            assert!(
+                searcher
+                    .input_obstruction_notice(&workspace, "(d : Data 0) : True", source)
+                    .unwrap()
+                    .is_none()
+            );
+        }
         let notice = searcher
             .input_obstruction_notice(&workspace, "(d : Demo.Data 0) : True", None)
             .unwrap()

@@ -315,3 +315,29 @@ name progressed through its leaf and pattern, then stopped with no results.
 `/tmp/mm-round7-warm-replay.out` records this six-request warm replay. The earlier
 cold replay was not used as evidence of absence. These are navigation checks,
 not a claim that the fixture theorem exists in Mathlib.
+
+
+## Fresh swarm evidence: attribute signatures and missing lexical context (i29–i30)
+
+Read-only telemetry events 148939 / q294400 and 148944–148945 / q294405–q294406
+revealed two remaining correctness faults. No retained formalization workspace
+was entered for this investigation.
+
+- i29: `OpenPartialHomeomorph.trans` had indexed signature
+  `] protected def trans : OpenPartialHomeomorph X Z`. The parser searched header
+  text for the name and found it inside `@[trans]`. It now slices from the regex's
+  captured declaration-name byte position, accounting for indentation. Regression
+  cases cover attributes, protected declarations, indentation and Unicode names.
+  The index version advances to discard previously corrupted signatures.
+- i30: ContDiffOn/ContDiffAt exact results had no stored source body. Automatic
+  input evidence consequently treated their local `E` as a global declaration and
+  surfaced an unrelated subsingleton theorem. Unqualified heads now require source
+  context without an ambient-omission marker before global lookup. Qualified
+  concrete input notices remain available. The generic integration fixture proves
+  missing/truncated context suppresses the warning while qualified evidence survives.
+
+Five isolated source/signature replays (`/tmp/mm-round9-replay.out`) recovered
+correct signatures while retaining their attributes in source. The installed-CLI
+smoke fixture now includes a theorem whose name matches its simplifier attribute.
+The expanded CLI suite, 259 Rust tests and baseline clippy passed. These checks
+use temporary repositories and do not alter formalization source.

@@ -24,6 +24,7 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
     (root / 'SourceFixture.lean').write_text(source_fixture)
     contract_fixture = "import Lean\nstructure Parent where\n  datum : Nat\nstructure Child extends Parent where\n  good : datum = 0 := by trivial\nstructure InheritedOnly extends Parent\ndef manyInputs {A B C D E F G H I J K L M : Type} (n : Nat) : Nat := n\nexample : True := by trivial\n"
     (root / 'ContractFixture.lean').write_text(contract_fixture)
+    (root / 'AttributeFixture.lean').write_text('import Lean\nnamespace AttributeFixture\n@[simp]\ntheorem simp (n : Nat) : n = n := rfl\nend AttributeFixture\n')
 
     run(['git', 'add', '.'])
     run(['git', 'commit', '-m', 'fixture'])
@@ -57,6 +58,8 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         many_full = run([binary, 'show', many_ref, '--all'], ws).stdout
         assert 'data input M' in many_full and 'additional inputs omitted' not in many_full, many_full
         assert many_full.index('data input n') < many_full.index('data input A'), many_full
+        attribute_signature = probe('AttributeFixture.simp signature')
+        assert '(n : Nat) : n = n' in attribute_signature and '] theorem simp' not in attribute_signature, attribute_signature
         short = probe('Demo.identityValue source')
         assert '[Inhabited α]' in short and 'Own documentation.' in short, short
         assert 'Neighbor documentation.' not in short, short

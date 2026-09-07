@@ -2266,6 +2266,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn signature_name_position_ignores_matching_attribute_text() {
+        for declaration in [
+            "@[trans]\nprotected def trans : Nat := 0",
+            "  @[simp]\n  theorem simp (n : Nat) : n = n := rfl",
+            "@[attr αβ]\ndef αβ : Nat := 0",
+        ] {
+            let entry = source::parse_source(declaration, "Fixture")
+                .into_iter()
+                .find(|e| matches!(e.kind.as_str(), "def" | "theorem"))
+                .unwrap();
+            assert!(!entry.signature.contains(']'), "{}", entry.signature);
+            assert!(
+                entry.signature == "Nat" || entry.signature == "(n : Nat) : n = n",
+                "{}",
+                entry.signature
+            );
+        }
+    }
+
+    #[test]
     fn explicit_generated_source_retains_origin_without_fabricating_signature() {
         let source = "namespace Demo\n@[simp]\n@[to_additive additive]\ntheorem multiplicative (n : Nat) : n = n := rfl\nend Demo\n";
         let hit =

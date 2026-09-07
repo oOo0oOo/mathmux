@@ -178,9 +178,13 @@ pub(super) fn parse_source_with_limit(
         let block = declaration_block(&source[complete.start()..end]);
         let header_end = declaration_header_end(block);
         let header = block[..header_end].trim();
-        let name_end = raw_name
-            .and_then(|raw_name| header.find(raw_name).map(|start| start + raw_name.len()))
-            .or_else(|| header.find(kind).map(|start| start + kind.len()))
+        let original = &source[complete.start()..end];
+        let leading = original.len() - original.trim_start().len();
+        let name_end = capture
+            .name("name")
+            .or_else(|| capture.name("kind"))
+            .map(|name| name.end() - complete.start() - leading)
+            .filter(|end| *end <= header.len())
             .unwrap_or(header.len());
         let mut signature = header[name_end..]
             .trim()
