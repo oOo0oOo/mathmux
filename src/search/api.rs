@@ -144,7 +144,7 @@ fn canonical_regex(path: Option<&str>, regex: &str) -> Result<String> {
     let regex = regex.trim();
     ensure!(
         regex.starts_with('/') && regex.ends_with('/') && regex.len() > 2,
-        "re: expects /REGEX/"
+        "re: expects /REGEX/; for case-insensitive matching use re:/(?i)PATTERN/"
     );
     Ok(match path {
         Some(path) => format!("{path} {regex}"),
@@ -171,6 +171,16 @@ mod tests {
             SearchExpression::Regex("Mathlib /foo|bar/".into())
         );
         assert!(SearchRequest::parse("type:(Nat → Nat", None, false).is_err());
+    }
+
+    #[test]
+    fn regex_error_explains_existing_case_insensitive_syntax() {
+        let error = SearchRequest::parse("re:/alpha|beta/i", None, false)
+            .unwrap_err().to_string();
+        assert!(error.contains("re:/(?i)PATTERN/"));
+        assert_eq!(SearchRequest::parse("re:/(?i)alpha|beta/", None, false).unwrap().expression,
+            SearchExpression::Regex("/(?i)alpha|beta/".into()));
+        assert!(regex::Regex::new("(?i)alpha|beta").unwrap().is_match("ALPHA"));
     }
 
     #[test]

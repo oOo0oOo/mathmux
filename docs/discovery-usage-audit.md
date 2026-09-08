@@ -1225,3 +1225,9 @@ Validation: all ten daemon tests pass, covering distinct instances, short/unrela
 Telemetry 153144 and 153148 returned an unrelated `h₁` declaration for H1 queries. Coverage promotion compared UTF-8 byte length against configured character thresholds: `h₁` (two characters, four bytes) qualified where `h1` did not. A generic ranked-candidate regression reproduced the weak Unicode match displacing a candidate with broader coverage. The existing coverage/body promotion thresholds now count characters. Numeric aliases, candidate retrieval and exact lookup remain unchanged.
 
 Validation: the regression failed before the two-line correction, then all 145 search tests passed. This removes the accidental promotion mechanism; it does not claim the unrelated declaration can never appear elsewhere in ranking. No additional Lean replay was needed for these string-length comparisons.
+
+### i101: explain existing case-insensitive regex syntax on parse failure
+
+Telemetry 153178 and 153181 repeated `/pattern/i` requests after an error that only said `re: expects /REGEX/`. The parse error now points to the already-supported inline flag form `re:/(?i)PATTERN/`. This is guidance, not an added grammar or compatibility path.
+
+Validation: all six search API tests pass; the new regression verifies rejection of trailing flags, acceptance of the inline form, and case-insensitive matching by the existing regex engine. No Lean behavior changed.
