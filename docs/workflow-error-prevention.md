@@ -102,3 +102,10 @@ Default check diagnostics now add one name-resolution hint only when the rejecte
 The newly exercised API exposed a malformed multi-inspection call (153693). It displayed a parser diagnostic beneath a normal probe heading and recorded success. An isolated CLI replay reproduced exit zero for both a trailing second inspection and an incomplete term, alongside a valid inspection control.
 
 The Lean service already reports failure. The CLI's directive normalization incorrectly treated any nonempty response without a few recognized error phrases as success. Removing this fallback preserves the service's failure status for parser errors and unfamiliar diagnostics. The existing explicit requested-term result recovery remains covered, as do valid results. No new syntax or diagnostic phrase list is added; full diagnostic text is retained.
+
+
+## Focus stored profile output (i112)
+
+The real `probe c54963 profile` response (153749) displayed linter warnings and small timing components while omitting the largest source hotspots. The profile focus reused a full check report, whose unrelated text consumed the compact preview. It now reuses the existing profile renderer with the check reference, keeping stored profiling evidence available through full show.
+
+An isolated synthetic stored profile with twenty warnings and a thirteen-second source hotspot reproduces the omission before the change. The focused response shows that hotspot and preserves the last timing component in full output. The CLI smoke includes this rendering regression without depending on wall-clock timing. This changes delivery of existing evidence, not profiling or Lean execution.

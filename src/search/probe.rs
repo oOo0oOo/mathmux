@@ -864,8 +864,9 @@ impl Searcher {
             )
             .with_context(|| format!("{reference} has no rewrite failure"))?,
             Some("profile") => {
-                ensure!(run.profile.is_some(), "{reference} has no stored profile");
-                self.state.show(reference, true)?
+                let profile = run.profile.as_ref()
+                    .with_context(|| format!("{reference} has no stored profile"))?;
+                format!("{reference}\n{}", profile.render(true))
             }
             Some("goal") => {
                 let diagnostic = diagnostic

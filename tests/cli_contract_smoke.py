@@ -412,6 +412,22 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         restored = run([binary, 'check', 'FreshConsumer.lean'], ws)
         assert 'run mathmux sync' not in restored.stdout, restored.stdout
 
+        # Synthetic stored profile isolates rendering from timing variability.
+        db = sqlite3.connect(root / '.git/mathmux/state.sqlite3')
+        ref = db.execute('select ref from check_runs order by created_at desc limit 1').fetchone()[0]
+        entries = [{'line': 7, 'column': 1, 'kind': 'theorem', 'detail': 'costlyHotspot', 'durationMs': 13000.0}]
+        entries += [{'line': 0, 'column': 0, 'kind': 'component' + str(i), 'detail': '', 'durationMs': float(100-i)} for i in range(20)]
+        profile = {'planning_ms': 0, 'files': [{'target': 'FreshConsumer.lean', 'mode': 'profile', 'dependencies_ms': 1, 'cache_ms': 1, 'setup_ms': 1, 'elaborate_ms': 14000, 'total_ms': 14003, 'entries': entries}]}
+        warnings = [{'kind': 'linter', 'text': 'irrelevant linter ' + str(i), 'context': None} for i in range(20)]
+        db.execute('update check_runs set profile_json=?, linters_json=? where ref=?', (json.dumps(profile), json.dumps(warnings), ref))
+        db.commit()
+        db.close()
+        result = run([binary, 'probe', ref + ' profile'], ws)
+        assert 'costlyHotspot' in result.stdout and 'irrelevant linter' not in result.stdout
+        qref = next(line[5:] for line in result.stdout.splitlines() if line.startswith('ref: '))
+        full = run([binary, 'show', qref, '--all'], ws).stdout
+        assert 'component19' in full and 'costlyHotspot' in full
+
     finally:
         try:
             daemon.wait(timeout=15)
