@@ -131,3 +131,9 @@ Pinned service smoke passes 52 cases, including signature/proof controls, a misl
 The Lean-information audit found a coordinate conversion defect: a real timed theorem on line 2 produced profile entries on line 3. `FileMap.toPosition` already returns one-based lines. Rust declaration labeling could mask this for command entries, while other entries retained the shifted location. The service now preserves the native line number and continues converting zero-based columns.
 
 `tests/lean_profile_smoke.py` exercises real timed Lean elaboration, including a namespace and preceding Unicode text. It failed on the original implementation and passes after the conversion fix. The test checks command and definition-value anchors; it does not claim that every nested trace carries a distinct tactic location. No public API or output budget changes.
+
+## Keep regex absence and recovery scope explicit (i116)
+
+Telemetry 153846 searched `/LocalHomeomorph/` and returned unrelated indexed alternatives after a project-source miss. A dependency-only fixture confirms that default regex scanning excludes dependencies, while recovery searches the broader declaration index. The output now names the scanned scope, explains that dependencies need an explicit scope for a default project scan, and labels indexed alternatives as not regex matches. Recovery preserves timeout notes and partial inference instead of replacing them with an absence claim. This changes evidence presentation, not retrieval or namespace semantics.
+
+The scoped-source regression failed before the fix and passes with both default-miss and explicit-dependency-hit controls. All 107 search tests pass; CLI smoke checks that the scope note survives recovery.

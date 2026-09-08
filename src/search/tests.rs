@@ -4098,6 +4098,15 @@ fn source_regex_queries_scan_a_bounded_scope_with_context() {
         dependency.hits[0].path,
         "<dependency>/Mathlib/Analysis/Api.lean"
     );
+    let workspace = Workspace {
+        reference: "w1".into(), name: "demo".into(),
+        path: directory.path().to_path_buf(), branch: "demo".into(), model: None,
+    };
+    let query = parse_source_regex_query(directory.path(), directory.path(), None,
+        "/dependency_hit/").unwrap().unwrap();
+    let miss = source_regex_result(&workspace, query, false).unwrap();
+    assert!(miss.hits.is_empty());
+    assert!(miss.note.unwrap().contains("dependencies require an explicit scope"));
 }
 
 #[test]

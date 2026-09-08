@@ -232,6 +232,12 @@ pub(super) fn source_regex_result(
     let displayed_matches = groups.iter().map(|group| group.count).sum::<usize>();
     let omitted_matches = total.saturating_sub(displayed_matches);
     let hits = groups.into_iter().map(SourceMatchGroup::into_hit).collect();
+    let root = fs::canonicalize(&workspace.path)?;
+    let scope = if query.scope == root {
+        "project sources; dependencies require an explicit scope".to_owned()
+    } else {
+        query.scope.strip_prefix(&root).unwrap_or(&query.scope).display().to_string()
+    };
     Ok(SearchResult {
         hits,
         inference: if timed_out {
@@ -241,9 +247,9 @@ pub(super) fn source_regex_result(
         }
         .into(),
         note: if timed_out {
-            Some("source regex scan timed out; narrow the scope".into())
+            Some(format!("source regex scan timed out in {scope}; narrow the scope"))
         } else if total == 0 {
-            Some("no regex source matches".into())
+            Some(format!("no regex source matches in {scope}"))
         } else if omitted_groups > 0 {
             Some(format!(
                 "+{omitted_matches} matches in {omitted_groups} declarations omitted; narrow the scope"

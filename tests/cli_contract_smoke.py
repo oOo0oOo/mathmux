@@ -71,6 +71,10 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         def probe(q):
             return run([binary, 'probe', q], ws).stdout
 
+        regex_miss = run([binary, 'search', '/^zzScopeSentinelAbsent$/'], ws).stdout
+        assert 'dependencies require an explicit scope' in regex_miss, regex_miss
+        assert 'indexed alternatives (not regex matches)' in regex_miss, regex_miss
+
         wrong_path = run([binary, 'search', 'Missing/Elsewhere/SourceFixture.lean:1-4'], ws, ok=False)
         assert wrong_path.returncode and 'source file not found or ambiguous' in wrong_path.stderr, wrong_path
         assert 'source result' not in wrong_path.stdout, wrong_path.stdout

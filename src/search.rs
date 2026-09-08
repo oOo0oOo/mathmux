@@ -875,9 +875,12 @@ impl Searcher {
                         false,
                     )?;
                     result.hits = recovered.hits.into_iter().take(3).collect();
-                    result.inference = "source-regex-recovery".into();
+                    if result.inference != "source-regex-partial" {
+                        result.inference = "source-regex-recovery".into();
+                    }
                     result.note = Some(format!(
-                        "no regex source matches; closest declarations for literals: {recovery_query}"
+                        "{}; indexed alternatives (not regex matches) for: {recovery_query}",
+                        result.note.as_deref().unwrap_or("no regex source matches")
                     ));
                 }
                 result
