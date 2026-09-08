@@ -109,3 +109,10 @@ The Lean service already reports failure. The CLI's directive normalization inco
 The real `probe c54963 profile` response (153749) displayed linter warnings and small timing components while omitting the largest source hotspots. The profile focus reused a full check report, whose unrelated text consumed the compact preview. It now reuses the existing profile renderer with the check reference, keeping stored profiling evidence available through full show.
 
 An isolated synthetic stored profile with twenty warnings and a thirteen-second source hotspot reproduces the omission before the change. The focused response shows that hotspot and preserves the last timing component in full output. The CLI smoke includes this rendering regression without depending on wall-clock timing. This changes delivery of existing evidence, not profiling or Lean execution.
+
+
+## Retain requested tactic suggestions (i113)
+
+The broader Lean-information audit confirmed an existing-output gap on the current installed build: native Lean emits a concrete `Try this:` proof for `simp?`, while the same explicit MathMux experiment returned only `solved`. With no higher-priority newly observed blocker, this verified gap is addressed through the existing tactic probe.
+
+Successful tactic experiments now append Lean informational messages beginning with `Try this:` after the result. Ordinary success, arbitrary informational traces, failed tactics, and admission/incompleteness classifications preserve their behavior. No tactic runs automatically and no new verb is introduced. Full stored detail retains the suggestion; the ordinary preview budget still applies. The pinned service smoke passes 48 cases, including suggestion and no-extra-output controls; CLI smoke includes the requested suggestion and ordinary proof control. Help digest is probe-v22. This is controlled capability verification, not measured fleet uptake.

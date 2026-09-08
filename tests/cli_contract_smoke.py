@@ -394,6 +394,12 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
             unavailable = run([binary, 'probe', f'LocalScope.lean:{line} "#check {name}"'], ws, ok=False)
             assert unavailable.returncode != 0 and 'Unknown identifier' in unavailable.stderr + unavailable.stdout
 
+        (ws / 'Suggestion.lean').write_text('import Lean\nexample : True ∧ True := by\n  sorry\n')
+        suggested = probe('Suggestion.lean:3 "by simp?"')
+        assert 'solved' in suggested and 'Try this:' in suggested and 'simp only' in suggested, suggested
+        ordinary = probe('Suggestion.lean:3 "by exact ⟨True.intro, True.intro⟩"')
+        assert 'solved' in ordinary and 'Try this:' not in ordinary, ordinary
+
         # A missing imported file on committed main has an actionable recovery.
         (root / 'Fixture').mkdir(exist_ok=True)
         (root / 'Fixture/FreshDependency.lean').write_text('theorem freshFact : True := True.intro\n')

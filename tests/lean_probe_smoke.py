@@ -49,6 +49,11 @@ request('inspect', 'manyInputs')
 for _ in range(3):
     request('inspect', 'Nat.add', line=1)
 request('inspect', 'manyInputs', line=1)
+suggestion_start = len(requests)
+source = "import Lean\nexample : True ∧ True := by\n  sorry\n"
+request('tactic', 'simp?', line=3)
+request('tactic', 'exact ⟨True.intro, True.intro⟩', line=3)
+request('tactic', 'trace "unrelated informational message"; exact ⟨True.intro, True.intro⟩', line=3)
 provenance_start = len(requests)
 source = """import Lean
 axiom unsafeResult : Nat → False
@@ -164,4 +169,9 @@ with tempfile.TemporaryDirectory(prefix='mathmux-lean-probe-') as temp:
         assert response['ok'] and 'ADMITTED' in response['detail'], response
     assert responses[-2]['ok'] and responses[-2]['detail'] == 'solved', responses[-2]
     assert responses[-1]['ok'] and responses[-1]['detail'] == 'solved', responses[-1]
+    suggestion = responses[suggestion_start]
+    assert suggestion['ok'] and suggestion['detail'].startswith('solved\n'), suggestion
+    assert 'Try this:' in suggestion['detail'] and 'simp only' in suggestion['detail'], suggestion
+    for response in responses[suggestion_start + 1:suggestion_start + 3]:
+        assert response['ok'] and response['detail'] == 'solved', response
     print(f'Lean probe smoke: {len(requests)} cases passed, including expression provenance.')

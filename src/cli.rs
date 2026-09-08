@@ -24,7 +24,7 @@ use clap::ValueEnum;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 const WORKFLOW_HELP: &str = r#"AGENT CONTRACT
-  api       search-v13/probe-v21; reread search/probe help only when this digest changes.
+  api       search-v13/probe-v22; reread search/probe help only when this digest changes.
   scope     Use the preassigned workspace; never run ws or enter main/another workspace.
   discover  Search unknown things; probe known API, exact context, or failures.
             Exact declarations go straight to probe NAME; qREFs store result sets.
@@ -80,7 +80,7 @@ RULES
   Sigil what you know; leave inference for what you do not."#;
 
 const PROBE_HELP: &str = r##"PROBE — inspect something known; returns qREF
-API probe-v21 — bounded exact inspection; reread only when this digest changes
+API probe-v22 — bounded exact inspection; reread only when this digest changes
 FORMS — type one directly; there are no API, LEAN, or other category keywords
   NAME [signature|source|outline|apply|fields|constructors|ext|simp|usages|assumptions|evidence|examples]
   NAME find TERM
@@ -128,6 +128,7 @@ RESULT
   Constructor probes without indexed signatures point to fields or Lean inspection.
   #inspect inspects elaborated inputs/result, constructors or a definition body;
   #apply tests an application and reports remaining obligations, without editing.
+  Tactic probes retain Lean suggestion messages (for example from simp?) after the result.
   Tactic probes label goals discharged through sorryAx as ADMITTED, not solved.
   An empty tactic goal list with unresolved proof metavariables is INCOMPLETE.
   Test small cases with #check (TERM : EXPECTED_TYPE), #reduce TERM or by TACTIC.
@@ -1197,7 +1198,7 @@ mod tests {
             .unwrap()
             .render_long_help()
             .to_string();
-        assert!(probe_help.contains("API probe-v21"));
+        assert!(probe_help.contains("API probe-v22"));
         for contract in [
             "there are no API, LEAN, or other category keywords",
             "NAME [signature|source|outline|apply|fields|constructors|ext|simp|usages|assumptions|evidence|examples]",
@@ -1243,7 +1244,7 @@ mod tests {
     #[test]
     fn workflow_help_prefers_direct_workspace_experimentation() {
         let help = command_line().render_help().to_string();
-        assert!(help.contains("search-v13/probe-v21"));
+        assert!(help.contains("search-v13/probe-v22"));
         assert!(help.contains("Edit intended files -> check -> submit"));
         assert!(help.contains("Exact declarations go straight to probe NAME"));
         assert!(help.contains("Search unknown things; probe known API, exact context"));

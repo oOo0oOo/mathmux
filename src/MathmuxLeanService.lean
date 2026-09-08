@@ -385,7 +385,15 @@ def runLocalProbe (snapshot : Language.Lean.InitialSnapshot) (request : Request)
                 seen := seen.insert name
                 detail := detail ++ s!"\nobligation API: mathmux probe {name} evidence (source candidates; hypotheses still required)"
           return detail
-        (((action {elaborator := .anonymous}).run' {goals := mvars}) {}).run' {}
+        let detail ← (((action {elaborator := .anonymous}).run' {goals := mvars}) {}).run' {}
+        let mut suggestions : Array String := #[]
+        for message in (← Core.getMessageLog).toList do
+          if message.severity == .information then
+            let text ← message.data.toString
+            if text.trimAscii.toString.startsWith "Try this:" then
+              suggestions := suggestions.push text
+        return if suggestions.isEmpty then detail else
+          detail ++ "\n" ++ String.intercalate "\n" suggestions.toList
     else
       match goal? with
       | some goal =>
