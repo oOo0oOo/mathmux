@@ -95,3 +95,10 @@ The previously observed mixed-error proof subsequently passed at the same 600,00
 The completed s4036 episode repeatedly changed instance binders before importing the missing class API (telemetry 153535–153558). A generic isolated project reproduces the misleading diagnostic: an unimported class in an instance binder yields `invalid binder annotation` with type `?m.2`. Positioned `#check` exposes the unknown name, global source lookup finds the class elsewhere, and importing its module makes the check pass. Global discovery alone does not establish availability in the target file.
 
 Default check diagnostics now add one name-resolution hint only when the rejected binder type starts with Lean's unresolved metavariable marker. The hint names imports, namespaces and local shadowing as checks, without asserting a missing import or recommending that the binder check be disabled. The original Lean diagnostic remains intact. Known non-class `Nat`, a locally shadowed class, and an unknown class with `autoImplicit false` do not receive the hint. This is earlier diagnostic guidance, not automatic import selection or measured fleet productivity.
+
+
+## Preserve failed probe status (i111)
+
+The newly exercised API exposed a malformed multi-inspection call (153693). It displayed a parser diagnostic beneath a normal probe heading and recorded success. An isolated CLI replay reproduced exit zero for both a trailing second inspection and an incomplete term, alongside a valid inspection control.
+
+The Lean service already reports failure. The CLI's directive normalization incorrectly treated any nonempty response without a few recognized error phrases as success. Removing this fallback preserves the service's failure status for parser errors and unfamiliar diagnostics. The existing explicit requested-term result recovery remains covered, as do valid results. No new syntax or diagnostic phrase list is added; full diagnostic text is retained.

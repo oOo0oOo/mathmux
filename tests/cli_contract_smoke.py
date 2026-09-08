@@ -194,6 +194,11 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         inherited_signature = probe('InheritedOnly signature')
         assert 'extends Parent' in inherited_signature and 'generated parent projection' not in inherited_signature.lower(), inherited_signature
 
+        for malformed in ['#inspect Nat.add #inspect Nat.zero', '#check (']:
+            failed = run([binary, 'probe', 'ContractFixture.lean:1 ' + malformed], ws, ok=False)
+            assert failed.returncode != 0, failed
+            assert 'error probe result' in failed.stderr and 'expected' in failed.stderr, failed
+
         for _ in range(3):
             imported = probe('ContractFixture.lean:1 #inspect Nat.add')
             assert 'Nat → Nat → Nat' in imported, imported

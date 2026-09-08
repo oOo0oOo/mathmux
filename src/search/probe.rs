@@ -1572,7 +1572,7 @@ fn decisive_directive_result(
             .join("\n");
         return (true, decisive);
     }
-    (!failed && (worker_ok || !detail.trim().is_empty()), detail)
+    (!failed && worker_ok, detail)
 }
 
 fn abbreviation_target(hit: &SearchHit) -> Option<&str> {
@@ -2543,6 +2543,18 @@ mod tests {
             "failed to synthesize instance of type class\n  MissingClass Nat".into(),
         );
         assert!(!ok);
+    }
+
+    #[test]
+    fn failed_directives_do_not_promote_unrecognized_diagnostics_to_success() {
+        for operation in ["term", "inspect", "reduce", "synth"] {
+            for diagnostic in ["<input>:1:8: expected end of input", "<input>:1:1: unexpected end of input", "unrecognized worker failure"] {
+                let (ok, detail) = decisive_directive_result(operation, "(", false, diagnostic.into());
+                assert!(!ok, "{operation}: {diagnostic}");
+                assert_eq!(detail, diagnostic);
+            }
+            assert!(decisive_directive_result(operation, "Nat", true, "Nat : Type".into()).0);
+        }
     }
 
     #[test]
