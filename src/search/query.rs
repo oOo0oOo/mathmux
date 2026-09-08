@@ -1353,7 +1353,7 @@ pub(super) fn promote_query_coverage(ranked: &mut Vec<Candidate>, query: &str, t
     }
     for token in tokens
         .iter()
-        .filter(|token| token.len() >= SEARCH_TUNING.promotion.coverage_token_chars)
+        .filter(|token| token.chars().count() >= SEARCH_TUNING.promotion.coverage_token_chars)
     {
         if promoted
             .iter()
@@ -1390,7 +1390,7 @@ pub(super) fn promote_query_coverage(ranked: &mut Vec<Candidate>, query: &str, t
                 .map(|(index, _)| index)
         }) {
             promoted.push(remaining.remove(position));
-        } else if token.len() >= SEARCH_TUNING.promotion.body_token_chars
+        } else if token.chars().count() >= SEARCH_TUNING.promotion.body_token_chars
             && !promoted
                 .iter()
                 .any(|candidate| hit_matches_token(&candidate.hit, token))

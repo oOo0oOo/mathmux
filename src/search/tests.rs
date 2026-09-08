@@ -4959,3 +4959,18 @@ fn exact_miss_for_structure_member_offers_lean_inspection() {
     let result = searcher.exact_miss_result(&current, "Unknown.toBase", &scopes, None, false, false).unwrap();
     assert!(!result.note.unwrap().contains("Generated members"));
 }
+
+#[test]
+fn coverage_promotion_counts_unicode_characters_not_bytes() {
+    let mut first = search_hit("Demo.manifold");
+    first.signature = Some("manifold H1 h₁ bound".into());
+    let mut relevant = search_hit("Demo.estimate");
+    relevant.signature = first.signature.clone();
+    let mut ranked = vec![first, relevant, search_hit("h₁")].into_iter().map(|hit| Candidate {
+        hit, score: 1.0, origins: 0,
+    }).collect();
+    let tokens = vec!["manifold".into(), "h1".into(), "h₁".into()];
+    promote_query_coverage(&mut ranked, "manifold H1", &tokens);
+    assert_eq!(ranked[1].hit.name, "Demo.estimate");
+    assert_eq!(ranked[2].hit.name, "h₁");
+}
