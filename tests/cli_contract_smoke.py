@@ -162,7 +162,7 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         assert 'have useful : True' in full_group and 'exact useful' in full_group, full_group
 
         case_recovery = run([binary, 'search', 'FindFixture.lean /[Cc]ompact|[Rr]ellich/'], ws).stdout
-        assert 'closest declarations for literals: compact rellich' in case_recovery, case_recovery
+        assert 'indexed alternatives (not regex matches) for: compact rellich' in case_recovery, case_recovery
 
         past_end = run([binary, 'search', 'FindFixture.lean:140-187'], ws).stdout
         assert 'file has 2 lines' in past_end, past_end
