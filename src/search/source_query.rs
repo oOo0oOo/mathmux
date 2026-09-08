@@ -993,7 +993,23 @@ fn nearby_source_paths(root: &Path, requested: &str) -> Vec<String> {
         .unwrap_or_default();
     let requested_parts = identifier_query_parts(requested_stem);
     let requested_lower = requested_stem.to_lowercase();
-    let mut candidates = project_lean_files(root)
+    let requested_path_parts = identifier_query_parts(&requested.to_string_lossy().replace('/', "."));
+    let mut files = project_lean_files(root);
+    // Only inspect the explicitly named library root, never all dependency trees.
+    if let Some(std::path::Component::Normal(library)) = requested.components().next().filter(|_| requested.components().count() > 1) {
+        let library = PathBuf::from(library);
+        if let Ok(packages) = fs::read_dir(root.join(".lake/packages")) {
+            for package in packages.flatten() {
+                let source_root = package.path().join(&library);
+                if source_root.is_dir() {
+                    files.extend(project_lean_files(&source_root).into_iter().map(|p| library.join(p)));
+                }
+            }
+        }
+    }
+    files.sort();
+    files.dedup();
+    let mut candidates = files
         .into_iter()
         .filter_map(|candidate| {
             let stem = candidate.file_stem()?.to_str()?;
@@ -1006,26 +1022,25 @@ fn nearby_source_paths(root: &Path, requested: &str) -> Vec<String> {
             let related_parts =
                 requested_parts.len() >= 2 && shared.saturating_add(1) >= requested_parts.len();
             let close_name = distance <= 2.max(requested_lower.chars().count() / 5);
-            if !related_parts && !close_name {
+            let path_parts = identifier_query_parts(&candidate.to_string_lossy().replace('/', "."));
+            let related_path = requested_path_parts.len() >= 3
+                && requested_path_parts.iter().all(|part| path_parts.contains(part));
+            if !related_parts && !close_name && !related_path {
                 return None;
             }
             let same_directory = candidate.parent() == requested.parent();
-            Some((same_directory, shared, distance, candidate))
+            Some((same_directory, related_path, shared, distance, candidate))
         })
         .collect::<Vec<_>>();
     candidates.sort_by(|left, right| {
-        right
-            .0
-            .cmp(&left.0)
+        right.0.cmp(&left.0)
             .then_with(|| right.1.cmp(&left.1))
-            .then_with(|| left.2.cmp(&right.2))
+            .then_with(|| right.2.cmp(&left.2))
             .then_with(|| left.3.cmp(&right.3))
+            .then_with(|| left.4.cmp(&right.4))
     });
-    candidates
-        .into_iter()
-        .take(5)
-        .map(|(_, _, _, path)| path.to_string_lossy().into_owned())
-        .collect()
+    candidates.into_iter().take(5)
+        .map(|(_, _, _, _, path)| path.to_string_lossy().into_owned()).collect()
 }
 
 fn source_request_path(display: &str) -> Option<PathBuf> {
@@ -1359,4 +1374,27 @@ pub(super) fn location_source_excerpt(
         .map(|(offset, line)| format!("{:>5}  {line}", start + offset + 1))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod path_recovery_tests {
+    use super::*;
+
+    #[test]
+    fn nearby_paths_include_only_the_requested_library() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        for path in [".lake/packages/pkg/Lib/Analysis/SchwartzSpace/Fourier.lean",
+            ".lake/packages/other/Other/Analysis/SchwartzSpace/Fourier.lean",
+            "SchwartzSpaceNearby.lean"] {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "theorem target : True := by trivial\n").unwrap();
+        }
+        let paths = nearby_source_paths(root, "Lib/Analysis/Fourier/SchwartzSpace.lean");
+        assert_eq!(paths[0], "Lib/Analysis/SchwartzSpace/Fourier.lean");
+        assert!(!paths.iter().any(|p| p.starts_with("Other/")));
+        let paths = nearby_source_paths(root, "SchwartzSpace.lean");
+        assert!(!paths.iter().any(|p| p.starts_with("Lib/")));
+    }
 }

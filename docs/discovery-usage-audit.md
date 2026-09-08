@@ -1145,3 +1145,10 @@ Validation: 35 pinned-Lean cases pass, including placeholder detail, ordinary mi
 Telemetry 151469/151470 showed an inline TODO comment flattened into a theorem contract, spending the preview budget before later hypotheses. A generic parser regression failed on the same pattern. Signatures now use the existing comment masker, preserving string literals and keeping original source text unchanged. Index version16 invalidates old cached signatures; public syntax/help unchanged.
 
 Validation: 102 search tests pass, including nested comments, literals, retained premises and unchanged source. `/tmp/mm-comments-replay.py` verifies the signature/source distinction through the CLI.
+
+
+### i89: include the requested dependency library in wrong-path recovery
+
+The no-results audit of 151528 found that nearby-source recovery considered only project files, overlooking a dependency file with rearranged path components. `/tmp/mm-path-recovery-audit.py` reproduced an unrelated project suggestion while the actual library file was directly retrievable. Recovery now includes only the explicitly named library source root and compares full path components as well as filename similarity. Suggestions remain capped at five and exact resolution remains unchanged. Absolute/parent path components do not trigger dependency enumeration.
+
+Validation: 102 search tests plus a library-scope regression pass. The isolated CLI replay now suggests the existing dependency path first and its outline succeeds. Bare filename requests do not enumerate dependencies. No new syntax or index/help change.
