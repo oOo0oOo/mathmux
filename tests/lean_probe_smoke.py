@@ -67,6 +67,7 @@ request('tactic', 'exact (0 : Nat)', line=8)
 request('tactic', 'run_tac Lean.Elab.Tactic.setGoals []', line=8)
 request('tactic', 'sorry', line=8)
 request('tactic', 'exact admittedTruth', line=8)
+request('tactic', 'exact False.elim h', line=8)
 request('tactic', 'exact True.intro', line=8)
 with tempfile.TemporaryDirectory(prefix='mathmux-lean-probe-') as temp:
     setup = pathlib.Path(temp) / 'setup.json'
@@ -131,8 +132,9 @@ with tempfile.TemporaryDirectory(prefix='mathmux-lean-probe-') as temp:
     assert '⊢ True' in response['detail'] and 'abortTactic' not in response['detail'], response
     response = responses[error_start + 1]
     assert not response['ok'] and 'Type mismatch' in response['detail'], response
-    assert responses[-4]['ok'] and 'INCOMPLETE' in responses[-4]['detail'], responses[-4]
-    for response in responses[-3:-1]:
+    assert responses[-5]['ok'] and 'INCOMPLETE' in responses[-5]['detail'], responses[-5]
+    for response in responses[-4:-2]:
         assert response['ok'] and 'ADMITTED' in response['detail'], response
+    assert responses[-2]['ok'] and responses[-2]['detail'] == 'solved', responses[-2]
     assert responses[-1]['ok'] and responses[-1]['detail'] == 'solved', responses[-1]
     print(f'Lean probe smoke: {len(responses)} cases passed, including expression provenance.')

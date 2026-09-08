@@ -1159,3 +1159,10 @@ Validation: 102 search tests plus a library-scope regression pass. The isolated 
 An isolated partial-application replay with 20 remaining proof inputs and 20 local arguments placed axiom/admission evidence in the omitted middle of the default head/tail preview. Inspection now moves its existing axiom, admission and unresolved-metavariable rows before the input list. All other rows retain their order; preview limits and full evidence remain unchanged. This applies to arbitrary Lean declarations and expressions.
 
 Validation: 35 pinned-Lean service cases pass, including admission ordering for declarations and expressions. The debug CLI replay `/tmp/mm-provenance-budget.py` confirms axiom/admission visibility before inputs for the long partial application. No new syntax or index/help change.
+
+
+### i91: retain the goal context during proof-completion audits
+
+An isolated Lean-evidence audit found that `exact False.elim h` with a local `h : False` closed its goal but returned an unknown-free-variable error while checking proof provenance. The completion audit now runs inside each original goal's local context, so valid local proofs remain successful and admission/metavariable checks retain access to their dependencies.
+
+Validation: 36 pinned-Lean service cases pass, including the local-hypothesis regression, admitted proofs, incomplete assignments and a closed proof control. CLI replay: `/tmp/mm-local-proof-replay.py`. No public syntax/help/index change.
