@@ -88,3 +88,10 @@ Before adding instance-search guidance, a generic local-variable experiment expo
 Both goal and elaboration-context lookups now pass the actual one-based line to Lean and use the next line only as the scan endpoint. A six-case service regression and CLI checks cover local inspection plus rejection of names from the adjacent proof. Existing service cases remain covered. Help is search-v13/probe-v21. This fixes supplied-context reliability; it adds no inference heuristic or public verb.
 
 The previously observed mixed-error proof subsequently passed at the same 600,000-heartbeat setting (c54930, s4033), with explicit local instances and type arguments in its final indexed source. That supports investigating type expectations before recommending additional resource budget, without asserting one causal explanation for every mixed diagnostic.
+
+
+## Unresolved instance binders (i109)
+
+The completed s4036 episode repeatedly changed instance binders before importing the missing class API (telemetry 153535–153558). A generic isolated project reproduces the misleading diagnostic: an unimported class in an instance binder yields `invalid binder annotation` with type `?m.2`. Positioned `#check` exposes the unknown name, global source lookup finds the class elsewhere, and importing its module makes the check pass. Global discovery alone does not establish availability in the target file.
+
+Default check diagnostics now add one name-resolution hint only when the rejected binder type starts with Lean's unresolved metavariable marker. The hint names imports, namespaces and local shadowing as checks, without asserting a missing import or recommending that the binder check be disabled. The original Lean diagnostic remains intact. Known non-class `Nat`, a locally shadowed class, and an unknown class with `autoImplicit false` do not receive the hint. This is earlier diagnostic guidance, not automatic import selection or measured fleet productivity.

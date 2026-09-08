@@ -59,7 +59,41 @@ fn enriched_diagnostic_text(diagnostic: &WorkerDiagnostic) -> String {
     } else if text.contains("synthesized type class instance is not definitionally equal to expression inferred by typing rules") {
         text.push_str("\nhint: construct both expressions under the same local instance; introduce `classical` before either expression when decidability is involved");
     }
+    if text
+        .split_once("invalid binder annotation, type is not a class instance")
+        .and_then(|(_, rest)| rest.split_whitespace().next())
+        .is_some_and(|ty| ty.starts_with("?m."))
+    {
+        text.push_str("\nhint: the binder type is unresolved; check that its class name resolves in this file (imports, namespace, local shadowing) before changing instance binders");
+    }
     text
+}
+
+#[cfg(test)]
+mod binder_tests {
+    use super::*;
+
+    #[test]
+    fn unresolved_binder_hint_preserves_diagnostic_and_excludes_known_types() {
+        for (ty, expected) in [("?m.2", true), ("Nat", false), ("NeededContext Nat", false)] {
+            let original = format!(
+                "Demo.lean:2:10: error: invalid binder annotation, type is not a class instance\n  {ty}\nNote: Use the command `set_option checkBinderAnnotations false` to disable the check"
+            );
+            let mut diagnostic = WorkerDiagnostic {
+                severity: "error".into(),
+                kind: "elab".into(),
+                text: original.clone(),
+            };
+            let result = enriched_diagnostic_text(&diagnostic);
+            assert!(result.starts_with(&original));
+            assert_eq!(
+                result.contains("hint: the binder type is unresolved"),
+                expected
+            );
+            diagnostic.severity = "warning".into();
+            assert_eq!(enriched_diagnostic_text(&diagnostic), original);
+        }
+    }
 }
 
 fn is_syntax_diagnostic(diagnostic: &Diagnostic) -> bool {
