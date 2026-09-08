@@ -440,9 +440,12 @@ fn rank_near_name_rows(query: &str, rows: Vec<IndexedRow>) -> Vec<Candidate> {
         .map(|row| {
             let candidate_leaf = row.name.rsplit('.').next().unwrap_or(&row.name);
             let distance = edit_distance(&leaf, &candidate_leaf.to_lowercase());
-            let same_owner = query
+            let same_owner = canonical_declaration_name(query)
                 .rsplit_once('.')
-                .is_some_and(|(owner, _)| row.module.eq_ignore_ascii_case(owner));
+                .zip(canonical_declaration_name(&row.name).rsplit_once('.'))
+                .is_some_and(|((owner, _), (candidate_owner, _))| {
+                    owner.eq_ignore_ascii_case(candidate_owner)
+                });
             (
                 std::cmp::Reverse(qualified_suffix_segments(query, &row.name)),
                 distance,
@@ -463,9 +466,9 @@ fn rank_near_name_rows(query: &str, rows: Vec<IndexedRow>) -> Vec<Candidate> {
     suggestions.sort_by(|left, right| {
         same_namespace_completion(query, &right.3)
             .cmp(&same_namespace_completion(query, &left.3))
+            .then_with(|| left.2.cmp(&right.2))
             .then_with(|| left.0.cmp(&right.0))
             .then_with(|| left.1.cmp(&right.1))
-            .then_with(|| left.2.cmp(&right.2))
             .then_with(|| left.3.cmp(&right.3))
             .then_with(|| right.4.hit.signature.is_some().cmp(&left.4.hit.signature.is_some()))
     });
@@ -635,13 +638,34 @@ fn name_prefix_candidates(connection: &Connection, token: &str) -> Result<Vec<In
         .map_err(Into::into)
 }
 
-fn near_name_prefix_candidates(connection: &Connection, leaf: &str) -> Result<Vec<IndexedRow>> {
-    let rows = name_prefix_candidates(connection, leaf)?;
+fn near_name_prefix_candidates(connection: &Connection, query: &str) -> Result<Vec<IndexedRow>> {
+    let query = canonical_declaration_name(query);
+    let leaf = query.rsplit('.').next().unwrap_or(query);
+    let mut rows = name_prefix_candidates(connection, leaf)?;
     if rows.is_empty()
         && let Some((prefix, _)) = leaf.split_once('_')
         && prefix.chars().count() >= 3
     {
-        return name_prefix_candidates(connection, prefix);
+        rows = name_prefix_candidates(connection, prefix)?;
+    }
+    if let Some((namespace, leaf)) = query.rsplit_once('.')
+        && leaf.chars().count() >= 3
+    {
+        // Search only the named namespace for affix variants omitted by leaf-prefix
+        // FTS (e.g. member vs toMember). Keep the existing edit-distance gate.
+        let sql = indexed_rows_sql(&format!(
+            "WHERE search_fts MATCH ?1
+             AND owner IN (SELECT owner FROM active_search_scopes)
+             AND (instr(lower(name), ?2) = 1 OR instr(lower(name), '_root_.' || ?2) = 1)
+             AND instr(lower(name), ?3) > 0
+             LIMIT {}", SEARCH_TUNING.retrieval.name_contains_rows,
+        ));
+        let fts = format!("name : \"{}\"", namespace.replace('"', "\"\""));
+        let mut statement = connection.prepare(&sql)?;
+        rows.extend(statement.query_map(
+            params![fts, format!("{}.", namespace.to_lowercase()), leaf.to_lowercase()],
+            indexed_row_from_row,
+        )?.collect::<rusqlite::Result<Vec<_>>>()?);
     }
     Ok(rows)
 }
@@ -2886,7 +2910,7 @@ impl Searcher {
         install_active_scopes(&connection, scopes)?;
         // Exact misses must stay bounded: FTS prefix retrieval avoids scanning every
         // indexed declaration just to find a few typo/near-name candidates.
-        let rows = near_name_prefix_candidates(&connection, &leaf)?;
+        let rows = near_name_prefix_candidates(&connection, query)?;
         Ok(rank_near_name_rows(query, rows))
     }
 

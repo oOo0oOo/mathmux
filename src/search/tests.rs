@@ -4887,3 +4887,29 @@ fn rewrite_comparison_excludes_ambient_context() {
     assert!(diagnostic_rewrite_comparison("Tactic rewrite failed: unknown identifier").is_none());
     assert!(diagnostic_rewrite_comparison("Did not find an occurrence of the pattern\nin the target expression\n").is_none());
 }
+
+#[test]
+fn qualified_near_names_recover_prefixed_members_without_other_scopes() {
+    let connection = Connection::open_in_memory().unwrap();
+    connection.execute_batch("CREATE VIRTUAL TABLE search_fts USING fts5(
+        owner UNINDEXED, origin UNINDEXED, file UNINDEXED, module UNINDEXED,
+        line UNINDEXED, name, kind UNINDEXED, signature, docs, body);").unwrap();
+    for (owner, name) in [
+        ("packages:demo", "Demo.toNormedGroup"),
+        ("packages:demo", "Other.normedGroup"),
+        ("workspace:hidden", "Demo.normedGroup"),
+        ("packages:demo", "Demo.unrelated"),
+    ] {
+        connection.execute("INSERT INTO search_fts VALUES (?1, '', 'Demo.lean', 'Fixture.Module',
+            1, ?2, 'def', '(n : Nat) : Nat', '', '')", params![owner, name]).unwrap();
+    }
+    install_active_scopes(&connection, &HashSet::from(["packages:demo".into()])).unwrap();
+    let rows = near_name_prefix_candidates(&connection, "Demo.normedGroup").unwrap();
+    let hits = rank_near_name_rows("Demo.normedGroup", rows);
+    assert_eq!(hits[0].hit.name, "Demo.toNormedGroup");
+    assert!(hits.iter().all(|hit| hit.hit.name != "Demo.normedGroup"));
+    assert!(hits.iter().all(|hit| hit.hit.name != "Demo.unrelated"));
+    assert!(hits[0].hit.signature.is_some());
+    let rows = near_name_prefix_candidates(&connection, "normedGroup").unwrap();
+    assert!(!rows.iter().any(|row| row.name == "Demo.toNormedGroup"));
+}

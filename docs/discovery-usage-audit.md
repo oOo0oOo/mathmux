@@ -1201,3 +1201,9 @@ Validation: daemon tests cover single goals, named/repeated cases, context prese
 Telemetry 153051 correctly labeled a sibling declaration as unmerged/not usable locally, but recommended syncing immediately before probing it. Sync cannot import unfinished sibling work. That existing hint now says to sync once the declaration is merged to main. Search scope, candidate ordering and local candidate handoffs remain unchanged.
 
 Validation: exact-miss tests cover an isolated sibling-only result and mixed local/sibling candidates; the sibling hint now states the merge prerequisite. This is a wording correction, with no new API.
+
+### i97: recover affix variants within the requested namespace
+
+Telemetry 153094 suggested unrelated namespaces for `ContinuousLinearMap.normedAddCommGroup`; the agent subsequently found `ContinuousLinearMap.toNormedAddCommGroup` (153096). The former name is absent, but leaf-prefix retrieval excluded the latter before ranking. Exact-miss retrieval now also searches the explicitly named namespace for bounded affix variants, retaining the existing edit-distance gate and three-suggestion limit. Namespace preference now compares declaration namespaces instead of source-module paths. Exact resolution and unqualified recovery are unchanged.
+
+Validation: a generic FTS regression failed with `Other.normedGroup` first before the fix, then passed with `Demo.toNormedGroup` first; inactive scopes and unrelated members remain excluded. All 143 search tests pass. Read-only replay of the supplemental retrieval against the actual dependency index includes the intended declaration. `/tmp/mm-prefixed-member.py` verifies CLI candidate order and successful signature retrieval in an isolated fixture. Its fresh index still reported warming; this replay does not establish steady-state absence wording. Existing exact-miss tests cover that wording. No public help/index changes.
