@@ -242,7 +242,7 @@ fn append_exact_miss_hint(output: &mut String, run: &SearchRun) {
         let name = shell_argument(probe_name(&hit.name));
         if hit.kind.starts_with("unmerged:") {
             output.push_str(&format!(
-                "\nnext: sync, then mathmux probe {name} signature"
+                "\nnext: once merged to main, sync, then mathmux probe {name} signature"
             ));
         } else {
             output.push_str(&format!("\nnext: mathmux probe {name} signature"));

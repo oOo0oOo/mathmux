@@ -3221,6 +3221,12 @@ fn exact_misses_overlay_active_sibling_declarations_as_unmerged() {
             .kind
             .starts_with("unmerged:w2/sibling/agent-sibling")
     );
+    let sibling_summary = render_summary(&SearchRun {
+        reference: "q-sibling".into(), workspace_ref: current.reference.clone(),
+        query: "ContinuousLinearMap.prodMap_apply".into(), inference: result.inference,
+        hits: result.hits, note: result.note, duration_ms: 1, created_at: 0,
+    });
+    assert!(sibling_summary.contains("once merged to main, sync, then mathmux probe"));
     for suffix in ["a", "b", "c"] {
         connection
             .execute(

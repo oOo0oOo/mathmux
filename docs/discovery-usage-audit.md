@@ -1194,3 +1194,10 @@ Validation: parser tests cover extraction and malformed/unrelated messages; the 
 Check c54571 contained two identically named cases across 2,227 diagnostic characters; the first target fell into the truncated middle. The existing goal-first renderer now handles unambiguous named cases, numbering targets and retaining their corresponding local contexts below. Unnamed/ambiguous layouts and shared preambles retain original rendering. Raw stored diagnostics and the default character cap remain unchanged.
 
 Validation: daemon tests cover single goals, named/repeated cases, context preservation and fallback layouts. `/tmp/mm-multiple-goals.py` checks a generic two-goal CLI preview with long contexts and lossless `show --all`. No new verbs/help/index changes.
+
+
+### i96: make sibling-declaration availability conditional on merge
+
+Telemetry 153051 correctly labeled a sibling declaration as unmerged/not usable locally, but recommended syncing immediately before probing it. Sync cannot import unfinished sibling work. That existing hint now says to sync once the declaration is merged to main. Search scope, candidate ordering and local candidate handoffs remain unchanged.
+
+Validation: exact-miss tests cover an isolated sibling-only result and mixed local/sibling candidates; the sibling hint now states the merge prerequisite. This is a wording correction, with no new API.
