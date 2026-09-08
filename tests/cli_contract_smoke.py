@@ -334,6 +334,22 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         recovery.write_text(recovery.read_text().replace('rw [h]', 'rw [← recover_coe b, h]'))
         run([binary, 'check', 'RepeatConversion.lean'], ws)
 
+        # A late proof premise must survive a long inspection preview.
+        types = ' '.join(f'AmbientType{i}' for i in range(35))
+        inputs = ' '.join(f'parameter{i}' for i in range(12))
+        (ws / 'PremisePriority.lean').write_text(
+            'theorem conditional {' + types + ' : Type} (' + inputs + ' : Nat) '
+            '(required : False) : False := required\nexample : True := by\n  trivial\n')
+        run([binary, 'check', 'PremisePriority.lean'], ws)
+        inspected = run([binary, 'probe', 'PremisePriority.lean:3 "#inspect conditional"'], ws).stdout
+        assert 'proof assumption required: False' in inspected and 'result: False' in inspected, inspected
+        assert '1 assumption fields, 0 not shown' in inspected, inspected
+        inspect_ref = next(line.removeprefix('ref: ') for line in inspected.splitlines() if line.startswith('ref: '))
+        full_inspection = run([binary, 'show', inspect_ref, '--all'], ws).stdout
+        assert 'data input parameter11: Nat' in full_inspection, full_inspection
+        assert 'data input AmbientType34: Type' in full_inspection, full_inspection
+        assert 'proof assumption required: False' in full_inspection, full_inspection
+
         # A missing imported file on committed main has an actionable recovery.
         (root / 'Fixture').mkdir(exist_ok=True)
         (root / 'Fixture/FreshDependency.lean').write_text('theorem freshFact : True := True.intro\n')

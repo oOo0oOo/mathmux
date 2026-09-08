@@ -494,6 +494,12 @@ fn render_source(
     };
     let lines = source.lines().collect::<Vec<_>>();
     let omitted = lines.len().saturating_sub(source_lines);
+    if run.inference == "probe" && hit.kind == "inspect" && omitted > 0
+        && lines.iter().any(|line| line.starts_with("inputs ("))
+    {
+        render_inspection_preview(output, &lines, source_lines, &run.reference);
+        return;
+    }
     if run.inference == "probe" && omitted > 0 {
         let head = source_lines.div_ceil(2);
         let tail = source_lines - head;
@@ -530,6 +536,55 @@ fn render_source(
 }
 
 // Contiguous previews preserve proof order and never silently cut a long line.
+// Inspection fields may span lines. Keep their continuations attached, and avoid
+// spending the compact budget on a duplicated elaborated type while premises vanish.
+fn render_inspection_preview(output: &mut String, lines: &[&str], budget: usize, reference: &str) {
+    let mut fields: Vec<Vec<&str>> = Vec::new();
+    for line in lines {
+        if line.starts_with(char::is_whitespace) && !fields.is_empty() {
+            fields.last_mut().unwrap().push(line);
+        } else {
+            fields.push(vec![line]);
+        }
+    }
+    let priority = |head: &str| {
+        if head.starts_with("axioms:") || head.starts_with("ADMITTED")
+            || head.starts_with("Unresolved metavariables")
+            || head.starts_with("Inspection is not") { 0 }
+        else if head.starts_with("result:") { 1 }
+        else if head.starts_with("proof assumption ") || head.starts_with("local assumption ") { 2 }
+        else if head.starts_with("instance assumption ") { 3 }
+        else { 4 }
+    };
+    let assumptions = fields.iter().filter(|field| matches!(priority(field[0]), 2 | 3)).count();
+    fields.sort_by_key(|field| priority(field[0]));
+    let mut remaining = budget;
+    let mut shown = 0;
+    let mut assumptions_shown = 0;
+    for field in fields {
+        if remaining == 0 { break; }
+        // A long result or premise must not crowd out every other obligation.
+        let allowance = remaining.min(3);
+        let take = if field.len() > allowance { allowance.saturating_sub(1) } else { field.len() };
+        if take == 0 { break; }
+        for line in field.iter().take(take) {
+            output.push('\n');
+            output.push_str(&truncate_line(line.trim_end(), 200));
+        }
+        shown += take;
+        assumptions_shown += usize::from(matches!(priority(field[0]), 2 | 3));
+        remaining -= take;
+        if take < field.len() {
+            output.push_str("\n  … field continues in full output");
+            remaining -= 1;
+        }
+    }
+    output.push_str(&format!(
+        "\nFocused inspection: {assumptions} assumption fields, {} not shown; {} lines omitted; show {reference} --all",
+        assumptions - assumptions_shown, lines.len() - shown,
+    ));
+}
+
 fn render_probe_source(output: &mut String, run: &SearchRun, hit: &SearchHit, source: &str) {
     let lines = source.lines().collect::<Vec<_>>();
     let mut chars = 0;
@@ -665,5 +720,46 @@ mod tests {
             "\"Demo.changeModelTrivialization'\""
         );
         assert_eq!(shell_argument("Demo.safe_name"), "Demo.safe_name");
+    }
+}
+
+#[cfg(test)]
+mod inspection_preview_tests {
+    use super::*;
+
+    #[test]
+    fn long_inspection_prioritizes_assumptions_and_result_with_attached_continuations() {
+        let mut detail = vec!["axioms: none".to_owned(), "inputs (explicit first):".to_owned()];
+        detail.extend((0..35).map(|i| format!("data input parameter{i}: Nat")));
+        detail.extend([
+            "proof assumption required: False", "instance assumption compact: CompactSpace X",
+            "result: ∃ n,", "  n = 0 ∧", "    True ∧", "    True",
+            "elaborated type: a long duplicated signature",
+        ].into_iter().map(str::to_owned));
+        let lines = detail.iter().map(String::as_str).collect::<Vec<_>>();
+        let mut output = String::new();
+        render_inspection_preview(&mut output, &lines, 16, "q1");
+        assert!(output.contains("proof assumption required: False"), "{output}");
+        assert!(output.contains("instance assumption compact: CompactSpace X"), "{output}");
+        assert!(output.contains("result: ∃ n,\n  n = 0 ∧\n  … field continues in full output"), "{output}");
+        assert!(output.find("proof assumption").unwrap() < output.find("data input").unwrap());
+        assert!(output.contains("2 assumption fields, 0 not shown"));
+        assert!(output.ends_with("show q1 --all"));
+        assert!(output.lines().count() <= 18);
+    }
+
+    #[test]
+    fn inspection_preview_preserves_admission_and_counts_unshown_assumptions() {
+        let mut detail = vec!["axioms: sorryAx".to_owned(), "ADMITTED: depends on sorryAx".to_owned(),
+            "Unresolved metavariables remain; not a closed proof.".to_owned()];
+        detail.extend((0..30).map(|i| format!("proof assumption h{i}: False")));
+        detail.push("result: False".into());
+        let lines = detail.iter().map(String::as_str).collect::<Vec<_>>();
+        let mut output = String::new();
+        render_inspection_preview(&mut output, &lines, 16, "q2");
+        assert!(output.contains("ADMITTED") && output.contains("Unresolved metavariables"));
+        assert!(output.contains("result: False"));
+        assert!(output.contains("30 assumption fields, 18 not shown; 18 lines omitted"), "{output}");
+        assert!(!output.contains("h29:"));
     }
 }

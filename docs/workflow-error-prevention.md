@@ -54,3 +54,10 @@ Two later workflows failed on files absent from their workspace, then located th
 An isolated registered-library replay reproduces the Lake missing-file diagnostic, the source lookup handoff, and a passing check after sync. Check output now offers that recovery only for an exact project dependency path absent from both workspace disk and workspace HEAD, present on main disk and committed in main HEAD. Missing-everywhere, uncommitted, unrelated, and locally deleted files do not receive the hint. Original diagnostics remain intact; no sync runs automatically. The regular CLI smoke covers uncommitted/committed availability and successful recovery.
 
 The preceding local-estimate episode contains nine searches, six probes, four checks, one sync and one submission (workspace-filtered telemetry 153315–153358). It does not exercise repeated rewrite failures, so it cannot establish i103's effect on productivity.
+
+
+## Assumptions in compact inspection (i105)
+
+A real positioned inspection (telemetry 153395) hid the explicit ellipticity premise and the result behind 44 omitted lines. The agent recovered them with `show --all` (153400). A generic conditional theorem with twelve data parameters and 35 ambient types reproduced the same omission of `required : False`; global `axioms: none` was still visible. This is a valid conditional theorem, not a detected contradiction. Its applicability condition should be visible at the decision point.
+
+Long inspection previews now prioritize trust status, the result and proof assumptions ahead of routine inputs and duplicated elaborated-type text. Multiline fields stay attached, with explicit continuation markers and a total assumption-field count when the budget cannot show everything. Short inspections and full stored details retain their existing presentation. This presentation change does not remove the Lean service's existing per-field text limit; a long elaborated type can still require source inspection. The CLI regression checks both the visible False premise and recovery of the omitted ambient inputs.
