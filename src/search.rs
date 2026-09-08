@@ -491,6 +491,41 @@ fn declaration_glob_candidates_from_connection(
     let Some(glob_query) = declaration_glob_fts_query(query) else {
         return Ok(None);
     };
+    // FTS token prefixes cannot recover substrings inside a declaration token.
+    // Keep the fast path for a simple trailing prefix wildcard; otherwise stream
+    // names through the same Unicode-aware matcher used to filter final results.
+    let simple_prefix = query.strip_suffix('*')
+        .is_some_and(|prefix| !prefix.contains(['*', '|']));
+    if !simple_prefix {
+        let alternatives = query.split('|').map(str::trim).map(|alternative| {
+            Ok((alternative, if alternative.contains('*') {
+                Some(declaration_glob_regex(alternative)?)
+            } else { None }))
+        }).collect::<Result<Vec<_>>>()?;
+        let mut names = connection.prepare(
+            "SELECT rowid, name FROM search_fts
+             WHERE owner IN (SELECT owner FROM active_search_scopes)
+             AND (?1 = '' OR lower(kind) = lower(?1))",
+        )?;
+        let mut cursor = names.query([kind.unwrap_or("")])?;
+        let mut ids: Vec<i64> = Vec::new();
+        while let Some(row) = cursor.next()? {
+            let name: String = row.get(1)?;
+            if alternatives.iter().any(|(alternative, pattern)| match pattern {
+                Some(pattern) => pattern.is_match(&name),
+                None => qualified_name_matches(&name, alternative),
+            }) {
+                ids.push(row.get(0)?);
+                if ids.len() == SEARCH_TUNING.retrieval.discovery_rows { break; }
+            }
+        }
+        if ids.is_empty() { return Ok(Some(Vec::new())); }
+        let placeholders = vec!["?"; ids.len()].join(",");
+        let sql = indexed_rows_sql(&format!("WHERE rowid IN ({placeholders})"));
+        let mut statement = connection.prepare(&sql)?;
+        return Ok(Some(statement.query_map(params_from_iter(ids), indexed_row_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?));
+    }
     let kind_condition = kind.map_or(String::new(), |_| " AND lower(kind) = lower(?2)".into());
     let sql = ranked_rows_sql(&format!(
         "WHERE search_fts MATCH ?1
@@ -3088,9 +3123,8 @@ impl Searcher {
     ) -> Result<Vec<IndexedRow>> {
         let connection = self.open()?;
         install_active_scopes(&connection, scopes)?;
-        // Declaration globs already have an authoritative name-only FTS
-        // query. Avoid generic token/prefix retrieval that would be filtered
-        // out later and is expensive on the full project index.
+        // Declaration globs have dedicated name-only retrieval. Avoid generic
+        // discovery retrieval, which cannot preserve substring wildcard semantics.
         if !include_all_signatures
             && let Some(rows) =
                 declaration_glob_candidates_from_connection(&connection, query, declaration_kind)?

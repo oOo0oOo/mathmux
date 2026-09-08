@@ -1231,3 +1231,9 @@ Validation: the regression failed before the two-line correction, then all 145 s
 Telemetry 153178 and 153181 repeated `/pattern/i` requests after an error that only said `re: expects /REGEX/`. The parse error now points to the already-supported inline flag form `re:/(?i)PATTERN/`. This is guidance, not an added grammar or compatibility path.
 
 Validation: all six search API tests pass; the new regression verifies rejection of trailing flags, acceptance of the inline form, and case-insensitive matching by the existing regex engine. No Lean behavior changed.
+
+### i102: preserve substring semantics in declaration glob retrieval
+
+Telemetry 153209 returned no results for `*localizedChartSchwartz*`; matching declarations were found in the same workspace index on inspection. A generic `*LocalizedChart*` lookup against `Demo.prefixedLocalizedChart` reproduced the miss independently of index timing. Token-prefix FTS cannot represent that substring match. Simple trailing-prefix queries retain FTS; other globs stream scoped names through the existing Unicode-aware matcher and fetch full rows only for matching IDs, bounded by the existing candidate limit.
+
+Validation: all 146 search tests pass; focused regressions cover internal substring matches, alternatives, Unicode case matching, inactive scopes and explicit kinds. `/tmp/mm-substring-glob.py` finds the ASCII/Unicode targets and preserves prefix lookup in an isolated CLI fixture. A read-only Python scan of 59,660 workspace/artifact names took about 0.7 seconds; this is not an end-to-end Rust benchmark. Substring queries trade additional name scanning for correct matching. No new schema, verbs or formalization mutations.

@@ -2182,6 +2182,9 @@ fn declaration_glob_candidates_are_name_scoped_and_skip_generic_matches() {
         .unwrap();
     for (owner, name, signature, body) in [
         ("workspace:w1", "Demo.FiberBundle.local_equiv", "X → Y", ""),
+        ("workspace:w1", "Demo.prefixedLocalizedChart", "X → Y", ""),
+        ("workspace:w1", "Demo.prefixΔSuffix", "X → Y", ""),
+        ("workspace:w2", "Other.prefixedLocalizedChart", "X → Y", ""),
         (
             "workspace:w1",
             "Demo.unrelated",
@@ -2209,6 +2212,15 @@ fn declaration_glob_candidates_are_name_scoped_and_skip_generic_matches() {
         rows.into_iter().map(|row| row.name).collect::<Vec<_>>(),
         ["Demo.FiberBundle.local_equiv"]
     );
+    let rows = declaration_glob_candidates_from_connection(&connection, "*LocalizedChart*", None)
+        .unwrap().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].name, "Demo.prefixedLocalizedChart");
+    let rows = declaration_glob_candidates_from_connection(&connection, "*δ*suffix|missing", None)
+        .unwrap().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].name, "Demo.prefixΔSuffix");
+
 }
 
 #[test]
@@ -2245,7 +2257,11 @@ fn declaration_glob_candidates_filter_explicit_kind() {
     assert_eq!(
         rows.into_iter().map(|row| row.name).collect::<Vec<_>>(),
         ["Demo.target_theorem"]
-    );
+    );    let rows = declaration_glob_candidates_from_connection(&connection, "*target*", Some("THEOREM"))
+        .unwrap().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].name, "Demo.target_theorem");
+
 }
 
 #[test]

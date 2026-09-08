@@ -492,7 +492,7 @@ pub(super) fn declaration_glob_matches(name: &str, query: &str) -> bool {
     declaration_glob_regex(query).is_ok_and(|pattern| pattern.is_match(name))
 }
 
-fn declaration_glob_regex(query: &str) -> Result<Regex, regex::Error> {
+pub(super) fn declaration_glob_regex(query: &str) -> Result<Regex, regex::Error> {
     let characters = query.chars().collect::<Vec<_>>();
     let pattern = characters
         .iter()
