@@ -255,15 +255,12 @@ fn append_exact_miss_hint(output: &mut String, run: &SearchRun) {
                 .unwrap_or(run.query.as_str())
         });
         let query = query.strip_prefix("name:").unwrap_or(query);
-        let leaf = query
-            .trim_start_matches('@')
-            .rsplit('.')
-            .next()
-            .unwrap_or(query);
-        let next = if leaf == query.trim_start_matches('@').trim_start_matches("_root_.") {
-            format!("{leaf}*")
+        let query = query.trim_start_matches('@').trim_start_matches("_root_.");
+        let next = if let Some((owner, leaf)) = query.rsplit_once('.') {
+            // Broaden exact lookup without discarding the caller's namespace context.
+            format!("{owner} {leaf}")
         } else {
-            leaf.to_owned()
+            format!("{query}*")
         };
         output.push_str(&format!("\nnext: mathmux search {}", shell_argument(&next)));
     }
@@ -637,11 +634,12 @@ mod tests {
         for (query, next) in [
             ("eLpNorm_two", "\"eLpNorm_two*\""),
             ("eLpNorm_two source", "\"eLpNorm_two*\""),
-            ("Demo.missing source", "missing"),
-            ("theorem Demo.missing source", "missing"),
+            ("Demo.missing source", "\"Demo missing\""),
+            ("theorem Demo.missing source", "\"Demo missing\""),
             ("declaration theorem missing proof", "\"missing*\""),
             ("name:missing", "\"missing*\""),
             ("@_root_.missing", "\"missing*\""),
+            ("@_root_.Demo.Inner.missing", "\"Demo.Inner missing\""),
             ("missing'", "\"missing'*\""),
         ] {
             let run = SearchRun {

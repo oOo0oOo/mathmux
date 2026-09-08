@@ -1173,3 +1173,10 @@ Validation: 36 pinned-Lean service cases pass, including the local-hypothesis re
 A neighboring completion audit found that a local `let hidden : True := by sorry` retained an assigned metavariable in its stored value. Inspection reported no axioms and unresolved evidence; a tactic using it reported solved. Provenance now instantiates the expression, type and each recursively visited local type/value before collecting dependencies. Both inspection and completion consequently detect the existing admission.
 
 Validation: 39 pinned-Lean service cases pass, including local admission inspection/completion and an independent proof in the same context. `/tmp/mm-local-admission-replay.py` covers the CLI. No new verbs, labels or index/help changes.
+
+
+### i93: retain namespace context when broadening an exact miss
+
+Telemetry 151742 and 151768 reduced qualified missing names to bare `ae` and `deriv` follow-ups. The suggested command discarded information the agent already supplied. When no candidate suggestions exist, a qualified exact miss now proposes a spaced namespace/leaf discovery query. Unqualified misses still suggest a prefix wildcard; candidate signature handoffs and exact resolution remain unchanged.
+
+Validation: focused display and exact-miss tests cover nested namespaces, root-qualified names, explicit declaration forms, unqualified wildcards and existing suggestions. `/tmp/mm-namespace-recovery.py` confirms the broader generic `Demo deriv` query ranks `Demo.derivCLM` first. Its initial exact lookups were warming, so the non-warming hint itself is verified by rendering tests, not claimed from that CLI result. No public syntax or index/help change.

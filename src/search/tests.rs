@@ -1416,7 +1416,7 @@ fn exact_miss_summary_labels_bounded_suggestions() {
 }
 
 #[test]
-fn exact_miss_without_suggestions_repairs_from_leaf_name() {
+fn exact_miss_without_suggestions_preserves_namespace_context() {
     let summary = render_summary(&SearchRun {
         reference: "q-leaf".into(),
         workspace_ref: "w1".into(),
@@ -1427,7 +1427,7 @@ fn exact_miss_without_suggestions_repairs_from_leaf_name() {
         duration_ms: 1,
         created_at: 0,
     });
-    assert!(summary.contains("next: mathmux search missing"));
+    assert!(summary.contains("next: mathmux search \"Demo.Namespace missing\""));
     assert!(!summary.contains("concept Demo.Namespace.missing"));
     assert!(summary.ends_with("ref: q-leaf"));
 }
