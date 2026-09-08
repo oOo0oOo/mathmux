@@ -90,6 +90,17 @@ local_cases = [('term', 'n', 2, True), ('inspect', 'n', 2, True),
 for operation, term, line, _ in local_cases:
     request(operation, term, line=line)
     requests[-1]['column'] = 4
+phase_start = len(requests)
+phase_header = 'import Lean\nclass Ready (α : Type) : Prop where\n  witness : True\ndef Requires (α : Type) [Ready α] : Prop := True\n'
+phase_cases = [
+    ('example : Requires Nat := by\n  letI : Ready Nat := ⟨True.intro⟩\n  trivial\n', True, False),
+    ('example : True := by\n  have : Requires Nat := by sorry\n  trivial\n', False, False),
+    ('theorem phase (_s : String := "( := by") : Requires Nat := by sorry\n', True, False),
+    ('local instance : Ready Nat := ⟨True.intro⟩\nexample : Requires Nat := by trivial\n', False, True),
+]
+for body, _, _ in phase_cases:
+    source = phase_header + body
+    request('check', '', line=1)
 with tempfile.TemporaryDirectory(prefix='mathmux-lean-probe-') as temp:
     setup = pathlib.Path(temp) / 'setup.json'
     setup.write_text(json.dumps(dict(name='ProbeFixture', package=None, isModule=False,
@@ -107,6 +118,10 @@ with tempfile.TemporaryDirectory(prefix='mathmux-lean-probe-') as temp:
             assert ('Nat' if term == 'n' else 'Bool') in response['detail'], response
         else:
             assert 'Unknown identifier' in response['detail'], response
+    for response, (_, hinted, ok) in zip(responses[phase_start:], phase_cases):
+        assert response['ok'] == ok, response
+        diagnostic_text = '\n'.join(d['text'] for d in response['diagnostics'])
+        assert ('required in the declaration signature' in diagnostic_text) == hinted, response
     responses = responses[:legacy_count]
     for i in range(7):
         assert responses[i]['ok'], (i, responses[i])

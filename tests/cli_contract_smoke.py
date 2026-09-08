@@ -400,6 +400,16 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         ordinary = probe('Suggestion.lean:3 "by exact ⟨True.intro, True.intro⟩"')
         assert 'solved' in ordinary and 'Try this:' not in ordinary, ordinary
 
+        phase_header = 'import Lean\nclass Ready (α : Type) : Prop where\n  witness : True\ndef Requires (α : Type) [Ready α] : Prop := True\n'
+        for body, hinted in [
+            ('example : Requires Nat := by\n  letI : Ready Nat := ⟨True.intro⟩\n  trivial\n', True),
+            ('example : True := by\n  have : Requires Nat := by sorry\n  trivial\n', False),
+        ]:
+            (ws / 'StatementScope.lean').write_text(phase_header + body)
+            phase = run([binary, 'check', 'StatementScope.lean'], ws, ok=False)
+            assert phase.returncode != 0, phase
+            assert ('required in the declaration signature' in phase.stdout + phase.stderr) == hinted, phase
+
         # A missing imported file on committed main has an actionable recovery.
         (root / 'Fixture').mkdir(exist_ok=True)
         (root / 'Fixture/FreshDependency.lean').write_text('theorem freshFact : True := True.intro\n')

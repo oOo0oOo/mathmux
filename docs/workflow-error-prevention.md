@@ -116,3 +116,12 @@ An isolated synthetic stored profile with twenty warnings and a thirteen-second 
 The broader Lean-information audit confirmed an existing-output gap on the current installed build: native Lean emits a concrete `Try this:` proof for `simp?`, while the same explicit MathMux experiment returned only `solved`. With no higher-priority newly observed blocker, this verified gap is addressed through the existing tactic probe.
 
 Successful tactic experiments now append Lean informational messages beginning with `Try this:` after the result. Ordinary success, arbitrary informational traces, failed tactics, and admission/incompleteness classifications preserve their behavior. No tactic runs automatically and no new verb is introduced. Full stored detail retains the suggestion; the ordinary preview budget still applies. The pinned service smoke passes 48 cases, including suggestion and no-extra-output controls; CLI smoke includes the requested suggestion and ordinary proof control. Help digest is probe-v22. This is controlled capability verification, not measured fleet uptake.
+
+
+## Locate missing instances in the declaration signature (i114)
+
+In c54972/c54973, a missing instance prevented the theorem result from elaborating. Adding proof-local instances could not repair that earlier failure. Subsequent source evidence 153830 showed the instances moved before the theorem, progressing to a later proof mismatch. A generic `Requires Nat` example reproduces both the failed proof-local repair and successful declaration-level repair.
+
+The first failing native declaration now contributes its parsed signature range to diagnostic rendering. Missing-instance errors within that range explain that an instance introduced inside the proof is too late. Proof-body errors receive no phase hint. Native syntax ranges avoid confusing comments, multiline binders or default strings with proof boundaries; unsupported command shapes receive no inferred classification. Original diagnostics and failure status are preserved.
+
+Pinned service smoke passes 52 cases, including signature/proof controls, a misleading default string, and successful pre-statement instance. CLI smoke includes signature/proof negative controls. This delivers phase evidence through existing checks without a new verb or textual header heuristic.

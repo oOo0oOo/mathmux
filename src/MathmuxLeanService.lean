@@ -507,9 +507,17 @@ def collectResultProfile (fileMap : FileMap)
     entries := entries ++ collectTraceProfile fileMap trace.ref trace.msg
   return entries
 
+def signatureRange? (fileMap : FileMap) (stx : Syntax) : Option (Position × Position) := do
+  guard (stx.getKind == ``Lean.Parser.Command.declaration)
+  let signature ← stx[1].getArgs.find? fun arg =>
+    arg.getKind == ``Lean.Parser.Command.declSig || arg.getKind == ``Lean.Parser.Command.optDeclSig
+  let start ← signature.getPos?
+  let stop ← signature.getTailPos?
+  return (fileMap.toPosition start, fileMap.toPosition stop)
+
 partial def firstErrorOrFinal (task : Language.SnapshotTask Language.Lean.CommandParsedSnapshot)
     (fileMap : FileMap) (profile : Bool) :
-    BaseIO (Bool × MessageLog × Array ProfileEntry) := do
+    BaseIO (Bool × MessageLog × Array ProfileEntry × Option (Position × Position)) := do
   let command := task.get
   let result := command.elabSnap.resultSnap.get
   let entries := if profile then collectResultProfile fileMap result else #[]
@@ -519,22 +527,31 @@ partial def firstErrorOrFinal (task : Language.SnapshotTask Language.Lean.Comman
     if let some next := command.nextCmdSnap? then
       let started ← IO.monoMsNow
       let messages ← collectAfterError next messages 1 0 started started
-      return (true, messages, entries)
+      return (true, messages, entries, signatureRange? fileMap command.stx)
     else
-      return (true, messages, entries)
+      return (true, messages, entries, signatureRange? fileMap command.stx)
   if let some next := command.nextCmdSnap? then
-    let (failed, messages, rest) ← firstErrorOrFinal next fileMap profile
-    return (failed, messages, entries ++ rest)
+    let (failed, messages, rest, signature) ← firstErrorOrFinal next fileMap profile
+    return (failed, messages, entries ++ rest, signature)
   else
-    return (false, result.cmdState.messages, entries)
+    return (false, result.cmdState.messages, entries, none)
 
-def renderMessages (messages : MessageLog) : BaseIO (Array Diagnostic) := do
+def renderMessages (messages : MessageLog)
+    (signature : Option (Position × Position) := none) : BaseIO (Array Diagnostic) := do
   let mut diagnostics := #[]
   for message in messages.reportedPlusUnreported do
+    let mut text ← message.toString
+    if message.severity == .error && (message.kind == `lean.synthInstanceFailed || message.kind == `lean.synthInstanceFailed._namedError) then
+      if let some (start, stop) := signature then
+        let pos := message.pos
+        let afterStart := start.line < pos.line || (start.line == pos.line && start.column ≤ pos.column)
+        let beforeStop := pos.line < stop.line || (pos.line == stop.line && pos.column < stop.column)
+        if afterStart && beforeStop then
+          text := text ++ "\nhint: this instance is required in the declaration signature; introducing it inside the proof is too late. Make it available to the statement."
     diagnostics := diagnostics.push {
       severity := message.severity.toString
       kind := message.kind.toString
-      text := ← message.toString
+      text
     }
   return diagnostics
 
@@ -550,10 +567,10 @@ def processSnapshot (snapshot : Language.Lean.InitialSnapshot) (version : Nat)
   let processed := header.processedSnap.get
   let some processed := processed.result? |
     return ← failureWithDiagnostics snapshot "import processing failed" version
-  let (failed, commandMessages, profileEntries) ←
+  let (failed, commandMessages, profileEntries, signature) ←
     firstErrorOrFinal processed.firstCmdSnap snapshot.ictx.fileMap profile
   let messages ← if failed then pure commandMessages else collectTree (Language.toSnapshotTree snapshot)
-  let diagnostics := deduplicateDiagnostics (← renderMessages messages)
+  let diagnostics := deduplicateDiagnostics (← renderMessages messages signature)
   return { ok := !messages.hasErrors, diagnostics, profile := profileEntries, version := version }
 
 where
