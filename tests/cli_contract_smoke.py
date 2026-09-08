@@ -310,6 +310,30 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         db.close()
         assert (ws / 'Fixture.lean').read_text() == source
         print('CLI smoke passed: inherited fields, default constructor inspection, complete stored input lists, dependency Lean error attribution, complete source snapshots/continuations/freshness, assumptions, source evidence, Lean evidence, inspection, application, cached evidence/invalidation, authored examples/routes, structured empty telemetry/provenance, unchanged source.')
+        # Repeated failures should expose existing recovery evidence, not only a link.
+        recovery = ws / 'RepeatConversion.lean'
+        recovery.write_text(
+            'structure RecoveryBox where\n  run : Nat → Nat\n'
+            'instance : CoeFun RecoveryBox (fun _ => Nat → Nat) := ⟨RecoveryBox.run⟩\n'
+            'def recoverBox (b : RecoveryBox) : RecoveryBox := b\n'
+            'def recoverFn (f : Nat → Nat) : Nat → Nat := f\n'
+            'theorem recover_coe (b : RecoveryBox) : (recoverBox b : Nat → Nat) = recoverFn b := rfl\n'
+            'example (b : RecoveryBox) (h : recoverBox b = b) : True := by\n'
+            '  have hx : recoverFn b = (b : Nat → Nat) := by\n    rw [h]\n  trivial\n'
+        )
+        for attempt in range(3):
+            if attempt:
+                recovery.write_text(recovery.read_text() + f'\n-- attempt {attempt}\n')
+            checked = run([binary, 'check', 'RepeatConversion.lean'], ws, ok=False)
+            evidence = checked.stdout + checked.stderr
+            assert checked.returncode != 0, evidence
+            if attempt == 0:
+                assert 'Possible conversion' not in evidence, evidence
+        assert 'repeated blocker:' in evidence, evidence
+        assert 'recover_coe :' in evidence and 'applicability unverified' in evidence, evidence
+        recovery.write_text(recovery.read_text().replace('rw [h]', 'rw [← recover_coe b, h]'))
+        run([binary, 'check', 'RepeatConversion.lean'], ws)
+
     finally:
         try:
             daemon.wait(timeout=15)

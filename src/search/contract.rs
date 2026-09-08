@@ -883,6 +883,21 @@ impl Searcher {
         diagnostic: &str,
         path: Option<&str>,
     ) -> Result<String> {
+        self.failure_context_view(workspace, diagnostic, path, false)
+    }
+
+    pub(crate) fn repeated_rewrite_hint(
+        &self, workspace: &Workspace, diagnostic: &str, path: Option<&str>,
+    ) -> Result<String> {
+        if diagnostic_rewrite_comparison(diagnostic).is_none() {
+            return Ok(String::new());
+        }
+        self.failure_context_view(workspace, diagnostic, path, true)
+    }
+
+    fn failure_context_view(
+        &self, workspace: &Workspace, diagnostic: &str, path: Option<&str>, compact: bool,
+    ) -> Result<String> {
         let rewrite = diagnostic_rewrite_comparison(diagnostic);
         if rewrite.is_none() && ![
             "type mismatch",
@@ -1018,19 +1033,19 @@ impl Searcher {
         });
         let mut seen = HashSet::new();
         rows.retain(|(_, r)| seen.insert(r.name.clone()));
+        if compact {
+            return Ok(rows.first().and_then(|(_, row)| {
+                compact_conversion_hint(&row.name, &row.signature,
+                    &conversion_availability(import_context.as_ref(), &row.module))
+            }).unwrap_or_default());
+        }
         let mut detail = format!("\n{focused}\n");
         if !rows.is_empty() {
             detail.push_str(
                 "\nConversion/law candidates (signature overlap; applicability unverified):\n",
             );
             for (_, row) in rows.iter().take(3) {
-                let availability = match &import_context {
-                    Some(c) if c.accessible.contains(&row.module) => {
-                        "available through imports".to_owned()
-                    }
-                    Some(_) => format!("import may be required: {}", row.module),
-                    None => "import availability unknown".into(),
-                };
+                let availability = conversion_availability(import_context.as_ref(), &row.module);
                 detail.push_str(&format!(
                     "{} : {}\n  {}:{}; {availability}; probe {} source\n",
                     row.name,
@@ -1071,9 +1086,37 @@ impl Searcher {
     }
 }
 
+fn conversion_availability(context: Option<&ImportContext>, module: &str) -> String {
+    match context {
+        Some(c) if c.accessible.contains(module) => "available through imports".into(),
+        Some(_) => format!("import may be required: {module}"),
+        None => "import availability unknown".into(),
+    }
+}
+
+fn compact_conversion_hint(name: &str, signature: &str, availability: &str) -> Option<String> {
+    if signature.is_empty() || signature.contains('…') { return None; }
+    let detail = format!(
+        "\nPossible conversion (indexed signature; applicability unverified):\n{name} : {signature}\n{availability}; mathmux probe {} source",
+        shell_argument(name),
+    );
+    // Omit the automatic suggestion rather than cut off a required premise.
+    (detail.chars().count() <= 480).then_some(detail)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn compact_conversion_keeps_premises_or_omits_candidate() {
+        let detail = compact_conversion_hint("Demo.bridge", "(required : False) : P = Q", "import availability unknown").unwrap();
+        assert!(detail.contains("required : False"));
+        assert!(detail.contains("applicability unverified"));
+        assert!(detail.contains("import availability unknown"));
+        assert!(compact_conversion_hint("Demo.bridge", &"premise ".repeat(100), "available through imports").is_none());
+        assert!(compact_conversion_hint("Demo.bridge", "(h : …) : P", "available through imports").is_none());
+    }
+
     #[test]
     fn examples_distinguish_existing_subject_inputs_from_other_requirements() {
         assert!(construction_needs_subject(

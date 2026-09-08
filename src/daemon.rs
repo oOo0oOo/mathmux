@@ -371,7 +371,15 @@ impl Service {
                     profile,
                     report,
                 )?;
-                let summary = check_summary(&outcome);
+                let mut summary = check_summary(&outcome);
+                if !outcome.ok && outcome.repetition.is_some()
+                    && let Some(diagnostic) = outcome.diagnostics.first()
+                    && let Ok(hint) = self.searcher.repeated_rewrite_hint(
+                        &workspace, &diagnostic.text, file.as_deref(),
+                    )
+                {
+                    summary.push_str(&hint);
+                }
                 if outcome.ok {
                     Ok(format!("ok {summary}"))
                 } else {
