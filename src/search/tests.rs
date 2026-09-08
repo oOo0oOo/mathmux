@@ -3442,8 +3442,8 @@ fn exact_resolution_fails_closed_instead_of_returning_a_different_declaration() 
         )
         .unwrap();
     let routed_note = routed.note.as_deref().unwrap();
-    assert!(routed_note.contains("exact declaration not found: pullbackCompHom"));
-    assert!(!routed_note.contains("exact declaration not found: pullbackCompHom source"));
+    assert!(routed_note.contains("exact declaration not found in index: pullbackCompHom"));
+    assert!(!routed_note.contains("exact declaration not found in index: pullbackCompHom source"));
     let miss = searcher
         .exact_miss_result(&workspace, "pullbackCompHom", &scopes, None, false, false)
         .unwrap();
@@ -3451,7 +3451,7 @@ fn exact_resolution_fails_closed_instead_of_returning_a_different_declaration() 
     assert!(
         miss.note
             .as_deref()
-            .is_some_and(|note| note.contains("exact declaration not found"))
+            .is_some_and(|note| note.contains("exact declaration not found in index"))
     );
     assert!(miss.hits.iter().all(|hit| hit.name != "AlgHom.pullbackFst"));
 }
@@ -4912,4 +4912,50 @@ fn qualified_near_names_recover_prefixed_members_without_other_scopes() {
     assert!(hits[0].hit.signature.is_some());
     let rows = near_name_prefix_candidates(&connection, "normedGroup").unwrap();
     assert!(!rows.iter().any(|row| row.name == "Demo.toNormedGroup"));
+}
+
+#[test]
+fn exact_miss_for_structure_member_offers_lean_inspection() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("root");
+    let state_dir = directory.path().join("state");
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(&state_dir).unwrap();
+    let repo = Repo {
+        root: root.clone(),
+        common_git_dir: directory.path().join("git"),
+        state_dir: state_dir.clone(),
+        socket_path: state_dir.join("daemon.sock"),
+        db_path: state_dir.join("state.sqlite3"),
+        search_db_path: state_dir.join("search.sqlite3"),
+        log_path: state_dir.join("daemon.log"),
+        cache_dir: state_dir.join("cache"),
+        integration_lock: state_dir.join("integration.lock"),
+        validation_lock: state_dir.join("validation.lock"),
+        startup_lock: state_dir.join("startup.lock"),
+    };
+    let state = State::new(repo.db_path.clone()).unwrap();
+    let current = Workspace {
+        reference: "w1".into(),
+        name: "current".into(),
+        path: root.clone(),
+        branch: "current".into(),
+        model: Some("agent-current".into()),
+    };
+    state.add_workspace(&current).unwrap();
+    let checker = Arc::new(Checker::new(repo.clone(), state.clone(), None).unwrap());
+    let searcher = Searcher::new(repo.clone(), state, checker, None).unwrap();
+    let connection = Connection::open(repo.search_db_path).unwrap();
+    connection.execute("INSERT INTO search_fts VALUES
+        ('workspace:w1', '', 'Fixture.lean', 'Fixture', 1, 'Derived', 'structure',
+         'extends Base', '', 'structure Derived extends Base where')", []).unwrap();
+    let scopes = HashSet::from(["workspace:w1".into()]);
+    let result = searcher.exact_miss_result(&current, "Derived.toBase", &scopes, None, false, false).unwrap();
+    let note = result.note.unwrap();
+    assert!(note.contains("exact declaration not found in index: Derived.toBase"));
+    assert!(note.contains("Generated members may be unindexed"));
+    assert!(note.contains("#inspect Derived.toBase"));
+    assert!(!result.ok);
+    let result = searcher.exact_miss_result(&current, "Unknown.toBase", &scopes, None, false, false).unwrap();
+    assert!(!result.note.unwrap().contains("Generated members"));
 }

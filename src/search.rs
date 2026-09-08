@@ -2747,8 +2747,18 @@ impl Searcher {
         let mut note = if ambiguous {
             format!("ambiguous declaration name: {query}; qualify the name")
         } else {
-            format!("exact declaration not found: {query}")
+            format!("exact declaration not found in index: {query}")
         };
+        if !ambiguous
+            && let Some((parent, _)) = query.rsplit_once('.')
+            && self.exact_candidates(parent, scopes)?.iter()
+                .any(|row| matches!(row.kind.as_str(), "structure" | "class"))
+        {
+            note.push_str(&format!(
+                "\nGenerated members may be unindexed; inspect in an importing file: mathmux probe FILE:LINE {}",
+                shell_argument(&format!("#inspect {query}")),
+            ));
+        }
         let local_source_module = self
             .exact_candidates(query, scopes)?
             .into_iter()
