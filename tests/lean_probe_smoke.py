@@ -58,9 +58,17 @@ example (h : False) : True := by
   let hidden := unsafeResult 0
   have keep : False := hidden
   exact False.elim keep
+example : True := by
+  let hidden : True := by sorry
+  have keep := hidden
+  exact keep
 """
 for term in ['(unsafeResult 0)', '(wrapped 0)', 'h', 'hidden', '(Nat.succ 0)', '(False.elim h : Nat)', '(id (by sorry : Nat))']:
     request('inspect', term, line=8)
+local_definition_start = len(requests)
+request('inspect', 'hidden', line=12)
+request('tactic', 'exact hidden', line=12)
+request('tactic', 'exact True.intro', line=12)
 error_start = len(requests)
 request('tactic', 'exact ?_', line=8)
 request('tactic', 'exact (0 : Nat)', line=8)
@@ -127,6 +135,10 @@ with tempfile.TemporaryDirectory(prefix='mathmux-lean-probe-') as temp:
     response = responses[provenance_start + 6]
     assert response['ok'] and 'sorryAx' in response['detail'] and 'ADMITTED' in response['detail'], response
     assert response['detail'].index('ADMITTED') < response['detail'].index('inputs (explicit first)'), response
+    for response in responses[local_definition_start:local_definition_start + 2]:
+        assert response['ok'] and 'ADMITTED' in response['detail'], response
+    response = responses[local_definition_start + 2]
+    assert response['ok'] and response['detail'] == 'solved', response
     response = responses[error_start]
     assert not response['ok'] and 'synthesize placeholder' in response['detail'], response
     assert '⊢ True' in response['detail'] and 'abortTactic' not in response['detail'], response

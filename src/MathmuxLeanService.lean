@@ -173,6 +173,8 @@ def boundedContractText (text : String) (limit : Nat := 800) : String :=
 -- Applied expressions can depend on axioms through arguments or local lets,
 -- not just their head declaration. Include the types of local dependencies too.
 def expressionProvenance (value type : Expr) : MetaM (Array Name × Array String) := do
+  let value ← instantiateMVars value
+  let type ← instantiateMVars type
   let mut expressions := #[value, type]
   let mut locals := collectFVars (collectFVars {} value) type
   let mut localLines := #[]
@@ -181,9 +183,11 @@ def expressionProvenance (value type : Expr) : MetaM (Array Name × Array String
     let id := locals.fvarIds[next]!
     next := next + 1
     let decl ← id.getDecl
-    expressions := expressions.push decl.type
-    locals := collectFVars locals decl.type
+    let localType ← instantiateMVars decl.type
+    expressions := expressions.push localType
+    locals := collectFVars locals localType
     if let some body := decl.value? then
+      let body ← instantiateMVars body
       expressions := expressions.push body
       locals := collectFVars locals body
     let proof ← isProp decl.type

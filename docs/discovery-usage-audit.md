@@ -1166,3 +1166,10 @@ Validation: 35 pinned-Lean service cases pass, including admission ordering for 
 An isolated Lean-evidence audit found that `exact False.elim h` with a local `h : False` closed its goal but returned an unknown-free-variable error while checking proof provenance. The completion audit now runs inside each original goal's local context, so valid local proofs remain successful and admission/metavariable checks retain access to their dependencies.
 
 Validation: 36 pinned-Lean service cases pass, including the local-hypothesis regression, admitted proofs, incomplete assignments and a closed proof control. CLI replay: `/tmp/mm-local-proof-replay.py`. No public syntax/help/index change.
+
+
+### i92: resolve assigned metavariables in local provenance
+
+A neighboring completion audit found that a local `let hidden : True := by sorry` retained an assigned metavariable in its stored value. Inspection reported no axioms and unresolved evidence; a tactic using it reported solved. Provenance now instantiates the expression, type and each recursively visited local type/value before collecting dependencies. Both inspection and completion consequently detect the existing admission.
+
+Validation: 39 pinned-Lean service cases pass, including local admission inspection/completion and an independent proof in the same context. `/tmp/mm-local-admission-replay.py` covers the CLI. No new verbs, labels or index/help changes.
