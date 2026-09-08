@@ -125,3 +125,9 @@ In c54972/c54973, a missing instance prevented the theorem result from elaborati
 The first failing native declaration now contributes its parsed signature range to diagnostic rendering. Missing-instance errors within that range explain that an instance introduced inside the proof is too late. Proof-body errors receive no phase hint. Native syntax ranges avoid confusing comments, multiline binders or default strings with proof boundaries; unsupported command shapes receive no inferred classification. Original diagnostics and failure status are preserved.
 
 Pinned service smoke passes 52 cases, including signature/proof controls, a misleading default string, and successful pre-statement instance. CLI smoke includes signature/proof negative controls. This delivers phase evidence through existing checks without a new verb or textual header heuristic.
+
+## Preserve native profile line coordinates (i115)
+
+The Lean-information audit found a coordinate conversion defect: a real timed theorem on line 2 produced profile entries on line 3. `FileMap.toPosition` already returns one-based lines. Rust declaration labeling could mask this for command entries, while other entries retained the shifted location. The service now preserves the native line number and continues converting zero-based columns.
+
+`tests/lean_profile_smoke.py` exercises real timed Lean elaboration, including a namespace and preceding Unicode text. It failed on the original implementation and passes after the conversion fix. The test checks command and definition-value anchors; it does not claim that every nested trace carries a distinct tactic location. No public API or output budget changes.

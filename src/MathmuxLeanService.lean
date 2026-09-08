@@ -488,7 +488,8 @@ partial def collectTraceProfile (fileMap : FileMap) (ref : Syntax) :
       if elapsed < 5 then children else
         let pos := fileMap.toPosition (ref.getPos?.getD 0)
         let detail := if data.tag.isEmpty then "" else data.tag
-        #[{ line := pos.line + 1, column := pos.column + 1, kind := data.cls.toString,
+        -- Lean positions already use one-based lines, but zero-based columns.
+        #[{ line := pos.line, column := pos.column + 1, kind := data.cls.toString,
             detail, duration_ms := elapsed }] ++ children
   | .withContext _ msg => collectTraceProfile fileMap ref msg
   | .withNamingContext _ msg => collectTraceProfile fileMap ref msg
