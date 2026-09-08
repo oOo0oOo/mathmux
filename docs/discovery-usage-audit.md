@@ -1187,3 +1187,10 @@ Validation: focused display and exact-miss tests cover nested namespaces, root-q
 The derivative/convolution episode produced repeated rewrite failures (c54542/c54544/c54545/c54547) involving bundled objects and underlying functions. An isolated Box/function replay confirmed that `probe cREF context` skipped conversion retrieval for this diagnostic class. The existing path now extracts the failed pattern and target, excludes ambient hypotheses, and reuses bounded law retrieval. Check output links to that context; candidates remain explicitly unverified.
 
 Validation: parser tests cover extraction and malformed/unrelated messages; the existing type-mismatch retrieval regression and check-summary tests pass. `/tmp/mm-rewrite-context.py` verifies the CLI hint, conversion-law candidate and a passing follow-up check using that law. Existing verbs and three-candidate limit remain unchanged.
+
+
+### i95: show named multiple goals before repeated contexts
+
+Check c54571 contained two identically named cases across 2,227 diagnostic characters; the first target fell into the truncated middle. The existing goal-first renderer now handles unambiguous named cases, numbering targets and retaining their corresponding local contexts below. Unnamed/ambiguous layouts and shared preambles retain original rendering. Raw stored diagnostics and the default character cap remain unchanged.
+
+Validation: daemon tests cover single goals, named/repeated cases, context preservation and fallback layouts. `/tmp/mm-multiple-goals.py` checks a generic two-goal CLI preview with long contexts and lossless `show --all`. No new verbs/help/index changes.
