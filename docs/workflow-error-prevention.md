@@ -70,3 +70,12 @@ The full response in telemetry 153400 was already cut by the Lean service at 800
 Contract types, including local inputs, constructor types and negative-existence subjects, now retain the text rendered by Lean. The normal preview owns the display budget; definition bodies retain their explicit one-step bound. This removes MathMux's extra contract-text cut, not Lean's own pretty-printer elision or inference limitations. In the controlled replay the default response was 551 characters, while the full response retained all three occurrences of the terminal requirement in 18,273 characters. Storing a requested long contract uses more space; compact output does not require discarding its evidence.
 
 The pinned Lean service's 39 cases pass, and the CLI regression checks retained requirements and bounded default output. This supersedes the service-limit caveat in the i105 section above.
+
+
+## Instance search and applicability labels (i107)
+
+A completed mixed-error proof recovered by annotating an intermediate bundled derivative and its coercion (c54586–c54588 and indexed final source). A generic `Lifted Nat Box` instance with a `Box`-to-`Nat` coercion reproduces the mistake without a timeout: an expected `Nat` result asks Lean for `Lifted Nat Nat`, while annotating the intermediate `Box` makes the application pass.
+
+Existing type search retrieves the useful alternative, so another instance-search mechanism is not justified. However, the exact query `type:Lifted Nat Nat` also returned `Lifted Nat Box` as an unlabeled structural candidate. The scoring code admits related structural rows after the Lean applicability stage; this is not solely a warming behavior. Type-search output now labels candidates lacking verified applicability as related and unverified, retaining the existing `applicable` label for verified matches. Ranking and ordinary search output are unchanged. The help digest is search-v13.
+
+Tests cover both labels and ordinary output. The CLI replay compares exact and relaxed discovery with failing/successful synthesis and a successful explicitly typed application. Negative discovery has limited index coverage in the isolated fixture and is not a nonexistence proof. A subsequent failed-instance handoff should use existing retrieval and preserve this distinction.

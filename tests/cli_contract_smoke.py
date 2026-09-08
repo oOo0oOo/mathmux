@@ -364,6 +364,18 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         assert '[truncated; inspect selected declaration source]' not in full_inspection, full_inspection
         assert len(inspected) < 2000 and 'show ' + inspect_ref + ' --all' in inspected, inspected
 
+        # Structural similarity is not verified type applicability.
+        (ws / 'TypeRelated.lean').write_text(
+            'class RelatedLift (α β : Type) where\n  lift : α → β\n'
+            'instance : RelatedLift Nat Bool := ⟨fun _ => true⟩\n'
+            'example : True := by\n  trivial\n')
+        run([binary, 'check', 'TypeRelated.lean'], ws)
+        related = run([binary, 'search', 'type:RelatedLift Nat Nat'], ws).stdout
+        assert 'RelatedLift Nat Bool' in related, related
+        assert 'related (applicability unverified)' in related, related
+        unavailable = run([binary, 'probe', 'TypeRelated.lean:5 "#synth RelatedLift Nat Nat"'], ws, ok=False)
+        assert unavailable.returncode != 0, unavailable.stdout
+
         # A missing imported file on committed main has an actionable recovery.
         (root / 'Fixture').mkdir(exist_ok=True)
         (root / 'Fixture/FreshDependency.lean').write_text('theorem freshFact : True := True.intro\n')

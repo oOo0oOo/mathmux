@@ -104,6 +104,8 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
         }
         if hit.applicable {
             output.push_str("  applicable");
+        } else if run.inference == "hybrid+applicability" {
+            output.push_str("  related (applicability unverified)");
         }
         if let Some(module) = &hit.required_import {
             output.push_str(&format!("\n  import {module}"));

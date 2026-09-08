@@ -4990,3 +4990,27 @@ fn coverage_promotion_counts_unicode_characters_not_bytes() {
     assert_eq!(ranked[1].hit.name, "Demo.estimate");
     assert_eq!(ranked[2].hit.name, "h₁");
 }
+
+#[test]
+fn type_search_distinguishes_unverified_related_candidates() {
+    let mut run = SearchRun {
+        reference: "q1".into(), workspace_ref: "w1".into(),
+        query: "Lifted Nat Nat".into(), inference: "hybrid+applicability".into(),
+        hits: vec![SearchHit {
+            name: "instLiftedNatBox".into(), kind: "instance".into(),
+            signature: Some("Lifted Nat Box".into()), module: "Demo".into(),
+            path: "Demo.lean".into(), line: 6, doc: None, source: None,
+            usages: Vec::new(), applicable: false, required_import: None,
+        }],
+        note: None, duration_ms: 1, created_at: 0,
+    };
+    let related = render_summary(&run);
+    assert!(related.contains("Lifted Nat Box"));
+    assert!(related.contains("related (applicability unverified)"), "{related}");
+    run.hits[0].applicable = true;
+    let verified = render_summary(&run);
+    assert!(verified.contains("  applicable") && !verified.contains("unverified"));
+    run.hits[0].applicable = false;
+    run.inference = "hybrid".into();
+    assert!(!render_summary(&run).contains("applicability unverified"));
+}
