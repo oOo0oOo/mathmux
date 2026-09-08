@@ -61,3 +61,12 @@ The preceding local-estimate episode contains nine searches, six probes, four ch
 A real positioned inspection (telemetry 153395) hid the explicit ellipticity premise and the result behind 44 omitted lines. The agent recovered them with `show --all` (153400). A generic conditional theorem with twelve data parameters and 35 ambient types reproduced the same omission of `required : False`; global `axioms: none` was still visible. This is a valid conditional theorem, not a detected contradiction. Its applicability condition should be visible at the decision point.
 
 Long inspection previews now prioritize trust status, the result and proof assumptions ahead of routine inputs and duplicated elaborated-type text. Multiline fields stay attached, with explicit continuation markers and a total assumption-field count when the budget cannot show everything. Short inspections and full stored details retain their existing presentation. This presentation change does not remove the Lean service's existing per-field text limit; a long elaborated type can still require source inspection. The CLI regression checks both the visible False premise and recovery of the omitted ambient inputs.
+
+
+## Retaining elaborated contract evidence (i106)
+
+The full response in telemetry 153400 was already cut by the Lean service at 800 characters per contract field. `show --all` could not recover that missing evidence. A generic theorem assuming and returning a conjunction of sixty `True` propositions followed by `TerminalRequirement` reproduced the loss: the terminal requirement disappeared from every stored contract field.
+
+Contract types, including local inputs, constructor types and negative-existence subjects, now retain the text rendered by Lean. The normal preview owns the display budget; definition bodies retain their explicit one-step bound. This removes MathMux's extra contract-text cut, not Lean's own pretty-printer elision or inference limitations. In the controlled replay the default response was 551 characters, while the full response retained all three occurrences of the terminal requirement in 18,273 characters. Storing a requested long contract uses more space; compact output does not require discarding its evidence.
+
+The pinned Lean service's 39 cases pass, and the CLI regression checks retained requirements and bounded default output. This supersedes the service-limit caveat in the i105 section above.

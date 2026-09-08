@@ -350,6 +350,20 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         assert 'data input AmbientType34: Type' in full_inspection, full_inspection
         assert 'proof assumption required: False' in full_inspection, full_inspection
 
+        # Stored contracts must retain requirements beyond the compact preview budget.
+        long_target = ' ∧ '.join(['True'] * 60 + ['TerminalRequirement'])
+        (ws / 'LongEvidence.lean').write_text(
+            'def TerminalRequirement : Prop := False\n'
+            'theorem conditional (required : ' + long_target + ') : ' + long_target + ' := required\n'
+            'example : True := by\n  trivial\n')
+        run([binary, 'check', 'LongEvidence.lean'], ws)
+        inspected = run([binary, 'probe', 'LongEvidence.lean:4 "#inspect conditional"'], ws).stdout
+        inspect_ref = next(line.removeprefix('ref: ') for line in inspected.splitlines() if line.startswith('ref: '))
+        full_inspection = run([binary, 'show', inspect_ref, '--all'], ws).stdout
+        assert full_inspection.count('TerminalRequirement') >= 3, full_inspection
+        assert '[truncated; inspect selected declaration source]' not in full_inspection, full_inspection
+        assert len(inspected) < 2000 and 'show ' + inspect_ref + ' --all' in inspected, inspected
+
         # A missing imported file on committed main has an actionable recovery.
         (root / 'Fixture').mkdir(exist_ok=True)
         (root / 'Fixture/FreshDependency.lean').write_text('theorem freshFact : True := True.intro\n')

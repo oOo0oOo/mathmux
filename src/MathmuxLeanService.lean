@@ -165,7 +165,9 @@ def throwLoggedErrors : Term.TermElabM Unit := do
         details := details.push (← message.toString)
     throwError ("\n".intercalate details.toList)
 
-def boundedContractText (text : String) (limit : Nat := 800) : String :=
+-- Contract types are stored losslessly as rendered by Lean; CLI previews own their budget.
+-- Definition bodies remain an explicitly bounded one-step preview.
+def boundedInspectionBody (text : String) (limit : Nat := 800) : String :=
   if text.length > limit then
     (text.take limit).toString ++ " … [truncated; inspect selected declaration source]"
   else text
@@ -193,7 +195,7 @@ def expressionProvenance (value type : Expr) : MetaM (Array Name × Array String
     let proof ← isProp decl.type
     let role := if decl.value?.isSome then "local definition" else
       if proof then "local assumption" else "local input"
-    localLines := localLines.push s!"{role} {(← ppExpr (mkFVar id)).pretty}: {boundedContractText (← ppExpr decl.type).pretty}"
+    localLines := localLines.push s!"{role} {(← ppExpr (mkFVar id)).pretty}: {(← ppExpr decl.type).pretty}"
   let mut axioms : Array Name := #[]
   let mut seen : NameSet := {}
   for expression in expressions do
@@ -223,13 +225,13 @@ def inspectContract (value : Expr) : MetaM String := do
       let role := if decl.binderInfo.isInstImplicit then
         if proof then "instance assumption" else "instance input"
         else if proof then "proof assumption" else "data input"
-      details := details.push s!"{role} {(← ppExpr arg).pretty}: {boundedContractText (← ppExpr decl.type).pretty}"
-    details := details.push s!"result: {boundedContractText (← ppExpr result).pretty}"
+      details := details.push s!"{role} {(← ppExpr arg).pretty}: {(← ppExpr decl.type).pretty}"
+    details := details.push s!"result: {(← ppExpr result).pretty}"
     if result.isAppOfArity ``Not 1 && (result.getArg! 0).isAppOfArity ``Nonempty 1 then
-      details := details.push s!"negative existence result under the inputs above: {boundedContractText (← ppExpr ((result.getArg! 0).getArg! 0)).pretty}"
+      details := details.push s!"negative existence result under the inputs above: {(← ppExpr ((result.getArg! 0).getArg! 0)).pretty}"
     return details
   lines := lines ++ premises
-  lines := lines.push s!"elaborated type: {boundedContractText (← ppExpr type).pretty}"
+  lines := lines.push s!"elaborated type: {(← ppExpr type).pretty}"
   if let .const name _ := value then
     let info ← getConstInfo name
     let axioms ← collectAxioms name
@@ -240,7 +242,7 @@ def inspectContract (value : Expr) : MetaM String := do
     | .inductInfo info =>
       for ctor in info.ctors.take 3 do
         let ctorInfo ← getConstInfo ctor
-        lines := lines.push s!"constructor {ctor}: {boundedContractText (← ppExpr ctorInfo.type).pretty}"
+        lines := lines.push s!"constructor {ctor}: {(← ppExpr ctorInfo.type).pretty}"
     | .defnInfo info =>
       let absent ← lambdaTelescope info.value fun args body => do
         let mut absent := #[]
@@ -250,7 +252,7 @@ def inspectContract (value : Expr) : MetaM String := do
         return absent
       if !absent.isEmpty then
         lines := lines.push s!"parameters absent from definition body (syntactic only): {String.intercalate ", " absent.toList}"
-      lines := lines.push s!"one-step body: {boundedContractText (← ppExpr info.value).pretty}"
+      lines := lines.push s!"one-step body: {boundedInspectionBody (← ppExpr info.value).pretty}"
     | _ => pure ()
   else
     lines := lines ++ (← expressionProvenance value type).2
