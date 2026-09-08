@@ -31,3 +31,15 @@ An isolated `by simp?` probe returned only `solved`, while Lean itself emitted `
 ## Operating discipline
 
 Batch observation around completed episodes and meaningful release outcomes. Avoid frequent status polling, cosmetic release churn and speculative special cases. Keep deeper evidence recoverable; compact defaults should remove repetition, not uncertainty or proof obligations.
+
+## Controlled applicability experiment (installed 2f3993f)
+
+Three isolated workflows were exercised using the existing commands:
+
+- Positive conversion: the initial failed check was 415 characters; a separate 624-character context probe exposed `convert_coe` with an explicit unverified label. Rewriting through that law made the next check pass.
+- Incidental overlap: a theorem with related words only in its name/documentation did not become a conversion candidate. The context response was 480 characters.
+- Unmet premise: a candidate requiring `False` remained unverified and showed that premise in its signature. Positioned `#inspect` reported `proof assumption required: False` and an elaborated implication type, despite having no global axioms. This distinguishes global trust from applicability under local assumptions.
+
+Replays: `/tmp/mm-workflow-positive.py`, `/tmp/mm-workflow-negative.py`, `/tmp/mm-workflow-premise.py`. All completed successfully outside formalization workspaces. These controlled cases establish available evidence and useful controls, not measured fleet productivity.
+
+The next implementation candidate is to reuse one compact conversion candidate in an already-detected repeated rewrite failure, rather than requiring another context command. Preserve the goal and the complete candidate signature/premises, label applicability and import uncertainty, and omit the automatic candidate when those facts cannot fit the budget. Reuse the existing retrieval path; do not parse its rendered prose or run automatic proof search. The first ordinary failure and failures without a supported candidate should remain concise. Validate the three workflows again against the actual default check output before release.
