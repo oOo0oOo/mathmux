@@ -251,6 +251,10 @@ def inspectContract (value : Expr) : MetaM String := do
   else
     lines := lines ++ (← expressionProvenance value type).2
   lines := lines.push "Inspection is not a certificate or a mathematical adequacy verdict. Test explicit small cases with #check/#reduce; use #apply at a goal to expose remaining obligations."
+  -- Provenance must survive the head/tail preview even for long partial applications.
+  let critical := fun (line : String) => line.startsWith "axioms:"
+    || line.startsWith "ADMITTED:" || line.startsWith "Unresolved metavariables"
+  lines := lines.filter critical ++ lines.filter (fun line => !critical line)
   return String.intercalate "\n" lines.toList
 
 structure ContractEvidence where

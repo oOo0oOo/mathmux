@@ -86,6 +86,7 @@ with tempfile.TemporaryDirectory(prefix='mathmux-lean-probe-') as temp:
     assert 'constructor Impossible.mk' in responses[1]['detail'], responses[1]
     assert 'parameters absent from definition body' in responses[2]['detail'], responses[2]
     assert 'ADMITTED' in responses[3]['detail'], responses[3]
+    assert responses[3]['detail'].index('ADMITTED') < responses[3]['detail'].index('inputs (explicit first)'), responses[3]
     assert 'n = 0' in responses[4]['detail'] and 'solved' not in responses[4]['detail'], responses[4]
     assert responses[6]['detail'].strip() == '0', responses[6]
     for i in range(7, 10):
@@ -124,6 +125,7 @@ with tempfile.TemporaryDirectory(prefix='mathmux-lean-probe-') as temp:
     assert 'local assumption' not in response['detail'], response
     response = responses[provenance_start + 6]
     assert response['ok'] and 'sorryAx' in response['detail'] and 'ADMITTED' in response['detail'], response
+    assert response['detail'].index('ADMITTED') < response['detail'].index('inputs (explicit first)'), response
     response = responses[error_start]
     assert not response['ok'] and 'synthesize placeholder' in response['detail'], response
     assert '⊢ True' in response['detail'] and 'abortTactic' not in response['detail'], response

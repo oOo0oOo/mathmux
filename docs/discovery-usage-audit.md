@@ -1152,3 +1152,10 @@ Validation: 102 search tests pass, including nested comments, literals, retained
 The no-results audit of 151528 found that nearby-source recovery considered only project files, overlooking a dependency file with rearranged path components. `/tmp/mm-path-recovery-audit.py` reproduced an unrelated project suggestion while the actual library file was directly retrievable. Recovery now includes only the explicitly named library source root and compares full path components as well as filename similarity. Suggestions remain capped at five and exact resolution remains unchanged. Absolute/parent path components do not trigger dependency enumeration.
 
 Validation: 102 search tests plus a library-scope regression pass. The isolated CLI replay now suggests the existing dependency path first and its outline succeeds. Bare filename requests do not enumerate dependencies. No new syntax or index/help change.
+
+
+### i90: keep inspection trust evidence ahead of long input lists
+
+An isolated partial-application replay with 20 remaining proof inputs and 20 local arguments placed axiom/admission evidence in the omitted middle of the default head/tail preview. Inspection now moves its existing axiom, admission and unresolved-metavariable rows before the input list. All other rows retain their order; preview limits and full evidence remain unchanged. This applies to arbitrary Lean declarations and expressions.
+
+Validation: 35 pinned-Lean service cases pass, including admission ordering for declarations and expressions. The debug CLI replay `/tmp/mm-provenance-budget.py` confirms axiom/admission visibility before inputs for the long partial application. No new syntax or index/help change.
