@@ -69,33 +69,6 @@ fn enriched_diagnostic_text(diagnostic: &WorkerDiagnostic) -> String {
     text
 }
 
-#[cfg(test)]
-mod binder_tests {
-    use super::*;
-
-    #[test]
-    fn unresolved_binder_hint_preserves_diagnostic_and_excludes_known_types() {
-        for (ty, expected) in [("?m.2", true), ("Nat", false), ("NeededContext Nat", false)] {
-            let original = format!(
-                "Demo.lean:2:10: error: invalid binder annotation, type is not a class instance\n  {ty}\nNote: Use the command `set_option checkBinderAnnotations false` to disable the check"
-            );
-            let mut diagnostic = WorkerDiagnostic {
-                severity: "error".into(),
-                kind: "elab".into(),
-                text: original.clone(),
-            };
-            let result = enriched_diagnostic_text(&diagnostic);
-            assert!(result.starts_with(&original));
-            assert_eq!(
-                result.contains("hint: the binder type is unresolved"),
-                expected
-            );
-            diagnostic.severity = "warning".into();
-            assert_eq!(enriched_diagnostic_text(&diagnostic), original);
-        }
-    }
-}
-
 fn is_syntax_diagnostic(diagnostic: &Diagnostic) -> bool {
     let kind = diagnostic.kind.to_ascii_lowercase();
     kind.contains("parser")
@@ -189,4 +162,31 @@ fn is_linter(diagnostic: &WorkerDiagnostic) -> bool {
 pub(super) fn deduplicate(diagnostics: &mut Vec<Diagnostic>) {
     let mut seen = HashSet::new();
     diagnostics.retain(|diagnostic| seen.insert(diagnostic.clone()));
+}
+
+#[cfg(test)]
+mod binder_tests {
+    use super::*;
+
+    #[test]
+    fn unresolved_binder_hint_preserves_diagnostic_and_excludes_known_types() {
+        for (ty, expected) in [("?m.2", true), ("Nat", false), ("NeededContext Nat", false)] {
+            let original = format!(
+                "Demo.lean:2:10: error: invalid binder annotation, type is not a class instance\n  {ty}\nNote: Use the command `set_option checkBinderAnnotations false` to disable the check"
+            );
+            let mut diagnostic = WorkerDiagnostic {
+                severity: "error".into(),
+                kind: "elab".into(),
+                text: original.clone(),
+            };
+            let result = enriched_diagnostic_text(&diagnostic);
+            assert!(result.starts_with(&original));
+            assert_eq!(
+                result.contains("hint: the binder type is unresolved"),
+                expected
+            );
+            diagnostic.severity = "warning".into();
+            assert_eq!(enriched_diagnostic_text(&diagnostic), original);
+        }
+    }
 }
