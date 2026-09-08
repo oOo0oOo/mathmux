@@ -79,3 +79,12 @@ A completed mixed-error proof recovered by annotating an intermediate bundled de
 Existing type search retrieves the useful alternative, so another instance-search mechanism is not justified. However, the exact query `type:Lifted Nat Nat` also returned `Lifted Nat Box` as an unlabeled structural candidate. The scoring code admits related structural rows after the Lean applicability stage; this is not solely a warming behavior. Type-search output now labels candidates lacking verified applicability as related and unverified, retaining the existing `applicable` label for verified matches. Ranking and ordinary search output are unchanged. The help digest is search-v13.
 
 Tests cover both labels and ordinary output. The CLI replay compares exact and relaxed discovery with failing/successful synthesis and a successful explicitly typed application. Negative discovery has limited index coverage in the isolated fixture and is not a nonexistence proof. A subsequent failed-instance handoff should use existing retrieval and preserve this distinction.
+
+
+## Local context coordinates (i108)
+
+Before adding instance-search guidance, a generic local-variable experiment exposed a more fundamental defect. At the same proof line, `goal` showed `n : Nat` and a tactic could use it, but `#check n` and `#inspect n` reported an unknown identifier. The Rust caller selects a column for term probes; the service then subtracted one from a line number passed to Lean's already-one-based `FileMap.ofPosition`, selecting the previous line's scope. Line-wide goal scans could mask this error by also reaching the following proof boundary.
+
+Both goal and elaboration-context lookups now pass the actual one-based line to Lean and use the next line only as the scan endpoint. A six-case service regression and CLI checks cover local inspection plus rejection of names from the adjacent proof. Existing service cases remain covered. Help is search-v13/probe-v21. This fixes supplied-context reliability; it adds no inference heuristic or public verb.
+
+The previously observed mixed-error proof subsequently passed at the same 600,000-heartbeat setting (c54930, s4033), with explicit local instances and type arguments in its final indexed source. That supports investigating type expectations before recommending additional resource budget, without asserting one causal explanation for every mixed diagnostic.

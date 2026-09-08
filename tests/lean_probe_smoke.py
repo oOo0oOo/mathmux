@@ -77,6 +77,14 @@ request('tactic', 'sorry', line=8)
 request('tactic', 'exact admittedTruth', line=8)
 request('tactic', 'exact False.elim h', line=8)
 request('tactic', 'exact True.intro', line=8)
+legacy_count = len(requests)
+source = 'example (n : Nat) : n = n := by\n  rfl\nexample (m : Bool) : True := by\n  trivial\n'
+local_cases = [('term', 'n', 2, True), ('inspect', 'n', 2, True),
+               ('term', 'm', 4, True), ('inspect', 'm', 4, True),
+               ('term', 'n', 4, False), ('term', 'm', 2, False)]
+for operation, term, line, _ in local_cases:
+    request(operation, term, line=line)
+    requests[-1]['column'] = 4
 with tempfile.TemporaryDirectory(prefix='mathmux-lean-probe-') as temp:
     setup = pathlib.Path(temp) / 'setup.json'
     setup.write_text(json.dumps(dict(name='ProbeFixture', package=None, isModule=False,
@@ -88,6 +96,13 @@ with tempfile.TemporaryDirectory(prefix='mathmux-lean-probe-') as temp:
     assert result.returncode == 0, result.stderr + result.stdout
     responses = [json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')]
     assert len(responses) == len(requests), (result.stdout, result.stderr)
+    for response, (_, term, _, expected) in zip(responses[legacy_count:], local_cases):
+        assert response['ok'] == expected, response
+        if expected:
+            assert ('Nat' if term == 'n' else 'Bool') in response['detail'], response
+        else:
+            assert 'Unknown identifier' in response['detail'], response
+    responses = responses[:legacy_count]
     for i in range(7):
         assert responses[i]['ok'], (i, responses[i])
     assert 'negative existence result' in responses[0]['detail'], responses[0]
@@ -149,4 +164,4 @@ with tempfile.TemporaryDirectory(prefix='mathmux-lean-probe-') as temp:
         assert response['ok'] and 'ADMITTED' in response['detail'], response
     assert responses[-2]['ok'] and responses[-2]['detail'] == 'solved', responses[-2]
     assert responses[-1]['ok'] and responses[-1]['detail'] == 'solved', responses[-1]
-    print(f'Lean probe smoke: {len(responses)} cases passed, including expression provenance.')
+    print(f'Lean probe smoke: {len(requests)} cases passed, including expression provenance.')

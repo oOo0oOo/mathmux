@@ -376,6 +376,19 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         unavailable = run([binary, 'probe', 'TypeRelated.lean:5 "#synth RelatedLift Nat Nat"'], ws, ok=False)
         assert unavailable.returncode != 0, unavailable.stdout
 
+        # Line-only term probes must use the requested proof's local scope.
+        (ws / 'LocalScope.lean').write_text(
+            'example (n : Nat) : n = n := by\n  rfl\n'
+            'example (m : Bool) : True := by\n  trivial\n')
+        run([binary, 'check', 'LocalScope.lean'], ws)
+        for line, name, typename in [(2, 'n', 'Nat'), (4, 'm', 'Bool')]:
+            for directive in ['#check', '#inspect']:
+                local = run([binary, 'probe', f'LocalScope.lean:{line} "{directive} {name}"'], ws).stdout
+                assert typename in local, local
+        for line, name in [(2, 'm'), (4, 'n')]:
+            unavailable = run([binary, 'probe', f'LocalScope.lean:{line} "#check {name}"'], ws, ok=False)
+            assert unavailable.returncode != 0 and 'Unknown identifier' in unavailable.stderr + unavailable.stdout
+
         # A missing imported file on committed main has an actionable recovery.
         (root / 'Fixture').mkdir(exist_ok=True)
         (root / 'Fixture/FreshDependency.lean').write_text('theorem freshFact : True := True.intro\n')

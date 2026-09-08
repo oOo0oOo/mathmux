@@ -108,11 +108,10 @@ partial def goalInSnapshotTree (tree : Language.SnapshotTree) (fileMap : FileMap
 def goalAtPosition (tree : Language.SnapshotTree) (fileMap : FileMap)
     (line column : Nat) : BaseIO (Option GoalsAtResult) := do
   if line == 0 then return none
-  let zeroLine := line - 1
-  let start := fileMap.ofPosition {line := zeroLine, column := column - 1}
+  let start := fileMap.ofPosition {line := line, column := column - 1}
   if column > 0 then
     return ← goalInSnapshotTree tree fileMap start.byteIdx start.byteIdx
-  let stop := fileMap.ofPosition {line := zeroLine + 1, column := 0}
+  let stop := fileMap.ofPosition {line := line + 1, column := 0}
   goalInSnapshotTree tree fileMap start.byteIdx stop.byteIdx
 
 def contextBetweenOffsets (trees : Array InfoTree) (start stop : Nat) :
@@ -136,10 +135,9 @@ def contextAtPosition (snapshot : Language.Lean.InitialSnapshot)
     (line column : Nat) : BaseIO (Option (ContextInfo × LocalContext)) := do
   if line == 0 then return none
   let fileMap := snapshot.ictx.fileMap
-  let zeroLine := line - 1
-  let start := fileMap.ofPosition {line := zeroLine, column := column - 1}
+  let start := fileMap.ofPosition {line := line, column := column - 1}
   let stop := if column > 0 then start else
-    fileMap.ofPosition {line := zeroLine + 1, column := 0}
+    fileMap.ofPosition {line := line + 1, column := 0}
   if let some ctx ← contextInSnapshotTree (Language.toSnapshotTree snapshot) fileMap
       start.byteIdx stop.byteIdx then
     return some ctx
