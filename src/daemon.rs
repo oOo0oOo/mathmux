@@ -546,6 +546,23 @@ fn show_reference(
 
 // Put goal targets first when their boundaries are unambiguous. Keep hypotheses
 // available rather than guessing which ones matter to the proof.
+fn compact_type_mismatch(text: &str) -> Option<String> {
+    let original_len = text.chars().count();
+    if original_len <= CHECK_DIAGNOSTIC_CHARS / 2
+        || !text.to_ascii_lowercase().contains("type mismatch")
+    {
+        return None;
+    }
+    let difference = crate::search::diagnostic_type_detail(text)?;
+    if !difference.starts_with("first type difference") || difference.contains('…') {
+        return None;
+    }
+    let header = text.lines().take_while(|line| line.trim() != "has type")
+        .collect::<Vec<_>>().join("\n");
+    let preview = format!("{header}\n{difference}\n(shared type context omitted)");
+    (preview.chars().count() * 2 < original_len).then_some(preview)
+}
+
 fn goal_first_diagnostic(text: &str) -> Option<String> {
     let lines = text.lines().collect::<Vec<_>>();
     if !lines.first()?.contains("unsolved goals") {
@@ -625,7 +642,9 @@ fn check_summary(outcome: &CheckOutcome) -> String {
     }
     if !outcome.ok {
         if let Some(diagnostic) = outcome.diagnostics.first() {
+            let compact_type = compact_type_mismatch(&diagnostic.text);
             let detail = goal_first_diagnostic(&diagnostic.text)
+                .or_else(|| compact_type.clone())
                 .unwrap_or_else(|| clean_line(&diagnostic.text));
             output.push_str(&format!(
                 "\n{}",
@@ -644,7 +663,7 @@ fn check_summary(outcome: &CheckOutcome) -> String {
                     outcome.reference
                 ));
             }
-            if detail.chars().count() > CHECK_DIAGNOSTIC_CHARS {
+            if compact_type.is_some() || detail.chars().count() > CHECK_DIAGNOSTIC_CHARS {
                 output.push_str(&format!("\nfull diagnostic: show {}", outcome.reference));
             }
         }
@@ -871,6 +890,21 @@ mod tests {
         assert!(summary.contains(">    3 | failing tactic"));
         assert!(summary.contains("full diagnostic: show c1"));
         assert!(summary.contains("repeated blocker: 3 checks (c8..c1, previous c9); search c1"));
+    }
+
+    #[test]
+    fn long_type_mismatch_focuses_distinct_instances() {
+        let common = "SharedTypeArgument ".repeat(40);
+        let text = format!("Demo:3:1: error: Type mismatch: term\n  proof\n has type\n  F {common}actualInstance x\nbut is expected to have type\n  F {common}expectedInstance x");
+        let preview = compact_type_mismatch(&text).unwrap();
+        assert!(preview.starts_with("Demo:3:1: error: Type mismatch: term\n  proof"));
+        assert!(preview.contains("actual: actualInstance"));
+        assert!(preview.contains("expected: expectedInstance"));
+        assert!(!preview.contains("SharedTypeArgument"));
+        assert!(compact_type_mismatch("Type mismatch\n has type\n Nat\nbut is expected to have type\n Bool").is_none());
+        let unrelated = format!("Type mismatch\n has type\n {}\nbut is expected to have type\n {}", "Left ".repeat(65), "Right ".repeat(65));
+        assert!(compact_type_mismatch(&unrelated).is_none());
+        assert!(compact_type_mismatch(&text.replace("Type mismatch", "unknown identifier")).is_none());
     }
 
     #[test]

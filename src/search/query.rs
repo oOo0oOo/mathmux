@@ -131,7 +131,7 @@ pub(super) fn diagnostic_apply_detail(diagnostic: &str) -> Option<String> {
     ))
 }
 
-pub(super) fn diagnostic_type_detail(diagnostic: &str) -> Option<String> {
+pub(crate) fn diagnostic_type_detail(diagnostic: &str) -> Option<String> {
     const SYNTHESIS: &str = "failed to synthesize instance of type class";
     let lines = diagnostic.lines().collect::<Vec<_>>();
     if let Some(index) = lines.iter().position(|line| line.contains(SYNTHESIS)) {

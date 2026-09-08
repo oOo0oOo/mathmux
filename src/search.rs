@@ -51,6 +51,7 @@ use display::{
 };
 use plan::*;
 use query::*;
+pub(crate) use query::diagnostic_type_detail;
 use source::*;
 use source_query::*;
 use tuning::*;
