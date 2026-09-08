@@ -1180,3 +1180,10 @@ Validation: 39 pinned-Lean service cases pass, including local admission inspect
 Telemetry 151742 and 151768 reduced qualified missing names to bare `ae` and `deriv` follow-ups. The suggested command discarded information the agent already supplied. When no candidate suggestions exist, a qualified exact miss now proposes a spaced namespace/leaf discovery query. Unqualified misses still suggest a prefix wildcard; candidate signature handoffs and exact resolution remain unchanged.
 
 Validation: focused display and exact-miss tests cover nested namespaces, root-qualified names, explicit declaration forms, unqualified wildcards and existing suggestions. `/tmp/mm-namespace-recovery.py` confirms the broader generic `Demo deriv` query ranks `Demo.derivCLM` first. Its initial exact lookups were warming, so the non-warming hint itself is verified by rendering tests, not claimed from that CLI result. No public syntax or index/help change.
+
+
+### i94: reuse focused conversion retrieval for rewrite mismatches
+
+The derivative/convolution episode produced repeated rewrite failures (c54542/c54544/c54545/c54547) involving bundled objects and underlying functions. An isolated Box/function replay confirmed that `probe cREF context` skipped conversion retrieval for this diagnostic class. The existing path now extracts the failed pattern and target, excludes ambient hypotheses, and reuses bounded law retrieval. Check output links to that context; candidates remain explicitly unverified.
+
+Validation: parser tests cover extraction and malformed/unrelated messages; the existing type-mismatch retrieval regression and check-summary tests pass. `/tmp/mm-rewrite-context.py` verifies the CLI hint, conversion-law candidate and a passing follow-up check using that law. Existing verbs and three-candidate limit remain unchanged.

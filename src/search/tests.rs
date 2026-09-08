@@ -4873,3 +4873,11 @@ fn signatures_exclude_comments_but_preserve_literal_text_and_source() {
     assert!(entries[0].body.contains("irrelevant commentary"));
     assert!(entries[1].signature.contains("-- text /- literal -/"));
 }
+
+#[test]
+fn rewrite_comparison_excludes_ambient_context() {
+    let diagnostic = "Tactic `rewrite` failed: Did not find an occurrence of the pattern\n  convert b\nin the target expression\n  convertFn b.run = b.run\n\nb : Box\nh : convert b = b\n⊢ convertFn b.run = b.run";
+    assert_eq!(diagnostic_rewrite_comparison(diagnostic), Some(("convert b".into(), "convertFn b.run = b.run".into())));
+    assert!(diagnostic_rewrite_comparison("Tactic rewrite failed: unknown identifier").is_none());
+    assert!(diagnostic_rewrite_comparison("Did not find an occurrence of the pattern\nin the target expression\n").is_none());
+}

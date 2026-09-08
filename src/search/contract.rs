@@ -883,7 +883,8 @@ impl Searcher {
         diagnostic: &str,
         path: Option<&str>,
     ) -> Result<String> {
-        if ![
+        let rewrite = diagnostic_rewrite_comparison(diagnostic);
+        if rewrite.is_none() && ![
             "type mismatch",
             "definitionally equal",
             "failed to synthesize",
@@ -894,13 +895,17 @@ impl Searcher {
         {
             return Ok("\nNo focused type-conversion retrieval for this diagnostic.".into());
         }
-        let focused = diagnostic_type_detail(diagnostic)
+        let focused = rewrite.as_ref().map(|(pattern, target)| format!(
+            "rewrite pattern\n{}\ntarget expression\n{}",
+            truncate_middle(pattern, 480), truncate_middle(target, 480)
+        )).or_else(|| diagnostic_type_detail(diagnostic))
             .or_else(|| diagnostic_defeq_detail(diagnostic))
             .unwrap_or_else(|| diagnostic.to_owned());
-        let mut terms = identifiers(&focused)
+        let retrieval = rewrite.as_ref().map(|(pattern, target)| format!("{pattern} {target}"));
+        let mut terms = identifiers(retrieval.as_deref().unwrap_or(&focused))
             .into_iter()
             .filter(|s| {
-                (s.contains('.') || s.chars().next().is_some_and(char::is_uppercase))
+                (rewrite.is_some() || s.contains('.') || s.chars().next().is_some_and(char::is_uppercase))
                     && s.chars().count() > 1
                     && !s.ends_with("lean")
                     && !matches!(

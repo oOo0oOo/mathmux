@@ -223,6 +223,14 @@ pub(super) fn diagnostic_defeq_detail(diagnostic: &str) -> Option<String> {
     (!left.is_empty() && !right.is_empty()).then(|| format!("left\n{left}\nright\n{right}"))
 }
 
+pub(super) fn diagnostic_rewrite_comparison(diagnostic: &str) -> Option<(String, String)> {
+    let (_, detail) = diagnostic.split_once("Did not find an occurrence of the pattern")?;
+    let (pattern, target) = detail.split_once("in the target expression")?;
+    let pattern = diagnostic_expression(pattern);
+    let target = diagnostic_expression(target);
+    (!pattern.is_empty() && !target.is_empty()).then_some((pattern, target))
+}
+
 pub(super) fn diagnostic_rewrite_detail(
     diagnostic: &str,
     source_context: Option<&str>,

@@ -612,6 +612,7 @@ fn check_summary(outcome: &CheckOutcome) -> String {
             }
             if detail.to_ascii_lowercase().contains("type mismatch")
                 || detail.contains("definitionally equal")
+                || detail.contains("Did not find an occurrence of the pattern")
             {
                 output.push_str(&format!(
                     "\ncontext: mathmux probe {} context",
