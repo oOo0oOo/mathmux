@@ -334,6 +334,24 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         recovery.write_text(recovery.read_text().replace('rw [h]', 'rw [← recover_coe b, h]'))
         run([binary, 'check', 'RepeatConversion.lean'], ws)
 
+        # A missing imported file on committed main has an actionable recovery.
+        (root / 'Fixture').mkdir(exist_ok=True)
+        (root / 'Fixture/FreshDependency.lean').write_text('theorem freshFact : True := True.intro\n')
+        (ws / 'FreshConsumer.lean').write_text('import Fixture.FreshDependency\nexample : True := freshFact\n')
+        missing = run([binary, 'check', 'FreshConsumer.lean'], ws, ok=False)
+        assert missing.returncode != 0, missing.stdout
+        assert 'run mathmux sync' not in missing.stdout + missing.stderr  # uncommitted main
+        run(['git', 'add', 'Fixture/FreshDependency.lean'])
+        run(['git', 'commit', '-m', 'new shared dependency'])
+        missing = run([binary, 'check', 'FreshConsumer.lean'], ws, ok=False)
+        evidence = missing.stdout + missing.stderr
+        assert missing.returncode != 0 and 'no such file or directory' in evidence, evidence
+        assert 'Fixture/FreshDependency.lean is committed on managed main but missing here' in evidence, evidence
+        assert 'run mathmux sync' in evidence, evidence
+        run([binary, 'sync'], ws)
+        restored = run([binary, 'check', 'FreshConsumer.lean'], ws)
+        assert 'run mathmux sync' not in restored.stdout, restored.stdout
+
     finally:
         try:
             daemon.wait(timeout=15)

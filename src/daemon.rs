@@ -372,6 +372,13 @@ impl Service {
                     report,
                 )?;
                 let mut summary = check_summary(&outcome);
+                if !outcome.ok
+                    && let Some(hint) = outcome.diagnostics.iter().find_map(|diagnostic| {
+                        missing_dependency_hint(&self.repo.root, &workspace.path, diagnostic)
+                    })
+                {
+                    summary.push_str(&hint);
+                }
                 if !outcome.ok && outcome.repetition.is_some()
                     && let Some(diagnostic) = outcome.diagnostics.first()
                     && let Ok(hint) = self.searcher.repeated_rewrite_hint(
@@ -620,6 +627,38 @@ fn goal_first_diagnostic(text: &str) -> Option<String> {
     ))
 }
 
+// Offer sync only for a precise dependency path known to be committed on main.
+// Diagnostic parsing or Git failures must never replace the original check result.
+fn missing_dependency_hint(
+    main: &Path,
+    workspace: &Path,
+    diagnostic: &crate::state::Diagnostic,
+) -> Option<String> {
+    if diagnostic.kind != "lean.dependency"
+        || !diagnostic.text.starts_with("no such file or directory (error code: 2)\n")
+    {
+        return None;
+    }
+    let requested = diagnostic.text.lines()
+        .find_map(|line| line.trim().strip_prefix("file: "))?;
+    let path = Path::new(requested);
+    let relative = path.strip_prefix(workspace).ok()?;
+    if relative.extension()? != "lean"
+        || relative.components().any(|part| !matches!(part, std::path::Component::Normal(_)))
+        || relative.starts_with(".lake")
+        || path.exists()
+        || git::tracked_at_head(workspace, relative).ok()?
+        || !main.join(relative).is_file()
+        || !git::tracked_at_head(main, relative).ok()?
+    {
+        return None;
+    }
+    Some(format!(
+        "\nsource {} is committed on managed main but missing here; run mathmux sync, then retry the check",
+        relative.display(),
+    ))
+}
+
 fn check_summary(outcome: &CheckOutcome) -> String {
     let mut output = format!("{} {}ms", outcome.reference, outcome.elapsed_ms);
     if outcome.ok {
@@ -798,6 +837,57 @@ mod tests {
     use super::*;
     use crate::state::{Diagnostic, ValidationReport, Workspace};
     use tempfile::tempdir;
+
+    #[test]
+    fn missing_dependency_hint_requires_exact_committed_main_source() {
+        let temp = tempdir().unwrap();
+        let main = temp.path().join("main");
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(main.join("Demo")).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        let git = |args: &[&str]| {
+            assert!(std::process::Command::new("git").args(args).current_dir(&main)
+                .output().unwrap().status.success());
+        };
+        git(&["init", "-b", "main"]);
+        fs::write(main.join("Demo/Needed.lean"), "def value := 1\n").unwrap();
+        git(&["add", "."]);
+        git(&["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "fixture"]);
+        let diagnostic = |path: &Path| Diagnostic {
+            kind: "lean.dependency".into(),
+            text: format!("no such file or directory (error code: 2)\n  file: {}\nFailed to build module dependencies.", path.display()),
+            context: None,
+        };
+        let missing = workspace.join("Demo/Needed.lean");
+        assert!(missing_dependency_hint(&main, &workspace, &diagnostic(&missing))
+            .unwrap().contains("Demo/Needed.lean is committed on managed main"));
+        let absent = workspace.join("Demo/Absent.lean");
+        assert!(missing_dependency_hint(&main, &workspace, &diagnostic(&absent)).is_none());
+        fs::write(main.join("Demo/Absent.lean"), "def value := 2\n").unwrap();
+        assert!(missing_dependency_hint(&main, &workspace, &diagnostic(&absent)).is_none());
+        assert!(missing_dependency_hint(&main, &workspace,
+            &diagnostic(&temp.path().join("sibling/Demo/Needed.lean"))).is_none());
+        assert!(missing_dependency_hint(&main, &workspace,
+            &diagnostic(&workspace.join("../main/Demo/Needed.lean"))).is_none());
+        let mut unrelated = diagnostic(&missing);
+        unrelated.kind = "lean.error".into();
+        assert!(missing_dependency_hint(&main, &workspace, &unrelated).is_none());
+        unrelated.kind = "lean.dependency".into();
+        unrelated.text = unrelated.text.replace("no such file or directory", "permission denied");
+        assert!(missing_dependency_hint(&main, &workspace, &unrelated).is_none());
+        fs::create_dir_all(workspace.join("Demo")).unwrap();
+        fs::write(&missing, "def value := 1\n").unwrap();
+        assert!(missing_dependency_hint(&main, &workspace, &diagnostic(&missing)).is_none());
+        // Sync preserves a local deletion; it does not restore a file already in HEAD.
+        for args in [vec!["init", "-b", "main"], vec!["add", "."],
+            vec!["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "workspace"]]
+        {
+            assert!(std::process::Command::new("git").args(args).current_dir(&workspace)
+                .output().unwrap().status.success());
+        }
+        fs::remove_file(&missing).unwrap();
+        assert!(missing_dependency_hint(&main, &workspace, &diagnostic(&missing)).is_none());
+    }
 
     #[test]
     fn root_scratch_files_are_ephemeral() {
