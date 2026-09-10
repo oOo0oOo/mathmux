@@ -71,6 +71,10 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         def probe(q):
             return run([binary, 'probe', q], ws).stdout
 
+        for literal in ['"error:"', '"unknown identifier"', '"ordinary"']:
+            reduced = probe('Fixture.lean:11 #reduce ' + literal)
+            assert literal in reduced, reduced
+
         regex_miss = run([binary, 'search', '/^zzScopeSentinelAbsent$/'], ws).stdout
         assert 'dependencies require an explicit scope' in regex_miss, regex_miss
         assert 'indexed alternatives (not regex matches)' in regex_miss, regex_miss

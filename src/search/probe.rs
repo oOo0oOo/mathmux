@@ -1554,12 +1554,6 @@ fn decisive_directive_result(
     if operation == "tactic" || operation == "goal" {
         return (worker_ok, detail);
     }
-    let lower = detail.to_ascii_lowercase();
-    let failed = lower.contains("unknown identifier")
-        || lower.contains("failed to synthesize")
-        || lower.contains("type mismatch")
-        || lower.contains("declaration has metavariables")
-        || lower.contains("error:");
     if operation == "term"
         && let Some(start) = detail
             .lines()
@@ -1573,7 +1567,7 @@ fn decisive_directive_result(
             .join("\n");
         return (true, decisive);
     }
-    (!failed && worker_ok, detail)
+    (worker_ok, detail)
 }
 
 fn abbreviation_target(hit: &SearchHit) -> Option<&str> {
@@ -2555,6 +2549,24 @@ mod tests {
                 assert_eq!(detail, diagnostic);
             }
             assert!(decisive_directive_result(operation, "Nat", true, "Nat : Type".into()).0);
+        }
+    }
+
+    #[test]
+    fn successful_directives_preserve_error_words_as_data() {
+        for operation in ["inspect", "reduce", "synth", "term"] {
+            for detail in [
+                "\"error:\"",
+                "\"unknown identifier\"",
+                "\"failed to synthesize\"",
+                "\"type mismatch\"",
+                "\"declaration has metavariables\"",
+            ] {
+                let (ok, rendered) =
+                    decisive_directive_result(operation, "value", true, detail.into());
+                assert!(ok, "{operation}: {detail}");
+                assert_eq!(rendered, detail);
+            }
         }
     }
 
