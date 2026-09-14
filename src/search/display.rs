@@ -208,6 +208,15 @@ fn split_verdict_and_note(run: &SearchRun) -> (String, Option<&str>) {
     {
         return ("index still warming; no indexed match yet (absence not established)\nRetry this query after indexing completes".into(), None);
     }
+    if run.inference == "source-unchanged" {
+        return (
+            run.note
+                .as_deref()
+                .unwrap_or("source unchanged; identical content elided")
+                .to_owned(),
+            None,
+        );
+    }
     if run.inference == "exact-miss" {
         let note = run.note.as_deref().unwrap_or("exact declaration not found in index");
         return note.split_once('\n').map_or_else(

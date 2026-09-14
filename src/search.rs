@@ -95,9 +95,18 @@ pub struct Searcher {
     checker: Arc<Checker>,
     index: SearchIndex,
     dirty_cache: Mutex<HashMap<String, (Instant, Vec<PathBuf>)>>,
+    repeated_reads: Mutex<HashMap<(String, String), RepeatedRead>>,
     type_search: Mutex<TypeSearchState>,
     telemetry: Option<Arc<TelemetryStore>>,
 }
+
+struct RepeatedRead {
+    content_hash: u64,
+    reference: String,
+    at: Instant,
+}
+
+const REPEATED_READ_TTL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
 #[derive(Default)]
 struct SearchIndex {
@@ -841,6 +850,7 @@ impl Searcher {
             checker,
             index: SearchIndex::default(),
             dirty_cache: Mutex::new(HashMap::new()),
+            repeated_reads: Mutex::new(HashMap::new()),
             type_search: Mutex::new(TypeSearchState::Empty),
             telemetry,
         }
@@ -889,6 +899,11 @@ impl Searcher {
             return self.probe(workspace, cwd, &format!("{} usages", anchor.trim()));
         }
         let reference = self.state.next_reference(ReferenceKind::Query)?;
+        let pure_source_read = match &planned.plan {
+            SearchPlan::Location(_) => true,
+            SearchPlan::Source(source) => source.terms.is_empty(),
+            _ => false,
+        };
         let result = match planned.plan {
             SearchPlan::StoredContext => SearchResult {
                 hits: Vec::new(),
@@ -946,6 +961,48 @@ impl Searcher {
         }
         if !expanded.context.is_empty() {
             result.hits.splice(0..0, expanded.context);
+        }
+        // Re-reading an unchanged range re-transmits bytes the agent has
+        // already seen (telemetry: half of all search output). Answer identical
+        // repeats with a pointer to the stored read instead of the content.
+        if pure_source_read && result.ok {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            use std::hash::{Hash, Hasher};
+            for hit in &result.hits {
+                hit.source.hash(&mut hasher);
+                hit.signature.hash(&mut hasher);
+                hit.name.hash(&mut hasher);
+            }
+            result.note.hash(&mut hasher);
+            request.all.hash(&mut hasher);
+            let content_hash = hasher.finish();
+            let key = (workspace.reference.clone(), query.to_owned());
+            let mut cache = self
+                .repeated_reads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            cache.retain(|_, read| read.at.elapsed() < REPEATED_READ_TTL);
+            match cache.get(&key) {
+                Some(previous) if previous.content_hash == content_hash => {
+                    let previous_reference = previous.reference.clone();
+                    drop(cache);
+                    result.hits.clear();
+                    result.note = Some(format!(
+                        "source unchanged since {previous_reference}; identical content elided. Use `mathmux show {previous_reference} --all` only if the earlier read is no longer available"
+                    ));
+                    result.inference = "source-unchanged".into();
+                }
+                _ => {
+                    cache.insert(
+                        key,
+                        RepeatedRead {
+                            content_hash,
+                            reference: reference.clone(),
+                            at: Instant::now(),
+                        },
+                    );
+                }
+            }
         }
         let mut run = SearchRun {
             reference: reference.clone(),

@@ -5036,3 +5036,66 @@ fn type_search_distinguishes_unverified_related_candidates() {
     run.inference = "hybrid".into();
     assert!(!render_summary(&run).contains("applicability unverified"));
 }
+
+#[test]
+fn repeated_identical_source_read_is_elided() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("root");
+    let state_dir = directory.path().join("state");
+    fs::create_dir_all(root.join("AtiyahSinger")).unwrap();
+    fs::create_dir_all(&state_dir).unwrap();
+    let body = (1..=30)
+        .map(|line| format!("-- line {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(
+        root.join("AtiyahSinger/Demo.lean"),
+        format!("namespace AtiyahSinger\n{body}\ndef Demo : Nat := 0\nend AtiyahSinger\n"),
+    )
+    .unwrap();
+    let repo = Repo {
+        root: root.clone(),
+        common_git_dir: directory.path().join("git"),
+        state_dir: state_dir.clone(),
+        socket_path: state_dir.join("daemon.sock"),
+        db_path: state_dir.join("state.sqlite3"),
+        search_db_path: state_dir.join("search.sqlite3"),
+        log_path: state_dir.join("daemon.log"),
+        cache_dir: state_dir.join("cache"),
+        integration_lock: state_dir.join("integration.lock"),
+        validation_lock: state_dir.join("validation.lock"),
+        startup_lock: state_dir.join("startup.lock"),
+    };
+    let state = State::new(repo.db_path.clone()).unwrap();
+    let workspace = Workspace {
+        reference: "w1".into(),
+        name: "demo".into(),
+        path: root.clone(),
+        branch: "demo".into(),
+        model: None,
+    };
+    state.add_workspace(&workspace).unwrap();
+    let checker = Arc::new(Checker::new(repo.clone(), state.clone(), None).unwrap());
+    let searcher = Searcher::new(repo, state, checker, None).unwrap();
+
+    let first = searcher
+        .search(&workspace, &root, "AtiyahSinger/Demo.lean:2-20", None, false)
+        .unwrap();
+    assert!(first.contains("line 1"), "{first}");
+    let second = searcher
+        .search(&workspace, &root, "AtiyahSinger/Demo.lean:2-20", None, false)
+        .unwrap();
+    assert!(second.contains("source unchanged since q"), "{second}");
+    assert!(!second.contains("-- line 5"), "{second}");
+
+    // Changing the file must invalidate the elision.
+    fs::write(
+        root.join("AtiyahSinger/Demo.lean"),
+        format!("namespace AtiyahSinger\n-- edited\n{body}\ndef Demo : Nat := 0\nend AtiyahSinger\n"),
+    )
+    .unwrap();
+    let third = searcher
+        .search(&workspace, &root, "AtiyahSinger/Demo.lean:2-20", None, false)
+        .unwrap();
+    assert!(!third.contains("source unchanged"), "{third}");
+}
