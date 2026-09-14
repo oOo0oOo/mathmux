@@ -588,7 +588,10 @@ impl State {
             .into_iter()
             .filter(|workspace| cwd.starts_with(&workspace.path))
             .max_by_key(|workspace| workspace.path.as_os_str().len())
-            .context("current directory is not inside a mathmux workspace")
+            .context(crate::protocol::DiscoveryFailure::InvalidRequest)
+            .context(
+                "current directory is not inside a mathmux workspace; run mathmux from your assigned workspace directory",
+            )
     }
 
     pub fn touch_workspace(&self, reference: &str) -> Result<()> {

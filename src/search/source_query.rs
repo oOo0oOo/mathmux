@@ -100,13 +100,13 @@ pub(super) fn parse_source_regex_query(
             bail!("search --all is only for explicit FILE:START-END or FILE:tail reads");
         }
     }
-    if scope
+    // Agents keep typing the help label; accept `source /REGEX/` and
+    // `source PATH /REGEX/` by dropping the label instead of erroring.
+    let scope = scope
         .split_whitespace()
         .next()
-        .is_some_and(|token| token.eq_ignore_ascii_case("source"))
-    {
-        bail!("source is a help label, not a keyword; use /REGEX/ or PATH /REGEX/ directly")
-    }
+        .filter(|token| token.eq_ignore_ascii_case("source"))
+        .map_or(scope, |label| scope[label.len()..].trim_start());
     ensure!(
         scope.split_whitespace().count() <= 1,
         "source regex accepts at most one file or directory scope"

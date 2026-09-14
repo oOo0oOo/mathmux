@@ -3903,6 +3903,16 @@ fn source_regex_queries_scan_a_bounded_scope_with_context() {
         "def before := 0\ntheorem alpha_apply := by trivial\ndef after := 1\n",
     )
     .unwrap();
+    // The help label is accepted and dropped rather than rejected.
+    let labeled = parse_source_regex_query(
+        directory.path(),
+        directory.path(),
+        None,
+        "source /alpha_apply/",
+    )
+    .unwrap()
+    .expect("labeled regex query parses");
+    assert_eq!(labeled.pattern, "alpha_apply");
     let error = match parse_source_regex_query(
         directory.path(),
         directory.path(),
@@ -3910,11 +3920,11 @@ fn source_regex_queries_scan_a_bounded_scope_with_context() {
         "source /alpha_apply/ extra",
     ) {
         Err(error) => error,
-        Ok(_) => panic!("source label unexpectedly parsed as a scope"),
+        Ok(_) => panic!("unknown scope unexpectedly resolved"),
     };
     assert_eq!(
         error.to_string(),
-        "source is a help label, not a keyword; use /REGEX/ or PATH /REGEX/ directly"
+        "source directory not found or ambiguous: extra"
     );
     for (query, expected) in [
         (
