@@ -471,7 +471,7 @@ partial def collectAfterError
     IO.sleep 10
     collectAfterError task messages failingCommands inspected started lastProgress
   cancelCommandWork command
-  let commandMessages := result.diagnostics.msgLog ++ result.cmdState.messages
+  let commandMessages := command.diagnostics.msgLog ++ result.diagnostics.msgLog ++ result.cmdState.messages
   let messages := messages ++ commandMessages
   let failingCommands := failingCommands + if commandMessages.hasErrors then 1 else 0
   let now ← IO.monoMsNow
@@ -522,7 +522,7 @@ partial def firstErrorOrFinal (task : Language.SnapshotTask Language.Lean.Comman
   let command := task.get
   let result := command.elabSnap.resultSnap.get
   let entries := if profile then collectResultProfile fileMap result else #[]
-  let messages := result.diagnostics.msgLog ++ result.cmdState.messages
+  let messages := command.diagnostics.msgLog ++ result.diagnostics.msgLog ++ result.cmdState.messages
   if messages.hasErrors then
     cancelCommandWork command
     if let some next := command.nextCmdSnap? then
@@ -535,7 +535,7 @@ partial def firstErrorOrFinal (task : Language.SnapshotTask Language.Lean.Comman
     let (failed, messages, rest, signature) ← firstErrorOrFinal next fileMap profile
     return (failed, messages, entries ++ rest, signature)
   else
-    return (false, result.cmdState.messages, entries, none)
+    return (false, command.diagnostics.msgLog ++ result.cmdState.messages, entries, none)
 
 def renderMessages (messages : MessageLog)
     (signature : Option (Position × Position) := none) : BaseIO (Array Diagnostic) := do
