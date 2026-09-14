@@ -1714,8 +1714,8 @@ fn stale_workspace_source_queries_recommend_sync() {
         Ok(_) => panic!("stale source unexpectedly resolved"),
     };
     assert_eq!(
-        error.to_string(),
-        "source file is on managed main; run mathmux sync"
+        format!("{error:#}"),
+        "unavailable probe context: source file is on managed main; run mathmux sync"
     );
     let error = match parse_source_regex_query(
         workspace.path(),
@@ -1727,8 +1727,8 @@ fn stale_workspace_source_queries_recommend_sync() {
         Ok(_) => panic!("stale regex source unexpectedly resolved"),
     };
     assert_eq!(
-        error.to_string(),
-        "source file is on managed main; run mathmux sync"
+        format!("{error:#}"),
+        "unavailable probe context: source file is on managed main; run mathmux sync"
     );
 
     fs::write(
@@ -1777,8 +1777,8 @@ fn stale_workspace_source_queries_recommend_sync() {
         Ok(_) => panic!("missing source unexpectedly resolved"),
     };
     assert_eq!(
-        error.to_string(),
-        "source file not found or ambiguous: Demo/Topology/Missing.lean"
+        format!("{error:#}"),
+        "invalid discovery request: source file not found or ambiguous: Demo/Topology/Missing.lean"
     );
 
     fs::create_dir_all(workspace.path().join("Demo/Topology")).unwrap();
@@ -2931,7 +2931,7 @@ fn source_query_regressions() {
         None,
         "Wrong/Prefix/Nested.lean:4-6",
     ).err().expect("qualified paths must not degrade to a basename");
-    assert!(rejected_guess.to_string().contains("source file not found or ambiguous"));
+    assert!(format!("{rejected_guess:#}").contains("source file not found or ambiguous"));
     let chart = project.join("FredholmFamilyKernelChart.lean");
     fs::write(&chart, &source).unwrap();
     let recovered_components = parse_source_occurrence_query(
@@ -2952,8 +2952,8 @@ fn source_query_regressions() {
             "FredholmKernelChart.lean:4-6 marker",
         )
         .err()
+        .map(|error| format!("{error:#}"))
         .unwrap()
-        .to_string()
         .contains("source file not found or ambiguous")
     );
     let outline =
@@ -2972,8 +2972,8 @@ fn source_query_regressions() {
             "Wrong/Prefix/Nested.lean:4-6",
         )
         .err()
+        .map(|error| format!("{error:#}"))
         .unwrap()
-        .to_string()
         .contains("source file not found or ambiguous")
     );
     assert!(
@@ -2984,8 +2984,8 @@ fn source_query_regressions() {
                 "Missing.lean:4-6",
             )
             .err()
+            .map(|error| format!("{error:#}"))
             .unwrap()
-            .to_string()
             .contains("source file not found or ambiguous")
         );
 

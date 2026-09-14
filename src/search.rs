@@ -704,7 +704,7 @@ fn concept_terms_from_name(name: &str) -> String {
     terms
         .into_iter()
         .map(|term| term.trim_end_matches(|c: char| c.is_ascii_digit()).to_lowercase())
-        .filter(|term| term.chars().count() >= 3 && !term.chars().all(|c| c.is_ascii_digit()))
+        .filter(|term| term.chars().count() >= 2 && !term.chars().all(|c| c.is_ascii_digit()))
         .filter(|term| seen.insert(term.clone()))
         .take(7)
         .collect::<Vec<_>>()
@@ -885,10 +885,12 @@ impl Searcher {
             &expanded.query,
             !expanded.context.is_empty(),
         )?;
-        ensure!(
-            !request.all || search_all_allowed(&planned.plan),
-            "search --all is only for explicit FILE:START-END or FILE:tail reads; use compact discovery, then `mathmux show qREF --all`"
-        );
+        if request.all && !search_all_allowed(&planned.plan) {
+            return Err(anyhow::anyhow!(
+                "search --all is only for explicit FILE:START-END or FILE:tail reads; use compact discovery, then `mathmux show qREF --all`"
+            )
+            .context(crate::protocol::DiscoveryFailure::InvalidRequest));
+        }
         let query = planned.query.as_str();
         // A usage request for a recognizable API belongs to the existing
         // probe dossier, not to lexical refinement by the word "usages".
@@ -2718,13 +2720,7 @@ impl Searcher {
         pipeline.timings.finish_ms = finish_started.elapsed().as_millis() as u64;
         let total_ms = pipeline.total_ms();
         let unaccounted_ms = pipeline.unaccounted_ms(total_ms);
-        let sampled_fallback = pipeline.fallback_used
-            && query
-                .bytes()
-                .fold(0_u8, |hash, byte| hash.wrapping_mul(31).wrapping_add(byte))
-                % 8
-                == 0;
-        if (total_ms >= 2_000 || sampled_fallback)
+        if total_ms >= 2_000
             && let Some(store) = &self.telemetry
         {
             let timings = &pipeline.timings;
@@ -2919,15 +2915,28 @@ impl Searcher {
                 "no declaration named {query} in the indexed project or dependencies (index current); do not repeat this exact query"
             )
         };
-        if !ambiguous
-            && let Some((parent, _)) = query.rsplit_once('.')
-            && self.exact_candidates(parent, scopes)?.iter()
+        if !ambiguous && let Some((parent, leaf)) = query.rsplit_once('.') {
+            let parent_rows = self.exact_candidates(parent, scopes)?;
+            if parent_rows
+                .iter()
                 .any(|row| matches!(row.kind.as_str(), "structure" | "class"))
-        {
-            note.push_str(&format!(
-                "\nGenerated members may be unindexed; inspect in an importing file: mathmux probe FILE:LINE {}",
-                shell_argument(&format!("#inspect {query}")),
-            ));
+            {
+                note.push_str(&format!(
+                    "\nGenerated members may be unindexed; inspect in an importing file: mathmux probe FILE:LINE {}",
+                    shell_argument(&format!("#inspect {query}")),
+                ));
+            } else if let Some(parent_row) = parent_rows
+                .iter()
+                .find(|row| !matches!(row.kind.as_str(), "file" | "imports"))
+            {
+                // The parent is real; only the guessed member is not. Say so
+                // and route to its actual API instead of a bare absence.
+                note.push_str(&format!(
+                    "\n{parent} exists ({}); it has no indexed member `{leaf}`. Inspect it: mathmux probe {} usages",
+                    parent_row.kind,
+                    shell_argument(parent),
+                ));
+            }
         }
         let local_source_module = self
             .exact_candidates(query, scopes)?

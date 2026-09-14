@@ -718,8 +718,8 @@ fn check_summary(outcome: &CheckOutcome) -> String {
                 || detail.contains("Did not find an occurrence of the pattern")
             {
                 output.push_str(&format!(
-                    "\ncontext: mathmux probe {} context",
-                    outcome.reference
+                    "\ncontext: mathmux probe {} context; test a replacement lemma with `mathmux probe {} NAME fits`",
+                    outcome.reference, outcome.reference
                 ));
             } else if detail.contains("unsolved goals") {
                 output.push_str(&format!(

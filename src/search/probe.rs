@@ -482,7 +482,10 @@ impl Searcher {
             (Some(ProbeContext::File(file)), None, Some("goal")) => {
                 bail!("goal requires an exact FILE:LINE context, not {file}")
             }
-            _ => bail!("probe form is incomplete"),
+            _ => {
+                return Err(anyhow::anyhow!("probe form is incomplete")
+                    .context(crate::protocol::DiscoveryFailure::InvalidRequest));
+            }
         }
     }
 
@@ -591,10 +594,11 @@ impl Searcher {
         let Some(hit) = hit else {
             return Ok(None);
         };
-        let signature = hit
-            .signature
-            .as_deref()
-            .expect("indexed check requires a signature");
+        // A hit without an indexed signature cannot answer a check probe;
+        // fall through to live elaboration instead of panicking the daemon.
+        let Some(signature) = hit.signature.as_deref() else {
+            return Ok(None);
+        };
         self.store_probe_result(
             workspace,
             &query,
@@ -1402,10 +1406,12 @@ impl Searcher {
             LeanDirective::Synth(input) => ("synth", input),
             LeanDirective::Reduce(input) => ("reduce", input),
             LeanDirective::Inspect(input) => {
-                ensure!(
-                    line > 0,
-                    "#inspect requires FILE:LINE, cREF, or positioned qREF context"
-                );
+                if line == 0 {
+                    return Err(anyhow::anyhow!(
+                        "#inspect requires FILE:LINE, cREF, or positioned qREF context"
+                    )
+                    .context(crate::protocol::DiscoveryFailure::InvalidRequest));
+                }
                 ("inspect", input)
             }
             LeanDirective::Tactic(input) => {

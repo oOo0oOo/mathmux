@@ -124,7 +124,7 @@ pub(super) fn parse_source_regex_query(
     {
         match resolve_source_path(root, cwd, scope)? {
             Some((path, _, _)) => path,
-            None => bail!(missing_source_message(root, main_root, scope)?),
+            None => return Err(missing_source_error(root, main_root, scope)),
         }
     } else {
         resolve_source_directory(root, cwd, scope)?
@@ -530,7 +530,7 @@ pub(super) fn parse_source_occurrence_query(
         if inferred_outline_path {
             return Ok(None);
         }
-        bail!(missing_source_message(root, main_root, requested_path)?);
+        return Err(missing_source_error(root, main_root, requested_path));
     };
     let main_path = if main_root
         .is_some_and(|main_root| fs::canonicalize(root).ok() != fs::canonicalize(main_root).ok())
@@ -907,7 +907,7 @@ pub(super) fn parse_source_location(
         && suffix.eq_ignore_ascii_case("tail")
     {
         let Some((path, display_path, _)) = resolve_source_path(root, cwd, path)? else {
-            bail!(missing_source_message(root, main_root, path)?);
+            return Err(missing_source_error(root, main_root, path));
         };
         let line = fs::read_to_string(&path)?.lines().count().max(1) as u64;
         return Ok(Some(SourceLocation {
@@ -925,7 +925,7 @@ pub(super) fn parse_source_location(
         return Ok(None);
     };
     let Some((path, display_path, _)) = resolve_source_path(root, cwd, path)? else {
-        bail!(missing_source_message(root, main_root, path)?);
+        return Err(missing_source_error(root, main_root, path));
     };
     ensure!(line > 0, "source line starts at 1");
     Ok(Some(SourceLocation {
@@ -952,6 +952,23 @@ fn is_source_location_token(token: &str) -> bool {
         .extension()
         .and_then(|extension| extension.to_str())
         == Some("lean")
+}
+
+
+/// Missing-source failures carry their telemetry class: a stale managed-main
+/// file is an unavailable context; anything else is a bad request (typo).
+fn missing_source_error(root: &Path, main_root: Option<&Path>, requested: &str) -> anyhow::Error {
+    match missing_source_message(root, main_root, requested) {
+        Ok(message) => {
+            let class = if message.starts_with("source file is on managed main") {
+                crate::protocol::DiscoveryFailure::UnavailableContext
+            } else {
+                crate::protocol::DiscoveryFailure::InvalidRequest
+            };
+            anyhow::anyhow!(message).context(class)
+        }
+        Err(error) => error,
+    }
 }
 
 pub(super) fn missing_source_message(
