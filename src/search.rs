@@ -69,7 +69,9 @@ const OUTLINE_PREVIEW_LINES: usize = 64;
 const OUTLINE_LINE_CHARS: usize = 120;
 const RELATED_RESULT_LIMIT: usize = SEARCH_PRESENTATION.related_result_limit;
 const SEARCH_INDEX_VERSION: i64 = 16;
-const SOURCE_INDEX_KIND: &str = "source-v13";
+// Bump when source parsing semantics change so cached docs/bodies are rebuilt
+// even when the underlying Lean files have not changed.
+const SOURCE_INDEX_KIND: &str = "source-v14";
 const DECLARATION_DETAIL_LINES: usize = SEARCH_PRESENTATION.declaration_detail_lines;
 const INDEX_COMMIT_BATCH: usize = 64;
 const SEARCH_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
