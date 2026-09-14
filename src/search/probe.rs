@@ -290,23 +290,35 @@ fn usage_path_matches_scope(path: &str, scope: &str) -> bool {
 
 fn indexed_check_hit<'a>(run: &'a SearchRun, subject: &str) -> Option<&'a SearchHit> {
     declaration_name_query(subject).then_some(())?;
-    run.hits.iter().find(|hit| {
-        qualified_name_matches(&hit.name, subject)
-            && hit
-                .signature
-                .as_deref()
-                .is_some_and(|value| !value.trim().is_empty())
-    })
+    run.hits
+        .iter()
+        .find(|hit| qualified_name_matches(&hit.name, subject) && indexed_hit_has_signature(hit))
 }
 
 fn indexed_check_hit_from_result(result: SearchResult, subject: &str) -> Option<SearchHit> {
-    result.hits.into_iter().find(|hit| {
-        qualified_name_matches(&hit.name, subject)
-            && hit
-                .signature
-                .as_deref()
-                .is_some_and(|value| !value.trim().is_empty())
-    })
+    result
+        .hits
+        .into_iter()
+        .find(|hit| qualified_name_matches(&hit.name, subject) && indexed_hit_has_signature(hit))
+}
+
+fn indexed_hit_has_signature(hit: &SearchHit) -> bool {
+    hit.signature
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn indexed_check_hit_at<'a>(
+    run: &'a SearchRun,
+    index: usize,
+    subject: &str,
+) -> Option<&'a SearchHit> {
+    run.hits
+        .get(index)
+        .filter(|hit| {
+            qualified_name_matches(&hit.name, subject) && indexed_hit_has_signature(hit)
+        })
+        .or_else(|| indexed_check_hit(run, subject))
 }
 
 fn parse_context(value: &str) -> Option<ProbeContext> {
@@ -561,11 +573,7 @@ impl Searcher {
                 let Some(run) = self.state.search_run(reference)? else {
                     return Ok(None);
                 };
-                run.hits
-                    .get(*hit_index)
-                    .filter(|hit| qualified_name_matches(&hit.name, subject))
-                    .or_else(|| indexed_check_hit(&run, subject))
-                    .cloned()
+                indexed_check_hit_at(&run, *hit_index, subject).cloned()
             }
             ProbeContext::File(_) if declaration_name_query(subject) => self
                 .planned_text_search(
@@ -2969,6 +2977,34 @@ mod tests {
             indexed_check_hit_from_result(result, "Demo.target").map(|hit| hit.name),
             Some("Demo.target".into())
         );
+    }
+
+    #[test]
+    fn indexed_query_check_skips_an_unsigned_selected_hit() {
+        let run = SearchRun {
+            reference: "q1".into(),
+            workspace_ref: "w1".into(),
+            query: "Demo.target".into(),
+            inference: "exact".into(),
+            hits: vec![SearchHit {
+                name: "Demo.target".into(),
+                kind: "declaration".into(),
+                signature: None,
+                module: "Demo".into(),
+                path: "Demo.lean".into(),
+                line: 7,
+                doc: None,
+                source: None,
+                usages: Vec::new(),
+                applicable: false,
+                required_import: None,
+            }],
+            note: None,
+            duration_ms: 0,
+            created_at: 0,
+        };
+
+        assert!(indexed_check_hit_at(&run, 0, "Demo.target").is_none());
     }
 
     #[test]
