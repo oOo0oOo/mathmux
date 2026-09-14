@@ -21,6 +21,9 @@ pub(crate) const SOURCE_PREVIEW_LINES: usize = 16;
 pub(crate) const BUILD_OUTPUT_LINES: usize = 120;
 pub(crate) const BUILD_OUTPUT_TAIL_LINES: usize = 30;
 pub(crate) const CHECK_DIAGNOSTIC_CHARS: usize = 1_200;
+// The first failure is the one the agent acts on; truncating it forces a
+// second `show cREF --all` round trip (444 in two weeks). Give it room.
+pub(crate) const CHECK_PRIMARY_DIAGNOSTIC_CHARS: usize = 4_000;
 pub(crate) const CHECK_ADDITIONAL_DIAGNOSTIC_CHARS: usize = 320;
 pub(crate) const CHECK_ADDITIONAL_DIAGNOSTICS: usize = 3;
 const REPEATED_PATH_MIN_BYTES: usize = 32;

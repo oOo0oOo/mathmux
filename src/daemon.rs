@@ -16,6 +16,7 @@ use crate::git::{self, dirty_lean_files, dirty_paths};
 use crate::issue::{TelemetryOperation, TelemetryStore, development_enabled};
 use crate::presentation::{
     CHECK_ADDITIONAL_DIAGNOSTIC_CHARS, CHECK_ADDITIONAL_DIAGNOSTICS, CHECK_DIAGNOSTIC_CHARS,
+    CHECK_PRIMARY_DIAGNOSTIC_CHARS,
 };
 use crate::protocol::{Command, Progress, Request, Response};
 use crate::reference::{Reference, ReferenceKind};
@@ -427,6 +428,17 @@ impl Service {
                     self.state
                         .add_sync(&workspace.reference, status, &result.detail)?;
                 if result.clean {
+                    // Rebuild import setups in the background so the next
+                    // check starts warm instead of paying preparation inline.
+                    if let Ok(targets) = git::dirty_lean_files(&workspace.path) {
+                        let checker = self.checker.clone();
+                        let workspace = workspace.clone();
+                        std::thread::spawn(move || {
+                            for target in targets.iter().take(3) {
+                                checker.prewarm_target(&workspace, target);
+                            }
+                        });
+                    }
                     Ok(format!("ok {reference}"))
                 } else {
                     bail!("{reference} conflict: {}", clean_line(&result.detail))
@@ -695,7 +707,7 @@ fn check_summary(outcome: &CheckOutcome) -> String {
                 .unwrap_or_else(|| clean_line(&diagnostic.text));
             output.push_str(&format!(
                 "\n{}",
-                truncate_middle(&detail, CHECK_DIAGNOSTIC_CHARS)
+                truncate_middle(&detail, CHECK_PRIMARY_DIAGNOSTIC_CHARS)
             ));
             if let Some(context) = &diagnostic.context {
                 output.push('\n');
@@ -720,7 +732,7 @@ fn check_summary(outcome: &CheckOutcome) -> String {
                     outcome.reference
                 ));
             }
-            if compact_type.is_some() || detail.chars().count() > CHECK_DIAGNOSTIC_CHARS {
+            if compact_type.is_some() || detail.chars().count() > CHECK_PRIMARY_DIAGNOSTIC_CHARS {
                 output.push_str(&format!("\nfull diagnostic: show {}", outcome.reference));
             }
         }
@@ -971,7 +983,7 @@ mod tests {
     fn check_summary_keeps_source_and_both_ends_of_long_diagnostics() {
         let diagnostic = format!(
             "Demo.Proof:3:1: error: {} final target",
-            "detail ".repeat(300)
+            "detail ".repeat(700)
         );
         let summary = check_summary(&CheckOutcome {
             reference: "c1".into(),

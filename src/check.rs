@@ -1695,6 +1695,28 @@ impl Checker {
         ]
     }
 
+    /// Rebuild the worker setup for a target off the request path, so the
+    /// next check after a sync does not pay the full import preparation
+    /// interactively (telemetry: 250s+ cold checks with validation idle).
+    pub fn prewarm_target(&self, workspace: &Workspace, target: &Path) {
+        let target = match resolve_target(&workspace.path, target) {
+            Ok(target) => target,
+            Err(_) => return,
+        };
+        let Ok(dependencies) = transitive_dependencies(&workspace.path, &target) else {
+            return;
+        };
+        if let Err(error) = self.worker_setup(workspace, &target, &dependencies, None) {
+            if let Ok(mut log) = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.repo.log_path)
+            {
+                let _ = writeln!(log, "post-sync prewarm skipped: {error:#}");
+            }
+        }
+    }
+
     pub fn evict_workspace_workers(&self, workspace_ref: &str) {
         self.runner
             .workers
