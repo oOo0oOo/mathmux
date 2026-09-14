@@ -251,11 +251,10 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         assert 'exact .intro' in run([binary, 'show', fresh_ref, '--all'], ws).stdout
         assert 'exact True.intro' in run([binary, 'show', source_ref, '--all'], ws).stdout
         (ws / 'SourceFixture.lean').write_text(source_fixture)
-        for query in ['Demo.longProof find exact', source_ref + ' find exact']:
-            found = probe(query)
-            assert '   83    exact True.intro' in found, found
-        found = probe('Demo.longProof find nonexistentNeedle')
-        assert 'No literal matches' in found, found
+        removed = run([binary, 'probe', 'Demo.longProof find exact'], ws, ok=False)
+        assert 'was removed' in removed.stderr, (removed.stdout, removed.stderr)
+        found = probe(source_ref + ' find exact')
+        assert '   83    exact True.intro' in found, found
         outline = probe('Demo.longProof outline')
         assert '   83    exact True.intro' in outline, outline
         assert 'premises retained' in probe('Impossible assumptions')
@@ -266,9 +265,9 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         assert 'Subsingleton (Data ⟶ Unit)' in detail, detail
         detail = probe('Fixture.lean:11 #inspect forgetInput')
         assert 'absent from definition body' in detail, detail
-        detail = probe('Fixture.lean:11 #apply needsHypothesis n')
+        detail = probe('Fixture.lean:11 needsHypothesis fits')
         assert 'n = 0' in detail, detail
-        failed = run([binary, 'probe', 'Fixture.lean:11 #apply True.intro'], ws, ok=False)
+        failed = run([binary, 'probe', 'Fixture.lean:11 True.intro fits'], ws, ok=False)
         failure = failed.stdout + failed.stderr
         assert failed.returncode != 0 and 'first type difference' in failure, failure
         assert 'Full diagnostic: mathmux show' in failure, failure
@@ -446,10 +445,11 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         db.execute('update check_runs set profile_json=?, linters_json=? where ref=?', (json.dumps(profile), json.dumps(warnings), ref))
         db.commit()
         db.close()
-        result = run([binary, 'probe', ref + ' profile'], ws)
-        assert 'costlyHotspot' in result.stdout and 'irrelevant linter' not in result.stdout
-        qref = next(line[5:] for line in result.stdout.splitlines() if line.startswith('ref: '))
-        full = run([binary, 'show', qref, '--all'], ws).stdout
+        removed = run([binary, 'probe', ref + ' profile'], ws, ok=False)
+        assert 'was removed' in removed.stderr, (removed.stdout, removed.stderr)
+        result = run([binary, 'show', ref], ws)
+        assert 'costlyHotspot' in result.stdout, result.stdout
+        full = run([binary, 'show', ref, '--all'], ws).stdout
         assert 'component19' in full and 'costlyHotspot' in full
 
     finally:
