@@ -1699,22 +1699,48 @@ impl Checker {
     /// next check after a sync does not pay the full import preparation
     /// interactively (telemetry: 250s+ cold checks with validation idle).
     pub fn prewarm_target(&self, workspace: &Workspace, target: &Path) {
-        let target = match resolve_target(&workspace.path, target) {
-            Ok(target) => target,
-            Err(_) => return,
-        };
+        // Targets arrive workspace-relative (from dirty_lean_files); never
+        // resolve against the daemon's own working directory.
+        let target = target
+            .strip_prefix(&workspace.path)
+            .unwrap_or(target)
+            .to_path_buf();
+        if !workspace.path.join(&target).is_file() {
+            return;
+        }
         let Ok(dependencies) = transitive_dependencies(&workspace.path, &target) else {
             return;
         };
-        if let Err(error) = self.worker_setup(workspace, &target, &dependencies, None) {
-            if let Ok(mut log) = fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&self.repo.log_path)
-            {
-                let _ = writeln!(log, "post-sync prewarm skipped: {error:#}");
+        let setup = match self.worker_setup(workspace, &target, &dependencies, None) {
+            Ok(setup) => setup,
+            Err(error) => {
+                if let Ok(mut log) = fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&self.repo.log_path)
+                {
+                    let _ = writeln!(log, "post-sync prewarm skipped: {error:#}");
+                }
+                return;
             }
-        }
+        };
+        // Elaborate the current source once in the background. The worker's
+        // incremental processor then answers the next interactive check from
+        // the unchanged prefix instead of re-elaborating the whole file.
+        let (setup_path, environment) = setup;
+        let Ok(source) = fs::read_to_string(workspace.path.join(&target)) else {
+            return;
+        };
+        let _ = self.run_worker(
+            workspace,
+            &target,
+            &setup_path,
+            &environment,
+            &source,
+            WorkerRun::Check,
+            None,
+            None,
+        );
     }
 
     pub fn evict_workspace_workers(&self, workspace_ref: &str) {

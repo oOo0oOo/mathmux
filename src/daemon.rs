@@ -155,9 +155,12 @@ pub fn run(repo: Repo) -> Result<()> {
             .searcher
             .evict_idle_worker(Duration::from_secs(5 * 60));
         let has_workers = if active_clients == 0 {
+            // Check workers hold incremental elaboration state; retaining
+            // them through a thinking pause keeps the next check on the
+            // unchanged-prefix fast path. Type-search keeps its shorter TTL.
             let has_check_workers = service
                 .checker
-                .evict_idle_workers(Duration::from_secs(5 * 60));
+                .evict_idle_workers(Duration::from_secs(15 * 60));
             has_check_workers || has_search_worker
         } else {
             true
