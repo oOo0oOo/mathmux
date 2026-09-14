@@ -163,6 +163,14 @@ fn signature_binders(signature: &str) -> Vec<&str> {
         let Some(end) = end else {
             break;
         };
+        // A declaration binder is followed by another outer binder or the
+        // declaration result's colon. A result can itself start with a
+        // parenthesized expression, so do not treat its first `(...)` as an
+        // input merely because it is at the beginning of the signature.
+        let tail = rest[end..].trim_start();
+        if !tail.starts_with(':') && !tail.starts_with(['(', '{', '[', '⦃']) {
+            break;
+        }
         binders.push(&rest[..end]);
         rest = rest[end..].trim_start();
     }
@@ -1210,6 +1218,15 @@ mod tests {
             input_heads("⦃X : Type⦄ (d : Demo.Data X) : True")[0],
             "Demo.Data"
         );
+    }
+
+    #[test]
+    fn parenthesized_result_is_not_reported_as_an_explicit_input() {
+        let signature = "(Demo.Data n).IsFredholm ∧ (Demo.Data n).index = 1";
+        let detail = assumption_signature(signature);
+        assert_eq!(signature_binders(signature).len(), 0);
+        assert!(detail.contains("signature (premises retained):"), "{detail}");
+        assert!(!detail.contains("input:"), "{detail}");
     }
 
     #[test]
