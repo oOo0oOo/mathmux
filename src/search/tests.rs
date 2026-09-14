@@ -4417,6 +4417,17 @@ fn source_parser_ignores_docs_nested_in_attributes() {
 }
 
 #[test]
+fn source_parser_does_not_reuse_docs_after_attribute_code() {
+    let source = "namespace Demo\n/-- Stale documentation. -/\n@[simp]\ntheorem first : List Nat := []\ntheorem second : True := trivial\nend Demo\n";
+    let entries = parse_source(source, "Demo");
+    let second = entries
+        .iter()
+        .find(|entry| entry.name == "Demo.second")
+        .unwrap();
+    assert!(second.docs.is_empty());
+}
+
+#[test]
 fn source_context_preserves_multiline_binders_and_local_scope() {
     let source = "namespace Demo\n@[expose] public section\nuniverse u\nvariable {α : Type u}\n  -- continuation comment\n\n    [Inhabited α]\nvariable (α) in\n/-- Own documentation. -/\ndef first : α := default\n\nvariable (α) in\n/-- Neighbor documentation. -/\ndef second : α := default\nend\ndef outside := 0\nend Demo\n";
     let entries = parse_source(source, "Demo");
@@ -5130,4 +5141,3 @@ fn repeated_identical_source_read_is_elided() {
         .unwrap();
     assert!(!third.contains("source unchanged"), "{third}");
 }
-

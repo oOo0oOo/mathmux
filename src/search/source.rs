@@ -887,15 +887,55 @@ fn doc_is_nested_in_attribute(prefix: &str, start: usize) -> bool {
     !prefix[attribute_start + 2..start].contains(']')
 }
 
+fn separated_only_by_attributes(suffix: &str) -> bool {
+    let code = mask_comments(suffix);
+    let mut rest = code.trim_start();
+    loop {
+        let Some(after_attribute) = rest.strip_prefix("@[") else {
+            return rest.chars().all(|character| character == ']');
+        };
+        let mut depth = 1usize;
+        let mut string = false;
+        let mut escaped = false;
+        let mut end = None;
+        for (index, character) in after_attribute.char_indices() {
+            if string {
+                if escaped {
+                    escaped = false;
+                } else if character == '\\' {
+                    escaped = true;
+                } else if character == '"' {
+                    string = false;
+                }
+                continue;
+            }
+            match character {
+                '"' => string = true,
+                '[' => depth += 1,
+                ']' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        end = Some(index);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(end) = end else {
+            return false;
+        };
+        rest = after_attribute[end + 1..].trim_start();
+    }
+}
+
 pub(super) fn preceding_doc(source: &str, offset: usize) -> Option<String> {
     let prefix = &source[..offset];
     let mut search_end = prefix.len();
     loop {
         let end = prefix[..search_end].rfind("-/")? + 2;
         let suffix = prefix[end..].trim();
-        let separated_only_by_attributes = suffix.chars().all(|character| character == ']')
-            || (suffix.starts_with("@[") && suffix.ends_with(']'));
-        if !suffix.is_empty() && !separated_only_by_attributes {
+        if !suffix.is_empty() && !separated_only_by_attributes(suffix) {
             return None;
         }
         let start = prefix[..end].rfind("/--")?;
