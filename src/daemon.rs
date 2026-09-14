@@ -709,6 +709,16 @@ fn check_summary(outcome: &CheckOutcome) -> String {
                     "\ncontext: mathmux probe {} context",
                     outcome.reference
                 ));
+            } else if detail.contains("unsolved goals") {
+                output.push_str(&format!(
+                    "\ngoal: mathmux probe {} goal; test a candidate lemma with `mathmux probe {} NAME fits`",
+                    outcome.reference, outcome.reference
+                ));
+            } else if detail.contains("failed to synthesize") {
+                output.push_str(&format!(
+                    "\ninstance failure: mathmux probe {} types",
+                    outcome.reference
+                ));
             }
             if compact_type.is_some() || detail.chars().count() > CHECK_DIAGNOSTIC_CHARS {
                 output.push_str(&format!("\nfull diagnostic: show {}", outcome.reference));

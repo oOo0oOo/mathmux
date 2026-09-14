@@ -22,6 +22,7 @@ const FOCUSES: &[&str] = &[
     "goal",
     "types",
     "warnings",
+    "fits",
 ];
 const REMOVED_FOCUSES: &[&str] =
     &["neighborhood", "dependencies", "instances", "coercions", "defeq", "rewrite", "profile"];
@@ -191,6 +192,25 @@ impl ProbeRequest {
             && let Some(stripped) = first.strip_prefix('@')
         {
             *first = stripped;
+        }
+        if focus.as_deref() == Some("fits") {
+            ensure!(
+                matches!(
+                    context,
+                    Some(ProbeContext::Check(_) | ProbeContext::Position(_))
+                ),
+                "fits tests a declaration against a goal: `probe cREF NAME fits` or `probe FILE:LINE NAME fits`"
+            );
+            ensure!(
+                terms.len() == 1,
+                "fits tests one declaration: `probe cREF NAME fits`"
+            );
+            return Ok(Self {
+                context,
+                subject: None,
+                focus: None,
+                directive: Some(LeanDirective::Tactic(format!("apply ({})", terms[0]))),
+            });
         }
         if context.is_none() && terms.len() >= 3 && terms[1].eq_ignore_ascii_case("find") {
             let name = terms[0];
@@ -1565,6 +1585,48 @@ fn abbreviation_target(hit: &SearchHit) -> Option<&str> {
         .find(|token| !token.is_empty())
 }
 
+/// Extract `[...]` instance binders from a signature, respecting nesting, so
+/// the dossier states the synthesis obligations a caller inherits.
+fn instance_obligations(signature: &str) -> Vec<String> {
+    let mut obligations = Vec::new();
+    let mut bracket_depth = 0usize;
+    let mut group_depth = 0usize;
+    let mut current = String::new();
+    for character in signature.chars() {
+        match character {
+            // The result type starts at the first top-level colon; instance
+            // binders never appear after it.
+            ':' if bracket_depth == 0 && group_depth == 0 => break,
+            '(' | '{' | '⦃' if bracket_depth == 0 => group_depth += 1,
+            ')' | '}' | '⦄' if bracket_depth == 0 => {
+                group_depth = group_depth.saturating_sub(1);
+            }
+            '[' if group_depth == 0 => {
+                if bracket_depth > 0 {
+                    current.push('[');
+                }
+                bracket_depth += 1;
+            }
+            ']' if group_depth == 0 && bracket_depth > 0 => {
+                bracket_depth -= 1;
+                if bracket_depth == 0 {
+                    let obligation = current.trim().to_owned();
+                    if !obligation.is_empty() {
+                        obligations.push(obligation);
+                    }
+                    current.clear();
+                } else {
+                    current.push(']');
+                }
+            }
+            _ if bracket_depth > 0 => current.push(character),
+            _ => {}
+        }
+    }
+    obligations.truncate(8);
+    obligations
+}
+
 fn render_static_probe_summary(run: &SearchRun, focus: &str) -> String {
     let mut run = run.clone();
     match focus {
@@ -1592,6 +1654,22 @@ fn render_static_probe_summary(run: &SearchRun, focus: &str) -> String {
             };
             for hit in &mut run.hits {
                 hit.source = None;
+            }
+            if focus == "signature"
+                && let Some(obligations) = run
+                    .hits
+                    .first()
+                    .and_then(|hit| hit.signature.as_deref())
+                    .map(instance_obligations)
+                    .filter(|obligations| !obligations.is_empty())
+            {
+                prepend_search_note(
+                    &mut run.note,
+                    format!(
+                        "instance obligations at every use site: {}",
+                        obligations.join("; ")
+                    ),
+                );
             }
         }
         "source" => {
@@ -3091,4 +3169,32 @@ mod tests {
         assert!(dossier.contains(">    3 | theorem publicResult"));
         assert!(!dossier.contains("This linter can be disabled"));
     }
+
+#[test]
+fn instance_obligations_parse_nested_binders() {
+    let obligations = instance_obligations(
+        "theorem foo {E : Type u} (x : E) [NormedAddCommGroup E] [InnerProductSpace ℂ E] [Fact (finrank ℂ E = 2)] : x = x",
+    );
+    assert_eq!(
+        obligations,
+        vec![
+            "NormedAddCommGroup E".to_owned(),
+            "InnerProductSpace ℂ E".to_owned(),
+            "Fact (finrank ℂ E = 2)".to_owned(),
+        ]
+    );
+    assert!(instance_obligations("theorem bar (x : Nat) : x = x").is_empty());
+}
+
+#[test]
+fn fits_focus_builds_an_apply_tactic_probe() {
+    let request = ProbeRequest::parse("c123 Foo.bar_comp fits").unwrap();
+    assert_eq!(request.context, Some(ProbeContext::Check("c123".into())));
+    assert_eq!(
+        request.directive,
+        Some(LeanDirective::Tactic("apply (Foo.bar_comp)".into()))
+    );
+    assert!(ProbeRequest::parse("Foo.bar fits").is_err());
+    assert!(ProbeRequest::parse("c123 Foo Bar fits").is_err());
+}
 }

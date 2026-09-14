@@ -88,6 +88,7 @@ FORMS — type one directly; there are no API, LEAN, or other category keywords
   FILE:LINE [goal] | FILE:LINE TERM [signature]
   PATH NAME usages
   cREF [goal|types|context]
+  cREF NAME fits | FILE:LINE NAME fits
   qREF[#N] [signature|source|outline|find TERM|usages]
   positioned-qREF [goal] | stored-probe-qREF
   FILE|FILE:LINE|cREF|qREF "#check TERM"|"#synth TYPE"|"#reduce TERM"
@@ -129,8 +130,10 @@ RESULT
 
 NEXT
   Start with signature; request source/usages only for the selected declaration.
-  Before building on a lemma, `probe NAME apply` its fit; after a failed check,
-  `probe cREF goal` before editing blind.
+  Signature dossiers list instance obligations; they must synthesize at your use
+  site. Before building on a lemma, test it against the live goal with
+  `probe cREF NAME fits` (runs Lean apply, reports obligations or the mismatch);
+  after a failed check, `probe cREF goal` before editing blind.
 
 RULES
   cREF goal/analyses need a matching stored failure; for a running check, use

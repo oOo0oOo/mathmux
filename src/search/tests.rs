@@ -5099,3 +5099,4 @@ fn repeated_identical_source_read_is_elided() {
         .unwrap();
     assert!(!third.contains("source unchanged"), "{third}");
 }
+

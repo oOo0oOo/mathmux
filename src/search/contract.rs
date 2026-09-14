@@ -1079,7 +1079,7 @@ impl Searcher {
         }
         if let Some(path) = path {
             detail.push_str(&format!(
-                "\nTest in explicit context: mathmux probe {path}:LINE '#apply TERM'\n"
+                "\nTest in explicit context: mathmux probe {path}:LINE NAME fits\n"
             ));
         }
         Ok(detail)
