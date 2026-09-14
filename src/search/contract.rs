@@ -299,7 +299,10 @@ fn selected_section_binders(signature: &str, source: Option<&str>) -> Vec<String
     if !command.is_empty() { commands.push(command); }
     let mut selected = Vec::new();
     for command in commands.iter().rev() {
-        for binder in signature_binders(command).into_iter().rev() {
+        // Variable commands have no declaration-result colon; provide a
+        // sentinel result so the final ambient binder is parsed as well.
+        let command_signature = format!("{command} : True");
+        for binder in signature_binders(&command_signature).into_iter().rev() {
             let start = binder.chars().next().unwrap();
             if start == '[' { continue; }
             let end = binder.chars().last().unwrap();

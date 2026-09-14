@@ -4404,6 +4404,19 @@ fn source_parser_does_not_reuse_docs_after_top_level_commands() {
 }
 
 #[test]
+fn source_parser_ignores_docs_nested_in_attributes() {
+    let source = "namespace Demo\n/-- Own documentation. -/\n@[to_additive /-- Generated documentation. -/]\ntheorem target : True := trivial\nend Demo\n";
+    let entries = parse_source(source, "Demo");
+    let target = entries.iter().find(|entry| entry.name == "Demo.target").unwrap();
+    assert_eq!(target.docs, "Own documentation.");
+
+    let source = "namespace Demo\n@[to_additive /-- Generated documentation. -/]\ntheorem target : True := trivial\nend Demo\n";
+    let entries = parse_source(source, "Demo");
+    let target = entries.iter().find(|entry| entry.name == "Demo.target").unwrap();
+    assert!(target.docs.is_empty());
+}
+
+#[test]
 fn source_context_preserves_multiline_binders_and_local_scope() {
     let source = "namespace Demo\n@[expose] public section\nuniverse u\nvariable {α : Type u}\n  -- continuation comment\n\n    [Inhabited α]\nvariable (α) in\n/-- Own documentation. -/\ndef first : α := default\n\nvariable (α) in\n/-- Neighbor documentation. -/\ndef second : α := default\nend\ndef outside := 0\nend Demo\n";
     let entries = parse_source(source, "Demo");

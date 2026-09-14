@@ -876,23 +876,41 @@ fn ambient_contexts_by_line(
     result
 }
 
+fn doc_is_nested_in_attribute(prefix: &str, start: usize) -> bool {
+    let previous_doc_end = prefix[..start]
+        .rfind("-/")
+        .map_or(0, |end| end + 2);
+    let Some(relative_attribute_start) = prefix[previous_doc_end..start].rfind("@[") else {
+        return false;
+    };
+    let attribute_start = previous_doc_end + relative_attribute_start;
+    !prefix[attribute_start + 2..start].contains(']')
+}
+
 pub(super) fn preceding_doc(source: &str, offset: usize) -> Option<String> {
     let prefix = &source[..offset];
-    let end = prefix.rfind("-/")? + 2;
-    let suffix = prefix[end..].trim();
-    let separated_only_by_attributes = suffix.chars().all(|character| character == ']')
-        || (suffix.starts_with("@[") && suffix.ends_with(']'));
-    if !suffix.is_empty() && !separated_only_by_attributes {
-        return None;
+    let mut search_end = prefix.len();
+    loop {
+        let end = prefix[..search_end].rfind("-/")? + 2;
+        let suffix = prefix[end..].trim();
+        let separated_only_by_attributes = suffix.chars().all(|character| character == ']')
+            || (suffix.starts_with("@[") && suffix.ends_with(']'));
+        if !suffix.is_empty() && !separated_only_by_attributes {
+            return None;
+        }
+        let start = prefix[..end].rfind("/--")?;
+        if doc_is_nested_in_attribute(prefix, start) {
+            search_end = start;
+            continue;
+        }
+        return Some(
+            prefix[start + 3..end - 2]
+                .lines()
+                .map(|line| line.trim().trim_start_matches('*').trim())
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
     }
-    let start = prefix[..end].rfind("/--")?;
-    Some(
-        prefix[start + 3..end - 2]
-            .lines()
-            .map(|line| line.trim().trim_start_matches('*').trim())
-            .collect::<Vec<_>>()
-            .join(" "),
-    )
 }
 
 pub(super) fn line_starts(source: &str) -> Vec<usize> {
