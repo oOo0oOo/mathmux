@@ -1211,11 +1211,33 @@ pub(super) fn resolve_source_path(
             }
         }
     }
-    if requested.components().count() == 1 {
+    // A mistyped directory prefix ("AtiySinger/X.lean") should not hide a
+    // uniquely named project file. Fall back to an exact-filename match, but
+    // only when the requested directory is a near-typo of the real one — a
+    // genuinely different location stays unresolved rather than silently
+    // rerouting to another file.
+    if requested.components().count() >= 1 {
+        let requested_parent = requested
+            .parent()
+            .map(|parent| parent.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
         let files = project_files.get_or_init(|| project_lean_files(&root));
         let mut matches = files
             .iter()
             .filter(|candidate| candidate.file_name() == requested.file_name())
+            .filter(|candidate| {
+                if requested_parent.is_empty() {
+                    // A bare filename request matches any unique location.
+                    return true;
+                }
+                let candidate_parent = candidate
+                    .parent()
+                    .map(|parent| parent.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
+                requested_parent == candidate_parent
+                    || edit_distance(&requested_parent, &candidate_parent)
+                        <= 2.max(candidate_parent.chars().count() / 5)
+            })
             .filter_map(|candidate| fs::canonicalize(root.join(candidate)).ok())
             .collect::<Vec<_>>();
         matches.sort();
@@ -1237,6 +1259,18 @@ pub(super) fn resolve_source_path(
                     name.to_string_lossy().eq_ignore_ascii_case(&requested_name)
                 })
             })
+            .filter(|candidate| {
+                if requested_parent.is_empty() {
+                    return true;
+                }
+                let candidate_parent = candidate
+                    .parent()
+                    .map(|parent| parent.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
+                requested_parent == candidate_parent
+                    || edit_distance(&requested_parent, &candidate_parent)
+                        <= 2.max(candidate_parent.chars().count() / 5)
+            })
             .filter_map(|candidate| fs::canonicalize(root.join(candidate)).ok())
             .collect::<Vec<_>>();
         matches.sort();
@@ -1244,7 +1278,7 @@ pub(super) fn resolve_source_path(
         if let [resolved] = matches.as_slice() {
             return Ok(Some((resolved.clone(), None, true)));
         }
-        if matches.is_empty() {
+        if matches.is_empty() && requested_parent.is_empty() {
             let requested_stem = requested
                 .file_stem()
                 .and_then(|stem| stem.to_str())

@@ -5141,3 +5141,36 @@ fn repeated_identical_source_read_is_elided() {
         .unwrap();
     assert!(!third.contains("source unchanged"), "{third}");
 }
+
+#[test]
+fn near_typo_directory_prefixes_resolve_but_wrong_locations_fail_closed() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::create_dir_all(directory.path().join("AtiyahSinger")).unwrap();
+    fs::write(
+        directory.path().join("AtiyahSinger/TorusChart.lean"),
+        "def torusChart := true\n",
+    )
+    .unwrap();
+    // One dropped letter in the directory resolves to the real file.
+    let corrected = resolve_source_path(
+        directory.path(),
+        directory.path(),
+        "AtiySinger/TorusChart.lean",
+    )
+    .unwrap()
+    .expect("near-typo prefix resolves");
+    assert_eq!(
+        corrected.0,
+        fs::canonicalize(directory.path().join("AtiyahSinger/TorusChart.lean")).unwrap()
+    );
+    // A genuinely different directory stays unresolved.
+    assert!(
+        resolve_source_path(
+            directory.path(),
+            directory.path(),
+            "Guards/TorusChart.lean"
+        )
+        .unwrap()
+        .is_none()
+    );
+}
