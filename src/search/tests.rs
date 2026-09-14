@@ -2524,13 +2524,6 @@ fn source_query_regressions() {
         .as_deref(),
         Some("left\nf x\nright\ng x")
     );
-    assert!(
-        diagnostic_rewrite_detail(
-            "Demo:13:2: error: Tactic `rewrite` failed: pattern not found",
-            Some(">  13 | rw [map_zpow]")
-        )
-        .is_some_and(|detail| detail.contains("rw [map_zpow]"))
-    );
     let mut inferred_note =
         Some("no nearby match for internal.instance; source index warming".to_owned());
     suppress_inferred_missing_note(&mut inferred_note);

@@ -231,35 +231,6 @@ pub(super) fn diagnostic_rewrite_comparison(diagnostic: &str) -> Option<(String,
     (!pattern.is_empty() && !target.is_empty()).then_some((pattern, target))
 }
 
-pub(super) fn diagnostic_rewrite_detail(
-    diagnostic: &str,
-    source_context: Option<&str>,
-) -> Option<String> {
-    let rewrite_failure = diagnostic.contains("rewrite")
-        || diagnostic.contains("Tactic `rw`")
-        || diagnostic.contains("pattern not found");
-    if !rewrite_failure {
-        return None;
-    }
-    let source = source_context
-        .and_then(|context| {
-            context
-                .lines()
-                .find(|line| line.trim_start().starts_with('>'))
-        })
-        .and_then(|line| line.split_once('|'))
-        .map(|(_, code)| code.trim())
-        .filter(|code| !code.is_empty());
-    let message = diagnostic
-        .lines()
-        .find(|line| line.contains("rewrite") || line.contains("pattern not found"))
-        .map(str::trim)
-        .unwrap_or("rewrite failed");
-    Some(match source {
-        Some(source) => format!("rewrite\n{source}\n{message}"),
-        None => format!("rewrite\n{message}"),
-    })
-}
 
 fn diagnostic_expression(section: &str) -> String {
     section

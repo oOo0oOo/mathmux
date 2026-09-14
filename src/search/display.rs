@@ -374,7 +374,7 @@ fn next_probe_focus(hit: &SearchHit) -> &'static str {
     match hit.kind.as_str() {
         "lemma" | "theorem" | "generated" => "usages",
         "class" | "structure" => "fields",
-        "inductive" => "constructors",
+        "inductive" => "fields",
         _ => "source",
     }
 }

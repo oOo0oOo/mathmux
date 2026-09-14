@@ -24,7 +24,7 @@ use clap::ValueEnum;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 const WORKFLOW_HELP: &str = r#"AGENT CONTRACT
-  api       search-v13/probe-v22; reread search/probe help only when this digest changes.
+  api       search-v13/probe-v23; reread search/probe help only when this digest changes.
   scope     Use the preassigned workspace; never run ws or enter main/another workspace.
   discover  Search unknown things; probe known API, exact context, or failures.
             Exact declarations go straight to probe NAME; qREFs store result sets.
@@ -80,81 +80,67 @@ RULES
   Sigil what you know; leave inference for what you do not."#;
 
 const PROBE_HELP: &str = r##"PROBE — inspect something known; returns qREF
-API probe-v22 — bounded exact inspection; reread only when this digest changes
+API probe-v23 — bounded exact inspection; reread only when this digest changes
 FORMS — type one directly; there are no API, LEAN, or other category keywords
-  NAME [signature|source|outline|apply|fields|constructors|ext|simp|usages|assumptions|evidence|examples]
-  NAME find TERM
+  NAME [signature|source|outline|apply|fields|ext|simp|usages|assumptions|evidence|examples]
   type:LEAN_TYPE [types]
   FILE warnings
   FILE:LINE [goal] | FILE:LINE TERM [signature]
-  FILE:LINE NAME evidence  (inspect up to three candidates; stop at verified evidence)
-  FILE:LINE NAME examples  (retrieve existing small-case candidates)
   PATH NAME usages
-  cREF [goal|types|defeq|rewrite|profile|context]
-  qREF[#N] [signature|source|outline|find TERM|usages|constructors]
+  cREF [goal|types|context]
+  qREF[#N] [signature|source|outline|find TERM|usages]
   positioned-qREF [goal] | stored-probe-qREF
   FILE|FILE:LINE|cREF|qREF "#check TERM"|"#synth TYPE"|"#reduce TERM"
-  FILE:LINE|cREF|positioned-qREF "by TACTIC"|"#apply TERM"|"#inspect TERM"
+  FILE:LINE|cREF|positioned-qREF "by TACTIC"|"#inspect TERM"
 
 RESULT
-  NAME source/outline/find reads a fresh textual snapshot. Source includes ambient
+  NAME source/outline reads a fresh textual snapshot. Source includes ambient
   binders, scoped options, bounded local-instance previews, and its own docs.
-  Find reports actual file lines, labeling ambient matches.
   Long source previews show continuation ranges; show qREF --all recovers the stored
   snapshot. Aliases and explicitly named to_additive declarations show their generator
   and an origin follow-up; generator text is not the generated proof or signature.
   Source retains preceding attributes and multiline variables, including bare variable
   commands. Indexed fallbacks are labeled incomplete. Text is not Lean elaboration.
-  Examples label direct existing-subject inputs; automatic ranking prefers public APIs,
-  then fewer direct subject inputs. Private visibility is separate from Lean premises.
-  Lean experiments need a project file importing the declaration; dependency files
-  remain available for textual source inspection.
-  NAME assumptions exposes premises and selected input APIs; evidence retrieves
-  construction/obstruction/subsingleton candidates with hypotheses. Indexed text is not verified
-  applicability; no results is not an existence verdict. Use qualified names.
-  NAME examples selects existing constructions with fewer indexed inputs and
-  project-authored examples as selectable qREF#N results; hidden premises remain.
-  A current snapshot-verified obstruction may appear directly in search; changing
-  project sources/configuration invalidates that evidence. Authored routes are advisory.
-  Exact discovery can flag specialized evidence about an explicit input type.
-  Unqualified inputs need lexical source context before global obstruction lookup.
-  cREF context adds type differences, import-aware laws and one usage to the failure.
-  Field inventories label omitted inherited obligations and show parent types.
+  assumptions lists premises and selected input APIs; evidence and examples return
+  bounded indexed candidates (constructions, obstructions, small cases). Indexed text
+  is not verified applicability; no results is not an existence verdict. Use qualified names.
+  cREF goal returns the exact stored failure goal; cREF types the type or instance
+  failure; cREF context adds type differences, import-aware laws and one usage.
+  fields targets structures, classes, and inductives; for an inductive it lists
+  constructors. Field inventories label omitted inherited obligations and parent types.
   #inspect lists explicit inputs first; show qREF --all retains every input.
   Bare-name inspection preserves implicit/default binders instead of applying them.
-  #inspect uses readable input names and labels instance inputs/assumptions.
   Applied terms include axiom dependencies and local inputs/assumptions;
   absence of global axioms does not remove local proof obligations.
-  Constructor probes without indexed signatures point to fields or Lean inspection.
-  #inspect inspects elaborated inputs/result, constructors or a definition body;
-  #apply tests an application and reports remaining obligations, without editing.
   Tactic probes retain Lean suggestion messages (for example from simp?) after the result.
   Tactic probes label goals discharged through sorryAx as ADMITTED, not solved.
   An empty tactic goal list with unresolved proof metavariables is INCOMPLETE.
   Test small cases with #check (TERM : EXPECTED_TYPE), #reduce TERM or by TACTIC.
   All experiments require explicit context; check remains certification.
+  Lean experiments need a project file importing the declaration; dependency files
+  remain available for textual source inspection.
   FILE warnings returns ranked residual-warning qREFs from its latest current check;
   probing one returns a source-bound dossier with API/dependency evidence.
   API focuses return one bounded dossier. goal returns the exact local goal;
   TERM/directives return Lean's elaborated answer; by returns solved or subgoals.
   NAME source resolves the exact declaration and returns that body; outline is
-  kind-aware, and find searches only that declaration. A miss never
-  falls through to another declaration. search FILE:LINE/RANGE reads file text.
+  kind-aware. A miss never falls through to another declaration.
+  search FILE:LINE/RANGE reads file text; search FILE find TERM searches a file.
 
 NEXT
   Start with signature; request source/usages only for the selected declaration.
+  Before building on a lemma, `probe NAME apply` its fit; after a failed check,
+  `probe cREF goal` before editing blind.
 
 RULES
-  fields/constructors target structures/inductives; ext/simp may be empty.
   cREF goal/analyses need a matching stored failure; for a running check, use
-  mathmux show cREF --wait first; profile needs check --profile. For queued or
-  running validation, use mathmux show sREF --wait.
+  mathmux show cREF --wait first. For queued or running validation, use
+  mathmux show sREF --wait. ext/simp may be empty.
   warnings omits mechanical fixes owned by Lean automation and never reruns Lean.
   Context is mandatory for directives and never guessed. FILE uses its imports;
   FILE:LINE uses that exact line—there is no nearby-line fallback. Probe never
   edits or certifies source; use check after editing. Use NAME signature, not
-  NAME "#check NAME". Quote directives. Cancel an owned running check with
-  `mathmux cancel cREF`, then use `mathmux show cREF` to confirm termination."##;
+  NAME "#check NAME". Quote directives."##;
 
 #[derive(Parser)]
 #[command(
@@ -200,6 +186,7 @@ enum TopCommand {
         profile: bool,
     },
     /// Cancel an owned running check and terminate its Lean process group.
+    #[command(hide = true)]
     Cancel {
         /// Running check reference, for example c123.
         reference: String,
@@ -253,10 +240,10 @@ enum TopCommand {
     },
     /// Show stored detail for a short reference.
     ///
-    /// Accepts cREF, qREF, sREF, uREF, or wREF. --all expands stored detail while
+    /// Accepts cREF, qREF, sREF, or wREF. --all expands stored detail while
     /// keeping raw build logs bounded. --wait waits for a running cREF or sREF validation.
     Show {
-        /// Stored cREF, qREF, sREF, uREF, or wREF.
+        /// Stored cREF, qREF, sREF, or wREF.
         reference: String,
         /// Include expanded stored detail.
         #[arg(long, conflicts_with = "wait")]
@@ -327,7 +314,7 @@ enum IssueCommand {
     Report {
         /// Concise tooling defect or inefficiency.
         summary: String,
-        /// Related cREF, qREF, sREF, uREF, or eREF.
+        /// Related cREF, qREF, sREF, or eREF.
         #[arg(long = "ref")]
         reference: Option<String>,
     },
@@ -1198,15 +1185,14 @@ mod tests {
             .unwrap()
             .render_long_help()
             .to_string();
-        assert!(probe_help.contains("API probe-v22"));
+        assert!(probe_help.contains("API probe-v23"));
         for contract in [
             "there are no API, LEAN, or other category keywords",
-            "NAME [signature|source|outline|apply|fields|constructors|ext|simp|usages|assumptions|evidence|examples]",
-            "NAME find TERM",
+            "NAME [signature|source|outline|apply|fields|ext|simp|usages|assumptions|evidence|examples]",
             "FILE warnings",
             "FILE:LINE [goal]",
-            "cREF [goal|types|defeq|rewrite|profile|context]",
-            "qREF[#N] [signature|source|outline|find TERM|usages|constructors]",
+            "cREF [goal|types|context]",
+            "qREF[#N] [signature|source|outline|find TERM|usages]",
             "Context is mandatory",
             "Use NAME signature, not",
             "no nearby-line fallback",
@@ -1244,7 +1230,7 @@ mod tests {
     #[test]
     fn workflow_help_prefers_direct_workspace_experimentation() {
         let help = command_line().render_help().to_string();
-        assert!(help.contains("search-v13/probe-v22"));
+        assert!(help.contains("search-v13/probe-v23"));
         assert!(help.contains("Edit intended files -> check -> submit"));
         assert!(help.contains("Exact declarations go straight to probe NAME"));
         assert!(help.contains("Search unknown things; probe known API, exact context"));

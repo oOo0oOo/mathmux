@@ -21,12 +21,10 @@ const FOCUSES: &[&str] = &[
     "outline",
     "goal",
     "types",
-    "defeq",
-    "rewrite",
-    "profile",
     "warnings",
 ];
-const REMOVED_FOCUSES: &[&str] = &["neighborhood", "dependencies", "instances", "coercions"];
+const REMOVED_FOCUSES: &[&str] =
+    &["neighborhood", "dependencies", "instances", "coercions", "defeq", "rewrite", "profile"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ProbeContext {
@@ -44,7 +42,6 @@ enum LeanDirective {
     Reduce(String),
     Tactic(String),
     Inspect(String),
-    Apply(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,7 +98,7 @@ impl ProbeRequest {
         {
             let hint = match &context {
                 Some(ProbeContext::Check(reference)) => {
-                    format!("use `mathmux probe {reference} goal|types|defeq|rewrite|profile`")
+                    format!("use `mathmux probe {reference} goal|types`")
                 }
                 Some(ProbeContext::Query(reference, _)) => {
                     format!("use `mathmux show {reference} --all` for stored results")
@@ -173,7 +170,7 @@ impl ProbeRequest {
             .filter(|term| REMOVED_FOCUSES.contains(&term.as_str()))
         {
             bail!(
-                "probe focus `{removed}` was removed; use signature, source, usages, or a kind-specific focus"
+                "probe focus `{removed}` was removed; use goal or types for stored checks, or signature, source, usages for declarations"
             );
         }
         let focus = terms
@@ -196,12 +193,10 @@ impl ProbeRequest {
             *first = stripped;
         }
         if context.is_none() && terms.len() >= 3 && terms[1].eq_ignore_ascii_case("find") {
-            return Ok(Self {
-                context,
-                subject: Some(terms[0].to_owned()),
-                focus: Some(format!("find:{}", terms[2..].join(" "))),
-                directive: None,
-            });
+            let name = terms[0];
+            bail!(
+                "probe NAME find was removed; use `mathmux probe {name} source`, or `mathmux search 'FILE find TERM'` to search a file"
+            );
         }
         if matches!(context, Some(ProbeContext::Query(_, _)))
             && terms.len() >= 2
@@ -336,6 +331,9 @@ fn source_range_context(value: &str) -> Option<(&str, u64)> {
 }
 
 fn parse_directive(value: &str) -> Result<Option<LeanDirective>> {
+    if value == "#apply" || value.starts_with("#apply ") {
+        bail!("#apply was removed; use `\"by apply (TERM)\"` or `probe NAME apply`");
+    }
     for (prefix, make) in [
         (
             "#check",
@@ -344,7 +342,6 @@ fn parse_directive(value: &str) -> Result<Option<LeanDirective>> {
         ("#synth", LeanDirective::Synth),
         ("#reduce", LeanDirective::Reduce),
         ("#inspect", LeanDirective::Inspect),
-        ("#apply", LeanDirective::Apply),
         ("by", LeanDirective::Tactic),
     ] {
         if value == prefix {
@@ -385,7 +382,7 @@ impl Searcher {
                 self.probe_check_reference(workspace, reference, focus)
             }
             (Some(ProbeContext::Check(_)), Some(_), _) => {
-                bail!("cREF accepts only goal, types, defeq, rewrite, or profile focus")
+                bail!("cREF accepts only goal, types, or context focus")
             }
             (Some(ProbeContext::Position(location)), None, None | Some("goal")) => {
                 self.run_position_probe(workspace, cwd, location, None)
@@ -856,18 +853,6 @@ impl Searcher {
             }
             Some("types") => diagnostic_type_detail(text)
                 .with_context(|| format!("{reference} has no type or instance failure"))?,
-            Some("defeq") => diagnostic_defeq_detail(text)
-                .with_context(|| format!("{reference} has no definitional-equality failure"))?,
-            Some("rewrite") => diagnostic_rewrite_detail(
-                text,
-                diagnostic.and_then(|diagnostic| diagnostic.context.as_deref()),
-            )
-            .with_context(|| format!("{reference} has no rewrite failure"))?,
-            Some("profile") => {
-                let profile = run.profile.as_ref()
-                    .with_context(|| format!("{reference} has no stored profile"))?;
-                format!("{reference}\n{}", profile.render(true))
-            }
             Some("goal") => {
                 let diagnostic = diagnostic
                     .with_context(|| format!("{reference} has no stored failure goal"))?;
@@ -879,7 +864,7 @@ impl Searcher {
                 diagnostic_context(text, diagnostic.context.as_deref())
             }
             Some(other) => bail!(
-                "focus `{other}` is not valid for a stored check; valid analyses: goal, types, defeq, rewrite, profile"
+                "focus `{other}` is not valid for a stored check; valid analyses: goal, types, context"
             ),
         };
         self.store_probe_result(
@@ -947,11 +932,11 @@ impl Searcher {
         }
         if run.inference != "probe"
             && subject.is_none()
-            && matches!(focus, Some("types" | "defeq" | "rewrite" | "profile"))
+            && matches!(focus, Some("types"))
         {
             let focus = focus.unwrap();
             bail!(
-                "focus `{focus}` is not valid for a declaration qREF; use signature, source, outline, neighborhood, dependencies, find TERM, or usages, or probe a cREF failure"
+                "focus `{focus}` is not valid for a declaration qREF; use signature, source, outline, find TERM, or usages, or probe a cREF failure"
             )
         }
         if run.inference != "probe"
@@ -1005,6 +990,13 @@ impl Searcher {
                 .is_some_and(|note| note.contains("not a class or structure"))
         {
             let subject = query.split_whitespace().next().unwrap_or("the subject");
+            if run
+                .hits
+                .first()
+                .is_some_and(|hit| hit.kind == "inductive")
+            {
+                return self.run_constructors_probe(workspace, cwd, subject);
+            }
             if let Some(hit) = run.hits.first()
                 && hit.kind == "abbrev"
                 && let Some(target) = abbreviation_target(hit)
@@ -1387,13 +1379,6 @@ impl Searcher {
                     "#inspect requires FILE:LINE, cREF, or positioned qREF context"
                 );
                 ("inspect", input)
-            }
-            LeanDirective::Apply(input) => {
-                ensure!(
-                    line > 0,
-                    "#apply requires FILE:LINE, cREF, or positioned qREF context"
-                );
-                ("tactic", format!("apply ({input})"))
             }
             LeanDirective::Tactic(input) => {
                 ensure!(
@@ -1885,7 +1870,7 @@ fn stored_goal_detail(diagnostic: &str, source_context: Option<&str>) -> String 
 
 fn running_check_probe_hint(reference: &str) -> String {
     format!(
-        "check {reference} is still running; use `mathmux show {reference} --wait`, then retry `mathmux probe {reference} goal|types|defeq|rewrite|profile`"
+        "check {reference} is still running; use `mathmux show {reference} --wait`, then retry `mathmux probe {reference} goal|types`"
     )
 }
 
@@ -2573,13 +2558,7 @@ mod tests {
     #[test]
     fn contract_probes_require_explicit_lean_context() {
         assert!(ProbeRequest::parse("#inspect Nat").is_err());
-        assert!(ProbeRequest::parse("#apply Nat.add_zero").is_err());
-        assert_eq!(
-            ProbeRequest::parse("Demo.lean:8 #apply h")
-                .unwrap()
-                .directive,
-            Some(LeanDirective::Apply("h".into()))
-        );
+        assert!(ProbeRequest::parse("Demo.lean:8 #apply h").is_err());
         assert_eq!(
             ProbeRequest::parse("Demo.lean:8 #inspect Nat")
                 .unwrap()
@@ -2846,9 +2825,12 @@ mod tests {
                 .to_string()
                 .contains("was removed")
         );
-        let local_find = ProbeRequest::parse("Demo.foo find simp only").unwrap();
-        assert_eq!(local_find.subject.as_deref(), Some("Demo.foo"));
-        assert_eq!(local_find.focus.as_deref(), Some("find:simp only"));
+        assert!(
+            ProbeRequest::parse("Demo.foo find simp only")
+                .unwrap_err()
+                .to_string()
+                .contains("was removed")
+        );
         let selected_find = ProbeRequest::parse("q123#2 find exact").unwrap();
         assert_eq!(
             selected_find.context,
@@ -2871,11 +2853,11 @@ mod tests {
         );
         assert_eq!(
             ProbeRequest::parse("c123 --all").unwrap_err().to_string(),
-            "probe --all is not valid here; use `mathmux probe c123 goal|types|defeq|rewrite|profile`"
+            "probe --all is not valid here; use `mathmux probe c123 goal|types`"
         );
         assert_eq!(
             running_check_probe_hint("c123"),
-            "check c123 is still running; use `mathmux show c123 --wait`, then retry `mathmux probe c123 goal|types|defeq|rewrite|profile`"
+            "check c123 is still running; use `mathmux show c123 --wait`, then retry `mathmux probe c123 goal|types`"
         );
         assert!(is_declaration_header(
             "noncomputable def parameterizedBottThickClutchingCore"
