@@ -216,7 +216,13 @@ fn split_verdict_and_note(run: &SearchRun) -> (String, Option<&str>) {
         );
     }
     let verdict = if run.hits.is_empty() {
-        "no results".to_owned()
+        if matches!(run.inference.as_str(), "hybrid" | "hybrid+applicability") {
+            // Warming returned earlier, so an empty ranked answer is current.
+            "no results (index current; repeating this query will not help — vary the terms or use type:)"
+                .to_owned()
+        } else {
+            "no results".to_owned()
+        }
     } else {
         match run.inference.as_str() {
             "exact" | "exact-batch" => "exact declaration".to_owned(),

@@ -1202,7 +1202,10 @@ fn empty_search_summary_omits_internal_timing() {
         duration_ms: 123,
         created_at: 0,
     });
-    assert_eq!(summary, "no results\nref: q1");
+    assert_eq!(
+        summary,
+        "no results (index current; repeating this query will not help — vary the terms or use type:)\nref: q1"
+    );
 }
 
 #[test]
@@ -3451,7 +3454,7 @@ fn exact_resolution_fails_closed_instead_of_returning_a_different_declaration() 
         )
         .unwrap();
     let routed_note = routed.note.as_deref().unwrap();
-    assert!(routed_note.contains("exact declaration not found in index: pullbackCompHom"));
+    assert!(routed_note.contains("no declaration named pullbackCompHom in the indexed project or dependencies"));
     assert!(!routed_note.contains("exact declaration not found in index: pullbackCompHom source"));
     let miss = searcher
         .exact_miss_result(&workspace, "pullbackCompHom", &scopes, None, false, false)
@@ -3460,9 +3463,18 @@ fn exact_resolution_fails_closed_instead_of_returning_a_different_declaration() 
     assert!(
         miss.note
             .as_deref()
-            .is_some_and(|note| note.contains("exact declaration not found in index"))
+            .is_some_and(|note| note.contains("no declaration named pullbackCompHom"))
     );
-    assert!(miss.hits.iter().all(|hit| hit.name != "AlgHom.pullbackFst"));
+    // Near names may be offered, but only as labeled non-exact suggestions on
+    // a failed result; exact resolution itself stays closed.
+    if !miss.hits.is_empty() {
+        assert!(
+            miss.note
+                .as_deref()
+                .is_some_and(|note| note.contains("suggestions (not exact)")
+                    || note.contains("related by concept terms (not exact)"))
+        );
+    }
 }
 
 #[test]
@@ -4978,7 +4990,7 @@ fn exact_miss_for_structure_member_offers_lean_inspection() {
     let scopes = HashSet::from(["workspace:w1".into()]);
     let result = searcher.exact_miss_result(&current, "Derived.toBase", &scopes, None, false, false).unwrap();
     let note = result.note.unwrap();
-    assert!(note.contains("exact declaration not found in index: Derived.toBase"));
+    assert!(note.contains("no declaration named Derived.toBase in the indexed project or dependencies"));
     assert!(note.contains("Generated members may be unindexed"));
     assert!(note.contains("#inspect Derived.toBase"));
     assert!(!result.ok);

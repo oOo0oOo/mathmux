@@ -674,6 +674,32 @@ fn name_prefix_candidates(connection: &Connection, token: &str) -> Result<Vec<In
         .map_err(Into::into)
 }
 
+/// Break a guessed declaration name into concept terms for a fallback
+/// discovery search: namespace segments, snake components, and camelCase words,
+/// with bare numbers and short fragments dropped.
+fn concept_terms_from_name(name: &str) -> String {
+    let mut terms = Vec::new();
+    for segment in name.split(['.', '_']) {
+        let mut word = String::new();
+        for character in segment.chars() {
+            if character.is_uppercase() && !word.is_empty() {
+                terms.push(std::mem::take(&mut word));
+            }
+            word.push(character);
+        }
+        terms.push(word);
+    }
+    let mut seen = HashSet::new();
+    terms
+        .into_iter()
+        .map(|term| term.trim_end_matches(|c: char| c.is_ascii_digit()).to_lowercase())
+        .filter(|term| term.chars().count() >= 3 && !term.chars().all(|c| c.is_ascii_digit()))
+        .filter(|term| seen.insert(term.clone()))
+        .take(7)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn near_name_prefix_candidates(connection: &Connection, query: &str) -> Result<Vec<IndexedRow>> {
     let query = canonical_declaration_name(query);
     let leaf = query.rsplit('.').next().unwrap_or(query);
@@ -683,6 +709,19 @@ fn near_name_prefix_candidates(connection: &Connection, query: &str) -> Result<V
         && prefix.chars().count() >= 3
     {
         rows = name_prefix_candidates(connection, prefix)?;
+    }
+    if rows.is_empty() {
+        // Leaf-prefix missed entirely; try the leading camelCase word so a
+        // wrong suffix still surfaces near names instead of an empty answer.
+        let head = leaf
+            .char_indices()
+            .skip(1)
+            .find(|(_, character)| character.is_uppercase())
+            .map(|(index, _)| &leaf[..index])
+            .unwrap_or(leaf);
+        if head.chars().count() >= 4 && head.len() < leaf.len() {
+            rows = name_prefix_candidates(connection, head)?;
+        }
     }
     if let Some((namespace, leaf)) = query.rsplit_once('.')
         && leaf.chars().count() >= 3
@@ -2241,14 +2280,41 @@ impl Searcher {
                 return Ok(result);
             }
             if exact_plan.refinement_tokens.is_empty() {
-                return self.exact_miss_result(
+                let mut miss = self.exact_miss_result(
                     workspace,
                     &exact_plan.anchor,
                     scopes,
                     import_context.as_ref(),
                     base_warming,
                     resolution.ambiguous,
-                );
+                )?;
+                // A miss with no near names still encodes intent in the guessed
+                // name; answer with bounded concept matches instead of nothing.
+                if miss.hits.is_empty() && !resolution.ambiguous {
+                    let concept_query = concept_terms_from_name(&exact_plan.anchor);
+                    if concept_query.split_whitespace().count() >= 2 {
+                        let related = self.execute_text_search(
+                            workspace,
+                            &concept_query,
+                            TextSearchPlan::Discovery,
+                            TextSearchContext {
+                                scopes,
+                                base_warming,
+                                import_target,
+                                show_all: false,
+                            },
+                        )?;
+                        let related_hits =
+                            related.hits.into_iter().take(3).collect::<Vec<_>>();
+                        if !related_hits.is_empty() {
+                            if let Some(note) = miss.note.as_mut() {
+                                note.push_str("\nrelated by concept terms (not exact):");
+                            }
+                            miss.hits = related_hits;
+                        }
+                    }
+                }
+                return Ok(miss);
             }
             family_anchor = Some(exact_plan.anchor.clone());
             family_requested_terms = exact_plan.requested_terms.clone();
@@ -2785,8 +2851,14 @@ impl Searcher {
         suggestions.truncate(3);
         let mut note = if ambiguous {
             format!("ambiguous declaration name: {query}; qualify the name")
-        } else {
+        } else if base_warming {
             format!("exact declaration not found in index: {query}")
+        } else {
+            // The index is current: this is an authoritative absence, not a
+            // transient miss. Say so once to stop identical retries.
+            format!(
+                "no declaration named {query} in the indexed project or dependencies (index current); do not repeat this exact query"
+            )
         };
         if !ambiguous
             && let Some((parent, _)) = query.rsplit_once('.')
