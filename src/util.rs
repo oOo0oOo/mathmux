@@ -1,6 +1,7 @@
 use std::ffi::OsStr;
 use std::fs;
-use std::io::Read;
+use std::io::{ErrorKind, Read};
+use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
@@ -103,70 +104,153 @@ pub(crate) fn run_command_with_timeout_cancelable(
         kill_process_group(&mut child);
         return Err(anyhow!("timed command has no stderr"));
     };
-    let stdout_reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stdout.read_to_end(&mut bytes).map(|_| bytes)
-    });
-    let stderr_reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stderr.read_to_end(&mut bytes).map(|_| bytes)
-    });
+    if let Err(error) = set_nonblocking(&stdout) {
+        kill_process_group(&mut child);
+        return Err(error).context("cannot make timed command stdout nonblocking");
+    }
+    if let Err(error) = set_nonblocking(&stderr) {
+        kill_process_group(&mut child);
+        return Err(error).context("cannot make timed command stderr nonblocking");
+    }
+    let mut stdout_bytes = Vec::new();
+    let mut stderr_bytes = Vec::new();
+    let mut stdout_done = false;
+    let mut stderr_done = false;
+    let mut status = None;
     let deadline = Instant::now() + timeout;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if cancelled() => {
-                kill_process_group(&mut child);
-                let _ = stdout_reader.join();
-                let _ = stderr_reader.join();
-                return Err(anyhow!("{phase} cancelled by operator"));
-            }
-            Ok(None) if Instant::now() >= deadline => {
-                kill_process_group(&mut child);
-                let _ = stdout_reader.join();
-                let stderr = stderr_reader
-                    .join()
-                    .ok()
-                    .and_then(Result::ok)
-                    .unwrap_or_default();
-                let recent = String::from_utf8_lossy(&stderr)
-                    .lines()
-                    .filter(|line| !line.trim().is_empty())
-                    .rev()
-                    .take(8)
-                    .map(|line| truncate_line(line, 240))
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                return Err(CommandTimeout {
-                    phase,
-                    timeout,
-                    last_output: recent,
+    loop {
+        if !stdout_done {
+            stdout_done = drain_nonblocking(&mut stdout, &mut stdout_bytes)
+                .context("cannot read timed command stdout")?;
+        }
+        if !stderr_done {
+            stderr_done = drain_nonblocking(&mut stderr, &mut stderr_bytes)
+                .context("cannot read timed command stderr")?;
+        }
+        if status.is_none() {
+            match child.try_wait() {
+                Ok(Some(exit)) => status = Some(exit),
+                Ok(None) if cancelled() => {
+                    terminate_and_drain(
+                        &mut child,
+                        &mut stdout,
+                        &mut stderr,
+                        &mut stdout_bytes,
+                        &mut stderr_bytes,
+                        &mut stdout_done,
+                        &mut stderr_done,
+                    );
+                    return Err(anyhow!("{phase} cancelled by operator"));
                 }
-                .into());
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-            Err(error) => {
-                kill_process_group(&mut child);
-                let _ = stdout_reader.join();
-                let _ = stderr_reader.join();
-                return Err(error).context("cannot wait for timed command");
+                Ok(None) => {}
+                Err(error) => {
+                    terminate_and_drain(
+                        &mut child,
+                        &mut stdout,
+                        &mut stderr,
+                        &mut stdout_bytes,
+                        &mut stderr_bytes,
+                        &mut stdout_done,
+                        &mut stderr_done,
+                    );
+                    return Err(error).context("cannot wait for timed command");
+                }
             }
         }
-    };
-    let stdout = stdout_reader
-        .join()
-        .map_err(|_| anyhow!("timed command stdout reader panicked"))??;
-    let stderr = stderr_reader
-        .join()
-        .map_err(|_| anyhow!("timed command stderr reader panicked"))??;
+        if status.is_some() && stdout_done && stderr_done {
+            break;
+        }
+        if Instant::now() >= deadline {
+            terminate_and_drain(
+                &mut child,
+                &mut stdout,
+                &mut stderr,
+                &mut stdout_bytes,
+                &mut stderr_bytes,
+                &mut stdout_done,
+                &mut stderr_done,
+            );
+            return Err(CommandTimeout {
+                phase,
+                timeout,
+                last_output: recent_output(&stderr_bytes),
+            }
+            .into());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
     Ok(Output {
-        status,
-        stdout,
-        stderr,
+        status: status.expect("timed command status is present"),
+        stdout: stdout_bytes,
+        stderr: stderr_bytes,
     })
+}
+
+fn set_nonblocking(file: &impl AsRawFd) -> std::io::Result<()> {
+    let descriptor = file.as_raw_fd();
+    let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if unsafe { libc::fcntl(descriptor, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn drain_nonblocking<R: Read>(reader: &mut R, bytes: &mut Vec<u8>) -> std::io::Result<bool> {
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => return Ok(true),
+            Ok(read) => bytes.extend_from_slice(&buffer[..read]),
+            Err(error) if error.kind() == ErrorKind::WouldBlock => return Ok(false),
+            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn terminate_and_drain(
+    child: &mut Child,
+    stdout: &mut impl Read,
+    stderr: &mut impl Read,
+    stdout_bytes: &mut Vec<u8>,
+    stderr_bytes: &mut Vec<u8>,
+    stdout_done: &mut bool,
+    stderr_done: &mut bool,
+) {
+    // The direct child may have exited while a descendant still owns one of
+    // these pipe ends. Kill the whole group, then give the pipes a short,
+    // bounded chance to close; never join an unbounded reader here.
+    kill_process_group(child);
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while !*stdout_done || !*stderr_done {
+        if !*stdout_done {
+            *stdout_done = drain_nonblocking(stdout, stdout_bytes).unwrap_or(true);
+        }
+        if !*stderr_done {
+            *stderr_done = drain_nonblocking(stderr, stderr_bytes).unwrap_or(true);
+        }
+        if (*stdout_done && *stderr_done) || Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn recent_output(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .rev()
+        .take(8)
+        .map(|line| truncate_line(line, 240))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn kill_process_group(child: &mut Child) {
@@ -347,6 +431,18 @@ pub fn resident_memory_kib() -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn timed_command_does_not_wait_for_an_inherited_pipe_after_child_exit() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 30 & exit 0"]);
+        let started = Instant::now();
+        let error = run_command_with_timeout(command, Duration::from_millis(100), "fixture")
+            .expect_err("an inherited pipe must not hide the child exit");
+
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(error.to_string().contains("fixture exceeded 100ms"));
+    }
 
     #[test]
     fn legacy_build_failure_details_use_the_stored_diagnostic() {
