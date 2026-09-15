@@ -462,7 +462,7 @@ impl Service {
                         let checker = self.checker.clone();
                         let workspace = workspace.clone();
                         std::thread::spawn(move || {
-                            for target in targets.iter().take(3) {
+                            for target in targets.iter().take(crate::check::PREWARM_TARGET_LIMIT) {
                                 checker.prewarm_target(&workspace, target);
                             }
                         });

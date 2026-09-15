@@ -16,7 +16,8 @@ use serde::{Deserialize, Serialize};
 use crate::artifact_cache::restore_available_olean;
 use crate::coordination::{lock_exclusive_until, lock_mutex_until, lock_shared_until, open_lock};
 use crate::git::{
-    dirty_lean_files, lake_command, merge_in_progress, project_lean_files, tracked_at_head,
+    background_lake_command, dirty_lean_files, lake_command, merge_in_progress,
+    project_lean_files, tracked_at_head,
 };
 use crate::issue::{TelemetryOperation, TelemetryStore};
 use crate::lean_service::{LeanServiceProcess, ServiceRequestError, reap_stale_processes};
@@ -38,6 +39,10 @@ use diagnostics::{attach_source_context, deduplicate, partition_diagnostics};
 const CHECK_RESULT_VERSION: &[u8] = b"check-result-v3";
 const CHECK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const CHECK_QUEUE_TIMEOUT: Duration = CHECK_TIMEOUT;
+// Post-sync warming is opportunistic. It must not hold a workspace setup lock
+// for the same five-minute budget as an interactive check.
+const PREWARM_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const PREWARM_TARGET_LIMIT: usize = 1;
 // A cold owner can spend one check budget preparing imports before it reaches
 // Lean's own check budget. Duplicate target checks should wait for that owner
 // rather than fail shortly before its reusable result becomes available.
@@ -1410,6 +1415,25 @@ impl Checker {
         deadline: Option<Instant>,
         cancellation: Option<&AtomicBool>,
     ) -> Result<(PathBuf, String)> {
+        self.worker_setup_with_deadline_mode(
+            workspace,
+            target,
+            dependencies,
+            deadline,
+            cancellation,
+            false,
+        )
+    }
+
+    fn worker_setup_with_deadline_mode(
+        &self,
+        workspace: &Workspace,
+        target: &Path,
+        dependencies: &[PathBuf],
+        deadline: Option<Instant>,
+        cancellation: Option<&AtomicBool>,
+        background: bool,
+    ) -> Result<(PathBuf, String)> {
         let setup_input = setup_input_fingerprint(&workspace.path, target, dependencies)?;
         let environment_base = environment_fingerprint(&workspace.path, dependencies)?;
         let mut environment =
@@ -1427,6 +1451,7 @@ impl Checker {
                     dependencies,
                     deadline,
                     cancellation,
+                    background,
                 )?;
                 environment =
                     self.worker_environment_from_base(workspace, target, &environment_base)?;
@@ -1517,6 +1542,7 @@ impl Checker {
         dependencies: &[PathBuf],
         deadline: Option<Instant>,
         cancellation: Option<&AtomicBool>,
+        background: bool,
     ) -> Result<PathBuf> {
         let gc_lock = open_lock(&self.repo.state_dir.join("setup-gc.lock"))?;
         lock_shared_until(
@@ -1579,7 +1605,11 @@ impl Checker {
             materialize_setup(&shared, &path, input_fingerprint)?;
             return Ok(path);
         }
-        let mut command = lake_command(&self.repo, &workspace.path);
+        let mut command = if background {
+            background_lake_command(&self.repo, &workspace.path)
+        } else {
+            lake_command(&self.repo, &workspace.path)
+        };
         command
             .current_dir(lake_package_root(&workspace.path, target))
             .arg("setup-file")
@@ -1699,6 +1729,7 @@ impl Checker {
     /// next check after a sync does not pay the full import preparation
     /// interactively (telemetry: 250s+ cold checks with validation idle).
     pub fn prewarm_target(&self, workspace: &Workspace, target: &Path) {
+        let deadline = Instant::now() + PREWARM_TIMEOUT;
         // Targets arrive workspace-relative (from dirty_lean_files); never
         // resolve against the daemon's own working directory.
         let target = target
@@ -1711,7 +1742,17 @@ impl Checker {
         let Ok(dependencies) = transitive_dependencies(&workspace.path, &target) else {
             return;
         };
-        let setup = match self.worker_setup(workspace, &target, &dependencies, None) {
+        // Only prepare the dependency setup here. The interactive check still
+        // owns source elaboration and can start its Lean service with its full
+        // budget after this bounded background attempt has released the lock.
+        let _setup = match self.worker_setup_with_deadline_mode(
+            workspace,
+            &target,
+            &dependencies,
+            Some(deadline),
+            None,
+            true,
+        ) {
             Ok(setup) => setup,
             Err(error) => {
                 if let Ok(mut log) = fs::OpenOptions::new()
@@ -1724,23 +1765,6 @@ impl Checker {
                 return;
             }
         };
-        // Elaborate the current source once in the background. The worker's
-        // incremental processor then answers the next interactive check from
-        // the unchanged prefix instead of re-elaborating the whole file.
-        let (setup_path, environment) = setup;
-        let Ok(source) = fs::read_to_string(workspace.path.join(&target)) else {
-            return;
-        };
-        let _ = self.run_worker(
-            workspace,
-            &target,
-            &setup_path,
-            &environment,
-            &source,
-            WorkerRun::Check,
-            None,
-            None,
-        );
     }
 
     pub fn evict_workspace_workers(&self, workspace_ref: &str) {
@@ -3025,6 +3049,12 @@ mod tests {
         assert_eq!(probe_timeout("term"), CONTEXTUAL_PROBE_TIMEOUT);
         assert_eq!(probe_timeout("check"), WARM_PROBE_TIMEOUT);
         assert_eq!(probe_timeout("synth"), WARM_PROBE_TIMEOUT);
+    }
+
+    #[test]
+    fn post_sync_prewarm_is_strictly_bounded_and_single_target() {
+        assert!(PREWARM_TIMEOUT < CHECK_TIMEOUT);
+        assert_eq!(PREWARM_TARGET_LIMIT, 1);
     }
 
     #[test]
