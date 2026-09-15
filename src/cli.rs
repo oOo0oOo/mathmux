@@ -24,7 +24,7 @@ use clap::ValueEnum;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 const WORKFLOW_HELP: &str = r#"AGENT CONTRACT
-  api       search-v15/probe-v23; reread search/probe help only when this digest changes.
+  api       search-v16/probe-v24; reread search/probe help only when this digest changes.
   scope     Use the preassigned workspace; never run ws or enter main/another workspace.
   discover  Search unknown things; probe known API, exact context, or failures.
             Exact declarations go straight to probe NAME; qREFs store result sets.
@@ -36,7 +36,7 @@ const WORKFLOW_HELP: &str = r#"AGENT CONTRACT
   safety    sorry is tracked; new axioms fail validation. Never edit .lake/generated artifacts."#;
 
 const SEARCH_HELP: &str = r#"SEARCH — find or read unknown things; returns qREF
-API search-v15 — compact discovery; reread only when this digest changes
+API search-v16 — compact discovery; reread only when this digest changes
 FORMS — type one directly; declaration/type/source/compose are labels, not keywords
   declaration  NAME | NAME* | KIND NAME [source|body|proof]
   type/concept TYPE_OR_CONCEPT_TERMS | type:LEAN_TYPE
@@ -69,6 +69,9 @@ RESULT
   An exact miss with a current index is authoritative absence: the name does
   not exist. Use the offered near names or concept candidates; never retry
   the same query, and prefer probe NAME source over FILE:RANGE re-reads.
+  Ranked candidates carry [missing: TERM] markers; revise the query once
+  using them instead of iterating blind. A bare A.*B query runs as a
+  project-wide source regex.
 
 NEXT
   One declaration -> probe NAME signature|source|outline|usages. Exact misses fail
@@ -87,7 +90,7 @@ RULES
   Sigil what you know; leave inference for what you do not."#;
 
 const PROBE_HELP: &str = r##"PROBE — inspect something known; returns qREF
-API probe-v23 — bounded exact inspection; reread only when this digest changes
+API probe-v24 — bounded exact inspection; reread only when this digest changes
 FORMS — type one directly; there are no API, LEAN, or other category keywords
   NAME [signature|source|outline|apply|fields|ext|simp|usages|assumptions|evidence|examples]
   type:LEAN_TYPE [types]
@@ -139,8 +142,9 @@ NEXT
   Start with signature; request source/usages only for the selected declaration.
   Signature dossiers list instance obligations; they must synthesize at your use
   site. Before building on a lemma, test it against the live goal with
-  `probe cREF NAME fits` (runs Lean apply, reports obligations or the mismatch);
-  after a failed check, `probe cREF goal` before editing blind.
+  `probe cREF NAME fits`: it answers verdict FITS (with remaining obligations)
+  or DOES NOT FIT (with the first type difference); either verdict is a
+  successful probe. After a failed check, `probe cREF goal` before editing blind.
 
 RULES
   cREF goal/analyses need a matching stored failure; for a running check, use
@@ -1172,7 +1176,7 @@ mod tests {
             .unwrap()
             .render_long_help()
             .to_string();
-        assert!(help.contains("API search-v15"));
+        assert!(help.contains("API search-v16"));
         for form in [
             "type:LEAN_TYPE",
             "FILE:LINE",
@@ -1195,7 +1199,7 @@ mod tests {
             .unwrap()
             .render_long_help()
             .to_string();
-        assert!(probe_help.contains("API probe-v23"));
+        assert!(probe_help.contains("API probe-v24"));
         for contract in [
             "there are no API, LEAN, or other category keywords",
             "NAME [signature|source|outline|apply|fields|ext|simp|usages|assumptions|evidence|examples]",
@@ -1240,7 +1244,7 @@ mod tests {
     #[test]
     fn workflow_help_prefers_direct_workspace_experimentation() {
         let help = command_line().render_help().to_string();
-        assert!(help.contains("search-v15/probe-v23"));
+        assert!(help.contains("search-v16/probe-v24"));
         assert!(help.contains("Edit intended files -> check -> submit"));
         assert!(help.contains("Exact declarations go straight to probe NAME"));
         assert!(help.contains("Search unknown things; probe known API, exact context"));

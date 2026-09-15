@@ -79,6 +79,20 @@ const SEARCH_INDEX_LOCK_WAIT: Duration = Duration::from_millis(100);
 const SOURCE_SCAN_BUDGET: Duration = Duration::from_millis(300);
 const SOURCE_FALLBACK_BUDGET: Duration = Duration::from_millis(750);
 
+/// Name the declaration enclosing a diagnostic position, for check-failure
+/// steering toward declaration-addressed rereads.
+pub(crate) fn enclosing_declaration_at(
+    workspace_root: &Path,
+    relative_file: &Path,
+    line: u64,
+) -> Option<(String, u64, u64)> {
+    let source = std::fs::read_to_string(workspace_root.join(relative_file)).ok()?;
+    let module = project_module_name(workspace_root, &workspace_root.join(relative_file));
+    let spans = declaration_spans(&source, &module);
+    enclosing_declaration_span(&spans, line)
+        .map(|span| (span.name.clone(), span.start, span.end))
+}
+
 pub(crate) fn is_exact_first_query(query: &str) -> bool {
     matches!(text_search_plan(query.trim()), TextSearchPlan::ExactFirst)
 }
@@ -920,8 +934,15 @@ impl Searcher {
                 self.source_location_search(workspace, location)?
             }
             SearchPlan::SourceRegex(source) => {
+                let inferred_regex = source.inferred;
                 let recovery = regex_recovery_terms(&source.pattern);
                 let mut result = source_regex_result(workspace, source, false)?;
+                if inferred_regex {
+                    prepend_search_note(
+                        &mut result.note,
+                        "bare A.*B query interpreted as a project-wide source regex; write /REGEX/ or PATH /REGEX/ to control scope".to_owned(),
+                    );
+                }
                 if result.hits.is_empty() && !recovery.is_empty() {
                     let recovery_query = recovery.join(" ");
                     let recovered = self.planned_text_search(
@@ -2699,7 +2720,26 @@ impl Searcher {
                 .map(|candidate| candidate.hit.clone())
                 .collect::<Vec<_>>();
             if let Some(coverage) = weak_coverage_note(&hits, &coverage_tokens) {
+                // Show where the first missing term actually occurs so the
+                // next query is a revision, not another guess.
+                let missing = uncovered_hit_terms(&hits, &coverage_tokens);
+                let occurrences = missing.first().and_then(|term| {
+                    let rows = self.exact_candidates(term, scopes).ok()?;
+                    let names = rows
+                        .iter()
+                        .filter(|row| !matches!(row.kind.as_str(), "file" | "imports"))
+                        .map(|row| row.name.trim_start_matches("_root_.").to_owned())
+                        .take(2)
+                        .collect::<Vec<_>>();
+                    (!names.is_empty()).then(|| format!(
+                        "`{term}` appears in: {}",
+                        names.join(", ")
+                    ))
+                });
                 prepend_search_note(&mut note, coverage);
+                if let Some(occurrences) = occurrences {
+                    prepend_search_note(&mut note, occurrences);
+                }
             }
         }
         if !type_search && !name_search && explicit_declaration.is_none() && !query.contains('|') {
@@ -2710,6 +2750,21 @@ impl Searcher {
         }
         if let Some(fallback) = structural_type_fallback {
             prepend_search_note(&mut note, fallback.into());
+        }
+        // Runner-up candidates without indexed signatures force follow-up
+        // probes just to compare; fill the top three from the exact index.
+        for candidate in ranked.iter_mut().take(3) {
+            if candidate.hit.signature.is_none()
+                && !matches!(candidate.hit.kind.as_str(), "file" | "imports")
+                && let Ok(rows) = self.exact_candidates(&candidate.hit.name, scopes)
+                && let Some(row) = rows.iter().find(|row| {
+                    !row.signature.is_empty()
+                        && canonical_declaration_name(&row.name)
+                            == canonical_declaration_name(&candidate.hit.name)
+                })
+            {
+                candidate.hit.signature = Some(row.signature.clone());
+            }
         }
         let result = SearchResult {
             hits: ranked.into_iter().map(|candidate| candidate.hit).collect(),

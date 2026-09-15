@@ -39,6 +39,8 @@ pub(super) fn plan_search(
         parse_source_regex_query(&workspace.path, cwd, Some(main_root), &query)?
     {
         SearchPlan::SourceRegex(source)
+    } else if let Some(source) = inferred_regex_query(&workspace.path, &query) {
+        SearchPlan::SourceRegex(source)
     } else if let Some(source) =
         parse_source_occurrence_query(&workspace.path, cwd, Some(main_root), &query)?
     {

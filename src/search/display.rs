@@ -34,6 +34,11 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
     };
     let mut previous_hit_path = None;
     let mut shortened_signature = false;
+    let ranked_terms = if matches!(run.inference.as_str(), "hybrid" | "hybrid+applicability") {
+        meaningful_query_tokens(&run.query)
+    } else {
+        Vec::new()
+    };
     for (index, hit) in run.hits.iter().take(summary_limit).enumerate() {
         output.push('\n');
         if run.hits.len() > 1 {
@@ -106,6 +111,18 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
             output.push_str("  applicable");
         } else if run.inference == "hybrid+applicability" {
             output.push_str("  related (applicability unverified)");
+        }
+        // Ranked candidates say which query terms they miss, so the next
+        // query is a one-shot revision instead of blind refinement.
+        if matches!(run.inference.as_str(), "hybrid" | "hybrid+applicability")
+            && run.hits.len() >= 2
+            && ranked_terms.len() >= 2
+        {
+            let missing =
+                uncovered_hit_terms(std::slice::from_ref(hit), &ranked_terms);
+            if !missing.is_empty() && missing.len() < ranked_terms.len() {
+                output.push_str(&format!("  [missing: {}]", missing.join(" ")));
+            }
         }
         if let Some(module) = &hit.required_import {
             output.push_str(&format!("\n  import {module}"));

@@ -377,6 +377,31 @@ impl Service {
                 )?;
                 let mut summary = check_summary(&outcome);
                 if !outcome.ok
+                    && let Some(diagnostic) = outcome.diagnostics.first()
+                    && let Some((module, line)) = diagnostic
+                        .text
+                        .split_once(':')
+                        .and_then(|(module, rest)| {
+                            rest.split(':')
+                                .next()
+                                .and_then(|line| line.parse::<u64>().ok())
+                                .map(|line| (module, line))
+                        })
+                {
+                    let relative = PathBuf::from(module.replace('.', "/")).with_extension("lean");
+                    if let Some((name, start, end)) = crate::search::enclosing_declaration_at(
+                        &workspace.path,
+                        &relative,
+                        line,
+                    ) {
+                        let leaf = name.rsplit('.').next().unwrap_or(&name);
+                        summary.push_str(&format!(
+                            "\nfailing declaration: {name} (lines {start}-{end}); reread: mathmux search {}:{leaf}",
+                            relative.display()
+                        ));
+                    }
+                }
+                if !outcome.ok
                     && let Some(hint) = outcome.diagnostics.iter().find_map(|diagnostic| {
                         missing_dependency_hint(&self.repo.root, &workspace.path, diagnostic)
                     })
@@ -731,8 +756,8 @@ fn check_summary(outcome: &CheckOutcome) -> String {
                 ));
             } else if detail.contains("failed to synthesize") {
                 output.push_str(&format!(
-                    "\ninstance failure: mathmux probe {} types",
-                    outcome.reference
+                    "\ninstance failure: mathmux probe {} types; test an alternative lemma with `mathmux probe {} NAME fits`",
+                    outcome.reference, outcome.reference
                 ));
             }
             if compact_type.is_some() || detail.chars().count() > CHECK_PRIMARY_DIAGNOSTIC_CHARS {

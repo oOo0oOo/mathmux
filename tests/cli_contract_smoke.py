@@ -266,13 +266,13 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         detail = probe('Fixture.lean:11 #inspect forgetInput')
         assert 'absent from definition body' in detail, detail
         detail = probe('Fixture.lean:11 needsHypothesis fits')
-        assert 'n = 0' in detail, detail
-        failed = run([binary, 'probe', 'Fixture.lean:11 True.intro fits'], ws, ok=False)
-        failure = failed.stdout + failed.stderr
-        assert failed.returncode != 0 and 'first type difference' in failure, failure
-        assert 'Full diagnostic: mathmux show' in failure, failure
-        failed_ref = next(line.removeprefix('ref: ') for line in failure.splitlines() if line.startswith('ref: '))
-        full = run([binary, 'show', failed_ref, '--all'], ws).stdout
+        assert 'verdict: FITS' in detail and 'n = 0' in detail, detail
+        # A completed experiment answers either way; DOES NOT FIT exits 0.
+        no_fit = probe('Fixture.lean:11 True.intro fits')
+        assert 'verdict: DOES NOT FIT' in no_fit, no_fit
+        assert 'first type difference' in no_fit, no_fit
+        no_fit_ref = next(line.removeprefix('ref: ') for line in no_fit.splitlines() if line.startswith('ref: '))
+        full = run([binary, 'show', no_fit_ref, '--all'], ws).stdout
         assert 'Full Lean diagnostic:' in full and 'Tactic `apply` failed' in full, full
         detail = probe('Fixture.lean:11 Impossible evidence')
         assert 'Lean inspection succeeded' in detail, detail

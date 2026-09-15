@@ -39,6 +39,8 @@ pub(super) struct SourceRegexQuery {
     pub(super) pattern: String,
     pub(super) first_line: u64,
     pub(super) last_line: u64,
+    /// True when a bare `A.*B` query was auto-routed here.
+    pub(super) inferred: bool,
 }
 
 pub(super) fn parse_source_regex_query(
@@ -139,7 +141,30 @@ pub(super) fn parse_source_regex_query(
         pattern: pattern.to_owned(),
         first_line,
         last_line,
+        inferred: false,
     }))
+}
+
+/// A bare `A.*B` query is regex intent typed without slashes; every such
+/// query in telemetry missed. Route it to a project-scoped source regex.
+pub(super) fn inferred_regex_query(root: &Path, query: &str) -> Option<SourceRegexQuery> {
+    let query = query.trim();
+    // A trailing `.*` is the documented NAME* glob, not regex intent.
+    let interior = query.trim_end_matches('*');
+    if query.contains('/') || query.contains(char::is_whitespace) || !interior.contains(".*") {
+        return None;
+    }
+    if query.len() > 200 || Regex::new(query).is_err() {
+        return None;
+    }
+    let scope = fs::canonicalize(root).ok()?;
+    Some(SourceRegexQuery {
+        scope,
+        pattern: query.to_owned(),
+        first_line: 1,
+        last_line: u64::MAX,
+        inferred: true,
+    })
 }
 
 fn resolve_source_directory(root: &Path, cwd: &Path, scope: &str) -> Result<PathBuf> {

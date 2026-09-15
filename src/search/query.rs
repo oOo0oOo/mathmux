@@ -906,7 +906,7 @@ fn concept_alias(token: &str) -> Option<&'static str> {
     }
 }
 
-fn uncovered_hit_terms(hits: &[SearchHit], terms: &[String]) -> Vec<String> {
+pub(super) fn uncovered_hit_terms(hits: &[SearchHit], terms: &[String]) -> Vec<String> {
     let searchable = hits
         .iter()
         .map(|hit| {

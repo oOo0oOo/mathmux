@@ -5241,3 +5241,49 @@ fn synthesis_timeout_diagnostics_yield_a_types_detail() {
     assert!(detail.contains("NormedSpace"), "{detail}");
     assert!(detail.contains("timed out"), "{detail}");
 }
+
+#[test]
+fn bare_regex_intent_routes_to_project_source_regex() {
+    let directory = tempfile::tempdir().unwrap();
+    assert!(
+        inferred_regex_query(directory.path(), "chartTransition.*deriv")
+            .is_some_and(|query| query.inferred && query.pattern == "chartTransition.*deriv")
+    );
+    // Trailing glob, whitespace, slashes, and plain names stay on their forms.
+    assert!(inferred_regex_query(directory.path(), "AtiyahSinger.*").is_none());
+    assert!(inferred_regex_query(directory.path(), "chart transition.*deriv").is_none());
+    assert!(inferred_regex_query(directory.path(), "Foo/Bar.*baz").is_none());
+    assert!(inferred_regex_query(directory.path(), "plainName").is_none());
+}
+
+#[test]
+fn ranked_hits_state_their_missing_terms() {
+    let hit = |name: &str, signature: &str| SearchHit {
+        name: name.into(),
+        kind: "theorem".into(),
+        signature: Some(signature.into()),
+        module: String::new(),
+        path: "Demo.lean".into(),
+        line: 1,
+        doc: None,
+        source: None,
+        usages: Vec::new(),
+        applicable: false,
+        required_import: None,
+    };
+    let summary = render_summary(&SearchRun {
+        reference: "q9".into(),
+        workspace_ref: "w1".into(),
+        query: "chart transition deriv".into(),
+        inference: "hybrid".into(),
+        hits: vec![
+            hit("chartTransition_comp", "chart transition composition law"),
+            hit("chart_deriv_eq", "chart deriv equality"),
+        ],
+        note: None,
+        duration_ms: 5,
+        created_at: 0,
+    });
+    assert!(summary.contains("[missing: deriv]"), "{summary}");
+    assert!(summary.contains("[missing: transition]"), "{summary}");
+}

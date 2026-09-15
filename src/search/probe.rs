@@ -1431,16 +1431,28 @@ impl Searcher {
             .probe_context(workspace, &path, line, 0, operation, &input)
             .context(crate::protocol::DiscoveryFailure::Infrastructure)?;
         let (ok, mut detail) = decisive_directive_result(operation, &input, worker_ok, detail);
+        let mut ok = ok;
         if operation == "tactic" && input.starts_with("apply (") {
+            let lemma = input
+                .trim_start_matches("apply (")
+                .trim_end_matches(')')
+                .to_owned();
             detail = if !ok && let Some(focused) = diagnostic_apply_detail(&detail) {
                 format!(
-                    "application experiment failed (not a check certificate)\n{focused}\nFull Lean diagnostic:\n{detail}"
+                    "verdict: DOES NOT FIT — {lemma} (experiment, not a check certificate)\n{focused}\nFull Lean diagnostic:\n{detail}"
+                )
+            } else if !ok {
+                format!(
+                    "verdict: DOES NOT FIT — {lemma} (experiment, not a check certificate)\n{detail}"
                 )
             } else {
                 format!(
-                    "application experiment (not a check certificate)\n{detail}\nRemaining goals are obligations, not established facts."
+                    "verdict: FITS — {lemma} applies (experiment, not a check certificate)\n{detail}\nRemaining goals are obligations, not established facts."
                 )
             };
+            // Either verdict answers the question; reserve errors for
+            // infrastructure so a negative fit does not read as a failure.
+            ok = true;
         }
         let query = format!("{} {} {}", path.display(), operation, input);
         let stored_path = path
