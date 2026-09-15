@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -11,9 +12,7 @@ use crate::coordination::{lock_exclusive, open_lock};
 use crate::git::{background_lake_command, lake_command, project_lean_files};
 use crate::issue::{TelemetryOperation, TelemetryStore};
 use crate::repo::Repo;
-#[cfg(test)]
-use crate::state::ValidationStatus;
-use crate::state::{State, Submission, ValidationReport};
+use crate::state::{State, Submission, ValidationReport, ValidationStatus};
 use crate::util::{
     build_error_diagnostic, command_detail, output_text, run_checked, run_command_with_timeout,
     run_output,
@@ -27,6 +26,7 @@ type ValidationSignal = Arc<(Mutex<bool>, Condvar)>;
 // when a compiler or dependency process stalls.
 const VALIDATION_BUILD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const AXIOM_AUDIT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const VALIDATION_PERSIST_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
 pub struct ValidationQueue {
@@ -99,7 +99,13 @@ fn validation_loop(
                         Vec::new(),
                     ),
                 };
-                let _ = state.finish_validation(&submission.reference, &report);
+                finish_validation_until_persisted(
+                    &repo,
+                    &state,
+                    &submission.reference,
+                    &report,
+                    VALIDATION_PERSIST_RETRY_DELAY,
+                );
                 if let Some(store) = &telemetry {
                     let _ = store.record_operation(
                         &repo,
@@ -128,6 +134,75 @@ fn validation_loop(
                 thread::sleep(Duration::from_secs(1));
             }
         }
+    }
+}
+
+fn finish_validation_until_persisted(
+    repo: &Repo,
+    state: &State,
+    reference: &str,
+    report: &ValidationReport,
+    retry_delay: Duration,
+) -> u64 {
+    let mut retries = 0_u64;
+    loop {
+        match state.finish_validation(reference, report) {
+            Ok(()) => {
+                if retries > 0 {
+                    log_validation_persistence(
+                        repo,
+                        reference,
+                        &format!("validation result persisted after {retries} retry(ies)"),
+                    );
+                }
+                return retries;
+            }
+            Err(error) => {
+                // `finish_validation` commits the terminal row before its
+                // best-effort build-log pruning. If that cleanup is the only
+                // failure, do not keep a durable terminal result looking
+                // active while retrying it.
+                if state
+                    .submission(reference)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|submission| {
+                        matches!(
+                            submission.validation_status,
+                            ValidationStatus::Passed
+                                | ValidationStatus::Failed
+                                | ValidationStatus::Skipped
+                        )
+                    })
+                {
+                    log_validation_persistence(
+                        repo,
+                        reference,
+                        &format!("terminal state persisted; cleanup retry stopped: {error:#}"),
+                    );
+                    return retries;
+                }
+                retries += 1;
+                if retries == 1 || retries.is_multiple_of(60) {
+                    log_validation_persistence(
+                        repo,
+                        reference,
+                        &format!("validation result persistence failed ({error:#}); retrying"),
+                    );
+                }
+                thread::sleep(retry_delay);
+            }
+        }
+    }
+}
+
+fn log_validation_persistence(repo: &Repo, reference: &str, detail: &str) {
+    if let Ok(mut log) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&repo.log_path)
+    {
+        let _ = writeln!(log, "{reference}: {detail}");
     }
 }
 
@@ -560,6 +635,7 @@ unsafe def main : IO UInt32 := do
 
 #[cfg(test)]
 mod tests {
+    use rusqlite::Connection;
     use tempfile::tempdir;
 
     use super::*;
@@ -651,6 +727,97 @@ mod tests {
         }
     }
     use crate::state::Workspace;
+
+    #[test]
+    fn validation_finish_retries_until_the_terminal_row_is_durable() {
+        let directory = tempdir().unwrap();
+        let state_dir = directory.path().join("state");
+        fs::create_dir_all(&state_dir).unwrap();
+        let repo = Repo {
+            root: directory.path().join("root"),
+            common_git_dir: directory.path().join("git"),
+            state_dir: state_dir.clone(),
+            socket_path: state_dir.join("daemon.sock"),
+            db_path: state_dir.join("state.sqlite3"),
+            search_db_path: state_dir.join("search.sqlite3"),
+            log_path: state_dir.join("daemon.log"),
+            cache_dir: state_dir.join("cache"),
+            integration_lock: state_dir.join("integration.lock"),
+            validation_lock: state_dir.join("validation.lock"),
+            startup_lock: state_dir.join("startup.lock"),
+        };
+        let state = State::new(repo.db_path.clone()).unwrap();
+        state
+            .add_workspace(&Workspace {
+                reference: "w1".into(),
+                name: "agent".into(),
+                path: directory.path().join("agent"),
+                branch: "mathmux/agent".into(),
+                model: None,
+            })
+            .unwrap();
+        state
+            .add_submission(&Submission {
+                reference: "s1".into(),
+                workspace_ref: "w1".into(),
+                workspace_commit: "workspace".into(),
+                main_commit: "main".into(),
+                base_commit: "base".into(),
+                checks: vec!["c1".into()],
+                validation_status: ValidationStatus::Queued,
+                validation_detail: None,
+                build_output: None,
+                build_summary: None,
+                axioms: Vec::new(),
+                sorries: Vec::new(),
+                validation_duration_ms: None,
+                validated_by: None,
+                created_at: 1,
+            })
+            .unwrap();
+        assert_eq!(state.next_validation().unwrap().unwrap().reference, "s1");
+
+        Connection::open(&repo.db_path)
+            .unwrap()
+            .execute("DROP TABLE build_log_summaries", [])
+            .unwrap();
+        let db_path = repo.db_path.clone();
+        let restore = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(25));
+            Connection::open(db_path)
+                .unwrap()
+                .execute(
+                    "CREATE TABLE build_log_summaries (
+                        submission_ref TEXT PRIMARY KEY REFERENCES submissions(ref),
+                        summary_json TEXT NOT NULL
+                     )",
+                    [],
+                )
+                .unwrap();
+        });
+        let retries = finish_validation_until_persisted(
+            &repo,
+            &state,
+            "s1",
+            &ValidationReport {
+                passed: true,
+                sorry_audit: true,
+                detail: "build passed".into(),
+                build_output: "output".into(),
+                axioms: Vec::new(),
+                sorries: Vec::new(),
+                duration_ms: 25,
+            },
+            Duration::from_millis(10),
+        );
+        restore.join().unwrap();
+
+        assert!(retries > 0);
+        assert_eq!(
+            state.submission("s1").unwrap().unwrap().validation_status,
+            ValidationStatus::Passed
+        );
+    }
 
     #[test]
     fn build_failure_detail_prefers_the_concrete_lean_error() {
