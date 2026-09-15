@@ -7,7 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::artifact_cache::{restore_available_olean, restore_olean};
-use crate::check::{parse_imports, project_module_name};
+use crate::check::{Checker, parse_imports, project_module_name};
 use crate::coordination::{lock_exclusive, open_lock};
 use crate::git::{background_lake_command, lake_command, project_lean_files};
 use crate::issue::{TelemetryOperation, TelemetryStore};
@@ -37,6 +37,7 @@ impl ValidationQueue {
     pub fn start(
         repo: Repo,
         state: State,
+        checker: Arc<Checker>,
         retiring: Arc<AtomicBool>,
         telemetry: Option<Arc<TelemetryStore>>,
     ) -> Result<Self> {
@@ -46,7 +47,7 @@ impl ValidationQueue {
         let signal = queue.signal.clone();
         thread::Builder::new()
             .name("mathmux-validation".into())
-            .spawn(move || validation_loop(repo, state, signal, retiring, telemetry))?;
+            .spawn(move || validation_loop(repo, state, checker, signal, retiring, telemetry))?;
         Ok(queue)
     }
 
@@ -60,6 +61,7 @@ impl ValidationQueue {
 fn validation_loop(
     repo: Repo,
     state: State,
+    checker: Arc<Checker>,
     signal: ValidationSignal,
     retiring: Arc<AtomicBool>,
     telemetry: Option<Arc<TelemetryStore>>,
@@ -88,6 +90,10 @@ fn validation_loop(
             .and_then(|_| state.next_validation());
         match next {
             Ok(Some(submission)) => {
+                // Full validation is memory-heavy. Release only idle
+                // incremental check workers before starting it; a busy worker
+                // cannot be evicted and its live request remains untouched.
+                let _ = checker.evict_idle_workers(Duration::ZERO);
                 let started = Instant::now();
                 let result = validate(&repo, &submission);
                 let report = match result {
@@ -909,7 +915,9 @@ mod tests {
         assert_eq!(state.next_validation().unwrap().unwrap().reference, "s1");
         let active_lock = acquire_validation_lock(&repo.validation_lock).unwrap();
         let retiring = Arc::new(AtomicBool::new(false));
-        let _queue = ValidationQueue::start(repo, state.clone(), retiring.clone(), None).unwrap();
+        let checker = Arc::new(Checker::new(repo.clone(), state.clone(), None).unwrap());
+        let _queue =
+            ValidationQueue::start(repo, state.clone(), checker, retiring.clone(), None).unwrap();
 
         assert!(state.has_running_validation().unwrap());
         retiring.store(true, Ordering::SeqCst);

@@ -69,6 +69,7 @@ pub fn run(repo: Repo) -> Result<()> {
     let validation = ValidationQueue::start(
         repo.clone(),
         state.clone(),
+        checker.clone(),
         retiring.clone(),
         telemetry.clone(),
     )?;
