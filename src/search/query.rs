@@ -134,11 +134,20 @@ pub(super) fn diagnostic_apply_detail(diagnostic: &str) -> Option<String> {
 }
 
 pub(crate) fn diagnostic_type_detail(diagnostic: &str) -> Option<String> {
-    const SYNTHESIS: &str = "failed to synthesize instance of type class";
+    // Lean phrases synthesis failures several ways; the shorter marker also
+    // covers synthInstance.maxHeartbeats timeouts (issue i108).
+    const SYNTHESIS_MARKERS: [&str; 2] =
+        ["failed to synthesize instance of type class", "failed to synthesize"];
     let lines = diagnostic.lines().collect::<Vec<_>>();
-    if let Some(index) = lines.iter().position(|line| line.contains(SYNTHESIS)) {
+    let synthesis = SYNTHESIS_MARKERS.iter().find_map(|marker| {
+        lines
+            .iter()
+            .position(|line| line.contains(marker))
+            .map(|index| (index, *marker))
+    });
+    if let Some((index, marker)) = synthesis {
         let mut goal = lines[index]
-            .split_once(SYNTHESIS)
+            .split_once(marker)
             .map(|(_, suffix)| suffix.trim())
             .filter(|suffix| !suffix.is_empty())
             .into_iter()
@@ -155,7 +164,13 @@ pub(crate) fn diagnostic_type_detail(diagnostic: &str) -> Option<String> {
         );
         let goal = goal.join(" ");
         if !goal.is_empty() {
-            return Some(format!("instance goal\n{}", truncate_middle(&goal, 480)));
+            let timeout = diagnostic.contains("synthInstance.maxHeartbeats");
+            let label = if timeout {
+                "instance goal (synthesis timed out; the instance may exist but is expensive)"
+            } else {
+                "instance goal"
+            };
+            return Some(format!("{label}\n{}", truncate_middle(&goal, 480)));
         }
     }
 

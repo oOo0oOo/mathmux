@@ -5231,3 +5231,13 @@ fn declaration_addressed_reads_return_the_exact_span() {
         "{missing:#}"
     );
 }
+
+#[test]
+fn synthesis_timeout_diagnostics_yield_a_types_detail() {
+    let detail = diagnostic_type_detail(
+        "Demo:5:2: error: failed to synthesize\n  NormedSpace \u{211d} E\n\nNote: synthInstance.maxHeartbeats has been reached",
+    )
+    .expect("timeout synthesis yields a types detail");
+    assert!(detail.contains("NormedSpace"), "{detail}");
+    assert!(detail.contains("timed out"), "{detail}");
+}
