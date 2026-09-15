@@ -24,7 +24,7 @@ use clap::ValueEnum;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 const WORKFLOW_HELP: &str = r#"AGENT CONTRACT
-  api       search-v14/probe-v23; reread search/probe help only when this digest changes.
+  api       search-v15/probe-v23; reread search/probe help only when this digest changes.
   scope     Use the preassigned workspace; never run ws or enter main/another workspace.
   discover  Search unknown things; probe known API, exact context, or failures.
             Exact declarations go straight to probe NAME; qREFs store result sets.
@@ -36,11 +36,11 @@ const WORKFLOW_HELP: &str = r#"AGENT CONTRACT
   safety    sorry is tracked; new axioms fail validation. Never edit .lake/generated artifacts."#;
 
 const SEARCH_HELP: &str = r#"SEARCH — find or read unknown things; returns qREF
-API search-v14 — compact discovery; reread only when this digest changes
+API search-v15 — compact discovery; reread only when this digest changes
 FORMS — type one directly; declaration/type/source/compose are labels, not keywords
   declaration  NAME | NAME* | KIND NAME [source|body|proof]
   type/concept TYPE_OR_CONCEPT_TERMS | type:LEAN_TYPE
-  source       FILE:LINE | FILE:START-END | FILE:tail
+  source       FILE:LINE | FILE:START-END | FILE:tail | FILE:DECL_NAME
                FILE[:RANGE] [find] TERMS
                FILE outline|declarations|imports|dependents
                MODULE outline|declarations
@@ -64,6 +64,8 @@ RESULT
   with explicit continuation and lossless show qREF --all.
   Repeating an identical unchanged source read within 15 minutes returns a
   pointer to the earlier qREF instead of the content; any edit restores it.
+  FILE:DECL_NAME returns exactly that declaration's current lines — prefer it
+  over line ranges when re-reading your own declarations.
   An exact miss with a current index is authoritative absence: the name does
   not exist. Use the offered near names or concept candidates; never retry
   the same query, and prefer probe NAME source over FILE:RANGE re-reads.
@@ -1170,7 +1172,7 @@ mod tests {
             .unwrap()
             .render_long_help()
             .to_string();
-        assert!(help.contains("API search-v14"));
+        assert!(help.contains("API search-v15"));
         for form in [
             "type:LEAN_TYPE",
             "FILE:LINE",
@@ -1238,7 +1240,7 @@ mod tests {
     #[test]
     fn workflow_help_prefers_direct_workspace_experimentation() {
         let help = command_line().render_help().to_string();
-        assert!(help.contains("search-v14/probe-v23"));
+        assert!(help.contains("search-v15/probe-v23"));
         assert!(help.contains("Edit intended files -> check -> submit"));
         assert!(help.contains("Exact declarations go straight to probe NAME"));
         assert!(help.contains("Search unknown things; probe known API, exact context"));

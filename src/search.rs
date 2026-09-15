@@ -2449,7 +2449,11 @@ impl Searcher {
                         "Lean unification rejected this pattern; showing strict structural type matches",
                     );
                 } else {
-                    bail!("invalid type pattern: {}", clean_line(error));
+                    return Err(anyhow::anyhow!(
+                        "invalid type pattern: {}",
+                        clean_line(error)
+                    )
+                    .context(crate::protocol::DiscoveryFailure::InvalidRequest));
                 }
             }
             warming |= applicable_warming;

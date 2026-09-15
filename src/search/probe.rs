@@ -197,7 +197,11 @@ impl ProbeRequest {
             ensure!(
                 matches!(
                     context,
-                    Some(ProbeContext::Check(_) | ProbeContext::Position(_))
+                    Some(
+                        ProbeContext::Check(_)
+                            | ProbeContext::Position(_)
+                            | ProbeContext::Query(_, _)
+                    )
                 ),
                 "fits tests a declaration against a goal: `probe cREF NAME fits` or `probe FILE:LINE NAME fits`"
             );

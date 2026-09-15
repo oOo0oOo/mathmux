@@ -27,6 +27,7 @@ fn search_all_accepts_only_explicit_source_ranges() {
         line: 10,
         tail: false,
         expanded: false,
+        declaration_span: None,
     })));
     assert!(search_all_allowed(&SearchPlan::Location(SourceLocation {
         path: "Demo.lean".into(),
@@ -34,6 +35,7 @@ fn search_all_accepts_only_explicit_source_ranges() {
         line: 10,
         tail: true,
         expanded: false,
+        declaration_span: None,
     })));
     assert!(search_all_allowed(&SearchPlan::Source(
         SourceOccurrenceQuery {
@@ -124,8 +126,8 @@ fn tuning_sql_exposes_fts_weights() {
 fn submission_reference_requires_search_terms() {
     let error = require_submission_refinement("s774", "").unwrap_err();
     assert_eq!(
-        error.to_string(),
-        "s774 requires search terms; use show s774 first, then --all only if needed"
+        format!("{error:#}"),
+        "invalid discovery request: s774 requires search terms; use show s774 first, then --all only if needed"
     );
     require_submission_refinement("s774", "block diagonal").unwrap();
 }
@@ -3060,6 +3062,7 @@ fn source_only_location_results_are_successful() {
         line: 2,
         tail: false,
         expanded: false,
+        declaration_span: None,
     };
     let result = source_location_result(
         &workspace,
@@ -3072,7 +3075,7 @@ fn source_only_location_results_are_successful() {
     assert_eq!(result.inference, "source-only");
     assert_eq!(result.note.as_deref(), Some("source only"));
     assert_eq!(result.hits[0].name, "target");
-    let beyond = SourceLocation { path: location.path.clone(), display_path: None, line: 99, tail: false, expanded: false };
+    let beyond = SourceLocation { path: location.path.clone(), display_path: None, line: 99, tail: false, expanded: false, declaration_span: None };
     let tail = source_location_result(&workspace, &beyond,
         "def before := true\ndef target := true\n", Some("source only"), true);
     assert_eq!(tail.hits[0].line, 2);
@@ -3923,8 +3926,8 @@ fn source_regex_queries_scan_a_bounded_scope_with_context() {
         Ok(_) => panic!("unknown scope unexpectedly resolved"),
     };
     assert_eq!(
-        error.to_string(),
-        "source directory not found or ambiguous: extra"
+        format!("{error:#}"),
+        "invalid discovery request: source directory not found or ambiguous: extra"
     );
     for (query, expected) in [
         (
@@ -5172,5 +5175,59 @@ fn near_typo_directory_prefixes_resolve_but_wrong_locations_fail_closed() {
         )
         .unwrap()
         .is_none()
+    );
+}
+
+#[test]
+fn declaration_addressed_reads_return_the_exact_span() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("root");
+    let state_dir = directory.path().join("state");
+    fs::create_dir_all(root.join("AtiyahSinger")).unwrap();
+    fs::create_dir_all(&state_dir).unwrap();
+    fs::write(
+        root.join("AtiyahSinger/Demo.lean"),
+        "namespace AtiyahSinger\ndef first : Nat := 0\n\ntheorem myLemma : first = first := by\n  rfl\n\ndef last : Nat := 1\nend AtiyahSinger\n",
+    )
+    .unwrap();
+    let repo = Repo {
+        root: root.clone(),
+        common_git_dir: directory.path().join("git"),
+        state_dir: state_dir.clone(),
+        socket_path: state_dir.join("daemon.sock"),
+        db_path: state_dir.join("state.sqlite3"),
+        search_db_path: state_dir.join("search.sqlite3"),
+        log_path: state_dir.join("daemon.log"),
+        cache_dir: state_dir.join("cache"),
+        integration_lock: state_dir.join("integration.lock"),
+        validation_lock: state_dir.join("validation.lock"),
+        startup_lock: state_dir.join("startup.lock"),
+    };
+    let state = State::new(repo.db_path.clone()).unwrap();
+    let workspace = Workspace {
+        reference: "w1".into(),
+        name: "demo".into(),
+        path: root.clone(),
+        branch: "demo".into(),
+        model: None,
+    };
+    state.add_workspace(&workspace).unwrap();
+    let checker = Arc::new(Checker::new(repo.clone(), state.clone(), None).unwrap());
+    let searcher = Searcher::new(repo, state, checker, None).unwrap();
+
+    let result = searcher
+        .search(&workspace, &root, "AtiyahSinger/Demo.lean:myLemma", None, false)
+        .unwrap();
+    assert!(result.contains("myLemma"), "{result}");
+    assert!(result.contains("rfl"), "{result}");
+    assert!(result.contains("complete declaration"), "{result}");
+    assert!(!result.contains("def last"), "{result}");
+
+    let missing = searcher
+        .search(&workspace, &root, "AtiyahSinger/Demo.lean:noSuchLemma", None, false)
+        .unwrap_err();
+    assert!(
+        format!("{missing:#}").contains("no declaration named noSuchLemma"),
+        "{missing:#}"
     );
 }

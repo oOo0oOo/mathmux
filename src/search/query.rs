@@ -20,10 +20,12 @@ pub(super) fn field_inventory_query(query: &str) -> Option<&str> {
 }
 
 pub(super) fn require_submission_refinement(reference: &str, refinement: &str) -> Result<()> {
-    ensure!(
-        !refinement.trim().is_empty(),
-        "{reference} requires search terms; use show {reference} first, then --all only if needed"
-    );
+    if refinement.trim().is_empty() {
+        return Err(anyhow::anyhow!(
+            "{reference} requires search terms; use show {reference} first, then --all only if needed"
+        )
+        .context(crate::protocol::DiscoveryFailure::InvalidRequest));
+    }
     Ok(())
 }
 

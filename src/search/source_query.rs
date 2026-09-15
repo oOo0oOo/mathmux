@@ -20,6 +20,8 @@ pub(super) struct SourceLocation {
     pub(super) line: u64,
     pub(super) tail: bool,
     pub(super) expanded: bool,
+    /// Set for FILE:declName requests: the exact span to show.
+    pub(super) declaration_span: Option<(u64, u64)>,
 }
 
 pub(super) struct SourceOccurrenceQuery {
@@ -107,10 +109,12 @@ pub(super) fn parse_source_regex_query(
         .next()
         .filter(|token| token.eq_ignore_ascii_case("source"))
         .map_or(scope, |label| scope[label.len()..].trim_start());
-    ensure!(
-        scope.split_whitespace().count() <= 1,
-        "source regex accepts at most one file or directory scope"
-    );
+    if scope.split_whitespace().count() > 1 {
+        return Err(anyhow::anyhow!(
+            "source regex accepts at most one file or directory scope"
+        )
+        .context(crate::protocol::DiscoveryFailure::InvalidRequest));
+    }
     let (scope, range) = scope
         .rsplit_once(':')
         .and_then(|(scope, range)| parse_source_line_range(range).map(|range| (scope, range)))
@@ -170,7 +174,10 @@ fn resolve_source_directory(root: &Path, cwd: &Path, scope: &str) -> Result<Path
     candidates.sort();
     candidates.dedup();
     let [resolved] = candidates.as_slice() else {
-        bail!("source directory not found or ambiguous: {scope}")
+        return Err(
+            anyhow::anyhow!("source directory not found or ambiguous: {scope}")
+                .context(crate::protocol::DiscoveryFailure::InvalidRequest),
+        );
     };
     ensure!(
         resolved.starts_with(&root)
@@ -916,12 +923,64 @@ pub(super) fn parse_source_location(
             line,
             tail: true,
             expanded,
+            declaration_span: None,
         }));
     }
     let Some((path, line)) = query.rsplit_once(':') else {
         return Ok(None);
     };
     let Ok(line) = line.parse::<u64>() else {
+        // FILE:declName addresses a declaration directly, so agents can ask
+        // for the lemma instead of guessing line ranges.
+        if lean_declaration_name_like(line)
+            && Path::new(path)
+                .extension()
+                .is_some_and(|extension| extension == "lean")
+        {
+            let requested_name = line;
+            let Some((path, display_path, _)) = resolve_source_path(root, cwd, path)? else {
+                return Err(missing_source_error(root, main_root, path));
+            };
+            let source = fs::read_to_string(&path)?;
+            let module = project_module_name(root, &path);
+            let spans = declaration_spans(&source, &module);
+            let leaf = requested_name.rsplit('.').next().unwrap_or(requested_name);
+            let matched = spans.iter().find(|span| {
+                let name = span.name.strip_prefix("_root_.").unwrap_or(&span.name);
+                name == requested_name
+                    || name.ends_with(&format!(".{requested_name}"))
+                    || name.rsplit('.').next() == Some(leaf)
+            });
+            let Some(span) = matched else {
+                let mut nearest = spans
+                    .iter()
+                    .map(|span| {
+                        let name = span.name.rsplit('.').next().unwrap_or(&span.name);
+                        (edit_distance(&leaf.to_lowercase(), &name.to_lowercase()), name)
+                    })
+                    .collect::<Vec<_>>();
+                nearest.sort();
+                let nearest = nearest
+                    .iter()
+                    .take(3)
+                    .map(|(_, name)| (*name).to_owned())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(anyhow::anyhow!(
+                    "no declaration named {requested_name} in {}; nearest: {nearest}",
+                    display_path.as_deref().unwrap_or(requested_path_display(&path, root))
+                )
+                .context(crate::protocol::DiscoveryFailure::InvalidRequest));
+            };
+            return Ok(Some(SourceLocation {
+                path,
+                display_path,
+                line: span.start,
+                tail: false,
+                expanded,
+                declaration_span: Some((span.start, span.end)),
+            }));
+        }
         return Ok(None);
     };
     let Some((path, display_path, _)) = resolve_source_path(root, cwd, path)? else {
@@ -934,7 +993,27 @@ pub(super) fn parse_source_location(
         line,
         tail: false,
         expanded,
+        declaration_span: None,
     }))
+}
+
+fn lean_declaration_name_like(candidate: &str) -> bool {
+    !candidate.is_empty()
+        && candidate
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_alphabetic() || character == '_')
+        && candidate.chars().all(|character| {
+            character.is_alphanumeric() || matches!(character, '_' | '\'' | '.' | '!' | '?')
+        })
+        && !candidate.eq_ignore_ascii_case("tail")
+}
+
+fn requested_path_display<'p>(path: &'p Path, root: &Path) -> &'p str {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_str()
+        .unwrap_or("the file")
 }
 
 fn is_source_location_token(token: &str) -> bool {
@@ -1342,6 +1421,48 @@ pub(super) fn source_location_result(
     let module = project_module_name(&workspace.path, &location.path);
     let spans = declaration_spans(source, &module);
     let enclosing = enclosing_declaration_span(&spans, location.line);
+    if let Some((span_start, span_end)) = location.declaration_span {
+        let shown_end = span_end.min(span_start + LOCATION_EXPANDED_LINES as u64 - 1);
+        let lines = source.lines().collect::<Vec<_>>();
+        let excerpt = lines
+            .iter()
+            .enumerate()
+            .skip(span_start.saturating_sub(1) as usize)
+            .take((shown_end + 1 - span_start) as usize)
+            .map(|(offset, line)| format!("{:>5}  {line}", offset + 1))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut result_note = note.map(str::to_owned);
+        if shown_end < span_end {
+            prepend_search_note(
+                &mut result_note,
+                format!("declaration continues; next: {relative}:{}-{span_end}", shown_end + 1),
+            );
+        } else {
+            prepend_search_note(&mut result_note, "complete declaration".to_owned());
+        }
+        return SearchResult {
+            hits: vec![SearchHit {
+                name: enclosing.map_or("source", |span| span.name.as_str()).to_owned(),
+                kind: "location-expanded".into(),
+                signature: Some(enclosing.map_or_else(
+                    || format!("declaration lines {span_start}-{span_end}"),
+                    |span| format!("{} lines {span_start}-{span_end}", span.kind),
+                )),
+                module: String::new(),
+                path: relative,
+                line: span_start,
+                doc: None,
+                source: nonempty(excerpt),
+                usages: Vec::new(),
+                applicable: false,
+                required_import: None,
+            }],
+            inference: if source_only { "source-only" } else { "source" }.into(),
+            note: result_note,
+            ok: true,
+        };
+    }
     let line_limit = if location.expanded {
         LOCATION_EXPANDED_LINES
     } else if location.tail {
