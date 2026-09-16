@@ -57,6 +57,7 @@ const CONTEXTUAL_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 // its operation-specific Lean budget starts.
 const PROBE_SETUP_TIMEOUT: Duration = Duration::from_secs(30);
 const WARM_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+const LARGE_DEPENDENCY_CLOSURE_THRESHOLD: usize = 500;
 const SLOW_CHECK_PROFILE_MS: u64 = 5_000;
 const PROFILE_ENTRY_LIMIT: usize = 512;
 const PROJECT_CONFIG_FILES: [&str; 4] = [
@@ -785,6 +786,13 @@ impl Checker {
         let phase = Instant::now();
         let dependencies = transitive_dependencies(&workspace.path, target)?;
         let dependencies_ms = phase.elapsed().as_millis() as u64;
+        if let Some(notice) = large_dependency_closure_notice(
+            reference,
+            target,
+            dependencies.len(),
+        ) {
+            report(&notice);
+        }
         let fingerprint = certificate_fingerprint(&workspace.path, target, &dependencies)?;
         let check_key = (workspace.reference.clone(), target.to_path_buf());
         if !include_profile
@@ -2663,6 +2671,20 @@ pub fn transitive_dependencies(root: &Path, target: &Path) -> Result<Vec<PathBuf
     Ok(ordered)
 }
 
+fn large_dependency_closure_notice(
+    reference: &str,
+    target: &Path,
+    dependency_count: usize,
+) -> Option<String> {
+    (dependency_count >= LARGE_DEPENDENCY_CLOSURE_THRESHOLD).then(|| {
+        format!(
+            "{reference} large dependency closure for {}: {} project files; batch or defer this target before a full validation",
+            target.display(),
+            dependency_count,
+        )
+    })
+}
+
 fn visit_dependencies(
     root: &Path,
     target: &Path,
@@ -3443,6 +3465,16 @@ mod tests {
             certificate_fingerprint(directory.path(), Path::new("A/Top.lean"), &dependencies)
                 .unwrap();
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn large_dependency_closure_notice_flags_graph_cost_not_filename() {
+        let target = Path::new("AtiyahSinger/Example.lean");
+        assert!(large_dependency_closure_notice("c1", target, 499).is_none());
+        let notice = large_dependency_closure_notice("c2", target, 500).unwrap();
+        assert!(notice.contains("c2 large dependency closure"));
+        assert!(notice.contains("500 project files"));
+        assert!(notice.contains("batch or defer"));
     }
 
     #[test]
