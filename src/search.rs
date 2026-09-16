@@ -872,6 +872,19 @@ impl Searcher {
         }
     }
 
+    /// Force the next search in a workspace to observe files changed by sync.
+    pub fn invalidate_workspace(&self, workspace_ref: &str) {
+        self.index
+            .last_refresh
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(workspace_ref);
+        self.dirty_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(workspace_ref);
+    }
+
     pub fn search(
         &self,
         workspace: &Workspace,

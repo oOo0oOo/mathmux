@@ -457,6 +457,7 @@ impl Service {
                     self.state
                         .add_sync(&workspace.reference, status, &result.detail)?;
                 if result.clean {
+                    self.searcher.invalidate_workspace(&workspace.reference);
                     // Rebuild import setups in the background so the next
                     // check starts warm instead of paying preparation inline.
                     if let Ok(targets) = git::dirty_lean_files(&workspace.path) {

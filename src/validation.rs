@@ -351,12 +351,37 @@ fn build_failure_detail(output: &str, exit_code: Option<i32>) -> String {
     if let Some(diagnostic) = missing_import_diagnostic(output) {
         return format!("build failed: {diagnostic}");
     }
+    if let Some(diagnostic) = missing_source_file_diagnostic(output) {
+        return format!("build failed: {diagnostic}");
+    }
     if let Some(diagnostic) = build_error_diagnostic(output) {
         return format!("build failed: {diagnostic}");
     }
     match exit_code {
         Some(code) => format!("build failed with exit code {code}; no Lean error diagnostic"),
         None => "build failed: process terminated by a signal or external interruption; no Lean error diagnostic".into(),
+    }
+}
+
+fn missing_source_file_diagnostic(output: &str) -> Option<String> {
+    let mut files = Vec::new();
+    for line in output.lines() {
+        let Some(path) = line.trim().strip_prefix("file:") else {
+            continue;
+        };
+        let path = path.trim();
+        if path.is_empty() || !path.ends_with(".lean") || files.iter().any(|file| file == path) {
+            continue;
+        }
+        files.push(path.to_owned());
+    }
+    match files.as_slice() {
+        [] => None,
+        [path] => Some(format!("missing source file {path}")),
+        paths => Some(format!(
+            "missing source files: {}",
+            paths.join(", ")
+        )),
     }
 }
 
@@ -851,6 +876,18 @@ mod tests {
             "AtiyahSinger.Consumer' required by AtiyahSinger/Guards/ConsumerGuard.lean",
         );
         assert_eq!(build_failure_detail(output, Some(2)), expected);
+    }
+
+    #[test]
+    fn build_failure_detail_names_missing_source_files() {
+        let output = concat!(
+            "error: no such file or directory (error code: 2)\n",
+            "  file: AtiyahSinger/Missing.lean\n",
+        );
+        assert_eq!(
+            build_failure_detail(output, Some(2)),
+            "build failed: missing source file AtiyahSinger/Missing.lean"
+        );
     }
 
     #[test]
