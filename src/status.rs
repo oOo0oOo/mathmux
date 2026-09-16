@@ -150,7 +150,19 @@ pub fn render(
 
     let pending = state.pending_submissions()?;
     let latest_completed = state.latest_completed_validation()?;
-    render_validation_status(&mut output, &pending, latest_completed.as_ref(), now)?;
+    let validation_started_at = pending
+        .iter()
+        .find(|submission| submission.validation_status == ValidationStatus::Running)
+        .map(|submission| state.validation_started_at(&submission.reference))
+        .transpose()?
+        .flatten();
+    render_validation_status(
+        &mut output,
+        &pending,
+        latest_completed.as_ref(),
+        validation_started_at,
+        now,
+    )?;
     Ok(output)
 }
 
@@ -339,6 +351,7 @@ fn render_validation_status(
     output: &mut String,
     pending: &[Submission],
     latest_completed: Option<&Submission>,
+    validation_started_at: Option<i64>,
     now: i64,
 ) -> std::fmt::Result {
     if !pending.is_empty() {
@@ -351,7 +364,13 @@ fn render_validation_status(
                 output,
                 " {}:running {}",
                 submission.reference,
-                format_age(now.saturating_sub(submission.created_at / 1000))
+                format_age(
+                    now.saturating_sub(
+                        validation_started_at
+                            .unwrap_or(submission.created_at)
+                            .saturating_div(1000),
+                    ),
+                )
             )?;
         }
         let queued = pending
@@ -1231,7 +1250,7 @@ mod tests {
             Some("axiom audit failed:\nconflicting declaration"),
         );
         let mut output = String::new();
-        render_validation_status(&mut output, &[], Some(&failed), 0).unwrap();
+        render_validation_status(&mut output, &[], Some(&failed), None, 0).unwrap();
         assert_eq!(
             output,
             "\nvalidation s9:failed; show s9 --all\n  axiom audit failed: conflicting declaration"
@@ -1239,12 +1258,12 @@ mod tests {
 
         let passed = submission("s10", "passed", Some("build passed"));
         let mut output = String::new();
-        render_validation_status(&mut output, &[], Some(&passed), 0).unwrap();
+        render_validation_status(&mut output, &[], Some(&passed), None, 0).unwrap();
         assert_eq!(output, "\nvalidation idle; last s10:passed <1m");
 
         let queued = submission("s11", "queued", None);
         let mut output = String::new();
-        render_validation_status(&mut output, &[queued], Some(&failed), 0).unwrap();
+        render_validation_status(&mut output, &[queued], Some(&failed), None, 0).unwrap();
         assert_eq!(
             output,
             "\nvalidation queue:1\n  latest result s9:failed; show s9 --all\n    axiom audit failed: conflicting declaration"
@@ -1255,11 +1274,21 @@ mod tests {
             "warning: noise\nerror: Demo.lean:12:4: failed to synthesize CompactSpace B\n".into(),
         );
         let mut output = String::new();
-        render_validation_status(&mut output, &[], Some(&legacy), 0).unwrap();
+        render_validation_status(&mut output, &[], Some(&legacy), None, 0).unwrap();
         assert_eq!(
             output,
             "\nvalidation s12:failed; show s12 --all\n  build failed: Demo.lean:12:4: failed to synthesize CompactSpace B"
         );
+    }
+
+    #[test]
+    fn running_validation_age_excludes_time_spent_queued() {
+        let mut running = submission("s13", "running", None);
+        running.created_at = 1_000;
+        let mut output = String::new();
+        render_validation_status(&mut output, &[running], None, Some(1_000_000), 1_003)
+            .unwrap();
+        assert_eq!(output, "\nvalidation s13:running <1m");
     }
 
     #[test]

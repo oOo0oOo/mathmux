@@ -17,7 +17,7 @@ use display::{render_check_run, render_search_run, render_submission};
 const SEARCH_HISTORY_LIMIT: i64 = 50_000;
 const SEARCH_HISTORY_AGE_MS: i64 = 48 * 60 * 60 * 1000;
 const STORED_PROFILE_LIMIT_BYTES: usize = 512 * 1024;
-const STATE_SCHEMA_VERSION: i64 = 3;
+const STATE_SCHEMA_VERSION: i64 = 4;
 pub(crate) const SEARCH_USAGE_LIMIT: usize = 8;
 
 pub(crate) struct ContractEvidenceRecord {
@@ -390,6 +390,7 @@ impl State {
                 sorries_json TEXT NOT NULL DEFAULT '[]',
                 sorry_audit_version INTEGER NOT NULL DEFAULT 0,
                 validation_duration_ms INTEGER,
+                validation_started_at INTEGER,
                 validated_by TEXT,
                 created_at INTEGER NOT NULL
              );
@@ -458,6 +459,7 @@ impl State {
                 1 => migrate_state_v1(&transaction)?,
                 2 => migrate_state_v2(&transaction)?,
                 3 => migrate_state_v3(&transaction)?,
+                4 => migrate_state_v4(&transaction)?,
                 _ => unreachable!("all state migrations are enumerated"),
             }
             transaction.execute(
@@ -1165,8 +1167,10 @@ impl State {
             [&newest.reference],
         )?;
         connection.execute(
-            "UPDATE submissions SET validation_status = 'running' WHERE ref = ?1",
-            [&newest.reference],
+            "UPDATE submissions
+             SET validation_status = 'running', validation_started_at = ?2
+             WHERE ref = ?1",
+            params![newest.reference, now_unix_ms()],
         )?;
         Ok(Some(Submission {
             validation_status: ValidationStatus::Running,
@@ -1183,7 +1187,7 @@ impl State {
             "UPDATE submissions
              SET validation_status = ?2, validation_detail = ?3, build_output = ?4,
                  axioms_json = ?5, sorries_json = ?6, sorry_audit_version = ?7,
-                 validation_duration_ms = ?8
+                 validation_duration_ms = ?8, validation_started_at = NULL
              WHERE ref = ?1",
             params![
                 reference,
@@ -1208,10 +1212,26 @@ impl State {
     pub fn recover_validation(&self) -> Result<()> {
         let _write_guard = self.write_guard();
         self.open()?.execute(
-            "UPDATE submissions SET validation_status = 'queued' WHERE validation_status = 'running'",
+            "UPDATE submissions
+             SET validation_status = 'queued', validation_started_at = NULL
+             WHERE validation_status = 'running'",
             [],
         )?;
         Ok(())
+    }
+
+    /// Return the wall-clock time when a submission was claimed by the
+    /// validator, distinct from its submission/queue creation time.
+    pub fn validation_started_at(&self, reference: &str) -> Result<Option<i64>> {
+        let started_at = self
+            .open()?
+            .query_row(
+                "SELECT validation_started_at FROM submissions WHERE ref = ?1",
+                [reference],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()?;
+        Ok(started_at.flatten())
     }
 
     pub fn has_validation_work(&self) -> Result<bool> {
@@ -1529,6 +1549,16 @@ fn migrate_state_v3(transaction: &rusqlite::Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
+fn migrate_state_v4(transaction: &rusqlite::Transaction<'_>) -> Result<()> {
+    add_column_if_missing(
+        transaction,
+        "submissions",
+        "validation_started_at",
+        "validation_started_at INTEGER",
+    )?;
+    Ok(())
+}
+
 fn add_column_if_missing(
     connection: &Connection,
     table: &str,
@@ -1757,6 +1787,12 @@ mod tests {
         assert_eq!(version, STATE_SCHEMA_VERSION);
         assert!(!legacy_checks);
         assert!(audited_index);
+        assert!(table_has_column(
+            &connection,
+            "submissions",
+            "validation_started_at"
+        )
+        .unwrap());
         for index in [
             "check_runs_workspace_created",
             "check_runs_workspace_status_created",
@@ -2456,8 +2492,11 @@ mod tests {
 
         assert_eq!(state.next_validation().unwrap().unwrap().reference, "s1");
         assert!(state.has_running_validation().unwrap());
+        assert!(state.validation_started_at("s1").unwrap().is_some());
         state.recover_validation().unwrap();
         assert!(!state.has_running_validation().unwrap());
+        assert!(state.validation_started_at("s1").unwrap().is_none());
         assert_eq!(state.next_validation().unwrap().unwrap().reference, "s1");
+        assert!(state.validation_started_at("s1").unwrap().is_some());
     }
 }
