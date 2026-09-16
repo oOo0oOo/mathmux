@@ -595,8 +595,10 @@ impl Checker {
             duration_ms: elapsed_ms,
             created_at,
         };
-        self.state
-            .add_check_run(&run, if ok { &certificates } else { &[] })?;
+        // Preserve certificates for targets that passed before a later target
+        // timed out. A failed aggregate run can still provide valid coverage
+        // for the next aggregate retry.
+        self.state.add_check_run(&run, &certificates)?;
         drop(run_lock);
         let _ = fs::remove_file(run_lock_path);
         self.state.touch_workspace(&workspace.reference)?;

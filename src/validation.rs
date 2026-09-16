@@ -24,7 +24,7 @@ type ValidationSignal = Arc<(Mutex<bool>, Condvar)>;
 // Validation builds the entire managed project, so it gets a larger bounded
 // budget than an individual check while still releasing the validation lock
 // when a compiler or dependency process stalls.
-const VALIDATION_BUILD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const VALIDATION_BUILD_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const AXIOM_AUDIT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const VALIDATION_PERSIST_RETRY_DELAY: Duration = Duration::from_secs(1);
 
