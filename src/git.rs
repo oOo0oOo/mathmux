@@ -2,7 +2,7 @@ use std::fs;
 use std::io::Write;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -24,7 +24,7 @@ fn acquire_integration_lock(repo: &Repo) -> Result<fs::File> {
     Ok(lock)
 }
 
-fn run_git_checked_with_index_lock_retry<I, S>(args: I, cwd: &Path) -> Result<String>
+fn run_git_output_with_index_lock_retry<I, S>(args: I, cwd: &Path) -> Result<Output>
 where
     I: IntoIterator<Item = S> + Clone,
     S: AsRef<std::ffi::OsStr>,
@@ -33,11 +33,61 @@ where
     loop {
         let output = run_output("git", args.clone(), cwd)?;
         if output.status.success() {
-            return Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned());
+            return Ok(output);
         }
         let detail = command_detail(&output);
         if !(detail.contains("index.lock") && detail.contains("File exists")) {
-            bail!("command failed: {detail}");
+            return Ok(output);
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "command failed: {detail}\nGit index.lock remained busy for {} seconds; no lock was removed",
+                INDEX_LOCK_RETRY_WINDOW.as_secs()
+            );
+        }
+        std::thread::sleep(INDEX_LOCK_RETRY_INTERVAL);
+    }
+}
+
+fn run_git_checked_with_index_lock_retry<I, S>(args: I, cwd: &Path) -> Result<String>
+where
+    I: IntoIterator<Item = S> + Clone,
+    S: AsRef<std::ffi::OsStr>,
+{
+    let output = run_git_output_with_index_lock_retry(args, cwd)?;
+    ensure!(
+        output.status.success(),
+        "command failed: {}",
+        command_detail(&output)
+    );
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+fn run_git_apply_with_index_lock_retry(diff: &[u8], cwd: &Path) -> Result<Output> {
+    let deadline = Instant::now() + INDEX_LOCK_RETRY_WINDOW;
+    loop {
+        let mut apply = Command::new("git");
+        apply
+            .args(["apply", "--index", "--whitespace=nowarn", "-"])
+            .current_dir(cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = apply
+            .spawn()
+            .context("cannot start workspace integration")?;
+        child
+            .stdin
+            .take()
+            .context("workspace integration has no input")?
+            .write_all(diff)?;
+        let output = child.wait_with_output()?;
+        if output.status.success() {
+            return Ok(output);
+        }
+        let detail = command_detail(&output);
+        if !(detail.contains("index.lock") && detail.contains("File exists")) {
+            return Ok(output);
         }
         if Instant::now() >= deadline {
             bail!(
@@ -525,8 +575,7 @@ pub fn sync(repo: &Repo, workspace: &Workspace) -> Result<SyncResult> {
     if !unmerged.is_empty() {
         return continue_autostash_sync(workspace, unmerged);
     }
-    let output = run_output(
-        "git",
+    let output = run_git_output_with_index_lock_retry(
         ["merge", "--no-edit", "--autostash", "main"],
         &workspace.path,
     )?;
@@ -576,11 +625,11 @@ fn continue_autostash_sync(workspace: &Workspace, conflicts: Vec<PathBuf>) -> Re
     }
     let mut args = vec!["add".into(), "--".into()];
     args.extend(conflicts.iter().map(|path| path.as_os_str().to_owned()));
-    run_checked("git", args, &workspace.path)
+    run_git_checked_with_index_lock_retry(args, &workspace.path)
         .context("cannot mark resolved autostash conflicts")?;
     let mut args = vec!["reset".into(), "--".into()];
     args.extend(conflicts.iter().map(|path| path.as_os_str().to_owned()));
-    run_checked("git", args, &workspace.path)
+    run_git_checked_with_index_lock_retry(args, &workspace.path)
         .context("cannot restore resolved workspace changes")?;
     Ok(SyncResult {
         clean: true,
@@ -604,11 +653,10 @@ fn continue_sync(workspace: &Workspace) -> Result<SyncResult> {
     if !conflicts.is_empty() {
         let mut args = vec!["add".into(), "--".into()];
         args.extend(conflicts.iter().map(|path| path.as_os_str().to_owned()));
-        run_checked("git", args, &workspace.path)
+        run_git_checked_with_index_lock_retry(args, &workspace.path)
             .context("cannot stage resolved sync conflicts")?;
     }
-    let output = run_output(
-        "git",
+    let output = run_git_output_with_index_lock_retry(
         ["-c", "core.editor=true", "merge", "--continue"],
         &workspace.path,
     )?;
@@ -781,22 +829,7 @@ pub fn submit(repo: &Repo, workspace: &Workspace, message: &str) -> Result<Submi
         bail!("workspace changes are already represented on managed main; run mathmux sync");
     }
 
-    let mut apply = Command::new("git");
-    apply
-        .args(["apply", "--index", "--whitespace=nowarn", "-"])
-        .current_dir(&repo.root)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = apply
-        .spawn()
-        .context("cannot start workspace integration")?;
-    child
-        .stdin
-        .take()
-        .context("workspace integration has no input")?
-        .write_all(&diff.stdout)?;
-    let output = child.wait_with_output()?;
+    let output = run_git_apply_with_index_lock_retry(&diff.stdout, &repo.root)?;
     if !output.status.success() {
         let _ = run_output("git", ["reset", "--hard", &base_commit], &repo.root);
         let restore = run_output("git", ["reset", "--mixed", "HEAD^"], &workspace.path)?;
@@ -805,7 +838,7 @@ pub fn submit(repo: &Repo, workspace: &Workspace, message: &str) -> Result<Submi
         }
         bail!("integration conflict; run mathmux sync");
     }
-    let commit = run_output("git", ["commit", "-m", message], &repo.root)?;
+    let commit = run_git_output_with_index_lock_retry(["commit", "-m", message], &repo.root)?;
     if !commit.status.success() {
         let _ = run_output("git", ["reset", "--hard", &base_commit], &repo.root);
         bail!(
@@ -933,6 +966,22 @@ mod tests {
         remover.join().unwrap();
         assert!(!lock_path.exists());
         assert_eq!(dirty_paths(&root).unwrap(), vec![PathBuf::from("README")]);
+    }
+
+    #[test]
+    fn git_index_lock_retry_preserves_expected_sync_failures() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("repo");
+        fs::create_dir(&root).unwrap();
+        run_checked("git", ["init", "-b", "main"], &root).unwrap();
+
+        let output = run_git_output_with_index_lock_retry(
+            ["merge", "--no-edit", "missing-branch"],
+            &root,
+        )
+        .unwrap();
+        assert!(!output.status.success());
+        assert!(command_detail(&output).contains("missing-branch"));
     }
 
     #[test]
