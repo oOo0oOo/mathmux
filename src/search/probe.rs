@@ -1515,10 +1515,23 @@ impl Searcher {
                 ("tactic", input)
             }
         };
-        let (worker_ok, detail) = self
+        let mut result = self
             .checker
             .probe_context(workspace, &path, line, 0, operation, &input)
             .context(crate::protocol::DiscoveryFailure::Infrastructure)?;
+        if result.1.trim().is_empty() {
+            result = self
+                .checker
+                .probe_context(workspace, &path, line, 0, operation, &input)
+                .context(crate::protocol::DiscoveryFailure::Infrastructure)?;
+        }
+        if result.1.trim().is_empty() {
+            return Err(anyhow::anyhow!(
+                "Lean probe returned an empty response twice; no result was stored"
+            ))
+            .context(crate::protocol::DiscoveryFailure::Infrastructure);
+        }
+        let (worker_ok, detail) = result;
         let (ok, mut detail) = decisive_directive_result(operation, &input, worker_ok, detail);
         let mut ok = ok;
         if operation == "tactic" && input.starts_with("apply (") {
