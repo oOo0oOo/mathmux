@@ -641,7 +641,19 @@ pub(super) fn declaration_source_header_offset(source: &str) -> usize {
 pub(super) fn declaration_header_end(block: &str) -> usize {
     let code = mask_comments(block);
     let mut delimiters = Vec::new();
+    let mut pending_let_assignment = None;
+    let mut let_value_indent = None;
+    let mut line_start = 0;
+    let mut line_has_content = false;
     for (index, character) in code.char_indices() {
+        let first_content = !line_has_content && !character.is_whitespace();
+        let indentation = index.saturating_sub(line_start);
+        if first_content
+            && let_value_indent.is_some_and(|indent| indentation <= indent)
+        {
+            let_value_indent = None;
+        }
+        line_has_content |= first_content;
         match character {
             '(' | '[' | '{' => delimiters.push(character),
             ')' | ']' | '}' => {
@@ -665,7 +677,27 @@ pub(super) fn declaration_header_end(block: &str) -> usize {
             {
                 return index;
             }
-            ':' if delimiters.is_empty() && block[index..].starts_with(":=") => return index,
+            'l' if delimiters.is_empty()
+                && (code[index..].starts_with("let ")
+                    || code[index..].starts_with("let\t")
+                    || code[index..].starts_with("let\n")
+                    || code[index..].starts_with("letI ")
+                    || code[index..].starts_with("letI\t")
+                    || code[index..].starts_with("letI\n"))
+                && code[..index]
+                    .chars()
+                    .next_back()
+                    .is_none_or(|previous| !previous.is_alphanumeric() && previous != '_') =>
+            {
+                pending_let_assignment = Some(indentation);
+            }
+            ':' if delimiters.is_empty() && block[index..].starts_with(":=") => {
+                if let Some(indent) = pending_let_assignment.take() {
+                    let_value_indent = Some(indent);
+                } else if let_value_indent.is_none() {
+                    return index;
+                }
+            }
             'w' if delimiters.is_empty()
                 && block[index..].starts_with("where")
                 && block[..index]
@@ -680,6 +712,10 @@ pub(super) fn declaration_header_end(block: &str) -> usize {
                 return index;
             }
             _ => {}
+        }
+        if character == '\n' {
+            line_start = index + character.len_utf8();
+            line_has_content = false;
         }
     }
     block.len()

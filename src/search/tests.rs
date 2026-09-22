@@ -5443,6 +5443,26 @@ fn signatures_exclude_comments_but_preserve_literal_text_and_source() {
 }
 
 #[test]
+fn theorem_signatures_keep_top_level_let_bindings_and_conclusion() {
+    let source = "theorem Demo.longLetType (X : Type) :\n    let eSource : Type := X\n    letI : Inhabited eSource := by\n      let witness : eSource := Classical.choice inferInstance\n      exact ⟨witness⟩\n    ∃ y : eSource, y = y := by\n  exact ⟨default, rfl⟩\n\ndef Demo.bodyLet : Nat :=\n  let value := 1\n  value\n";
+    let entries = parse_source(source, "Demo");
+    let theorem = entries
+        .iter()
+        .find(|entry| entry.name == "Demo.longLetType")
+        .unwrap();
+    assert!(theorem.signature.contains("let eSource : Type := X"));
+    assert!(theorem.signature.contains("letI : Inhabited eSource :="));
+    assert!(theorem.signature.contains("∃ y : eSource, y = y"));
+    assert!(!theorem.signature.contains("exact ⟨default, rfl⟩"));
+
+    let definition = entries
+        .iter()
+        .find(|entry| entry.name == "Demo.bodyLet")
+        .unwrap();
+    assert_eq!(definition.signature, "Nat");
+}
+
+#[test]
 fn rewrite_comparison_excludes_ambient_context() {
     let diagnostic = "Tactic `rewrite` failed: Did not find an occurrence of the pattern\n  convert b\nin the target expression\n  convertFn b.run = b.run\n\nb : Box\nh : convert b = b\n⊢ convertFn b.run = b.run";
     assert_eq!(
