@@ -1,4 +1,12 @@
-use super::*;
+use std::path::Path;
+
+use anyhow::{Result, ensure};
+
+use super::{
+    SourceLocation, SourceOccurrenceQuery, SourceRegexQuery, Workspace, declaration_name_query,
+    exact_plan, explicit_declaration_name, field_inventory_query, inferred_regex_query,
+    parse_source_location, parse_source_occurrence_query, parse_source_regex_query, type_shaped,
+};
 
 pub(super) enum SearchPlan {
     StoredContext,

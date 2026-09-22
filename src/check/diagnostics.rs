@@ -1,4 +1,9 @@
-use super::*;
+use std::collections::HashSet;
+use std::path::Path;
+
+use crate::state::Diagnostic;
+
+use super::WorkerDiagnostic;
 
 pub(super) fn partition_diagnostics(
     diagnostics: &[WorkerDiagnostic],
@@ -21,7 +26,7 @@ pub(super) fn partition_diagnostics(
         match diagnostic.severity.as_str() {
             "warning" if is_linter(diagnostic) => linters.push(value),
             "warning" | "information" | "info" if is_tactic_suggestion(diagnostic) => {
-                suggestions.push(value)
+                suggestions.push(value);
             }
             "warning" => warnings.push(value),
             "error" => errors.push(value),

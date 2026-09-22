@@ -268,6 +268,33 @@ struct ImportCoverage<'a> {
     passed: &'a HashSet<PathBuf>,
 }
 
+struct CheckOneOptions<'a> {
+    reference: &'a str,
+    cancellation: &'a AtomicBool,
+    include_profile: bool,
+    import_coverage: Option<ImportCoverage<'a>>,
+}
+
+struct WorkerRunRequest<'a> {
+    target: &'a Path,
+    setup_path: &'a Path,
+    environment: &'a str,
+    source: &'a str,
+    run: WorkerRun<'a>,
+    check_reference: Option<&'a str>,
+    cancellation: Option<&'a AtomicBool>,
+}
+
+struct SetupRequest<'a> {
+    target: &'a Path,
+    input_fingerprint: &'a str,
+    has_project_dependencies: bool,
+    dependencies: &'a [PathBuf],
+    deadline: Option<Instant>,
+    cancellation: Option<&'a AtomicBool>,
+    background: bool,
+}
+
 pub struct Checker {
     repo: Repo,
     state: State,
@@ -428,18 +455,17 @@ impl Checker {
         report: &mut dyn FnMut(&str),
     ) -> Result<CheckOutcome> {
         let started = Instant::now();
-        let (targets, dirty_targets) = match requested {
-            Some(path) => (vec![resolve_target(&workspace.path, path)?], None),
-            None => {
-                ensure!(
-                    !merge_in_progress(&workspace.path),
-                    "workspace has an unfinished sync; check the conflicted files, then rerun mathmux sync"
-                );
-                let files = dirty_lean_files(&workspace.path)?;
-                ensure!(!files.is_empty(), "workspace has no dirty Lean files");
-                let targets = maximal_check_targets(&workspace.path, &files)?;
-                (targets, Some(files.into_iter().collect::<HashSet<_>>()))
-            }
+        let (targets, dirty_targets) = if let Some(path) = requested {
+            (vec![resolve_target(&workspace.path, path)?], None)
+        } else {
+            ensure!(
+                !merge_in_progress(&workspace.path),
+                "workspace has an unfinished sync; check the conflicted files, then rerun mathmux sync"
+            );
+            let files = dirty_lean_files(&workspace.path)?;
+            ensure!(!files.is_empty(), "workspace has no dirty Lean files");
+            let targets = maximal_check_targets(&workspace.path, &files)?;
+            (targets, Some(files.into_iter().collect::<HashSet<_>>()))
         };
         let planning_ms = started.elapsed().as_millis() as u64;
         let mut covered_targets = HashSet::new();
@@ -506,13 +532,15 @@ impl Checker {
             match self.check_one(
                 workspace,
                 target,
-                &reference,
-                &cancellation,
-                include_profile,
-                dirty_targets.as_ref().map(|dirty| ImportCoverage {
-                    dirty,
-                    passed: &covered_targets,
-                }),
+                CheckOneOptions {
+                    reference: &reference,
+                    cancellation: &cancellation,
+                    include_profile,
+                    import_coverage: dirty_targets.as_ref().map(|dirty| ImportCoverage {
+                        dirty,
+                        passed: &covered_targets,
+                    }),
+                },
                 report,
             ) {
                 Ok(result) => {
@@ -668,13 +696,11 @@ impl Checker {
             count: matches.len(),
             first_reference: matches
                 .last()
-                .map(|run| run.reference.clone())
-                .unwrap_or_else(|| current.reference.clone()),
+                .map_or_else(|| current.reference.clone(), |run| run.reference.clone()),
             previous_reference: matches
                 .iter()
                 .find(|run| run.reference != current.reference)
-                .map(|run| run.reference.clone())
-                .unwrap_or_else(|| current.reference.clone()),
+                .map_or_else(|| current.reference.clone(), |run| run.reference.clone()),
             deterministic_timeout,
         }))
     }
@@ -683,12 +709,15 @@ impl Checker {
         &self,
         workspace: &Workspace,
         target: &Path,
-        reference: &str,
-        cancellation: &AtomicBool,
-        include_profile: bool,
-        import_coverage: Option<ImportCoverage<'_>>,
+        options: CheckOneOptions<'_>,
         report: &mut dyn FnMut(&str),
     ) -> Result<FileCheck> {
+        let CheckOneOptions {
+            reference,
+            cancellation,
+            include_profile,
+            import_coverage,
+        } = options;
         let file_started = Instant::now();
         let check_lock = {
             let key = (workspace.reference.clone(), target.to_path_buf());
@@ -965,17 +994,19 @@ impl Checker {
         report(&format!("{reference} elaborating {}", target.display()));
         let (mut response, mode, reused_prefix_lines) = self.run_worker(
             workspace,
-            target,
-            &setup_path,
-            &environment,
-            &source,
-            if include_profile {
-                WorkerRun::Profile
-            } else {
-                WorkerRun::Check
+            WorkerRunRequest {
+                target,
+                setup_path: &setup_path,
+                environment: &environment,
+                source: &source,
+                run: if include_profile {
+                    WorkerRun::Profile
+                } else {
+                    WorkerRun::Check
+                },
+                check_reference: Some(reference),
+                cancellation: Some(cancellation),
             },
-            Some(reference),
-            Some(cancellation),
         )?;
         let elaborate_ms = phase.elapsed().as_millis() as u64;
         ensure!(
@@ -1115,14 +1146,17 @@ impl Checker {
     fn run_worker(
         &self,
         workspace: &Workspace,
-        target: &Path,
-        setup_path: &Path,
-        environment: &str,
-        source: &str,
-        run: WorkerRun<'_>,
-        check_reference: Option<&str>,
-        cancellation: Option<&AtomicBool>,
+        request: WorkerRunRequest<'_>,
     ) -> Result<(WorkerResponse, &'static str, Option<u64>)> {
+        let WorkerRunRequest {
+            target,
+            setup_path,
+            environment,
+            source,
+            run,
+            check_reference,
+            cancellation,
+        } = request;
         let (allow_fallback, retry_worker, timeout, action, deadline) = match run {
             WorkerRun::Check => (true, true, CHECK_TIMEOUT, WorkerAction::CHECK, None),
             WorkerRun::Probe {
@@ -1377,22 +1411,24 @@ impl Checker {
         };
         let (response, _, _) = self.run_worker(
             workspace,
-            &target,
-            &setup_path,
-            &environment,
-            &source,
-            WorkerRun::Probe {
-                timeout: probe_timeout(operation),
-                deadline,
-                action: WorkerAction {
-                    operation,
-                    line,
-                    column,
-                    input,
+            WorkerRunRequest {
+                target: &target,
+                setup_path: &setup_path,
+                environment: &environment,
+                source: &source,
+                run: WorkerRun::Probe {
+                    timeout: probe_timeout(operation),
+                    deadline,
+                    action: WorkerAction {
+                        operation,
+                        line,
+                        column,
+                        input,
+                    },
                 },
+                check_reference: None,
+                cancellation: None,
             },
-            None,
-            None,
         )?;
         let detail = if response.detail.trim().is_empty() {
             response
@@ -1455,13 +1491,15 @@ impl Checker {
             None => {
                 let path = self.prepare_setup(
                     workspace,
-                    target,
-                    &setup_input,
-                    !dependencies.is_empty(),
-                    dependencies,
-                    deadline,
-                    cancellation,
-                    background,
+                    SetupRequest {
+                        target,
+                        input_fingerprint: &setup_input,
+                        has_project_dependencies: !dependencies.is_empty(),
+                        dependencies,
+                        deadline,
+                        cancellation,
+                        background,
+                    },
                 )?;
                 environment =
                     self.worker_environment_from_base(workspace, target, &environment_base)?;
@@ -1546,14 +1584,17 @@ impl Checker {
     fn prepare_setup(
         &self,
         workspace: &Workspace,
-        target: &Path,
-        input_fingerprint: &str,
-        has_project_dependencies: bool,
-        dependencies: &[PathBuf],
-        deadline: Option<Instant>,
-        cancellation: Option<&AtomicBool>,
-        background: bool,
+        request: SetupRequest<'_>,
     ) -> Result<PathBuf> {
+        let SetupRequest {
+            target,
+            input_fingerprint,
+            has_project_dependencies,
+            dependencies,
+            deadline,
+            cancellation,
+            background,
+        } = request;
         let gc_lock = open_lock(&self.repo.state_dir.join("setup-gc.lock"))?;
         lock_shared_until(
             &gc_lock,

@@ -543,10 +543,7 @@ pub(super) fn parse_source_occurrence_query(
     let inferred_outline_path = Path::new(path).extension().is_none_or(|ext| ext != "lean")
         && source_request_path(path).is_some()
         && terms.len() == 1
-        && matches!(
-            terms[0].to_ascii_lowercase().as_str(),
-            "outline" | "declarations" | "dossier"
-        );
+        && is_module_source_facet(&terms[0]);
     if inferred_outline_path && path.eq_ignore_ascii_case("FILE") {
         bail!("FILE is a help placeholder; replace it with a Lean source path");
     }
@@ -614,10 +611,7 @@ pub(super) fn normalize_colon_attached_source_facet(query: &str) -> String {
                         .extension()
                         .and_then(|extension| extension.to_str())
                         == Some("lean")
-                        && matches!(
-                            facet.to_ascii_lowercase().as_str(),
-                            "outline" | "declarations" | "imports" | "dependents" | "dossier"
-                        )
+                        && is_source_facet(facet)
                     {
                         format!("{path} {facet}")
                     } else {
@@ -628,6 +622,20 @@ pub(super) fn normalize_colon_attached_source_facet(query: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+pub(super) fn is_source_facet(value: &str) -> bool {
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "outline" | "declarations" | "imports" | "dependents" | "dossier"
+    )
+}
+
+fn is_module_source_facet(value: &str) -> bool {
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "outline" | "declarations" | "dossier"
+    )
 }
 
 pub(super) fn source_occurrence_result(
@@ -873,22 +881,9 @@ fn source_outline_result(
     query: &SourceOccurrenceQuery,
     source: &str,
 ) -> SearchResult {
-    let module = project_module_name(&workspace.path, &query.path);
-    let mut entries = parse_source(source, &module)
-        .into_iter()
-        .filter(|entry| !matches!(entry.kind.as_str(), "field" | "file" | "imports"))
-        .collect::<Vec<_>>();
-    entries.sort_by_key(|entry| entry.line);
+    let (module, relative, entries) = source_inventory(workspace, query, source);
     let total = entries.len();
     let source_lines = source.lines().count();
-    let relative = query.display_path.clone().unwrap_or_else(|| {
-        query
-            .path
-            .strip_prefix(&workspace.path)
-            .unwrap_or(&query.path)
-            .to_string_lossy()
-            .into_owned()
-    });
     let hits = entries
         .iter()
         .take(SOURCE_OCCURRENCE_ALL_LIMIT)
@@ -930,12 +925,7 @@ fn source_dossier_result(
 ) -> SearchResult {
     const IMPORT_LIMIT: usize = 8;
     const DECLARATION_LIMIT: usize = 12;
-    let module = project_module_name(&workspace.path, &query.path);
-    let mut entries = parse_source(source, &module)
-        .into_iter()
-        .filter(|entry| !matches!(entry.kind.as_str(), "field" | "file" | "imports"))
-        .collect::<Vec<_>>();
-    entries.sort_by_key(|entry| entry.line);
+    let (module, relative, entries) = source_inventory(workspace, query, source);
     let imports = source
         .lines()
         .filter_map(|line| {
@@ -946,14 +936,6 @@ fn source_dossier_result(
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .collect::<Vec<_>>();
-    let relative = query.display_path.clone().unwrap_or_else(|| {
-        query
-            .path
-            .strip_prefix(&workspace.path)
-            .unwrap_or(&query.path)
-            .to_string_lossy()
-            .into_owned()
-    });
     let mut detail = format!(
         "file dossier: {} lines, {} declarations, {} imports",
         source.lines().count(),
@@ -1014,6 +996,28 @@ fn source_dossier_result(
         note: None,
         ok: true,
     }
+}
+
+fn source_inventory(
+    workspace: &Workspace,
+    query: &SourceOccurrenceQuery,
+    source: &str,
+) -> (String, String, Vec<SourceEntry>) {
+    let module = project_module_name(&workspace.path, &query.path);
+    let mut entries = parse_source(source, &module)
+        .into_iter()
+        .filter(|entry| !matches!(entry.kind.as_str(), "field" | "file" | "imports"))
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| entry.line);
+    let relative = query.display_path.clone().unwrap_or_else(|| {
+        query
+            .path
+            .strip_prefix(&workspace.path)
+            .unwrap_or(&query.path)
+            .to_string_lossy()
+            .into_owned()
+    });
+    (module, relative, entries)
 }
 
 pub(super) fn parse_source_location(

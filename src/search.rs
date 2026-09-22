@@ -11,7 +11,6 @@ use anyhow::{Context, Result, bail, ensure};
 use regex::Regex;
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use walkdir::WalkDir;
 
@@ -45,16 +44,16 @@ mod tests;
 mod tuning;
 mod type_worker;
 
-use api::*;
+use api::{SearchExpression, SearchRequest, validate_balanced_fragment};
 use display::{
     render_summary, render_summary_without_hints, source_has_complete_declaration_header,
 };
-use plan::*;
+use plan::{SearchPlan, TextSearchPlan, plan_search, text_search_plan};
 pub(crate) use query::diagnostic_type_detail;
 use query::*;
 use source::*;
 use source_query::*;
-use tuning::*;
+use tuning::{SEARCH_TUNING, fts_rank_sql, indexed_rows_sql, ranked_rows_sql};
 use type_worker::{TypeSearchHit, TypeSearchResult, TypeSearchState, TypeSearchWorker};
 
 const RESULT_LIMIT: usize = SEARCH_PRESENTATION.result_limit;

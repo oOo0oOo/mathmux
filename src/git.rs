@@ -1100,8 +1100,7 @@ mod tests {
         fs::write(stale_path.join("Unsubmitted.lean"), "def value := 1\n").unwrap();
 
         let error = delete_workspace(&repo, &state, "agent", false)
-            .err()
-            .expect("source-bearing orphan should not be deleted");
+            .expect_err("source-bearing orphan should not be deleted");
         assert!(error.to_string().contains("possible unsubmitted files"));
         assert!(stale_path.join("Unsubmitted.lean").exists());
         assert_eq!(state.list_workspaces().unwrap().len(), 1);
@@ -1136,8 +1135,7 @@ mod tests {
         fs::rename(&missing_path, &moved_path).unwrap();
 
         let error = delete_workspace(&repo, &state, "agent", false)
-            .err()
-            .expect("missing workspace with branch changes should be preserved");
+            .expect_err("missing workspace with branch changes should be preserved");
         assert!(
             error
                 .to_string()

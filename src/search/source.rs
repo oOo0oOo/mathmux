@@ -678,12 +678,7 @@ pub(super) fn declaration_header_end(block: &str) -> usize {
                 return index;
             }
             'l' if delimiters.is_empty()
-                && (code[index..].starts_with("let ")
-                    || code[index..].starts_with("let\t")
-                    || code[index..].starts_with("let\n")
-                    || code[index..].starts_with("letI ")
-                    || code[index..].starts_with("letI\t")
-                    || code[index..].starts_with("letI\n"))
+                && starts_let_binding(&code[index..])
                 && code[..index]
                     .chars()
                     .next_back()
@@ -719,6 +714,15 @@ pub(super) fn declaration_header_end(block: &str) -> usize {
         }
     }
     block.len()
+}
+
+fn starts_let_binding(value: &str) -> bool {
+    ["let", "letI"].into_iter().any(|keyword| {
+        value
+            .strip_prefix(keyword)
+            .and_then(|rest| rest.chars().next())
+            .is_some_and(char::is_whitespace)
+    })
 }
 
 pub(super) fn declaration_block(block: &str) -> &str {

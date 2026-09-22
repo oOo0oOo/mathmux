@@ -1,5 +1,11 @@
 //! Snapshot-bound Lean evidence and explicitly authored project routes.
-use super::*;
+use std::fs;
+use std::path::Path;
+
+use anyhow::{Context, Result, ensure};
+use serde::Deserialize;
+
+use super::{SearchRun, Searcher, Workspace, single_line, truncate_line};
 
 #[derive(Debug, Deserialize)]
 pub(super) struct LeanEvidence {

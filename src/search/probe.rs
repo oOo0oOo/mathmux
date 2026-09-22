@@ -132,10 +132,7 @@ impl ProbeRequest {
             let mut facet_terms = remainder.split_whitespace();
             if let (Some(facet), None) = (facet_terms.next(), facet_terms.next()) {
                 let facet = facet.trim_matches(['\'', '"']);
-                if matches!(
-                    facet.to_ascii_lowercase().as_str(),
-                    "outline" | "declarations" | "imports" | "dependents" | "dossier"
-                ) {
+                if is_source_facet(facet) {
                     bail!(
                         "`{facet}` is a source-search facet, not a probe subject; use `mathmux search {file} {facet}`"
                     )
@@ -494,8 +491,8 @@ impl Searcher {
                 bail!("goal requires an exact FILE:LINE context, not {file}")
             }
             _ => {
-                return Err(anyhow::anyhow!("probe form is incomplete")
-                    .context(crate::protocol::DiscoveryFailure::InvalidRequest));
+                Err(anyhow::anyhow!("probe form is incomplete")
+                    .context(crate::protocol::DiscoveryFailure::InvalidRequest))
             }
         }
     }
