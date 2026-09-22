@@ -342,7 +342,10 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
             if attempt == 0:
                 assert 'Possible conversion' not in evidence, evidence
         assert 'repeated blocker:' in evidence, evidence
-        assert 'recover_coe :' in evidence and 'applicability unverified' in evidence, evidence
+        check_ref = evidence.splitlines()[0].split()[1]
+        evidence = probe(check_ref + ' evidence')
+        assert 'failure evidence for ' in evidence and 'recover_coe :' in evidence, evidence
+        assert 'Verify one candidate in place:' in evidence, evidence
         recovery.write_text(recovery.read_text().replace('rw [h]', 'rw [← recover_coe b, h]'))
         run([binary, 'check', 'RepeatConversion.lean'], ws)
 

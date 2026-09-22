@@ -224,7 +224,9 @@ pub(super) fn render_search_run(run: &SearchRun, all: bool) -> String {
                     _ if all && matches!(run.inference.as_str(), "probe" | "probe-source") => {
                         usize::MAX
                     }
-                    "fields" | "outline" | "source-range" | "source-occurrences" => usize::MAX,
+                    "fields" | "outline" | "dossier" | "source-range" | "source-occurrences" => {
+                        usize::MAX
+                    }
                     "class" | "inductive" | "structure" => 48,
                     _ if index == 0 && query_requests_proof_body(&run.query) => 48,
                     _ => SOURCE_PREVIEW_LINES,

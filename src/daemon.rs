@@ -379,10 +379,8 @@ impl Service {
                 let mut summary = check_summary(&outcome);
                 if !outcome.ok
                     && let Some(diagnostic) = outcome.diagnostics.first()
-                    && let Some((module, line)) = diagnostic
-                        .text
-                        .split_once(':')
-                        .and_then(|(module, rest)| {
+                    && let Some((module, line)) =
+                        diagnostic.text.split_once(':').and_then(|(module, rest)| {
                             rest.split(':')
                                 .next()
                                 .and_then(|line| line.parse::<u64>().ok())
@@ -390,11 +388,9 @@ impl Service {
                         })
                 {
                     let relative = PathBuf::from(module.replace('.', "/")).with_extension("lean");
-                    if let Some((name, start, end)) = crate::search::enclosing_declaration_at(
-                        &workspace.path,
-                        &relative,
-                        line,
-                    ) {
+                    if let Some((name, start, end)) =
+                        crate::search::enclosing_declaration_at(&workspace.path, &relative, line)
+                    {
                         let leaf = name.rsplit('.').next().unwrap_or(&name);
                         summary.push_str(&format!(
                             "\nfailing declaration: {name} (lines {start}-{end}); reread: mathmux search {}:{leaf}",
@@ -409,10 +405,13 @@ impl Service {
                 {
                     summary.push_str(&hint);
                 }
-                if !outcome.ok && outcome.repetition.is_some()
+                if !outcome.ok
+                    && outcome.repetition.is_some()
                     && let Some(diagnostic) = outcome.diagnostics.first()
                     && let Ok(hint) = self.searcher.repeated_rewrite_hint(
-                        &workspace, &diagnostic.text, file.as_deref(),
+                        &workspace,
+                        &diagnostic.text,
+                        file.as_deref(),
                     )
                 {
                     summary.push_str(&hint);
@@ -614,8 +613,11 @@ fn compact_type_mismatch(text: &str) -> Option<String> {
     if !difference.starts_with("first type difference") || difference.contains('…') {
         return None;
     }
-    let header = text.lines().take_while(|line| line.trim() != "has type")
-        .collect::<Vec<_>>().join("\n");
+    let header = text
+        .lines()
+        .take_while(|line| line.trim() != "has type")
+        .collect::<Vec<_>>()
+        .join("\n");
     let preview = format!("{header}\n{difference}\n(shared type context omitted)");
     (preview.chars().count() * 2 < original_len).then_some(preview)
 }
@@ -632,32 +634,55 @@ fn goal_first_diagnostic(text: &str) -> Option<String> {
         .map(|(index, _)| index)
         .collect::<Vec<_>>();
     let [start] = goals.as_slice() else {
-        if goals.len() < 2 { return None; }
+        if goals.len() < 2 {
+            return None;
+        }
         let mut overview = Vec::new();
         let mut contexts = Vec::new();
         let mut previous = 0;
         for (number, start) in goals.iter().enumerate() {
-            let case_index = previous + lines[previous..*start].iter()
-                .rposition(|line| line.starts_with("case "))?;
-            if lines[previous..*start].iter().filter(|line| line.starts_with("case ")).count() != 1
-                || (number == 0 && lines[1..case_index].iter().any(|line| !line.trim().is_empty())) {
+            let case_index = previous
+                + lines[previous..*start]
+                    .iter()
+                    .rposition(|line| line.starts_with("case "))?;
+            if lines[previous..*start]
+                .iter()
+                .filter(|line| line.starts_with("case "))
+                .count()
+                != 1
+                || (number == 0
+                    && lines[1..case_index]
+                        .iter()
+                        .any(|line| !line.trim().is_empty()))
+            {
                 return None;
             }
             let case = lines[case_index];
-            let end = lines[*start + 1..].iter()
+            let end = lines[*start + 1..]
+                .iter()
                 .position(|line| line.starts_with("case "))
                 .map_or(lines.len(), |offset| start + 1 + offset);
             if goals.get(number + 1).is_some_and(|next| *next < end) {
                 return None;
             }
-            overview.push(format!("goal {} ({case})\n{}", number + 1,
-                lines[*start..end].join("\n").trim_end()));
-            contexts.push(format!("local context (goal {}, {case}): {}", number + 1,
-                clean_line(&lines[case_index + 1..*start].join("\n"))));
+            overview.push(format!(
+                "goal {} ({case})\n{}",
+                number + 1,
+                lines[*start..end].join("\n").trim_end()
+            ));
+            contexts.push(format!(
+                "local context (goal {}, {case}): {}",
+                number + 1,
+                clean_line(&lines[case_index + 1..*start].join("\n"))
+            ));
             previous = *start + 1;
         }
-        return Some(format!("{}\n{}\n{}",
-            lines[0], overview.join("\n"), contexts.join("\n")));
+        return Some(format!(
+            "{}\n{}\n{}",
+            lines[0],
+            overview.join("\n"),
+            contexts.join("\n")
+        ));
     };
     let context = lines[1..*start].join("\n");
     let goal = lines[*start..].join("\n");
@@ -677,16 +702,22 @@ fn missing_dependency_hint(
     diagnostic: &crate::state::Diagnostic,
 ) -> Option<String> {
     if diagnostic.kind != "lean.dependency"
-        || !diagnostic.text.starts_with("no such file or directory (error code: 2)\n")
+        || !diagnostic
+            .text
+            .starts_with("no such file or directory (error code: 2)\n")
     {
         return None;
     }
-    let requested = diagnostic.text.lines()
+    let requested = diagnostic
+        .text
+        .lines()
         .find_map(|line| line.trim().strip_prefix("file: "))?;
     let path = Path::new(requested);
     let relative = path.strip_prefix(workspace).ok()?;
     if relative.extension()? != "lean"
-        || relative.components().any(|part| !matches!(part, std::path::Component::Normal(_)))
+        || relative
+            .components()
+            .any(|part| !matches!(part, std::path::Component::Normal(_)))
         || relative.starts_with(".lake")
         || path.exists()
         || git::tracked_at_head(workspace, relative).ok()?
@@ -743,25 +774,10 @@ fn check_summary(outcome: &CheckOutcome) -> String {
                 output.push('\n');
                 output.push_str(context);
             }
-            if detail.to_ascii_lowercase().contains("type mismatch")
-                || detail.contains("definitionally equal")
-                || detail.contains("Did not find an occurrence of the pattern")
-            {
-                output.push_str(&format!(
-                    "\ncontext: mathmux probe {} context; test a replacement lemma with `mathmux probe {} NAME fits`",
-                    outcome.reference, outcome.reference
-                ));
-            } else if detail.contains("unsolved goals") {
-                output.push_str(&format!(
-                    "\ngoal: mathmux probe {} goal; test a candidate lemma with `mathmux probe {} NAME fits`",
-                    outcome.reference, outcome.reference
-                ));
-            } else if detail.contains("failed to synthesize") {
-                output.push_str(&format!(
-                    "\ninstance failure: mathmux probe {} types; test an alternative lemma with `mathmux probe {} NAME fits`",
-                    outcome.reference, outcome.reference
-                ));
-            }
+            output.push_str(&format!(
+                "\nproof dossier: mathmux probe {} evidence; it combines the stored goal, type/conversion analysis, import-aware candidates, and a verification command",
+                outcome.reference
+            ));
             if compact_type.is_some() || detail.chars().count() > CHECK_PRIMARY_DIAGNOSTIC_CHARS {
                 output.push_str(&format!("\nfull diagnostic: show {}", outcome.reference));
             }
@@ -793,7 +809,7 @@ fn check_summary(outcome: &CheckOutcome) -> String {
             let next = if repetition.deterministic_timeout {
                 "check --profile".to_owned()
             } else {
-                format!("search {}", outcome.reference)
+                format!("probe {} evidence", outcome.reference)
             };
             output.push_str(&format!(
                 "\nrepeated blocker: {} checks ({}..{}, previous {}); {}",
@@ -898,44 +914,96 @@ mod tests {
         fs::create_dir_all(main.join("Demo")).unwrap();
         fs::create_dir_all(&workspace).unwrap();
         let git = |args: &[&str]| {
-            assert!(std::process::Command::new("git").args(args).current_dir(&main)
-                .output().unwrap().status.success());
+            assert!(
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(&main)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
         };
         git(&["init", "-b", "main"]);
         fs::write(main.join("Demo/Needed.lean"), "def value := 1\n").unwrap();
         git(&["add", "."]);
-        git(&["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "fixture"]);
+        git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-m",
+            "fixture",
+        ]);
         let diagnostic = |path: &Path| Diagnostic {
             kind: "lean.dependency".into(),
-            text: format!("no such file or directory (error code: 2)\n  file: {}\nFailed to build module dependencies.", path.display()),
+            text: format!(
+                "no such file or directory (error code: 2)\n  file: {}\nFailed to build module dependencies.",
+                path.display()
+            ),
             context: None,
         };
         let missing = workspace.join("Demo/Needed.lean");
-        assert!(missing_dependency_hint(&main, &workspace, &diagnostic(&missing))
-            .unwrap().contains("Demo/Needed.lean is committed on managed main"));
+        assert!(
+            missing_dependency_hint(&main, &workspace, &diagnostic(&missing))
+                .unwrap()
+                .contains("Demo/Needed.lean is committed on managed main")
+        );
         let absent = workspace.join("Demo/Absent.lean");
         assert!(missing_dependency_hint(&main, &workspace, &diagnostic(&absent)).is_none());
         fs::write(main.join("Demo/Absent.lean"), "def value := 2\n").unwrap();
         assert!(missing_dependency_hint(&main, &workspace, &diagnostic(&absent)).is_none());
-        assert!(missing_dependency_hint(&main, &workspace,
-            &diagnostic(&temp.path().join("sibling/Demo/Needed.lean"))).is_none());
-        assert!(missing_dependency_hint(&main, &workspace,
-            &diagnostic(&workspace.join("../main/Demo/Needed.lean"))).is_none());
+        assert!(
+            missing_dependency_hint(
+                &main,
+                &workspace,
+                &diagnostic(&temp.path().join("sibling/Demo/Needed.lean"))
+            )
+            .is_none()
+        );
+        assert!(
+            missing_dependency_hint(
+                &main,
+                &workspace,
+                &diagnostic(&workspace.join("../main/Demo/Needed.lean"))
+            )
+            .is_none()
+        );
         let mut unrelated = diagnostic(&missing);
         unrelated.kind = "lean.error".into();
         assert!(missing_dependency_hint(&main, &workspace, &unrelated).is_none());
         unrelated.kind = "lean.dependency".into();
-        unrelated.text = unrelated.text.replace("no such file or directory", "permission denied");
+        unrelated.text = unrelated
+            .text
+            .replace("no such file or directory", "permission denied");
         assert!(missing_dependency_hint(&main, &workspace, &unrelated).is_none());
         fs::create_dir_all(workspace.join("Demo")).unwrap();
         fs::write(&missing, "def value := 1\n").unwrap();
         assert!(missing_dependency_hint(&main, &workspace, &diagnostic(&missing)).is_none());
         // Sync preserves a local deletion; it does not restore a file already in HEAD.
-        for args in [vec!["init", "-b", "main"], vec!["add", "."],
-            vec!["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "workspace"]]
-        {
-            assert!(std::process::Command::new("git").args(args).current_dir(&workspace)
-                .output().unwrap().status.success());
+        for args in [
+            vec!["init", "-b", "main"],
+            vec!["add", "."],
+            vec![
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-m",
+                "workspace",
+            ],
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(&workspace)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
         }
         fs::remove_file(&missing).unwrap();
         assert!(missing_dependency_hint(&main, &workspace, &diagnostic(&missing)).is_none());
@@ -1039,22 +1107,37 @@ mod tests {
         assert!(summary.contains("final target"));
         assert!(summary.contains(">    3 | failing tactic"));
         assert!(summary.contains("full diagnostic: show c1"));
-        assert!(summary.contains("repeated blocker: 3 checks (c8..c1, previous c9); search c1"));
+        assert!(
+            summary.contains("repeated blocker: 3 checks (c8..c1, previous c9); probe c1 evidence")
+        );
     }
 
     #[test]
     fn long_type_mismatch_focuses_distinct_instances() {
         let common = "SharedTypeArgument ".repeat(40);
-        let text = format!("Demo:3:1: error: Type mismatch: term\n  proof\n has type\n  F {common}actualInstance x\nbut is expected to have type\n  F {common}expectedInstance x");
+        let text = format!(
+            "Demo:3:1: error: Type mismatch: term\n  proof\n has type\n  F {common}actualInstance x\nbut is expected to have type\n  F {common}expectedInstance x"
+        );
         let preview = compact_type_mismatch(&text).unwrap();
         assert!(preview.starts_with("Demo:3:1: error: Type mismatch: term\n  proof"));
         assert!(preview.contains("actual: actualInstance"));
         assert!(preview.contains("expected: expectedInstance"));
         assert!(!preview.contains("SharedTypeArgument"));
-        assert!(compact_type_mismatch("Type mismatch\n has type\n Nat\nbut is expected to have type\n Bool").is_none());
-        let unrelated = format!("Type mismatch\n has type\n {}\nbut is expected to have type\n {}", "Left ".repeat(65), "Right ".repeat(65));
+        assert!(
+            compact_type_mismatch(
+                "Type mismatch\n has type\n Nat\nbut is expected to have type\n Bool"
+            )
+            .is_none()
+        );
+        let unrelated = format!(
+            "Type mismatch\n has type\n {}\nbut is expected to have type\n {}",
+            "Left ".repeat(65),
+            "Right ".repeat(65)
+        );
         assert!(compact_type_mismatch(&unrelated).is_none());
-        assert!(compact_type_mismatch(&text.replace("Type mismatch", "unknown identifier")).is_none());
+        assert!(
+            compact_type_mismatch(&text.replace("Type mismatch", "unknown identifier")).is_none()
+        );
     }
 
     #[test]
@@ -1064,14 +1147,23 @@ mod tests {
         assert!(rendered.starts_with("Demo:3:1: error: unsolved goals\n⊢ P x ∧\n    True"));
         assert!(rendered.ends_with("local context: α : Type x : α h : P x"));
         let multiple = goal_first_diagnostic(
-            "error: unsolved goals\ncase left\nh : P\n⊢ P\ncase right\nh : Q\n⊢ Q"
-        ).unwrap();
-        assert!(multiple.starts_with("error: unsolved goals\ngoal 1 (case left)\n⊢ P\ngoal 2 (case right)\n⊢ Q"));
+            "error: unsolved goals\ncase left\nh : P\n⊢ P\ncase right\nh : Q\n⊢ Q",
+        )
+        .unwrap();
+        assert!(multiple.starts_with(
+            "error: unsolved goals\ngoal 1 (case left)\n⊢ P\ngoal 2 (case right)\n⊢ Q"
+        ));
         assert!(multiple.contains("local context (goal 1, case left): h : P"));
         assert!(multiple.contains("local context (goal 2, case right): h : Q"));
         assert!(goal_first_diagnostic("error: unsolved goals\nh : P\n⊢ P\nh : Q\n⊢ Q").is_none());
-        assert!(goal_first_diagnostic("error: unsolved goals\nshared : P\ncase left\n⊢ P\ncase right\n⊢ Q").is_none());
-        let repeated = goal_first_diagnostic("error: unsolved goals\ncase e_a\n⊢ P\ncase e_a\n⊢ Q").unwrap();
+        assert!(
+            goal_first_diagnostic(
+                "error: unsolved goals\nshared : P\ncase left\n⊢ P\ncase right\n⊢ Q"
+            )
+            .is_none()
+        );
+        let repeated =
+            goal_first_diagnostic("error: unsolved goals\ncase e_a\n⊢ P\ncase e_a\n⊢ Q").unwrap();
         assert!(repeated.contains("goal 1 (case e_a)\n⊢ P\ngoal 2 (case e_a)\n⊢ Q"));
         assert!(goal_first_diagnostic("error: type mismatch\n⊢ P").is_none());
         assert!(goal_first_diagnostic("error: unsolved goals").is_none());
@@ -1168,7 +1260,10 @@ mod tests {
             profile: None,
             repetition: None,
         });
-        assert_eq!(summary, "c4 10ms\nblocking error");
+        assert_eq!(
+            summary,
+            "c4 10ms\nblocking error\nproof dossier: mathmux probe c4 evidence; it combines the stored goal, type/conversion analysis, import-aware candidates, and a verification command"
+        );
     }
 
     #[test]

@@ -112,10 +112,10 @@ pub(super) fn parse_source_regex_query(
         .filter(|token| token.eq_ignore_ascii_case("source"))
         .map_or(scope, |label| scope[label.len()..].trim_start());
     if scope.split_whitespace().count() > 1 {
-        return Err(anyhow::anyhow!(
-            "source regex accepts at most one file or directory scope"
-        )
-        .context(crate::protocol::DiscoveryFailure::InvalidRequest));
+        return Err(
+            anyhow::anyhow!("source regex accepts at most one file or directory scope")
+                .context(crate::protocol::DiscoveryFailure::InvalidRequest),
+        );
     }
     let (scope, range) = scope
         .rsplit_once(':')
@@ -268,7 +268,12 @@ pub(super) fn source_regex_result(
     let scope = if query.scope == root {
         "project sources; dependencies require an explicit scope".to_owned()
     } else {
-        query.scope.strip_prefix(&root).unwrap_or(&query.scope).display().to_string()
+        query
+            .scope
+            .strip_prefix(&root)
+            .unwrap_or(&query.scope)
+            .display()
+            .to_string()
     };
     Ok(SearchResult {
         hits,
@@ -279,7 +284,9 @@ pub(super) fn source_regex_result(
         }
         .into(),
         note: if timed_out {
-            Some(format!("source regex scan timed out in {scope}; narrow the scope"))
+            Some(format!(
+                "source regex scan timed out in {scope}; narrow the scope"
+            ))
         } else if total == 0 {
             Some(format!("no regex source matches in {scope}"))
         } else if omitted_groups > 0 {
@@ -502,8 +509,8 @@ pub(super) fn parse_source_occurrence_query(
         _ => 0,
     };
     let target = parts[target_index];
-    let find_selector = parts.get(target_index + 1) == Some(&"find")
-        && parts.get(target_index + 2).is_some();
+    let find_selector =
+        parts.get(target_index + 1) == Some(&"find") && parts.get(target_index + 2).is_some();
     let terms = parts
         .iter()
         .enumerate()
@@ -527,7 +534,7 @@ pub(super) fn parse_source_occurrence_query(
             == Some("lean")
         {
             bail!(
-                "source file query needs a line, range, or facet: {target}; use {target}:LINE, {target}:START-END, or {target} outline/imports/dependents"
+                "source file query needs a line, range, or facet: {target}; use {target}:LINE, {target}:START-END, or {target} dossier/outline/imports/dependents"
             );
         }
         return Ok(None);
@@ -538,7 +545,7 @@ pub(super) fn parse_source_occurrence_query(
         && terms.len() == 1
         && matches!(
             terms[0].to_ascii_lowercase().as_str(),
-            "outline" | "declarations"
+            "outline" | "declarations" | "dossier"
         );
     if inferred_outline_path && path.eq_ignore_ascii_case("FILE") {
         bail!("FILE is a help placeholder; replace it with a Lean source path");
@@ -588,7 +595,11 @@ pub(super) fn parse_source_occurrence_query(
 pub(super) fn parse_source_line_range(range: &str) -> Option<(u64, u64)> {
     let (first, last) = range.split_once('-')?;
     let first = first.parse().ok()?;
-    let last = last.parse().ok()?;
+    let last = if matches!(last.to_ascii_lowercase().as_str(), "end" | "tail") {
+        u64::MAX
+    } else {
+        last.parse().ok()?
+    };
     (first > 0 && first <= last).then_some((first, last))
 }
 
@@ -605,7 +616,7 @@ pub(super) fn normalize_colon_attached_source_facet(query: &str) -> String {
                         == Some("lean")
                         && matches!(
                             facet.to_ascii_lowercase().as_str(),
-                            "outline" | "declarations" | "imports" | "dependents"
+                            "outline" | "declarations" | "imports" | "dependents" | "dossier"
                         )
                     {
                         format!("{path} {facet}")
@@ -632,6 +643,9 @@ pub(super) fn source_occurrence_result(
         )
     {
         return Ok(source_outline_result(workspace, &query, &source));
+    }
+    if query.terms.len() == 1 && query.terms[0].eq_ignore_ascii_case("dossier") {
+        return Ok(source_dossier_result(workspace, &query, &source));
     }
     let import_query = query
         .terms
@@ -752,9 +766,7 @@ pub(super) fn source_occurrence_result(
                 } else {
                     format!(
                         "{line_label}; inside {} lines {}-{}",
-                        span.name,
-                        span.start,
-                        span.end
+                        span.name, span.start, span.end
                     )
                 }
             },
@@ -834,12 +846,14 @@ pub(super) fn source_occurrence_result(
                         query.first_line.saturating_add(limit as u64),
                         |(line, _)| *line,
                     );
+                    let continuation = if query.last_line == u64::MAX {
+                        format!("{continuation_path}:{next_line}-tail")
+                    } else {
+                        format!("{continuation_path}:{next_line}-{}", query.last_line)
+                    };
                     format!(
                         "+{omitted} lines omitted; next: mathmux search {}",
-                        super::shell_argument(&format!(
-                            "{continuation_path}:{next_line}-{}",
-                            query.last_line
-                        )),
+                        super::shell_argument(&continuation),
                     )
                 }
             } else {
@@ -905,6 +919,99 @@ fn source_outline_result(
         } else {
             Some(format!("{total} declarations across {source_lines} lines"))
         },
+        ok: true,
+    }
+}
+
+fn source_dossier_result(
+    workspace: &Workspace,
+    query: &SourceOccurrenceQuery,
+    source: &str,
+) -> SearchResult {
+    const IMPORT_LIMIT: usize = 8;
+    const DECLARATION_LIMIT: usize = 12;
+    let module = project_module_name(&workspace.path, &query.path);
+    let mut entries = parse_source(source, &module)
+        .into_iter()
+        .filter(|entry| !matches!(entry.kind.as_str(), "field" | "file" | "imports"))
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| entry.line);
+    let imports = source
+        .lines()
+        .filter_map(|line| {
+            line.trim_start()
+                .strip_prefix("import ")
+                .or_else(|| line.trim_start().strip_prefix("public import "))
+        })
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    let relative = query.display_path.clone().unwrap_or_else(|| {
+        query
+            .path
+            .strip_prefix(&workspace.path)
+            .unwrap_or(&query.path)
+            .to_string_lossy()
+            .into_owned()
+    });
+    let mut detail = format!(
+        "file dossier: {} lines, {} declarations, {} imports",
+        source.lines().count(),
+        entries.len(),
+        imports.len()
+    );
+    if !imports.is_empty() {
+        detail.push_str("\nimports:");
+        for import in imports.iter().take(IMPORT_LIMIT) {
+            detail.push_str(&format!("\n  {import}"));
+        }
+        if imports.len() > IMPORT_LIMIT {
+            detail.push_str(&format!("\n  +{} imports", imports.len() - IMPORT_LIMIT));
+        }
+    }
+    if !entries.is_empty() {
+        detail.push_str("\ndeclarations:");
+        for entry in entries.iter().take(DECLARATION_LIMIT) {
+            let signature = truncate_line(&single_line(&entry.signature), 180);
+            detail.push_str(&format!(
+                "\n  {}:{} {}{}",
+                relative,
+                entry.line,
+                entry.name,
+                if signature.is_empty() {
+                    String::new()
+                } else {
+                    format!(" : {signature}")
+                }
+            ));
+        }
+        if entries.len() > DECLARATION_LIMIT {
+            detail.push_str(&format!(
+                "\n  +{} declarations; use `{relative} outline`",
+                entries.len() - DECLARATION_LIMIT
+            ));
+        }
+        detail.push_str(&format!(
+            "\nnext: mathmux probe {} source",
+            super::shell_argument(&entries[0].name)
+        ));
+    }
+    SearchResult {
+        hits: vec![SearchHit {
+            name: relative.clone(),
+            kind: "dossier".into(),
+            signature: Some(format!("bounded semantic inventory for {relative}")),
+            module,
+            path: relative,
+            line: 1,
+            doc: None,
+            source: Some(detail),
+            usages: Vec::new(),
+            applicable: false,
+            required_import: None,
+        }],
+        inference: "source-dossier".into(),
+        note: None,
         ok: true,
     }
 }
@@ -981,7 +1088,10 @@ pub(super) fn parse_source_location(
                     .iter()
                     .map(|span| {
                         let name = span.name.rsplit('.').next().unwrap_or(&span.name);
-                        (edit_distance(&leaf.to_lowercase(), &name.to_lowercase()), name)
+                        (
+                            edit_distance(&leaf.to_lowercase(), &name.to_lowercase()),
+                            name,
+                        )
                     })
                     .collect::<Vec<_>>();
                 nearest.sort();
@@ -993,7 +1103,9 @@ pub(super) fn parse_source_location(
                     .join(", ");
                 return Err(anyhow::anyhow!(
                     "no declaration named {requested_name} in {}; nearest: {nearest}",
-                    display_path.as_deref().unwrap_or(requested_path_display(&path, root))
+                    display_path
+                        .as_deref()
+                        .unwrap_or(requested_path_display(&path, root))
                 )
                 .context(crate::protocol::DiscoveryFailure::InvalidRequest));
             };
@@ -1058,7 +1170,6 @@ fn is_source_location_token(token: &str) -> bool {
         == Some("lean")
 }
 
-
 /// Missing-source failures carry their telemetry class: a stale managed-main
 /// file is an unavailable context; anything else is a bad request (typo).
 fn missing_source_error(root: &Path, main_root: Option<&Path>, requested: &str) -> anyhow::Error {
@@ -1120,16 +1231,25 @@ fn nearby_source_paths(root: &Path, requested: &str) -> Vec<String> {
         .unwrap_or_default();
     let requested_parts = identifier_query_parts(requested_stem);
     let requested_lower = requested_stem.to_lowercase();
-    let requested_path_parts = identifier_query_parts(&requested.to_string_lossy().replace('/', "."));
+    let requested_path_parts =
+        identifier_query_parts(&requested.to_string_lossy().replace('/', "."));
     let mut files = project_lean_files(root);
     // Only inspect the explicitly named library root, never all dependency trees.
-    if let Some(std::path::Component::Normal(library)) = requested.components().next().filter(|_| requested.components().count() > 1) {
+    if let Some(std::path::Component::Normal(library)) = requested
+        .components()
+        .next()
+        .filter(|_| requested.components().count() > 1)
+    {
         let library = PathBuf::from(library);
         if let Ok(packages) = fs::read_dir(root.join(".lake/packages")) {
             for package in packages.flatten() {
                 let source_root = package.path().join(&library);
                 if source_root.is_dir() {
-                    files.extend(project_lean_files(&source_root).into_iter().map(|p| library.join(p)));
+                    files.extend(
+                        project_lean_files(&source_root)
+                            .into_iter()
+                            .map(|p| library.join(p)),
+                    );
                 }
             }
         }
@@ -1151,7 +1271,9 @@ fn nearby_source_paths(root: &Path, requested: &str) -> Vec<String> {
             let close_name = distance <= 2.max(requested_lower.chars().count() / 5);
             let path_parts = identifier_query_parts(&candidate.to_string_lossy().replace('/', "."));
             let related_path = requested_path_parts.len() >= 3
-                && requested_path_parts.iter().all(|part| path_parts.contains(part));
+                && requested_path_parts
+                    .iter()
+                    .all(|part| path_parts.contains(part));
             if !related_parts && !close_name && !related_path {
                 return None;
             }
@@ -1160,19 +1282,27 @@ fn nearby_source_paths(root: &Path, requested: &str) -> Vec<String> {
         })
         .collect::<Vec<_>>();
     candidates.sort_by(|left, right| {
-        right.0.cmp(&left.0)
+        right
+            .0
+            .cmp(&left.0)
             .then_with(|| right.1.cmp(&left.1))
             .then_with(|| right.2.cmp(&left.2))
             .then_with(|| left.3.cmp(&right.3))
             .then_with(|| left.4.cmp(&right.4))
     });
-    candidates.into_iter().take(5)
-        .map(|(_, _, _, _, path)| path.to_string_lossy().into_owned()).collect()
+    candidates
+        .into_iter()
+        .take(5)
+        .map(|(_, _, _, _, path)| path.to_string_lossy().into_owned())
+        .collect()
 }
 
 fn source_request_path(display: &str) -> Option<PathBuf> {
     let path = Path::new(display);
-    if !display.contains(['/', '\\'])
+    if !display.contains(['/', '\\']) && display.ends_with(".lean") {
+        let stem = display.strip_suffix(".lean")?;
+        Some(PathBuf::from(format!("{}.lean", stem.replace('.', "/"))))
+    } else if !display.contains(['/', '\\'])
         && display.contains('.')
         && path.extension().is_none_or(|extension| extension != "lean")
     {
@@ -1190,6 +1320,18 @@ pub(super) fn resolve_source_path(
     path: &str,
 ) -> Result<Option<(PathBuf, Option<String>, bool)>> {
     let display = path.strip_prefix("<dependency>/").unwrap_or(path);
+    let literal = Path::new(display);
+    let literal_direct = if literal.is_absolute() {
+        literal.to_path_buf()
+    } else {
+        cwd.join(literal)
+    };
+    if literal_direct.is_file() {
+        let direct = fs::canonicalize(literal_direct)?;
+        if direct.starts_with(fs::canonicalize(root)?) {
+            return Ok(Some((direct, None, true)));
+        }
+    }
     let Some(requested) = source_request_path(display) else {
         return Ok(None);
     };
@@ -1461,14 +1603,19 @@ pub(super) fn source_location_result(
         if shown_end < span_end {
             prepend_search_note(
                 &mut result_note,
-                format!("declaration continues; next: {relative}:{}-{span_end}", shown_end + 1),
+                format!(
+                    "declaration continues; next: {relative}:{}-{span_end}",
+                    shown_end + 1
+                ),
             );
         } else {
             prepend_search_note(&mut result_note, "complete declaration".to_owned());
         }
         return SearchResult {
             hits: vec![SearchHit {
-                name: enclosing.map_or("source", |span| span.name.as_str()).to_owned(),
+                name: enclosing
+                    .map_or("source", |span| span.name.as_str())
+                    .to_owned(),
                 kind: "location-expanded".into(),
                 signature: Some(enclosing.map_or_else(
                     || format!("declaration lines {span_start}-{span_end}"),
@@ -1500,10 +1647,13 @@ pub(super) fn source_location_result(
     let beyond_end = line_count > 0 && location.line > line_count;
     let mut result_note = note.map(str::to_owned);
     if beyond_end {
-        prepend_search_note(&mut result_note, format!(
-            "requested line {} is beyond the file's {line_count} lines; showing the tail",
-            location.line
-        ));
+        prepend_search_note(
+            &mut result_note,
+            format!(
+                "requested line {} is beyond the file's {line_count} lines; showing the tail",
+                location.line
+            ),
+        );
     }
     SearchResult {
         hits: vec![SearchHit {
@@ -1527,7 +1677,11 @@ pub(super) fn source_location_result(
             )),
             module: String::new(),
             path: relative,
-            line: if beyond_end { line_count } else { location.line },
+            line: if beyond_end {
+                line_count
+            } else {
+                location.line
+            },
             doc: None,
             source: nonempty(location_source_excerpt(source, location.line, line_limit)),
             usages: Vec::new(),
@@ -1587,9 +1741,11 @@ mod path_recovery_tests {
     fn nearby_paths_include_only_the_requested_library() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
-        for path in [".lake/packages/pkg/Lib/Analysis/SchwartzSpace/Fourier.lean",
+        for path in [
+            ".lake/packages/pkg/Lib/Analysis/SchwartzSpace/Fourier.lean",
             ".lake/packages/other/Other/Analysis/SchwartzSpace/Fourier.lean",
-            "SchwartzSpaceNearby.lean"] {
+            "SchwartzSpaceNearby.lean",
+        ] {
             let path = root.join(path);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, "theorem target : True := by trivial\n").unwrap();

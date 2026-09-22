@@ -1026,9 +1026,9 @@ fn query_parsing_scoring_and_ranking_regressions() {
         vec!["linearequiv.offinrankeq", "finrank"]
     );
     let (anchor, refinements, requested) =
-        anchored_api_query("bottProjectionMatrix selfAdjoint|conjTranspose|mul_self|one_sub")
+        anchored_api_query("Demo.bottProjectionMatrix selfAdjoint|conjTranspose|mul_self|one_sub")
             .unwrap();
-    assert_eq!(anchor, "bottProjectionMatrix");
+    assert_eq!(anchor, "Demo.bottProjectionMatrix");
     assert!(refinements.contains(&"mul_self".into()));
     assert_eq!(
         requested,
@@ -1039,6 +1039,7 @@ fn query_parsing_scoring_and_ranking_regressions() {
         Some(("changeModelIso", Vec::new(), Vec::new()))
     );
     assert!(anchored_api_query("continuous map compact support").is_none());
+    assert!(anchored_api_query("bottProjectionMatrix selfAdjoint").is_none());
     let exact = exact_plan("changeModelIso declarations", false).unwrap();
     assert_eq!(exact.anchor, "changeModelIso");
     assert!(!exact.recover_continuation);
@@ -1263,7 +1264,10 @@ fn exact_search_summary_is_signature_only_and_has_probe_next_action() {
     run.hits[0].signature = None;
     run.hits[0].source = None;
     let summary = render_summary(&run);
-    assert!(summary.contains("next: mathmux probe Demo.target source"), "{summary}");
+    assert!(
+        summary.contains("next: mathmux probe Demo.target source"),
+        "{summary}"
+    );
 }
 
 #[test]
@@ -1850,6 +1854,32 @@ fn source_outline_lists_declarations_without_structure_fields() {
     assert!(summary.contains("Demo.Config  Outline.lean:5"));
     assert!(summary.contains("3 declarations across 9 lines"));
     assert!(!summary.contains("source:"));
+    let dossier = parse_source_occurrence_query(
+        directory.path(),
+        directory.path(),
+        None,
+        "Outline.lean dossier",
+    )
+    .unwrap()
+    .unwrap();
+    let dossier = source_occurrence_result(
+        &Workspace {
+            reference: "w1".into(),
+            name: "demo".into(),
+            path: directory.path().to_path_buf(),
+            branch: "demo".into(),
+            model: None,
+        },
+        dossier,
+        false,
+    )
+    .unwrap();
+    assert_eq!(dossier.inference, "source-dossier");
+    let detail = dossier.hits[0].source.as_deref().unwrap();
+    assert!(detail.contains("file dossier: 9 lines, 3 declarations, 1 imports"));
+    assert!(detail.contains("imports:\n  Demo"));
+    assert!(detail.contains("Outline.lean:3 Demo.alpha : Nat"));
+    assert!(detail.contains("next: mathmux probe Demo.alpha source"));
     let imports = parse_source_occurrence_query(
         directory.path(),
         directory.path(),
@@ -2160,9 +2190,21 @@ fn name_prefix_candidates_use_fts_and_respect_scopes() {
         ["Demo.prefixAlphaSuffix"]
     );
     let recovered = near_name_prefix_candidates(&connection, "prefix_alpha_suffix").unwrap();
-    assert!(recovered.iter().any(|hit| hit.name == "Demo.prefixAlphaSuffix"));
-    assert!(!recovered.iter().any(|hit| hit.name == "Demo.prefixGammaSuffix"));
-    assert!(near_name_prefix_candidates(&connection, "pr_missing").unwrap().is_empty());
+    assert!(
+        recovered
+            .iter()
+            .any(|hit| hit.name == "Demo.prefixAlphaSuffix")
+    );
+    assert!(
+        !recovered
+            .iter()
+            .any(|hit| hit.name == "Demo.prefixGammaSuffix")
+    );
+    assert!(
+        near_name_prefix_candidates(&connection, "pr_missing")
+            .unwrap()
+            .is_empty()
+    );
     let unchanged = near_name_prefix_candidates(&connection, "prefixAlpha").unwrap();
     assert_eq!(unchanged.len(), 1);
     assert_eq!(unchanged[0].name, "Demo.prefixAlphaSuffix");
@@ -2218,14 +2260,15 @@ fn declaration_glob_candidates_are_name_scoped_and_skip_generic_matches() {
         ["Demo.FiberBundle.local_equiv"]
     );
     let rows = declaration_glob_candidates_from_connection(&connection, "*LocalizedChart*", None)
-        .unwrap().unwrap();
+        .unwrap()
+        .unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].name, "Demo.prefixedLocalizedChart");
     let rows = declaration_glob_candidates_from_connection(&connection, "*δ*suffix|missing", None)
-        .unwrap().unwrap();
+        .unwrap()
+        .unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].name, "Demo.prefixΔSuffix");
-
 }
 
 #[test]
@@ -2262,11 +2305,13 @@ fn declaration_glob_candidates_filter_explicit_kind() {
     assert_eq!(
         rows.into_iter().map(|row| row.name).collect::<Vec<_>>(),
         ["Demo.target_theorem"]
-    );    let rows = declaration_glob_candidates_from_connection(&connection, "*target*", Some("THEOREM"))
-        .unwrap().unwrap();
+    );
+    let rows =
+        declaration_glob_candidates_from_connection(&connection, "*target*", Some("THEOREM"))
+            .unwrap()
+            .unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].name, "Demo.target_theorem");
-
 }
 
 #[test]
@@ -2431,7 +2476,13 @@ fn batched_usages_preserve_scope_order_and_per_target_limit() {
 
 #[test]
 fn colon_attached_source_facets_normalize_to_the_documented_form() {
-    for facet in ["outline", "declarations", "imports", "dependents"] {
+    for facet in [
+        "outline",
+        "declarations",
+        "imports",
+        "dependents",
+        "dossier",
+    ] {
         let query = format!("Demo.lean:{facet}");
         assert_eq!(
             normalize_colon_attached_source_facet(&query),
@@ -2446,6 +2497,8 @@ fn colon_attached_source_facets_normalize_to_the_documented_form() {
         normalize_colon_attached_source_facet("Demo.lean:tail"),
         "Demo.lean:tail"
     );
+    assert_eq!(parse_source_line_range("41-end"), Some((41, u64::MAX)));
+    assert_eq!(parse_source_line_range("41-tail"), Some((41, u64::MAX)));
 }
 
 #[test]
@@ -2462,15 +2515,20 @@ fn bare_lean_paths_require_explicit_source_context() {
     };
     assert_eq!(
         error.to_string(),
-        "source file query needs a line, range, or facet: Demo.lean; use Demo.lean:LINE, Demo.lean:START-END, or Demo.lean outline/imports/dependents"
+        "source file query needs a line, range, or facet: Demo.lean; use Demo.lean:LINE, Demo.lean:START-END, or Demo.lean dossier/outline/imports/dependents"
     );
 }
 
 #[test]
 fn source_query_regressions() {
-    assert_eq!(regex_recovery_terms("[Cc]ompact|[Rr]ellich|IsCompactOperator"),
-        vec!["IsCompactOperator", "compact", "rellich"]);
-    assert_eq!(regex_recovery_terms("[CR]ompact|[a-z]word"), vec!["ompact", "word"]);
+    assert_eq!(
+        regex_recovery_terms("[Cc]ompact|[Rr]ellich|IsCompactOperator"),
+        vec!["IsCompactOperator", "compact", "rellich"]
+    );
+    assert_eq!(
+        regex_recovery_terms("[CR]ompact|[a-z]word"),
+        vec!["ompact", "word"]
+    );
     assert_eq!(edit_distance("compp", "comp"), 1);
     assert_eq!(
         regex_recovery_terms(r"AtiyahSinger\..*pullbackCompHom"),
@@ -2543,6 +2601,23 @@ fn source_query_regressions() {
 
     let directory = tempfile::tempdir().unwrap();
     fs::write(directory.path().join("Demo.lean"), &source).unwrap();
+    fs::create_dir_all(directory.path().join("Demo/Topology")).unwrap();
+    fs::write(
+        directory.path().join("Demo/Topology/Dotted.lean"),
+        "def dotted := true\n",
+    )
+    .unwrap();
+    let dotted = resolve_source_path(
+        directory.path(),
+        directory.path(),
+        "Demo.Topology.Dotted.lean",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        dotted.0,
+        fs::canonicalize(directory.path().join("Demo/Topology/Dotted.lean")).unwrap()
+    );
     let column_error =
         match parse_source_location(directory.path(), directory.path(), None, "Demo.lean:15:2") {
             Err(error) => error,
@@ -2560,13 +2635,37 @@ fn source_query_regressions() {
         duplicated_root.0,
         fs::canonicalize(directory.path().join("Demo.lean")).unwrap()
     );
-    assert!(resolve_source_path(directory.path(), directory.path(), "Missing/Elsewhere/Demo.lean").unwrap().is_none());
-    assert!(resolve_source_path(directory.path(), directory.path(), "Missing.Demo").unwrap().is_none());
-    assert!(resolve_source_path(directory.path(), directory.path(), "Demo.lean").unwrap().is_some());
-    let dependency = directory.path().join(".lake/packages/lib/Library/Actual/Demo.lean");
+    assert!(
+        resolve_source_path(
+            directory.path(),
+            directory.path(),
+            "Missing/Elsewhere/Demo.lean"
+        )
+        .unwrap()
+        .is_none()
+    );
+    assert!(
+        resolve_source_path(directory.path(), directory.path(), "Missing.Demo")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        resolve_source_path(directory.path(), directory.path(), "Demo.lean")
+            .unwrap()
+            .is_some()
+    );
+    let dependency = directory
+        .path()
+        .join(".lake/packages/lib/Library/Actual/Demo.lean");
     fs::create_dir_all(dependency.parent().unwrap()).unwrap();
     fs::write(&dependency, "def dependency := true\n").unwrap();
-    let resolved = resolve_source_path(directory.path(), directory.path(), "Library/Actual/Demo.lean").unwrap().unwrap();
+    let resolved = resolve_source_path(
+        directory.path(),
+        directory.path(),
+        "Library/Actual/Demo.lean",
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(resolved.0, fs::canonicalize(dependency).unwrap());
     fs::create_dir_all(directory.path().join("Actual/Topology")).unwrap();
     fs::write(
@@ -2932,7 +3031,9 @@ fn source_query_regressions() {
         directory.path(),
         None,
         "Wrong/Prefix/Nested.lean:4-6",
-    ).err().expect("qualified paths must not degrade to a basename");
+    )
+    .err()
+    .expect("qualified paths must not degrade to a basename");
     assert!(format!("{rejected_guess:#}").contains("source file not found or ambiguous"));
     let chart = project.join("FredholmFamilyKernelChart.lean");
     fs::write(&chart, &source).unwrap();
@@ -3075,13 +3176,31 @@ fn source_only_location_results_are_successful() {
     assert_eq!(result.inference, "source-only");
     assert_eq!(result.note.as_deref(), Some("source only"));
     assert_eq!(result.hits[0].name, "target");
-    let beyond = SourceLocation { path: location.path.clone(), display_path: None, line: 99, tail: false, expanded: false, declaration_span: None };
-    let tail = source_location_result(&workspace, &beyond,
-        "def before := true\ndef target := true\n", Some("source only"), true);
+    let beyond = SourceLocation {
+        path: location.path.clone(),
+        display_path: None,
+        line: 99,
+        tail: false,
+        expanded: false,
+        declaration_span: None,
+    };
+    let tail = source_location_result(
+        &workspace,
+        &beyond,
+        "def before := true\ndef target := true\n",
+        Some("source only"),
+        true,
+    );
     assert_eq!(tail.hits[0].line, 2);
     assert!(tail.note.as_deref().unwrap().contains("requested line 99"));
     assert!(tail.note.as_deref().unwrap().contains("source only"));
-    assert!(tail.hits[0].source.as_deref().unwrap().contains("def target"));
+    assert!(
+        tail.hits[0]
+            .source
+            .as_deref()
+            .unwrap()
+            .contains("def target")
+    );
     assert_eq!(
         result.hits[0].signature.as_deref(),
         Some("inside def lines 2-2; showing 1-2")
@@ -3237,9 +3356,14 @@ fn exact_misses_overlay_active_sibling_declarations_as_unmerged() {
             .starts_with("unmerged:w2/sibling/agent-sibling")
     );
     let sibling_summary = render_summary(&SearchRun {
-        reference: "q-sibling".into(), workspace_ref: current.reference.clone(),
-        query: "ContinuousLinearMap.prodMap_apply".into(), inference: result.inference,
-        hits: result.hits, note: result.note, duration_ms: 1, created_at: 0,
+        reference: "q-sibling".into(),
+        workspace_ref: current.reference.clone(),
+        query: "ContinuousLinearMap.prodMap_apply".into(),
+        inference: result.inference,
+        hits: result.hits,
+        note: result.note,
+        duration_ms: 1,
+        created_at: 0,
     });
     assert!(sibling_summary.contains("once merged to main, sync, then mathmux probe"));
     for suffix in ["a", "b", "c"] {
@@ -3457,7 +3581,11 @@ fn exact_resolution_fails_closed_instead_of_returning_a_different_declaration() 
         )
         .unwrap();
     let routed_note = routed.note.as_deref().unwrap();
-    assert!(routed_note.contains("no declaration named pullbackCompHom in the indexed project or dependencies"));
+    assert!(
+        routed_note.contains(
+            "no declaration named pullbackCompHom in the indexed project or dependencies"
+        )
+    );
     assert!(!routed_note.contains("exact declaration not found in index: pullbackCompHom source"));
     let miss = searcher
         .exact_miss_result(&workspace, "pullbackCompHom", &scopes, None, false, false)
@@ -3565,10 +3693,7 @@ fn anchored_query_with_uncovered_refinements_discovers_member_family() {
             "LinearIsometryEquiv.trans_apply",
             "(e₁.trans e₂) x = e₂ (e₁ x)",
         ),
-        (
-            "LinearIsometryEquiv.symm_apply_apply",
-            "e.symm (e x) = x",
-        ),
+        ("LinearIsometryEquiv.symm_apply_apply", "e.symm (e x) = x"),
     ] {
         connection
             .execute(
@@ -3650,7 +3775,10 @@ fn anchored_query_with_uncovered_refinements_discovers_member_family() {
     );
     for (name, signature) in [
         ("Demo.image", "(hf : Continuous f) : IsCompact (f '' s)"),
-        ("Demo.image_of_continuousOn", "(hf : ContinuousOn f s) : IsCompact (f '' s)"),
+        (
+            "Demo.image_of_continuousOn",
+            "(hf : ContinuousOn f s) : IsCompact (f '' s)",
+        ),
     ] {
         connection.execute(
             "INSERT INTO search_fts(owner,origin,file,module,line,name,kind,signature,docs,body)
@@ -3659,12 +3787,20 @@ fn anchored_query_with_uncovered_refinements_discovers_member_family() {
         ).unwrap();
     }
     let query = "Demo.image continuousOn";
-    let result = searcher.execute_text_search(
-        &workspace, query, TextSearchPlan::ExactFirst,
-        TextSearchContext { scopes: &scopes, base_warming: false, import_target: None, show_all: false },
-    ).unwrap();
+    let result = searcher
+        .execute_text_search(
+            &workspace,
+            query,
+            TextSearchPlan::ExactFirst,
+            TextSearchContext {
+                scopes: &scopes,
+                base_warming: false,
+                import_target: None,
+                show_all: false,
+            },
+        )
+        .unwrap();
     assert_eq!(result.hits[0].name, "Demo.image_of_continuousOn");
-
 }
 
 #[test]
@@ -4117,14 +4253,23 @@ fn source_regex_queries_scan_a_bounded_scope_with_context() {
         "<dependency>/Mathlib/Analysis/Api.lean"
     );
     let workspace = Workspace {
-        reference: "w1".into(), name: "demo".into(),
-        path: directory.path().to_path_buf(), branch: "demo".into(), model: None,
+        reference: "w1".into(),
+        name: "demo".into(),
+        path: directory.path().to_path_buf(),
+        branch: "demo".into(),
+        model: None,
     };
-    let query = parse_source_regex_query(directory.path(), directory.path(), None,
-        "/dependency_hit/").unwrap().unwrap();
+    let query =
+        parse_source_regex_query(directory.path(), directory.path(), None, "/dependency_hit/")
+            .unwrap()
+            .unwrap();
     let miss = source_regex_result(&workspace, query, false).unwrap();
     assert!(miss.hits.is_empty());
-    assert!(miss.note.unwrap().contains("dependencies require an explicit scope"));
+    assert!(
+        miss.note
+            .unwrap()
+            .contains("dependencies require an explicit scope")
+    );
 }
 
 #[test]
@@ -4410,12 +4555,18 @@ fn source_parser_does_not_reuse_docs_after_top_level_commands() {
 fn source_parser_ignores_docs_nested_in_attributes() {
     let source = "namespace Demo\n/-- Own documentation. -/\n@[to_additive /-- Generated documentation. -/]\ntheorem target : True := trivial\nend Demo\n";
     let entries = parse_source(source, "Demo");
-    let target = entries.iter().find(|entry| entry.name == "Demo.target").unwrap();
+    let target = entries
+        .iter()
+        .find(|entry| entry.name == "Demo.target")
+        .unwrap();
     assert_eq!(target.docs, "Own documentation.");
 
     let source = "namespace Demo\n@[to_additive /-- Generated documentation. -/]\ntheorem target : True := trivial\nend Demo\n";
     let entries = parse_source(source, "Demo");
-    let target = entries.iter().find(|entry| entry.name == "Demo.target").unwrap();
+    let target = entries
+        .iter()
+        .find(|entry| entry.name == "Demo.target")
+        .unwrap();
     assert!(target.docs.is_empty());
 }
 
@@ -4435,7 +4586,11 @@ fn source_context_preserves_multiline_binders_and_local_scope() {
     let source = "namespace Demo\n@[expose] public section\nuniverse u\nvariable {α : Type u}\n  -- continuation comment\n\n    [Inhabited α]\nvariable (α) in\n/-- Own documentation. -/\ndef first : α := default\n\nvariable (α) in\n/-- Neighbor documentation. -/\ndef second : α := default\nend\ndef outside := 0\nend Demo\n";
     let entries = parse_source(source, "Demo");
     let first = entries.iter().find(|e| e.name == "Demo.first").unwrap();
-    assert!(first.body.contains("variable {α : Type u}\n    [Inhabited α]"));
+    assert!(
+        first
+            .body
+            .contains("variable {α : Type u}\n    [Inhabited α]")
+    );
     assert_eq!(first.body.matches("variable (α) in").count(), 1);
     assert_eq!(first.docs, "Own documentation.");
     assert!(first.body.ends_with("def first : α := default"));
@@ -4448,16 +4603,24 @@ fn source_context_preserves_multiline_binders_and_local_scope() {
 #[test]
 fn source_snapshot_preview_preserves_long_lines_and_reports_continuation() {
     let mut run = SearchRun {
-        reference: "q9".into(), workspace_ref: "w1".into(), query: String::new(),
-        inference: String::new(), hits: vec![search_hit("Demo.long")], note: None,
-        duration_ms: 0, created_at: 0,
+        reference: "q9".into(),
+        workspace_ref: "w1".into(),
+        query: String::new(),
+        inference: String::new(),
+        hits: vec![search_hit("Demo.long")],
+        note: None,
+        duration_ms: 0,
+        created_at: 0,
     };
     run.inference = "probe-source".into();
     run.query = "Demo.long source".into();
     run.hits[0].path = "Demo.lean".into();
     run.hits[0].line = 10;
     let long = format!("  -- {}", "λ".repeat(250));
-    run.hits[0].source = Some(format!("-- ambient context\nvariable (n : Nat)\n\ntheorem long : True := by\n{long}\n{}  trivial", "  -- line\n".repeat(60)));
+    run.hits[0].source = Some(format!(
+        "-- ambient context\nvariable (n : Nat)\n\ntheorem long : True := by\n{long}\n{}  trivial",
+        "  -- line\n".repeat(60)
+    ));
     let rendered = render_summary(&run);
     assert!(rendered.contains(&long));
     assert!(rendered.contains("lines not shown"));
@@ -4467,7 +4630,10 @@ fn source_snapshot_preview_preserves_long_lines_and_reports_continuation() {
 
 #[test]
 fn source_body_excludes_following_commands_and_term_opens_do_not_leak() {
-    let entries = parse_source("def first := 0\n@[simp]\ntheorem second : True := by\n  open Nat in\n  exact True.intro\nexample : True := by trivial\ndef third := 1\n", "Demo");
+    let entries = parse_source(
+        "def first := 0\n@[simp]\ntheorem second : True := by\n  open Nat in\n  exact True.intro\nexample : True := by trivial\ndef third := 1\n",
+        "Demo",
+    );
     let first = entries.iter().find(|e| e.name == "first").unwrap();
     assert_eq!(first.body, "def first := 0");
     let second = entries.iter().find(|e| e.name == "second").unwrap();
@@ -4478,16 +4644,26 @@ fn source_body_excludes_following_commands_and_term_opens_do_not_leak() {
 
 #[test]
 fn bare_variable_commands_preserve_binders_and_end_previous_body() {
-    let entries = parse_source("theorem first : True := by trivial\nvariable\n  {α : Type}\n  -- binders continue\n  [Inhabited α]\ndef value : α := default\n", "Demo");
-    assert_eq!(entries.iter().find(|e| e.name == "first").unwrap().body,
-        "theorem first : True := by trivial");
+    let entries = parse_source(
+        "theorem first : True := by trivial\nvariable\n  {α : Type}\n  -- binders continue\n  [Inhabited α]\ndef value : α := default\n",
+        "Demo",
+    );
+    assert_eq!(
+        entries.iter().find(|e| e.name == "first").unwrap().body,
+        "theorem first : True := by trivial"
+    );
     let value = entries.iter().find(|e| e.name == "value").unwrap();
-    assert!(value.body.contains("variable\n  {α : Type}\n  [Inhabited α]"));
+    assert!(
+        value
+            .body
+            .contains("variable\n  {α : Type}\n  [Inhabited α]")
+    );
 }
 
 #[test]
 fn source_keeps_preceding_attributes_with_true_start_line() {
-    let source = "namespace Demo\n/-- Own documentation. -/\n@[simp]\n@[inline]\ndef value := 0\nend Demo\n";
+    let source =
+        "namespace Demo\n/-- Own documentation. -/\n@[simp]\n@[inline]\ndef value := 0\nend Demo\n";
     let entries = parse_source(source, "Demo");
     let value = entries.iter().find(|e| e.name == "Demo.value").unwrap();
     assert_eq!(value.line, 3);
@@ -4519,23 +4695,36 @@ fn alias_source_requires_exact_generated_name_and_exposes_origin() {
     assert!(alias_source_entry(protected, "Other.old").is_none());
     assert!(alias_source_entry("-- protected alias old := current\n", "old").is_none());
 
-
     assert!(alias_source_entry(source, "Other.backward").is_none());
     assert!(alias_source_entry(source, "Demo.fake").is_none());
     let entries = parse_source(source, "Demo");
-    assert!(!entries.iter().find(|e| e.name == "Demo.base").unwrap().body.contains("alias"));
+    assert!(
+        !entries
+            .iter()
+            .find(|e| e.name == "Demo.base")
+            .unwrap()
+            .body
+            .contains("alias")
+    );
 }
 
 #[test]
 fn nonrec_declarations_retain_source_and_do_not_extend_previous_body() {
-    let source = "namespace Demo\ndef first := 0\nnonrec theorem target : True := by trivial\nend Demo\n";
+    let source =
+        "namespace Demo\ndef first := 0\nnonrec theorem target : True := by trivial\nend Demo\n";
     let entries = parse_source(source, "Demo");
     let target = entries.iter().find(|e| e.name == "Demo.target").unwrap();
     assert_eq!(target.line, 3);
     assert_eq!(target.body, "nonrec theorem target : True := by trivial");
-    assert_eq!(entries.iter().find(|e| e.name == "Demo.first").unwrap().body, "def first := 0");
+    assert_eq!(
+        entries
+            .iter()
+            .find(|e| e.name == "Demo.first")
+            .unwrap()
+            .body,
+        "def first := 0"
+    );
 }
-
 
 #[test]
 fn generated_index_metadata_does_not_hide_exact_authored_source() {
@@ -4544,7 +4733,11 @@ fn generated_index_metadata_does_not_hide_exact_authored_source() {
     let state_dir = directory.path().join("state");
     fs::create_dir_all(&root).unwrap();
     fs::create_dir_all(&state_dir).unwrap();
-    fs::write(root.join("Demo.lean"), "namespace Demo\ndef Map := { f : Nat → Nat // True }\nend Demo\n").unwrap();
+    fs::write(
+        root.join("Demo.lean"),
+        "namespace Demo\ndef Map := { f : Nat → Nat // True }\nend Demo\n",
+    )
+    .unwrap();
     let repo = Repo {
         root: root.clone(),
         common_git_dir: directory.path().join("git"),
@@ -4562,19 +4755,36 @@ fn generated_index_metadata_does_not_hide_exact_authored_source() {
     let checker = Arc::new(Checker::new(repo.clone(), state.clone(), None).unwrap());
     let searcher = Searcher::new(repo, state, checker, None).unwrap();
     let workspace = Workspace {
-        reference: "w1".into(), name: "demo".into(), path: root,
-        branch: "demo".into(), model: None,
+        reference: "w1".into(),
+        name: "demo".into(),
+        path: root,
+        branch: "demo".into(),
+        model: None,
     };
     let mut hit = search_hit("_root_.Demo.Map");
     hit.kind = "generated".into();
     searcher.state.add_workspace(&workspace).unwrap();
     let reference = searcher.state.next_reference(ReferenceKind::Query).unwrap();
-    searcher.state.add_search(&SearchRun {
-        reference: reference.clone(), workspace_ref: workspace.reference.clone(),
-        query: "Demo.Map".into(), inference: "exact".into(), hits: vec![hit.clone()],
-        note: None, duration_ms: 0, created_at: 0,
-    }).unwrap();
-    let output = searcher.probe(&workspace, &workspace.path, &format!("{reference}#1 source")).unwrap();
+    searcher
+        .state
+        .add_search(&SearchRun {
+            reference: reference.clone(),
+            workspace_ref: workspace.reference.clone(),
+            query: "Demo.Map".into(),
+            inference: "exact".into(),
+            hits: vec![hit.clone()],
+            note: None,
+            duration_ms: 0,
+            created_at: 0,
+        })
+        .unwrap();
+    let output = searcher
+        .probe(
+            &workspace,
+            &workspace.path,
+            &format!("{reference}#1 source"),
+        )
+        .unwrap();
     assert!(output.contains("def Map :="), "{output}");
     assert!(!output.contains("source unavailable"), "{output}");
     assert!(searcher.refresh_probe_source(&workspace, &mut hit).unwrap());
@@ -4591,42 +4801,86 @@ fn generated_index_metadata_does_not_hide_exact_authored_source() {
     assert!(!searcher.refresh_probe_source(&workspace, &mut hit).unwrap());
     assert!(hit.source.is_none());
     let reference = searcher.state.next_reference(ReferenceKind::Query).unwrap();
-    searcher.state.add_search(&SearchRun {
-        reference: reference.clone(), workspace_ref: workspace.reference.clone(),
-        query: hit.name.clone(), inference: "exact".into(), hits: vec![hit],
-        note: None, duration_ms: 0, created_at: 0,
-    }).unwrap();
-    let output = searcher.probe(&workspace, &workspace.path, &format!("{reference}#1 source")).unwrap();
+    searcher
+        .state
+        .add_search(&SearchRun {
+            reference: reference.clone(),
+            workspace_ref: workspace.reference.clone(),
+            query: hit.name.clone(),
+            inference: "exact".into(),
+            hits: vec![hit],
+            note: None,
+            duration_ms: 0,
+            created_at: 0,
+        })
+        .unwrap();
+    let output = searcher
+        .probe(
+            &workspace,
+            &workspace.path,
+            &format!("{reference}#1 source"),
+        )
+        .unwrap();
     assert!(output.contains("Source unavailable"), "{output}");
     assert!(output.contains("importing project file"), "{output}");
-    assert!(output.contains("#inspect Demo.actuallyGenerated"), "{output}");
+    assert!(
+        output.contains("#inspect Demo.actuallyGenerated"),
+        "{output}"
+    );
     assert!(!output.contains("source snapshot"), "{output}");
 }
-
 
 #[test]
 fn source_context_retains_local_instances_without_scope_leaks() {
     let source = "namespace Demo\nlocal instance defaultSeven : Inhabited Nat := ⟨7⟩\ndef chosen : Nat := default\nend Demo\ndef outside : Nat := default\n";
     let entries = parse_source(source, "Demo");
-    let chosen = entries.iter().find(|entry| entry.name == "Demo.chosen").unwrap();
-    assert!(chosen.body.contains("local instance declared at source line 2"), "{}", chosen.body);
-    assert!(chosen.body.contains("Inhabited Nat := ⟨7⟩"), "{}", chosen.body);
+    let chosen = entries
+        .iter()
+        .find(|entry| entry.name == "Demo.chosen")
+        .unwrap();
+    assert!(
+        chosen
+            .body
+            .contains("local instance declared at source line 2"),
+        "{}",
+        chosen.body
+    );
+    assert!(
+        chosen.body.contains("Inhabited Nat := ⟨7⟩"),
+        "{}",
+        chosen.body
+    );
     assert_eq!(chosen.line, 3);
-    let outside = entries.iter().find(|entry| entry.name == "outside").unwrap();
+    let outside = entries
+        .iter()
+        .find(|entry| entry.name == "outside")
+        .unwrap();
     assert!(!outside.body.contains("defaultSeven"));
-    let long = format!("section\nlocal instance longInstance : Inhabited Nat := by\n{}  exact ⟨7⟩\ndef chosen : Nat := default\nend\n", "  skip\n".repeat(20));
+    let long = format!(
+        "section\nlocal instance longInstance : Inhabited Nat := by\n{}  exact ⟨7⟩\ndef chosen : Nat := default\nend\n",
+        "  skip\n".repeat(20)
+    );
     let entries = parse_source(&long, "Demo");
     let chosen = entries.iter().find(|entry| entry.name == "chosen").unwrap();
-    assert!(chosen.body.contains("instance preview truncated; inspect source line 2"));
+    assert!(
+        chosen
+            .body
+            .contains("instance preview truncated; inspect source line 2")
+    );
     assert!(!chosen.body.contains("exact ⟨7⟩"));
 }
-
 
 #[test]
 fn exact_lookup_canonicalizes_root_prefix_before_sql_filtering() {
     let connection = Connection::open_in_memory().unwrap();
     connection.execute_batch("CREATE VIRTUAL TABLE search_fts USING fts5(owner UNINDEXED, origin UNINDEXED, file UNINDEXED, module UNINDEXED, line UNINDEXED, name, kind UNINDEXED, signature, docs, body);").unwrap();
-    for name in ["_root_.Demo.explicitRoot", "Demo.ordinary", "Other.Demo.explicitRoot", "RootOnly", "Other.RootOnly"] {
+    for name in [
+        "_root_.Demo.explicitRoot",
+        "Demo.ordinary",
+        "Other.Demo.explicitRoot",
+        "RootOnly",
+        "Other.RootOnly",
+    ] {
         connection.execute("INSERT INTO search_fts VALUES ('workspace:w1', 'Demo.lean', 'Demo.lean', 'Demo', 1, ?1, 'theorem', 'True', '', '')", [name]).unwrap();
     }
     let scopes = HashSet::from(["workspace:w1".into()]);
@@ -4637,31 +4891,55 @@ fn exact_lookup_canonicalizes_root_prefix_before_sql_filtering() {
         ("_root_.Demo.ordinary", "Demo.ordinary"),
         ("_root_.RootOnly", "RootOnly"),
     ] {
-        connection.execute_batch("DROP TABLE IF EXISTS temp.active_search_scopes").unwrap();
+        connection
+            .execute_batch("DROP TABLE IF EXISTS temp.active_search_scopes")
+            .unwrap();
         let rows = exact_candidates_from_connection(&connection, query, &scopes, 8).unwrap();
-        assert_eq!(rows.iter().map(|row| row.name.as_str()).collect::<Vec<_>>(), vec![expected], "{query}");
+        assert_eq!(
+            rows.iter().map(|row| row.name.as_str()).collect::<Vec<_>>(),
+            vec![expected],
+            "{query}"
+        );
     }
-    connection.execute_batch("DROP TABLE temp.active_search_scopes").unwrap();
-    assert!(exact_candidates_from_connection(&connection, "Missing.explicitRoot", &scopes, 8).unwrap().is_empty());
+    connection
+        .execute_batch("DROP TABLE temp.active_search_scopes")
+        .unwrap();
+    assert!(
+        exact_candidates_from_connection(&connection, "Missing.explicitRoot", &scopes, 8)
+            .unwrap()
+            .is_empty()
+    );
 }
-
 
 #[test]
 fn coverage_recognizes_exact_concept_aliases_without_fuzzy_prefixes() {
-    for (concept, signature) in [("continuity", "Continuous f"), ("injection", "Function.Injective f"), ("composition", "f.comp g")] {
+    for (concept, signature) in [
+        ("continuity", "Continuous f"),
+        ("injection", "Function.Injective f"),
+        ("composition", "f.comp g"),
+    ] {
         let mut hit = search_hit("Demo.result");
         hit.signature = Some(signature.into());
         assert_eq!(weak_coverage_note(&[hit], &[concept.into()]), None);
     }
-    for (name, term) in [("Demo.inv_le_inv₀", "inv_le_inv0"), ("Demo.value12", "value₁₂")] {
-        assert_eq!(weak_coverage_note(&[search_hit(name)], &[term.into()]), None);
+    for (name, term) in [
+        ("Demo.inv_le_inv₀", "inv_le_inv0"),
+        ("Demo.value12", "value₁₂"),
+    ] {
+        assert_eq!(
+            weak_coverage_note(&[search_hit(name)], &[term.into()]),
+            None
+        );
     }
     assert!(weak_coverage_note(&[search_hit("Demo.value₁")], &["value2".into()]).is_some());
     let hit = search_hit("Demo.compact");
-    assert!(weak_coverage_note(&[hit], &["composition".into()]).unwrap().contains("missing composition"));
+    assert!(
+        weak_coverage_note(&[hit], &["composition".into()])
+            .unwrap()
+            .contains("missing composition")
+    );
     assert!(meaningful_query_tokens("Signal injection Lp").contains(&"injective".into()));
 }
-
 
 #[test]
 fn signature_modifier_keeps_api_anchor_exact() {
@@ -4676,7 +4954,10 @@ fn signature_modifier_keeps_api_anchor_exact() {
 
 #[test]
 fn source_options_retain_scope_without_leaking_proof_local_commands() {
-    let entries = parse_source("namespace Demo\nset_option autoImplicit false\nset_option pp.universes true in\nvariable (n : Nat) in\ndef target : Nat := n\ndef later : Nat := 2\ntheorem proofOption : True := by\n  set_option pp.all true in\n    exact True.intro\ndef afterProof : Nat := 4\nend Demo\ndef outside : Nat := 3\n", "Options");
+    let entries = parse_source(
+        "namespace Demo\nset_option autoImplicit false\nset_option pp.universes true in\nvariable (n : Nat) in\ndef target : Nat := n\ndef later : Nat := 2\ntheorem proofOption : True := by\n  set_option pp.all true in\n    exact True.intro\ndef afterProof : Nat := 4\nend Demo\ndef outside : Nat := 3\n",
+        "Options",
+    );
     let body = |name| &entries.iter().find(|e| e.name == name).unwrap().body;
     assert!(body("Demo.target").contains("set_option autoImplicit false"));
     assert!(body("Demo.target").contains("set_option pp.universes true in"));
@@ -4693,18 +4974,31 @@ fn declaration_spans_exclude_following_docs_and_commands() {
     let spans = declaration_spans(source, "Demo");
     assert_eq!(enclosing_declaration_span(&spans, 2).unwrap().name, "first");
     assert!(enclosing_declaration_span(&spans, 4).is_none());
-    assert_eq!(enclosing_declaration_span(&spans, 5).unwrap().name, "second");
+    assert_eq!(
+        enclosing_declaration_span(&spans, 5).unwrap().name,
+        "second"
+    );
     assert!(enclosing_declaration_span(&spans, 6).is_none());
-    let long = format!("theorem long : True := by\n{}  trivial\n/-- Next. -/\ndef next := 0\n", "  -- long proof comment\n".repeat(1000));
+    let long = format!(
+        "theorem long : True := by\n{}  trivial\n/-- Next. -/\ndef next := 0\n",
+        "  -- long proof comment\n".repeat(1000)
+    );
     let spans = declaration_spans(&long, "Demo");
-    assert_eq!(enclosing_declaration_span(&spans, 1002).unwrap().name, "long");
+    assert_eq!(
+        enclosing_declaration_span(&spans, 1002).unwrap().name,
+        "long"
+    );
     assert!(enclosing_declaration_span(&spans, 1003).is_none());
 }
 
 #[test]
 fn source_find_selector_is_not_a_literal_search_term() {
     let directory = tempfile::tempdir().unwrap();
-    fs::write(directory.path().join("Find.lean"), "-- find a neighborhood\ndef target := 1\n").unwrap();
+    fs::write(
+        directory.path().join("Find.lean"),
+        "-- find a neighborhood\ndef target := 1\n",
+    )
+    .unwrap();
     for (query, expected) in [
         ("Find.lean find target", vec!["target"]),
         ("Find.lean find find", vec!["find"]),
@@ -4712,7 +5006,9 @@ fn source_find_selector_is_not_a_literal_search_term() {
         ("Find.lean 'find' target", vec!["find", "target"]),
         ("Find.lean target find", vec!["target", "find"]),
     ] {
-        let parsed = parse_source_occurrence_query(directory.path(), directory.path(), None, query).unwrap().unwrap();
+        let parsed = parse_source_occurrence_query(directory.path(), directory.path(), None, query)
+            .unwrap()
+            .unwrap();
         assert_eq!(parsed.terms, expected, "{query}");
     }
 }
@@ -4722,23 +5018,48 @@ fn dotted_module_outline_uses_existing_source_resolution() {
     let directory = tempfile::tempdir().unwrap();
     fs::create_dir(directory.path().join("Demo")).unwrap();
     fs::write(directory.path().join("Demo/Facts.lean"), "def first := 1\n").unwrap();
-    for query in ["Demo.Facts outline", "Demo.Facts declarations", "Demo/Facts outline"] {
-        let parsed = parse_source_occurrence_query(directory.path(), directory.path(), None, query).unwrap().unwrap();
+    for query in [
+        "Demo.Facts outline",
+        "Demo.Facts declarations",
+        "Demo/Facts outline",
+    ] {
+        let parsed = parse_source_occurrence_query(directory.path(), directory.path(), None, query)
+            .unwrap()
+            .unwrap();
         assert_eq!(parsed.path, directory.path().join("Demo/Facts.lean"));
     }
-    assert!(parse_source_occurrence_query(directory.path(), directory.path(), None, "Demo.missing outline").unwrap().is_none());
+    assert!(
+        parse_source_occurrence_query(
+            directory.path(),
+            directory.path(),
+            None,
+            "Demo.missing outline"
+        )
+        .unwrap()
+        .is_none()
+    );
 }
 
 #[test]
 fn grouped_structure_fields_preserve_each_name_type_and_line() {
     let fields = parse_structure_fields(
-        "structure Demo where\n  (inner outer : Nat)\n  ordered : inner < outer\n  (f g : Nat → (Nat × Nat))\n", "Demo", 10,
+        "structure Demo where\n  (inner outer : Nat)\n  ordered : inner < outer\n  (f g : Nat → (Nat × Nat))\n",
+        "Demo",
+        10,
     );
-    assert_eq!(fields.iter().map(|f| (f.name.as_str(), f.signature.as_str(), f.line)).collect::<Vec<_>>(), vec![
-        ("Demo.inner", "Nat", 11), ("Demo.outer", "Nat", 11),
-        ("Demo.ordered", "inner < outer", 12),
-        ("Demo.f", "Nat → (Nat × Nat)", 13), ("Demo.g", "Nat → (Nat × Nat)", 13),
-    ]);
+    assert_eq!(
+        fields
+            .iter()
+            .map(|f| (f.name.as_str(), f.signature.as_str(), f.line))
+            .collect::<Vec<_>>(),
+        vec![
+            ("Demo.inner", "Nat", 11),
+            ("Demo.outer", "Nat", 11),
+            ("Demo.ordered", "inner < outer", 12),
+            ("Demo.f", "Nat → (Nat × Nat)", 13),
+            ("Demo.g", "Nat → (Nat × Nat)", 13),
+        ]
+    );
 }
 
 #[test]
@@ -4746,10 +5067,23 @@ fn discovery_excludes_private_macro_helpers_but_keeps_explicit_names() {
     let helper = "_private.Demo.BumpFunction.0._aux_Demo_macroRules_term_1";
     let quoted = "_private.Demo.BumpFunction.0.«_aux_Demo_macroRules_term#_1»";
     let ordinary = "_private.Demo.0.BumpFunction_theorem";
-    let candidates = || vec![helper, quoted, ordinary, "Demo.BumpFunction"].into_iter().map(|name| Candidate {
-        hit: search_hit(name), score: 100.0, origins: 0,
-    }).collect();
-    let (ranked, _) = rank_discovery_candidates(candidates(), "BumpFunction*", &meaningful_query_tokens("BumpFunction*"), false, None);
+    let candidates = || {
+        vec![helper, quoted, ordinary, "Demo.BumpFunction"]
+            .into_iter()
+            .map(|name| Candidate {
+                hit: search_hit(name),
+                score: 100.0,
+                origins: 0,
+            })
+            .collect()
+    };
+    let (ranked, _) = rank_discovery_candidates(
+        candidates(),
+        "BumpFunction*",
+        &meaningful_query_tokens("BumpFunction*"),
+        false,
+        None,
+    );
     assert!(!ranked.iter().any(|c| c.hit.name == helper));
     assert!(ranked.iter().any(|c| c.hit.name == ordinary));
     assert!(ranked.iter().any(|c| c.hit.name == "Demo.BumpFunction"));
@@ -4764,16 +5098,35 @@ fn discovery_excludes_private_macro_helpers_but_keeps_explicit_names() {
 
 #[test]
 fn case_pair_name_globs_promote_matches_without_dropping_fallbacks() {
-    let candidates = || vec![
-        Candidate { hit: search_hit("Function.HasTemperateGrowth.mul"), score: 100.0, origins: 0 },
-        Candidate { hit: search_hit("_root_.ContinuousLinearMap.bilinear_hasTemperateGrowth"), score: 1.0, origins: 0 },
-    ];
+    let candidates = || {
+        vec![
+            Candidate {
+                hit: search_hit("Function.HasTemperateGrowth.mul"),
+                score: 100.0,
+                origins: 0,
+            },
+            Candidate {
+                hit: search_hit("_root_.ContinuousLinearMap.bilinear_hasTemperateGrowth"),
+                score: 1.0,
+                origins: 0,
+            },
+        ]
+    };
     let query = "ContinuousLinearMap.*[Tt]emperateGrowth";
-    let (ranked, miss) = rank_discovery_candidates(candidates(), query, &meaningful_query_tokens(query), false, None);
+    let (ranked, miss) = rank_discovery_candidates(
+        candidates(),
+        query,
+        &meaningful_query_tokens(query),
+        false,
+        None,
+    );
     assert!(ranked[0].hit.name.contains("bilinear_hasTemperateGrowth"));
     assert_eq!(ranked.len(), 2);
     assert!(!miss);
-    for query in ["ContinuousLinearMap.*[TR]emperateGrowth", "ContinuousLinearMap.*[a-z]emperateGrowth"] {
+    for query in [
+        "ContinuousLinearMap.*[TR]emperateGrowth",
+        "ContinuousLinearMap.*[a-z]emperateGrowth",
+    ] {
         let (ranked, _) = rank_discovery_candidates(candidates(), query, &[], false, None);
         assert_eq!(ranked[0].hit.name, "Function.HasTemperateGrowth.mul");
         assert_eq!(ranked.len(), 2);
@@ -4783,8 +5136,16 @@ fn case_pair_name_globs_promote_matches_without_dropping_fallbacks() {
 #[test]
 fn discovery_keeps_public_generated_names_but_filters_hygienic_helpers() {
     let helper = "Demo.definition._@.Demo.Facts.123._hygCtx._hyg.2";
-    let candidates = || [helper, "Demo.mk", "Demo._hyg", "Demo.Facts"].into_iter()
-        .map(|name| Candidate { hit: search_hit(name), score: 100.0, origins: 0 }).collect();
+    let candidates = || {
+        [helper, "Demo.mk", "Demo._hyg", "Demo.Facts"]
+            .into_iter()
+            .map(|name| Candidate {
+                hit: search_hit(name),
+                score: 100.0,
+                origins: 0,
+            })
+            .collect()
+    };
     let (broad, _) = rank_discovery_candidates(candidates(), "Demo", &[], false, None);
     assert!(!broad.iter().any(|c| c.hit.name == helper));
     for name in ["Demo.mk", "Demo._hyg", "Demo.Facts"] {
@@ -4797,11 +5158,24 @@ fn discovery_keeps_public_generated_names_but_filters_hygienic_helpers() {
 #[test]
 fn distributed_coverage_qualifies_only_disjoint_textual_matches() {
     let terms = vec!["elliptic".into(), "estimate".into()];
-    let hits = vec![search_hit("Elliptic.symbol"), search_hit("Valuation.estimate")];
-    assert!(distributed_coverage_note(&hits, &terms).unwrap().contains("no single result"));
+    let hits = vec![
+        search_hit("Elliptic.symbol"),
+        search_hit("Valuation.estimate"),
+    ];
+    assert!(
+        distributed_coverage_note(&hits, &terms)
+            .unwrap()
+            .contains("no single result")
+    );
     assert_eq!(weak_coverage_note(&hits, &terms), None);
-    assert_eq!(distributed_coverage_note(&[search_hit("Elliptic.estimate")], &terms), None);
-    assert_eq!(distributed_coverage_note(&hits, &["missing".into(), "estimate".into()]), None);
+    assert_eq!(
+        distributed_coverage_note(&[search_hit("Elliptic.estimate")], &terms),
+        None
+    );
+    assert_eq!(
+        distributed_coverage_note(&hits, &["missing".into(), "estimate".into()]),
+        None
+    );
     let mut documented = hits.clone();
     documented[0].doc = Some("elliptic estimate".into());
     assert_eq!(distributed_coverage_note(&documented, &terms), None);
@@ -4814,11 +5188,29 @@ fn multiword_owner_member_prefers_the_complete_name_at_equal_coverage() {
     let mut broad = search_hit("Demo.growth_excerpt");
     broad.source = Some("HasTemperateGrowth mul has temperate growth".into());
     let candidates = vec![
-        Candidate { hit: broad, score: 1000.0, origins: 0 },
-        Candidate { hit: search_hit("Complex.hasTemperateGrowth_exp_mul_I"), score: 900.0, origins: 0 },
-        Candidate { hit: search_hit("Function.HasTemperateGrowth.mul"), score: 10.0, origins: 0 },
+        Candidate {
+            hit: broad,
+            score: 1000.0,
+            origins: 0,
+        },
+        Candidate {
+            hit: search_hit("Complex.hasTemperateGrowth_exp_mul_I"),
+            score: 900.0,
+            origins: 0,
+        },
+        Candidate {
+            hit: search_hit("Function.HasTemperateGrowth.mul"),
+            score: 10.0,
+            origins: 0,
+        },
     ];
-    let (ranked, _) = rank_discovery_candidates(candidates, query, &meaningful_query_tokens(query), false, None);
+    let (ranked, _) = rank_discovery_candidates(
+        candidates,
+        query,
+        &meaningful_query_tokens(query),
+        false,
+        None,
+    );
     assert_eq!(ranked[0].hit.name, "Function.HasTemperateGrowth.mul");
     assert_eq!(ranked.len(), 3);
 }
@@ -4826,20 +5218,38 @@ fn multiword_owner_member_prefers_the_complete_name_at_equal_coverage() {
 #[test]
 fn glob_suffix_retry_requires_retrieved_declaration_evidence() {
     let candidates = vec![Candidate {
-        hit: search_hit("Demo.tsupport_lineDerivOp_subset"), score: 1.0, origins: 0,
+        hit: search_hit("Demo.tsupport_lineDerivOp_subset"),
+        score: 1.0,
+        origins: 0,
     }];
-    assert_eq!(declaration_glob_suffix_retry(&candidates, "tsupport.*lineDeriv"),
-        Some("tsupport.*lineDeriv*".into()));
-    for query in ["tsupport.*lineDeriv*", "tsupport.*missing", "lineDeriv", "tsupport.*lineDeriv|Other.*"] {
+    assert_eq!(
+        declaration_glob_suffix_retry(&candidates, "tsupport.*lineDeriv"),
+        Some("tsupport.*lineDeriv*".into())
+    );
+    for query in [
+        "tsupport.*lineDeriv*",
+        "tsupport.*missing",
+        "lineDeriv",
+        "tsupport.*lineDeriv|Other.*",
+    ] {
         assert_eq!(declaration_glob_suffix_retry(&candidates, query), None);
     }
-    assert_eq!(declaration_glob_suffix_retry(&[], "tsupport.*lineDeriv"), None);
+    assert_eq!(
+        declaration_glob_suffix_retry(&[], "tsupport.*lineDeriv"),
+        None
+    );
     let mut non_decl = candidates.clone();
     non_decl[0].hit.kind = "file".into();
-    assert_eq!(declaration_glob_suffix_retry(&non_decl, "tsupport.*lineDeriv"), None);
+    assert_eq!(
+        declaration_glob_suffix_retry(&non_decl, "tsupport.*lineDeriv"),
+        None
+    );
     non_decl[0].hit.kind = "declaration".into();
     non_decl[0].hit.name = "_private.Demo.tsupport_lineDerivOp_subset".into();
-    assert_eq!(declaration_glob_suffix_retry(&non_decl, "tsupport.*lineDeriv"), None);
+    assert_eq!(
+        declaration_glob_suffix_retry(&non_decl, "tsupport.*lineDeriv"),
+        None
+    );
 }
 
 #[test]
@@ -4851,11 +5261,24 @@ fn near_names_merge_root_aliases_and_keep_signature() {
     let neighbor = indexed_row("Demo.subset_closedBall_lt");
     let hits = rank_near_name_rows("Demo.subset_closedBal", vec![plain, rich, other, neighbor]);
     assert_eq!(hits.len(), 3);
-    let same = hits.iter().filter(|c| canonical_declaration_name(&c.hit.name) == "Demo.subset_closedBall").collect::<Vec<_>>();
+    let same = hits
+        .iter()
+        .filter(|c| canonical_declaration_name(&c.hit.name) == "Demo.subset_closedBall")
+        .collect::<Vec<_>>();
     assert_eq!(same.len(), 1);
-    assert!(same[0].hit.signature.as_deref().unwrap().contains("IsBounded"));
+    assert!(
+        same[0]
+            .hit
+            .signature
+            .as_deref()
+            .unwrap()
+            .contains("IsBounded")
+    );
     assert!(hits.iter().any(|c| c.hit.name == "Other.subset_closedBall"));
-    assert!(hits.iter().any(|c| c.hit.name == "Demo.subset_closedBall_lt"));
+    assert!(
+        hits.iter()
+            .any(|c| c.hit.name == "Demo.subset_closedBall_lt")
+    );
 }
 
 #[test]
@@ -4870,18 +5293,30 @@ fn exact_refinements_do_not_stop_on_proof_only_mentions() {
     anchor.signature = Some("(hf : ContinuousOn f s) : IsCompact (f '' s)".into());
     assert_eq!(exact_refinement_score(&anchor, &terms), 1);
     let mut ranked = vec![
-        Candidate { hit: search_hit("Demo.image"), score: 100.0, origins: 0 },
-        Candidate { hit: search_hit("Demo.image_of_continuousOn"), score: 1.0, origins: 0 },
+        Candidate {
+            hit: search_hit("Demo.image"),
+            score: 100.0,
+            origins: 0,
+        },
+        Candidate {
+            hit: search_hit("Demo.image_of_continuousOn"),
+            score: 1.0,
+            origins: 0,
+        },
     ];
     promote_family_candidates(&mut ranked, "Demo.image", &terms);
     assert_eq!(ranked[0].hit.name, "Demo.image_of_continuousOn");
-
 }
 
 #[test]
 fn named_generator_source_accepts_attribute_options() {
-    for attr in ["to_additive (attr := simp) additive", "to_additive additive (attr := simp)"] {
-        let source = format!("namespace Demo\n@[{attr}]\ntheorem multiplicative : True := by trivial\nend Demo\n");
+    for attr in [
+        "to_additive (attr := simp) additive",
+        "to_additive additive (attr := simp)",
+    ] {
+        let source = format!(
+            "namespace Demo\n@[{attr}]\ntheorem multiplicative : True := by trivial\nend Demo\n"
+        );
         let entry = explicit_generator_source_entry(&source, "Demo", "Demo.additive").unwrap();
         assert!(entry.body.contains("multiplicative"));
         assert_eq!(entry.kind, "generator");
@@ -4893,17 +5328,22 @@ fn named_generator_source_accepts_attribute_options() {
 
 #[test]
 fn near_names_keep_bounded_same_namespace_suffix_completions() {
-    let rows = || vec![
-        indexed_row("_root_.Demo.repr_apply_apply"),
-        indexed_row("Other.repr_apply_apply"),
-        indexed_row("Demo.repr_apply_apply_extra"),
-        indexed_row("Demo.repr_apply_verylongsuffix"),
-        indexed_row("Demo.repr_apply.Nested"),
-    ];
+    let rows = || {
+        vec![
+            indexed_row("_root_.Demo.repr_apply_apply"),
+            indexed_row("Other.repr_apply_apply"),
+            indexed_row("Demo.repr_apply_apply_extra"),
+            indexed_row("Demo.repr_apply_verylongsuffix"),
+            indexed_row("Demo.repr_apply.Nested"),
+        ]
+    };
     let hits = rank_near_name_rows("Demo.repr_apply", rows());
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].hit.name, "_root_.Demo.repr_apply_apply");
-    assert_eq!(rank_near_name_rows("_root_.Demo.repr_apply", rows()).len(), 1);
+    assert_eq!(
+        rank_near_name_rows("_root_.Demo.repr_apply", rows()).len(),
+        1
+    );
     assert!(rank_near_name_rows("repr_apply", rows()).is_empty());
 }
 
@@ -4914,40 +5354,79 @@ fn connecting_statement_outranks_file_body_coverage() {
     file.source = Some("extendValue coefficientAction".into());
     let mut theorem = search_hit("Demo.interaction");
     theorem.signature = Some("(n : Nat) : extendValue n = coefficientAction n".into());
-    let candidates = vec![file, search_hit("Demo.extendValue"), search_hit("Demo.coefficientAction"), theorem];
-    let candidates = candidates.into_iter().enumerate().map(|(i, hit)| Candidate {
-        hit, score: 100.0 - i as f64, origins: 0,
-    }).collect();
-    let (ranked, _) = rank_discovery_candidates(candidates, "extendValue coefficientAction",
-        &["extendvalue".into(), "coefficientaction".into()], false, None);
+    let candidates = vec![
+        file,
+        search_hit("Demo.extendValue"),
+        search_hit("Demo.coefficientAction"),
+        theorem,
+    ];
+    let candidates = candidates
+        .into_iter()
+        .enumerate()
+        .map(|(i, hit)| Candidate {
+            hit,
+            score: 100.0 - i as f64,
+            origins: 0,
+        })
+        .collect();
+    let (ranked, _) = rank_discovery_candidates(
+        candidates,
+        "extendValue coefficientAction",
+        &["extendvalue".into(), "coefficientaction".into()],
+        false,
+        None,
+    );
     assert_eq!(ranked[0].hit.name, "Demo.interaction");
 }
 
 #[test]
 fn literal_source_miss_offers_outline_without_changing_matches() {
     let directory = tempfile::tempdir().unwrap();
-    let workspace = Workspace { reference: "w1".into(), name: "demo".into(),
-        path: directory.path().to_path_buf(), branch: "demo".into(), model: None };
+    let workspace = Workspace {
+        reference: "w1".into(),
+        name: "demo".into(),
+        path: directory.path().to_path_buf(),
+        branch: "demo".into(),
+        model: None,
+    };
     for (text, needle, hint) in [
         ("def target := 1\n", "source", true),
         ("-- source context\ndef target := 1\n", "source", false),
         ("def target := 1\n", "missing", false),
     ] {
         fs::write(directory.path().join("Facts.lean"), text).unwrap();
-        let query = parse_source_occurrence_query(directory.path(), directory.path(), None,
-            &format!("{needle} Facts.lean")).unwrap().unwrap();
+        let query = parse_source_occurrence_query(
+            directory.path(),
+            directory.path(),
+            None,
+            &format!("{needle} Facts.lean"),
+        )
+        .unwrap()
+        .unwrap();
         let result = source_occurrence_result(&workspace, query, false).unwrap();
-        assert_eq!(result.note.as_deref().unwrap_or_default().contains("Facts.lean:outline"), hint);
-        if text.contains("source") { assert!(!result.hits.is_empty()); }
+        assert_eq!(
+            result
+                .note
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Facts.lean:outline"),
+            hint
+        );
+        if text.contains("source") {
+            assert!(!result.hits.is_empty());
+        }
     }
 }
 
 #[test]
 fn qualified_completion_precedes_other_namespace_leaf() {
-    let hits = rank_near_name_rows("Demo.derivCLM_apply", vec![
-        indexed_row("Other.derivCLM_apply"),
-        indexed_row("Demo.derivCLM_apply_apply"),
-    ]);
+    let hits = rank_near_name_rows(
+        "Demo.derivCLM_apply",
+        vec![
+            indexed_row("Other.derivCLM_apply"),
+            indexed_row("Demo.derivCLM_apply_apply"),
+        ],
+    );
     assert_eq!(hits[0].hit.name, "Demo.derivCLM_apply_apply");
     assert_eq!(hits[1].hit.name, "Other.derivCLM_apply");
 }
@@ -4966,25 +5445,42 @@ fn signatures_exclude_comments_but_preserve_literal_text_and_source() {
 #[test]
 fn rewrite_comparison_excludes_ambient_context() {
     let diagnostic = "Tactic `rewrite` failed: Did not find an occurrence of the pattern\n  convert b\nin the target expression\n  convertFn b.run = b.run\n\nb : Box\nh : convert b = b\n⊢ convertFn b.run = b.run";
-    assert_eq!(diagnostic_rewrite_comparison(diagnostic), Some(("convert b".into(), "convertFn b.run = b.run".into())));
+    assert_eq!(
+        diagnostic_rewrite_comparison(diagnostic),
+        Some(("convert b".into(), "convertFn b.run = b.run".into()))
+    );
     assert!(diagnostic_rewrite_comparison("Tactic rewrite failed: unknown identifier").is_none());
-    assert!(diagnostic_rewrite_comparison("Did not find an occurrence of the pattern\nin the target expression\n").is_none());
+    assert!(
+        diagnostic_rewrite_comparison(
+            "Did not find an occurrence of the pattern\nin the target expression\n"
+        )
+        .is_none()
+    );
 }
 
 #[test]
 fn qualified_near_names_recover_prefixed_members_without_other_scopes() {
     let connection = Connection::open_in_memory().unwrap();
-    connection.execute_batch("CREATE VIRTUAL TABLE search_fts USING fts5(
+    connection
+        .execute_batch(
+            "CREATE VIRTUAL TABLE search_fts USING fts5(
         owner UNINDEXED, origin UNINDEXED, file UNINDEXED, module UNINDEXED,
-        line UNINDEXED, name, kind UNINDEXED, signature, docs, body);").unwrap();
+        line UNINDEXED, name, kind UNINDEXED, signature, docs, body);",
+        )
+        .unwrap();
     for (owner, name) in [
         ("packages:demo", "Demo.toNormedGroup"),
         ("packages:demo", "Other.normedGroup"),
         ("workspace:hidden", "Demo.normedGroup"),
         ("packages:demo", "Demo.unrelated"),
     ] {
-        connection.execute("INSERT INTO search_fts VALUES (?1, '', 'Demo.lean', 'Fixture.Module',
-            1, ?2, 'def', '(n : Nat) : Nat', '', '')", params![owner, name]).unwrap();
+        connection
+            .execute(
+                "INSERT INTO search_fts VALUES (?1, '', 'Demo.lean', 'Fixture.Module',
+            1, ?2, 'def', '(n : Nat) : Nat', '', '')",
+                params![owner, name],
+            )
+            .unwrap();
     }
     install_active_scopes(&connection, &HashSet::from(["packages:demo".into()])).unwrap();
     let rows = near_name_prefix_candidates(&connection, "Demo.normedGroup").unwrap();
@@ -5029,17 +5525,28 @@ fn exact_miss_for_structure_member_offers_lean_inspection() {
     let checker = Arc::new(Checker::new(repo.clone(), state.clone(), None).unwrap());
     let searcher = Searcher::new(repo.clone(), state, checker, None).unwrap();
     let connection = Connection::open(repo.search_db_path).unwrap();
-    connection.execute("INSERT INTO search_fts VALUES
+    connection
+        .execute(
+            "INSERT INTO search_fts VALUES
         ('workspace:w1', '', 'Fixture.lean', 'Fixture', 1, 'Derived', 'structure',
-         'extends Base', '', 'structure Derived extends Base where')", []).unwrap();
+         'extends Base', '', 'structure Derived extends Base where')",
+            [],
+        )
+        .unwrap();
     let scopes = HashSet::from(["workspace:w1".into()]);
-    let result = searcher.exact_miss_result(&current, "Derived.toBase", &scopes, None, false, false).unwrap();
+    let result = searcher
+        .exact_miss_result(&current, "Derived.toBase", &scopes, None, false, false)
+        .unwrap();
     let note = result.note.unwrap();
-    assert!(note.contains("no declaration named Derived.toBase in the indexed project or dependencies"));
+    assert!(
+        note.contains("no declaration named Derived.toBase in the indexed project or dependencies")
+    );
     assert!(note.contains("Generated members may be unindexed"));
     assert!(note.contains("#inspect Derived.toBase"));
     assert!(!result.ok);
-    let result = searcher.exact_miss_result(&current, "Unknown.toBase", &scopes, None, false, false).unwrap();
+    let result = searcher
+        .exact_miss_result(&current, "Unknown.toBase", &scopes, None, false, false)
+        .unwrap();
     assert!(!result.note.unwrap().contains("Generated members"));
 }
 
@@ -5049,9 +5556,14 @@ fn coverage_promotion_counts_unicode_characters_not_bytes() {
     first.signature = Some("manifold H1 h₁ bound".into());
     let mut relevant = search_hit("Demo.estimate");
     relevant.signature = first.signature.clone();
-    let mut ranked = vec![first, relevant, search_hit("h₁")].into_iter().map(|hit| Candidate {
-        hit, score: 1.0, origins: 0,
-    }).collect();
+    let mut ranked = vec![first, relevant, search_hit("h₁")]
+        .into_iter()
+        .map(|hit| Candidate {
+            hit,
+            score: 1.0,
+            origins: 0,
+        })
+        .collect();
     let tokens = vec!["manifold".into(), "h1".into(), "h₁".into()];
     promote_query_coverage(&mut ranked, "manifold H1", &tokens);
     assert_eq!(ranked[1].hit.name, "Demo.estimate");
@@ -5061,19 +5573,33 @@ fn coverage_promotion_counts_unicode_characters_not_bytes() {
 #[test]
 fn type_search_distinguishes_unverified_related_candidates() {
     let mut run = SearchRun {
-        reference: "q1".into(), workspace_ref: "w1".into(),
-        query: "Lifted Nat Nat".into(), inference: "hybrid+applicability".into(),
+        reference: "q1".into(),
+        workspace_ref: "w1".into(),
+        query: "Lifted Nat Nat".into(),
+        inference: "hybrid+applicability".into(),
         hits: vec![SearchHit {
-            name: "instLiftedNatBox".into(), kind: "instance".into(),
-            signature: Some("Lifted Nat Box".into()), module: "Demo".into(),
-            path: "Demo.lean".into(), line: 6, doc: None, source: None,
-            usages: Vec::new(), applicable: false, required_import: None,
+            name: "instLiftedNatBox".into(),
+            kind: "instance".into(),
+            signature: Some("Lifted Nat Box".into()),
+            module: "Demo".into(),
+            path: "Demo.lean".into(),
+            line: 6,
+            doc: None,
+            source: None,
+            usages: Vec::new(),
+            applicable: false,
+            required_import: None,
         }],
-        note: None, duration_ms: 1, created_at: 0,
+        note: None,
+        duration_ms: 1,
+        created_at: 0,
     };
     let related = render_summary(&run);
     assert!(related.contains("Lifted Nat Box"));
-    assert!(related.contains("related (applicability unverified)"), "{related}");
+    assert!(
+        related.contains("related (applicability unverified)"),
+        "{related}"
+    );
     run.hits[0].applicable = true;
     let verified = render_summary(&run);
     assert!(verified.contains("  applicable") && !verified.contains("unverified"));
@@ -5124,11 +5650,23 @@ fn repeated_identical_source_read_is_elided() {
     let searcher = Searcher::new(repo, state, checker, None).unwrap();
 
     let first = searcher
-        .search(&workspace, &root, "AtiyahSinger/Demo.lean:2-20", None, false)
+        .search(
+            &workspace,
+            &root,
+            "AtiyahSinger/Demo.lean:2-20",
+            None,
+            false,
+        )
         .unwrap();
     assert!(first.contains("line 1"), "{first}");
     let second = searcher
-        .search(&workspace, &root, "AtiyahSinger/Demo.lean:2-20", None, false)
+        .search(
+            &workspace,
+            &root,
+            "AtiyahSinger/Demo.lean:2-20",
+            None,
+            false,
+        )
         .unwrap();
     assert!(second.contains("source unchanged since q"), "{second}");
     assert!(!second.contains("-- line 5"), "{second}");
@@ -5136,11 +5674,19 @@ fn repeated_identical_source_read_is_elided() {
     // Changing the file must invalidate the elision.
     fs::write(
         root.join("AtiyahSinger/Demo.lean"),
-        format!("namespace AtiyahSinger\n-- edited\n{body}\ndef Demo : Nat := 0\nend AtiyahSinger\n"),
+        format!(
+            "namespace AtiyahSinger\n-- edited\n{body}\ndef Demo : Nat := 0\nend AtiyahSinger\n"
+        ),
     )
     .unwrap();
     let third = searcher
-        .search(&workspace, &root, "AtiyahSinger/Demo.lean:2-20", None, false)
+        .search(
+            &workspace,
+            &root,
+            "AtiyahSinger/Demo.lean:2-20",
+            None,
+            false,
+        )
         .unwrap();
     assert!(!third.contains("source unchanged"), "{third}");
 }
@@ -5168,13 +5714,9 @@ fn near_typo_directory_prefixes_resolve_but_wrong_locations_fail_closed() {
     );
     // A genuinely different directory stays unresolved.
     assert!(
-        resolve_source_path(
-            directory.path(),
-            directory.path(),
-            "Guards/TorusChart.lean"
-        )
-        .unwrap()
-        .is_none()
+        resolve_source_path(directory.path(), directory.path(), "Guards/TorusChart.lean")
+            .unwrap()
+            .is_none()
     );
 }
 
@@ -5216,7 +5758,13 @@ fn declaration_addressed_reads_return_the_exact_span() {
     let searcher = Searcher::new(repo, state, checker, None).unwrap();
 
     let result = searcher
-        .search(&workspace, &root, "AtiyahSinger/Demo.lean:myLemma", None, false)
+        .search(
+            &workspace,
+            &root,
+            "AtiyahSinger/Demo.lean:myLemma",
+            None,
+            false,
+        )
         .unwrap();
     assert!(result.contains("myLemma"), "{result}");
     assert!(result.contains("rfl"), "{result}");
@@ -5224,7 +5772,13 @@ fn declaration_addressed_reads_return_the_exact_span() {
     assert!(!result.contains("def last"), "{result}");
 
     let missing = searcher
-        .search(&workspace, &root, "AtiyahSinger/Demo.lean:noSuchLemma", None, false)
+        .search(
+            &workspace,
+            &root,
+            "AtiyahSinger/Demo.lean:noSuchLemma",
+            None,
+            false,
+        )
         .unwrap_err();
     assert!(
         format!("{missing:#}").contains("no declaration named noSuchLemma"),

@@ -24,8 +24,15 @@ const FOCUSES: &[&str] = &[
     "warnings",
     "fits",
 ];
-const REMOVED_FOCUSES: &[&str] =
-    &["neighborhood", "dependencies", "instances", "coercions", "defeq", "rewrite", "profile"];
+const REMOVED_FOCUSES: &[&str] = &[
+    "neighborhood",
+    "dependencies",
+    "instances",
+    "coercions",
+    "defeq",
+    "rewrite",
+    "profile",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ProbeContext {
@@ -99,7 +106,7 @@ impl ProbeRequest {
         {
             let hint = match &context {
                 Some(ProbeContext::Check(reference)) => {
-                    format!("use `mathmux probe {reference} goal|types`")
+                    format!("use `mathmux probe {reference} evidence|goal|types`")
                 }
                 Some(ProbeContext::Query(reference, _)) => {
                     format!("use `mathmux show {reference} --all` for stored results")
@@ -127,7 +134,7 @@ impl ProbeRequest {
                 let facet = facet.trim_matches(['\'', '"']);
                 if matches!(
                     facet.to_ascii_lowercase().as_str(),
-                    "outline" | "declarations" | "imports" | "dependents"
+                    "outline" | "declarations" | "imports" | "dependents" | "dossier"
                 ) {
                     bail!(
                         "`{facet}` is a source-search facet, not a probe subject; use `mathmux search {file} {facet}`"
@@ -239,7 +246,9 @@ impl ProbeRequest {
         {
             if terms.len() > 2 {
                 let name = terms[0];
-                bail!("inspect one declaration per probe; try `probe {name} signature`, then probe the other names separately");
+                bail!(
+                    "inspect one declaration per probe; try `probe {name} signature`, then probe the other names separately"
+                );
             }
             let requested = unquote(terms.last().copied().unwrap_or_default());
             let name = terms[0];
@@ -319,9 +328,7 @@ fn indexed_check_hit_at<'a>(
 ) -> Option<&'a SearchHit> {
     run.hits
         .get(index)
-        .filter(|hit| {
-            qualified_name_matches(&hit.name, subject) && indexed_hit_has_signature(hit)
-        })
+        .filter(|hit| qualified_name_matches(&hit.name, subject) && indexed_hit_has_signature(hit))
         .or_else(|| indexed_check_hit(run, subject))
 }
 
@@ -418,7 +425,7 @@ impl Searcher {
                 self.probe_check_reference(workspace, reference, focus)
             }
             (Some(ProbeContext::Check(_)), Some(_), _) => {
-                bail!("cREF accepts only goal, types, or context focus")
+                bail!("cREF accepts only goal, types, context, or evidence focus")
             }
             (Some(ProbeContext::Position(location)), None, None | Some("goal")) => {
                 self.run_position_probe(workspace, cwd, location, None)
@@ -894,13 +901,28 @@ impl Searcher {
                     .with_context(|| format!("{reference} has no stored failure goal"))?;
                 stored_goal_detail(text, diagnostic.context.as_deref())
             }
+            Some("evidence") => {
+                let diagnostic =
+                    diagnostic.with_context(|| format!("{reference} has no failure to inspect"))?;
+                self.failure_evidence(
+                    workspace,
+                    reference,
+                    text,
+                    diagnostic.context.as_deref(),
+                    if run.workspace_ref == workspace.reference {
+                        path.as_deref()
+                    } else {
+                        None
+                    },
+                )?
+            }
             None => {
                 let diagnostic =
                     diagnostic.with_context(|| format!("{reference} has no failure to probe"))?;
                 diagnostic_context(text, diagnostic.context.as_deref())
             }
             Some(other) => bail!(
-                "focus `{other}` is not valid for a stored check; valid analyses: goal, types, context"
+                "focus `{other}` is not valid for a stored check; valid analyses: goal, types, context, evidence"
             ),
         };
         self.store_probe_result(
@@ -911,6 +933,77 @@ impl Searcher {
             path.as_deref(),
             line,
         )
+    }
+
+    fn failure_evidence(
+        &self,
+        workspace: &Workspace,
+        reference: &str,
+        diagnostic: &str,
+        source_context: Option<&str>,
+        path: Option<&str>,
+    ) -> Result<String> {
+        let mut detail = format!(
+            "failure evidence for {reference} (indexed candidates are suggestions; check remains certification)\n{}",
+            stored_goal_detail(diagnostic, source_context)
+        );
+        let focused = self.failure_context(workspace, diagnostic, path)?;
+        if !focused.contains("No focused type-conversion retrieval") {
+            detail.push_str(&focused);
+        }
+        if let Some(goal) = diagnostic_goal_detail(diagnostic)
+            && let Some((_, conclusion)) = goal.split_once('⊢')
+        {
+            let conclusion = conclusion.trim();
+            if !conclusion.is_empty() {
+                let import_target = path.map(Path::new);
+                if let Ok(result) = self.planned_text_search(
+                    workspace,
+                    conclusion,
+                    TextSearchPlan::Type,
+                    import_target,
+                    None,
+                    false,
+                ) {
+                    let candidates = result
+                        .hits
+                        .iter()
+                        .filter(|hit| !matches!(hit.kind.as_str(), "file" | "imports"))
+                        .take(3)
+                        .collect::<Vec<_>>();
+                    if !candidates.is_empty() {
+                        detail.push_str("\n\nGoal-shaped candidates:");
+                        for hit in candidates {
+                            detail.push_str(&format!(
+                                "\n{} : {}\n  {}:{}; {}{}",
+                                hit.name,
+                                truncate_line(
+                                    hit.signature.as_deref().unwrap_or("signature unavailable"),
+                                    250
+                                ),
+                                hit.path,
+                                hit.line,
+                                if hit.applicable {
+                                    "applicable match"
+                                } else {
+                                    "related; applicability unverified"
+                                },
+                                hit.required_import
+                                    .as_deref()
+                                    .map(|module| format!("; import may be required: {module}"))
+                                    .unwrap_or_default()
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(path) = path {
+            detail.push_str(&format!(
+                "\n\nVerify one candidate in place: mathmux probe {reference} NAME fits\nThen edit {path} and run mathmux check {path}."
+            ));
+        }
+        Ok(detail)
     }
 
     fn probe_query_reference(
@@ -966,10 +1059,7 @@ impl Searcher {
                 None,
             );
         }
-        if run.inference != "probe"
-            && subject.is_none()
-            && matches!(focus, Some("types"))
-        {
+        if run.inference != "probe" && subject.is_none() && matches!(focus, Some("types")) {
             let focus = focus.unwrap();
             bail!(
                 "focus `{focus}` is not valid for a declaration qREF; use signature, source, outline, find TERM, or usages, or probe a cREF failure"
@@ -1026,11 +1116,7 @@ impl Searcher {
                 .is_some_and(|note| note.contains("not a class or structure"))
         {
             let subject = query.split_whitespace().next().unwrap_or("the subject");
-            if run
-                .hits
-                .first()
-                .is_some_and(|hit| hit.kind == "inductive")
-            {
+            if run.hits.first().is_some_and(|hit| hit.kind == "inductive") {
                 return self.run_constructors_probe(workspace, cwd, subject);
             }
             if let Some(hit) = run.hits.first()
@@ -1233,7 +1319,10 @@ impl Searcher {
             .find(|entry| {
                 entry.name.trim_start_matches("_root_.") == hit.name.trim_start_matches("_root_.")
                     && (entry.kind == hit.kind
-                        || matches!(hit.kind.as_str(), "declaration" | "generated" | "source-group"))
+                        || matches!(
+                            hit.kind.as_str(),
+                            "declaration" | "generated" | "source-group"
+                        ))
             })
             .or_else(|| source::alias_source_entry(&source, &hit.name))
             .or_else(|| source::explicit_generator_source_entry(&source, &hit.module, &hit.name));
@@ -1784,7 +1873,8 @@ fn render_static_probe_summary(run: &SearchRun, focus: &str) -> String {
     {
         run.note = None;
     }
-    if focus == "signature" && run.hits.len() == 1
+    if focus == "signature"
+        && run.hits.len() == 1
         && let Some(hit) = run.hits.first().filter(|hit| hit.signature.is_none())
     {
         let name = hit.name.trim_start_matches("_root_.");
@@ -1978,7 +2068,7 @@ fn stored_goal_detail(diagnostic: &str, source_context: Option<&str>) -> String 
 
 fn running_check_probe_hint(reference: &str) -> String {
     format!(
-        "check {reference} is still running; use `mathmux show {reference} --wait`, then retry `mathmux probe {reference} goal|types`"
+        "check {reference} is still running; use `mathmux show {reference} --wait`, then retry `mathmux probe {reference} evidence|goal|types`"
     )
 }
 
@@ -2530,15 +2620,27 @@ mod tests {
         };
         let output = render_static_probe_summary(&run, "signature");
         assert!(output.contains("Signature is not indexed"), "{output}");
-        assert!(output.contains("mathmux probe Demo.target source"), "{output}");
-        assert!(output.contains("mathmux probe FILE:LINE \"#inspect Demo.target\""), "{output}");
+        assert!(
+            output.contains("mathmux probe Demo.target source"),
+            "{output}"
+        );
+        assert!(
+            output.contains("mathmux probe FILE:LINE \"#inspect Demo.target\""),
+            "{output}"
+        );
         assert!(output.find("#inspect").unwrap() < output.find("Demo.target source").unwrap());
         let mut file = run.clone();
         file.hits[0].kind = "file".into();
         file.hits[0].path = "Demo Facts.lean".into();
         let output = render_static_probe_summary(&file, "signature");
-        assert!(output.contains("File result has no declaration signature"), "{output}");
-        assert!(output.contains("mathmux search \"Demo Facts.lean\" outline"), "{output}");
+        assert!(
+            output.contains("File result has no declaration signature"),
+            "{output}"
+        );
+        assert!(
+            output.contains("mathmux search \"Demo Facts.lean\" outline"),
+            "{output}"
+        );
         assert!(!output.contains("not indexed"), "{output}");
         assert!(!output.contains("mathmux probe"), "{output}");
         let mut signed = run;
@@ -2551,7 +2653,10 @@ mod tests {
             "{X : Type} [TopologicalSpace X] (f : X → X) (hf : Continuous f) : Continuous f".into(),
         );
         let output = render_static_probe_summary(&signed, "signature");
-        assert!(output.contains("(hf : Continuous f) : Continuous f"), "{output}");
+        assert!(
+            output.contains("(hf : Continuous f) : Continuous f"),
+            "{output}"
+        );
         assert!(output.contains("[TopologicalSpace X]"), "{output}");
         assert!(!output.contains("Full signature/context"), "{output}");
         signed.hits[0].signature = Some(format!(
@@ -2559,12 +2664,24 @@ mod tests {
             "[TopologicalSpace X] ".repeat(20),
         ));
         let output = render_static_probe_summary(&signed, "signature");
-        assert!(output.contains("(hf : Continuous f) : Continuous f"), "{output}");
-        assert!(output.contains("[context: 20 implicit/typeclass]"), "{output}");
-        assert!(output.contains("Full signature/context: mathmux show q1 --all"), "{output}");
+        assert!(
+            output.contains("(hf : Continuous f) : Continuous f"),
+            "{output}"
+        );
+        assert!(
+            output.contains("[context: 20 implicit/typeclass]"),
+            "{output}"
+        );
+        assert!(
+            output.contains("Full signature/context: mathmux show q1 --all"),
+            "{output}"
+        );
         signed.hits[0].signature = Some(format!("(hyp : {}) : True", "Nat → ".repeat(60)));
         let output = render_static_probe_summary(&signed, "signature");
-        assert!(output.contains("Full signature/context: mathmux show q1 --all"), "{output}");
+        assert!(
+            output.contains("Full signature/context: mathmux show q1 --all"),
+            "{output}"
+        );
     }
 
     #[test]
@@ -2636,8 +2753,13 @@ mod tests {
     #[test]
     fn failed_directives_do_not_promote_unrecognized_diagnostics_to_success() {
         for operation in ["term", "inspect", "reduce", "synth"] {
-            for diagnostic in ["<input>:1:8: expected end of input", "<input>:1:1: unexpected end of input", "unrecognized worker failure"] {
-                let (ok, detail) = decisive_directive_result(operation, "(", false, diagnostic.into());
+            for diagnostic in [
+                "<input>:1:8: expected end of input",
+                "<input>:1:1: unexpected end of input",
+                "unrecognized worker failure",
+            ] {
+                let (ok, detail) =
+                    decisive_directive_result(operation, "(", false, diagnostic.into());
                 assert!(!ok, "{operation}: {diagnostic}");
                 assert_eq!(detail, diagnostic);
             }
@@ -2737,7 +2859,13 @@ mod tests {
                 directive: None,
             }
         );
-        for facet in ["outline", "declarations", "imports", "dependents"] {
+        for facet in [
+            "outline",
+            "declarations",
+            "imports",
+            "dependents",
+            "dossier",
+        ] {
             assert_eq!(
                 ProbeRequest::parse(&format!("Demo.lean {facet}"))
                     .unwrap_err()
@@ -2888,7 +3016,10 @@ mod tests {
                 .to_string(),
             "unknown declaration focus `Fiber`; try `probe Demo.foo signature`, `probe Demo.foo source`, or `probe Demo.foo usages`"
         );
-        for query in ["Demo.first Demo.second Demo.third", "Demo.first Demo.second Demo.third signature"] {
+        for query in [
+            "Demo.first Demo.second Demo.third",
+            "Demo.first Demo.second Demo.third signature",
+        ] {
             let error = ProbeRequest::parse(query).unwrap_err().to_string();
             assert!(error.contains("one declaration per probe"));
             assert!(error.contains("probe Demo.first signature"));
@@ -2956,16 +3087,23 @@ mod tests {
             Some("goal")
         );
         assert_eq!(
+            ProbeRequest::parse("c123 evidence")
+                .unwrap()
+                .focus
+                .as_deref(),
+            Some("evidence")
+        );
+        assert_eq!(
             ProbeRequest::parse("q123 --all").unwrap_err().to_string(),
             "probe --all is not valid here; use `mathmux show q123 --all` for stored detail"
         );
         assert_eq!(
             ProbeRequest::parse("c123 --all").unwrap_err().to_string(),
-            "probe --all is not valid here; use `mathmux probe c123 goal|types`"
+            "probe --all is not valid here; use `mathmux probe c123 evidence|goal|types`"
         );
         assert_eq!(
             running_check_probe_hint("c123"),
-            "check c123 is still running; use `mathmux show c123 --wait`, then retry `mathmux probe c123 goal|types`"
+            "check c123 is still running; use `mathmux show c123 --wait`, then retry `mathmux probe c123 evidence|goal|types`"
         );
         assert!(is_declaration_header(
             "noncomputable def parameterizedBottThickClutchingCore"
@@ -3228,31 +3366,31 @@ mod tests {
         assert!(!dossier.contains("This linter can be disabled"));
     }
 
-#[test]
-fn instance_obligations_parse_nested_binders() {
-    let obligations = instance_obligations(
-        "theorem foo {E : Type u} (x : E) [NormedAddCommGroup E] [InnerProductSpace ℂ E] [Fact (finrank ℂ E = 2)] : x = x",
-    );
-    assert_eq!(
-        obligations,
-        vec![
-            "NormedAddCommGroup E".to_owned(),
-            "InnerProductSpace ℂ E".to_owned(),
-            "Fact (finrank ℂ E = 2)".to_owned(),
-        ]
-    );
-    assert!(instance_obligations("theorem bar (x : Nat) : x = x").is_empty());
-}
+    #[test]
+    fn instance_obligations_parse_nested_binders() {
+        let obligations = instance_obligations(
+            "theorem foo {E : Type u} (x : E) [NormedAddCommGroup E] [InnerProductSpace ℂ E] [Fact (finrank ℂ E = 2)] : x = x",
+        );
+        assert_eq!(
+            obligations,
+            vec![
+                "NormedAddCommGroup E".to_owned(),
+                "InnerProductSpace ℂ E".to_owned(),
+                "Fact (finrank ℂ E = 2)".to_owned(),
+            ]
+        );
+        assert!(instance_obligations("theorem bar (x : Nat) : x = x").is_empty());
+    }
 
-#[test]
-fn fits_focus_builds_an_apply_tactic_probe() {
-    let request = ProbeRequest::parse("c123 Foo.bar_comp fits").unwrap();
-    assert_eq!(request.context, Some(ProbeContext::Check("c123".into())));
-    assert_eq!(
-        request.directive,
-        Some(LeanDirective::Tactic("apply (Foo.bar_comp)".into()))
-    );
-    assert!(ProbeRequest::parse("Foo.bar fits").is_err());
-    assert!(ProbeRequest::parse("c123 Foo Bar fits").is_err());
-}
+    #[test]
+    fn fits_focus_builds_an_apply_tactic_probe() {
+        let request = ProbeRequest::parse("c123 Foo.bar_comp fits").unwrap();
+        assert_eq!(request.context, Some(ProbeContext::Check("c123".into())));
+        assert_eq!(
+            request.directive,
+            Some(LeanDirective::Tactic("apply (Foo.bar_comp)".into()))
+        );
+        assert!(ProbeRequest::parse("Foo.bar fits").is_err());
+        assert!(ProbeRequest::parse("c123 Foo Bar fits").is_err());
+    }
 }

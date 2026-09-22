@@ -118,8 +118,7 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
             && run.hits.len() >= 2
             && ranked_terms.len() >= 2
         {
-            let missing =
-                uncovered_hit_terms(std::slice::from_ref(hit), &ranked_terms);
+            let missing = uncovered_hit_terms(std::slice::from_ref(hit), &ranked_terms);
             if !missing.is_empty() && missing.len() < ranked_terms.len() {
                 output.push_str(&format!("  [missing: {}]", missing.join(" ")));
             }
@@ -167,6 +166,7 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
                     | "declaration-outline"
                     | "declaration-neighborhood"
                     | "declaration-dependencies"
+                    | "dossier"
                     | "declaration-find"
                     | "source-group"
                     | "source-occurrences"
@@ -235,7 +235,10 @@ fn split_verdict_and_note(run: &SearchRun) -> (String, Option<&str>) {
         );
     }
     if run.inference == "exact-miss" {
-        let note = run.note.as_deref().unwrap_or("exact declaration not found in index");
+        let note = run
+            .note
+            .as_deref()
+            .unwrap_or("exact declaration not found in index");
         return note.split_once('\n').map_or_else(
             || (note.to_owned(), None),
             |(head, tail)| (head.to_owned(), Some(tail)),
@@ -255,7 +258,7 @@ fn split_verdict_and_note(run: &SearchRun) -> (String, Option<&str>) {
             "probe" | "probe-source" | "probe-source-excerpt" | "usages" => {
                 "probe result".to_owned()
             }
-            "source" | "source-only" | "source-regex" | "source-outline" => {
+            "source" | "source-only" | "source-regex" | "source-outline" | "source-dossier" => {
                 "source result".to_owned()
             }
             _ => format!(
@@ -528,7 +531,9 @@ fn render_source(
     };
     let lines = source.lines().collect::<Vec<_>>();
     let omitted = lines.len().saturating_sub(source_lines);
-    if run.inference == "probe" && hit.kind == "inspect" && omitted > 0
+    if run.inference == "probe"
+        && hit.kind == "inspect"
+        && omitted > 0
         && lines.iter().any(|line| line.starts_with("inputs ("))
     {
         render_inspection_preview(output, &lines, source_lines, &run.reference);
@@ -582,25 +587,44 @@ fn render_inspection_preview(output: &mut String, lines: &[&str], budget: usize,
         }
     }
     let priority = |head: &str| {
-        if head.starts_with("axioms:") || head.starts_with("ADMITTED")
+        if head.starts_with("axioms:")
+            || head.starts_with("ADMITTED")
             || head.starts_with("Unresolved metavariables")
-            || head.starts_with("Inspection is not") { 0 }
-        else if head.starts_with("result:") { 1 }
-        else if head.starts_with("proof assumption ") || head.starts_with("local assumption ") { 2 }
-        else if head.starts_with("instance assumption ") { 3 }
-        else { 4 }
+            || head.starts_with("Inspection is not")
+        {
+            0
+        } else if head.starts_with("result:") {
+            1
+        } else if head.starts_with("proof assumption ") || head.starts_with("local assumption ") {
+            2
+        } else if head.starts_with("instance assumption ") {
+            3
+        } else {
+            4
+        }
     };
-    let assumptions = fields.iter().filter(|field| matches!(priority(field[0]), 2 | 3)).count();
+    let assumptions = fields
+        .iter()
+        .filter(|field| matches!(priority(field[0]), 2 | 3))
+        .count();
     fields.sort_by_key(|field| priority(field[0]));
     let mut remaining = budget;
     let mut shown = 0;
     let mut assumptions_shown = 0;
     for field in fields {
-        if remaining == 0 { break; }
+        if remaining == 0 {
+            break;
+        }
         // A long result or premise must not crowd out every other obligation.
         let allowance = remaining.min(3);
-        let take = if field.len() > allowance { allowance.saturating_sub(1) } else { field.len() };
-        if take == 0 { break; }
+        let take = if field.len() > allowance {
+            allowance.saturating_sub(1)
+        } else {
+            field.len()
+        };
+        if take == 0 {
+            break;
+        }
         for line in field.iter().take(take) {
             output.push('\n');
             output.push_str(&truncate_line(line.trim_end(), 200));
@@ -713,7 +737,9 @@ mod tests {
             assert_eq!(compact_signature_preview(signature), signature);
         }
         assert_eq!(
-            compact_signature_preview("{X : Type} [Inhabited {x : X // True}] (x : X) : x ∈ {y | True}"),
+            compact_signature_preview(
+                "{X : Type} [Inhabited {x : X // True}] (x : X) : x ∈ {y | True}"
+            ),
             "(x : X) : x ∈ {y | True} [context: 2 implicit/typeclass]"
         );
     }
@@ -763,19 +789,39 @@ mod inspection_preview_tests {
 
     #[test]
     fn long_inspection_prioritizes_assumptions_and_result_with_attached_continuations() {
-        let mut detail = vec!["axioms: none".to_owned(), "inputs (explicit first):".to_owned()];
+        let mut detail = vec![
+            "axioms: none".to_owned(),
+            "inputs (explicit first):".to_owned(),
+        ];
         detail.extend((0..35).map(|i| format!("data input parameter{i}: Nat")));
-        detail.extend([
-            "proof assumption required: False", "instance assumption compact: CompactSpace X",
-            "result: ∃ n,", "  n = 0 ∧", "    True ∧", "    True",
-            "elaborated type: a long duplicated signature",
-        ].into_iter().map(str::to_owned));
+        detail.extend(
+            [
+                "proof assumption required: False",
+                "instance assumption compact: CompactSpace X",
+                "result: ∃ n,",
+                "  n = 0 ∧",
+                "    True ∧",
+                "    True",
+                "elaborated type: a long duplicated signature",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        );
         let lines = detail.iter().map(String::as_str).collect::<Vec<_>>();
         let mut output = String::new();
         render_inspection_preview(&mut output, &lines, 16, "q1");
-        assert!(output.contains("proof assumption required: False"), "{output}");
-        assert!(output.contains("instance assumption compact: CompactSpace X"), "{output}");
-        assert!(output.contains("result: ∃ n,\n  n = 0 ∧\n  … field continues in full output"), "{output}");
+        assert!(
+            output.contains("proof assumption required: False"),
+            "{output}"
+        );
+        assert!(
+            output.contains("instance assumption compact: CompactSpace X"),
+            "{output}"
+        );
+        assert!(
+            output.contains("result: ∃ n,\n  n = 0 ∧\n  … field continues in full output"),
+            "{output}"
+        );
         assert!(output.find("proof assumption").unwrap() < output.find("data input").unwrap());
         assert!(output.contains("2 assumption fields, 0 not shown"));
         assert!(output.ends_with("show q1 --all"));
@@ -784,8 +830,11 @@ mod inspection_preview_tests {
 
     #[test]
     fn inspection_preview_preserves_admission_and_counts_unshown_assumptions() {
-        let mut detail = vec!["axioms: sorryAx".to_owned(), "ADMITTED: depends on sorryAx".to_owned(),
-            "Unresolved metavariables remain; not a closed proof.".to_owned()];
+        let mut detail = vec![
+            "axioms: sorryAx".to_owned(),
+            "ADMITTED: depends on sorryAx".to_owned(),
+            "Unresolved metavariables remain; not a closed proof.".to_owned(),
+        ];
         detail.extend((0..30).map(|i| format!("proof assumption h{i}: False")));
         detail.push("result: False".into());
         let lines = detail.iter().map(String::as_str).collect::<Vec<_>>();
@@ -793,7 +842,10 @@ mod inspection_preview_tests {
         render_inspection_preview(&mut output, &lines, 16, "q2");
         assert!(output.contains("ADMITTED") && output.contains("Unresolved metavariables"));
         assert!(output.contains("result: False"));
-        assert!(output.contains("30 assumption fields, 18 not shown; 18 lines omitted"), "{output}");
+        assert!(
+            output.contains("30 assumption fields, 18 not shown; 18 lines omitted"),
+            "{output}"
+        );
         assert!(!output.contains("h29:"));
     }
 }

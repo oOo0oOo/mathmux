@@ -50,8 +50,8 @@ use display::{
     render_summary, render_summary_without_hints, source_has_complete_declaration_header,
 };
 use plan::*;
-use query::*;
 pub(crate) use query::diagnostic_type_detail;
+use query::*;
 use source::*;
 use source_query::*;
 use tuning::*;
@@ -89,8 +89,7 @@ pub(crate) fn enclosing_declaration_at(
     let source = std::fs::read_to_string(workspace_root.join(relative_file)).ok()?;
     let module = project_module_name(workspace_root, &workspace_root.join(relative_file));
     let spans = declaration_spans(&source, &module);
-    enclosing_declaration_span(&spans, line)
-        .map(|span| (span.name.clone(), span.start, span.end))
+    enclosing_declaration_span(&spans, line).map(|span| (span.name.clone(), span.start, span.end))
 }
 
 pub(crate) fn is_exact_first_query(query: &str) -> bool {
@@ -100,7 +99,7 @@ pub(crate) fn is_exact_first_query(query: &str) -> bool {
 fn search_all_allowed(plan: &SearchPlan) -> bool {
     match plan {
         SearchPlan::Location(location) => location.tail,
-        SearchPlan::Source(source) => source.terms.is_empty() && source.last_line != u64::MAX,
+        SearchPlan::Source(source) => source.terms.is_empty(),
         _ => false,
     }
 }
@@ -451,10 +450,12 @@ fn same_namespace_completion(query: &str, name: &str) -> bool {
     let name = canonical_declaration_name(name);
     let leaf = query.rsplit('.').next().unwrap_or(query);
     name.strip_prefix(query).is_some_and(|suffix| {
-        query.contains('.') && suffix.strip_prefix('_').is_some_and(|tail| {
-            !tail.is_empty() && !tail.contains(['_', '.'])
-                && suffix.chars().count() <= leaf.chars().count()
-        })
+        query.contains('.')
+            && suffix.strip_prefix('_').is_some_and(|tail| {
+                !tail.is_empty()
+                    && !tail.contains(['_', '.'])
+                    && suffix.chars().count() <= leaf.chars().count()
+            })
     })
 }
 
@@ -496,13 +497,21 @@ fn rank_near_name_rows(query: &str, rows: Vec<IndexedRow>) -> Vec<Candidate> {
             .then_with(|| left.0.cmp(&right.0))
             .then_with(|| left.1.cmp(&right.1))
             .then_with(|| left.3.cmp(&right.3))
-            .then_with(|| right.4.hit.signature.is_some().cmp(&left.4.hit.signature.is_some()))
+            .then_with(|| {
+                right
+                    .4
+                    .hit
+                    .signature
+                    .is_some()
+                    .cmp(&left.4.hit.signature.is_some())
+            })
     });
     let mut seen = HashSet::new();
     suggestions
         .into_iter()
         .filter_map(|(_, _, _, _, candidate)| {
-            seen.insert(canonical_declaration_name(&candidate.hit.name).to_owned()).then_some(candidate)
+            seen.insert(canonical_declaration_name(&candidate.hit.name).to_owned())
+                .then_some(candidate)
         })
         .take(3)
         .collect()
@@ -519,14 +528,24 @@ fn declaration_glob_candidates_from_connection(
     // FTS token prefixes cannot recover substrings inside a declaration token.
     // Keep the fast path for a simple trailing prefix wildcard; otherwise stream
     // names through the same Unicode-aware matcher used to filter final results.
-    let simple_prefix = query.strip_suffix('*')
+    let simple_prefix = query
+        .strip_suffix('*')
         .is_some_and(|prefix| !prefix.contains(['*', '|']));
     if !simple_prefix {
-        let alternatives = query.split('|').map(str::trim).map(|alternative| {
-            Ok((alternative, if alternative.contains('*') {
-                Some(declaration_glob_regex(alternative)?)
-            } else { None }))
-        }).collect::<Result<Vec<_>>>()?;
+        let alternatives = query
+            .split('|')
+            .map(str::trim)
+            .map(|alternative| {
+                Ok((
+                    alternative,
+                    if alternative.contains('*') {
+                        Some(declaration_glob_regex(alternative)?)
+                    } else {
+                        None
+                    },
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
         let mut names = connection.prepare(
             "SELECT rowid, name FROM search_fts
              WHERE owner IN (SELECT owner FROM active_search_scopes)
@@ -536,20 +555,30 @@ fn declaration_glob_candidates_from_connection(
         let mut ids: Vec<i64> = Vec::new();
         while let Some(row) = cursor.next()? {
             let name: String = row.get(1)?;
-            if alternatives.iter().any(|(alternative, pattern)| match pattern {
-                Some(pattern) => pattern.is_match(&name),
-                None => qualified_name_matches(&name, alternative),
-            }) {
+            if alternatives
+                .iter()
+                .any(|(alternative, pattern)| match pattern {
+                    Some(pattern) => pattern.is_match(&name),
+                    None => qualified_name_matches(&name, alternative),
+                })
+            {
                 ids.push(row.get(0)?);
-                if ids.len() == SEARCH_TUNING.retrieval.discovery_rows { break; }
+                if ids.len() == SEARCH_TUNING.retrieval.discovery_rows {
+                    break;
+                }
             }
         }
-        if ids.is_empty() { return Ok(Some(Vec::new())); }
+        if ids.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
         let placeholders = vec!["?"; ids.len()].join(",");
         let sql = indexed_rows_sql(&format!("WHERE rowid IN ({placeholders})"));
         let mut statement = connection.prepare(&sql)?;
-        return Ok(Some(statement.query_map(params_from_iter(ids), indexed_row_from_row)?
-            .collect::<rusqlite::Result<Vec<_>>>()?));
+        return Ok(Some(
+            statement
+                .query_map(params_from_iter(ids), indexed_row_from_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?,
+        ));
     }
     let kind_condition = kind.map_or(String::new(), |_| " AND lower(kind) = lower(?2)".into());
     let sql = ranked_rows_sql(&format!(
@@ -717,7 +746,10 @@ fn concept_terms_from_name(name: &str) -> String {
     let mut seen = HashSet::new();
     terms
         .into_iter()
-        .map(|term| term.trim_end_matches(|c: char| c.is_ascii_digit()).to_lowercase())
+        .map(|term| {
+            term.trim_end_matches(|c: char| c.is_ascii_digit())
+                .to_lowercase()
+        })
         .filter(|term| term.chars().count() >= 2 && !term.chars().all(|c| c.is_ascii_digit()))
         .filter(|term| seen.insert(term.clone()))
         .take(7)
@@ -758,14 +790,23 @@ fn near_name_prefix_candidates(connection: &Connection, query: &str) -> Result<V
              AND owner IN (SELECT owner FROM active_search_scopes)
              AND (instr(lower(name), ?2) = 1 OR instr(lower(name), '_root_.' || ?2) = 1)
              AND instr(lower(name), ?3) > 0
-             LIMIT {}", SEARCH_TUNING.retrieval.name_contains_rows,
+             LIMIT {}",
+            SEARCH_TUNING.retrieval.name_contains_rows,
         ));
         let fts = format!("name : \"{}\"", namespace.replace('"', "\"\""));
         let mut statement = connection.prepare(&sql)?;
-        rows.extend(statement.query_map(
-            params![fts, format!("{}.", namespace.to_lowercase()), leaf.to_lowercase()],
-            indexed_row_from_row,
-        )?.collect::<rusqlite::Result<Vec<_>>>()?);
+        rows.extend(
+            statement
+                .query_map(
+                    params![
+                        fts,
+                        format!("{}.", namespace.to_lowercase()),
+                        leaf.to_lowercase()
+                    ],
+                    indexed_row_from_row,
+                )?
+                .collect::<rusqlite::Result<Vec<_>>>()?,
+        );
     }
     Ok(rows)
 }
@@ -1058,9 +1099,12 @@ impl Searcher {
         };
         let ok = result.ok;
         self.prioritize_requested_risk(workspace, &mut run)?;
-        if let Some(limit) = request.max_results { run.hits.truncate(limit); }
+        if let Some(limit) = request.max_results {
+            run.hits.truncate(limit);
+        }
         self.append_discovery_contract(workspace, &mut run);
-        if ok && run.hits.len() == 1
+        if ok
+            && run.hits.len() == 1
             && matches!(run.inference.as_str(), "exact" | "exact-batch")
             && query_requests_proof_body(&run.query)
         {
@@ -1068,7 +1112,11 @@ impl Searcher {
                 run.inference = "probe-source".into();
                 run.hits[0].usages.clear();
             } else {
-                prepend_search_note(&mut run.note, "Current declaration source unavailable; indexed preview may be incomplete.".into());
+                prepend_search_note(
+                    &mut run.note,
+                    "Current declaration source unavailable; indexed preview may be incomplete."
+                        .into(),
+                );
             }
         }
         self.state.add_search(&run)?;
@@ -2399,8 +2447,7 @@ impl Searcher {
                                 show_all: false,
                             },
                         )?;
-                        let related_hits =
-                            related.hits.into_iter().take(3).collect::<Vec<_>>();
+                        let related_hits = related.hits.into_iter().take(3).collect::<Vec<_>>();
                         if !related_hits.is_empty() {
                             if let Some(note) = miss.note.as_mut() {
                                 note.push_str("\nrelated by concept terms (not exact):");
@@ -2483,11 +2530,10 @@ impl Searcher {
                         "Lean unification rejected this pattern; showing strict structural type matches",
                     );
                 } else {
-                    return Err(anyhow::anyhow!(
-                        "invalid type pattern: {}",
-                        clean_line(error)
-                    )
-                    .context(crate::protocol::DiscoveryFailure::InvalidRequest));
+                    return Err(
+                        anyhow::anyhow!("invalid type pattern: {}", clean_line(error))
+                            .context(crate::protocol::DiscoveryFailure::InvalidRequest),
+                    );
                 }
             }
             warming |= applicable_warming;
@@ -2569,8 +2615,7 @@ impl Searcher {
             let score = lexical
                 + type_score
                 + if strict_type
-                    && (row.owner.starts_with("workspace:")
-                        || row.owner.starts_with("artifacts:"))
+                    && (row.owner.starts_with("workspace:") || row.owner.starts_with("artifacts:"))
                 {
                     SEARCH_TUNING.type_score.project
                 } else {
@@ -2716,9 +2761,12 @@ impl Searcher {
         if glob_name_miss {
             prepend_search_note(&mut note, "no name match".into());
             if let Some(retry) = glob_suffix_retry {
-                prepend_search_note(&mut note, format!(
-                    "name pattern requires an exact ending; to include suffixes, try: mathmux search {retry}"
-                ));
+                prepend_search_note(
+                    &mut note,
+                    format!(
+                        "name pattern requires an exact ending; to include suffixes, try: mathmux search {retry}"
+                    ),
+                );
             }
         }
         if exact_name_miss {
@@ -2744,10 +2792,8 @@ impl Searcher {
                         .map(|row| row.name.trim_start_matches("_root_.").to_owned())
                         .take(2)
                         .collect::<Vec<_>>();
-                    (!names.is_empty()).then(|| format!(
-                        "`{term}` appears in: {}",
-                        names.join(", ")
-                    ))
+                    (!names.is_empty())
+                        .then(|| format!("`{term}` appears in: {}", names.join(", ")))
                 });
                 prepend_search_note(&mut note, coverage);
                 if let Some(occurrences) = occurrences {
@@ -2756,7 +2802,10 @@ impl Searcher {
             }
         }
         if !type_search && !name_search && explicit_declaration.is_none() && !query.contains('|') {
-            let hits = ranked.iter().map(|candidate| candidate.hit.clone()).collect::<Vec<_>>();
+            let hits = ranked
+                .iter()
+                .map(|candidate| candidate.hit.clone())
+                .collect::<Vec<_>>();
             if let Some(coverage) = distributed_coverage_note(&hits, &coverage_tokens) {
                 prepend_search_note(&mut note, coverage);
             }
@@ -3260,7 +3309,11 @@ impl Searcher {
         if base_warming {
             return None;
         }
-        let dirty = if requested.is_some() { Vec::new() } else { self.dirty_lean_files(workspace)? };
+        let dirty = if requested.is_some() {
+            Vec::new()
+        } else {
+            self.dirty_lean_files(workspace)?
+        };
         let nested = dirty
             .iter()
             .filter(|path| path.components().count() > 1)
@@ -3625,7 +3678,11 @@ impl Searcher {
                 .then_some(row)
             })
             .collect::<Vec<_>>();
-        let inherited = parent.hit.signature.as_deref().and_then(source::structure_parent_types);
+        let inherited = parent
+            .hit
+            .signature
+            .as_deref()
+            .and_then(source::structure_parent_types);
         if fields.is_empty() && inherited.is_none() {
             return Ok(Some(miss(format!(
                 "{} has no indexed fields",
@@ -3662,7 +3719,9 @@ impl Searcher {
             required_import: parent.hit.required_import,
         };
         let mut result = exact_search_result(vec![hit], base_warming);
-        if let Some(note) = inheritance_note { prepend_search_note(&mut result.note, note); }
+        if let Some(note) = inheritance_note {
+            prepend_search_note(&mut result.note, note);
+        }
         Ok(Some(result))
     }
 
@@ -3809,7 +3868,8 @@ impl Searcher {
             scopes.contains(&row.owner)
                 && row.module == hit.module
                 && (row.line == hit.line
-                    || row.name.trim_start_matches("_root_.") == hit.name.trim_start_matches("_root_."))
+                    || row.name.trim_start_matches("_root_.")
+                        == hit.name.trim_start_matches("_root_."))
                 && row.name.rsplit('.').next() == Some(leaf)
                 && (!row.body.is_empty() || !row.signature.is_empty())
         }) else {

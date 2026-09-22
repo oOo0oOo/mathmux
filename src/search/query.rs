@@ -136,8 +136,10 @@ pub(super) fn diagnostic_apply_detail(diagnostic: &str) -> Option<String> {
 pub(crate) fn diagnostic_type_detail(diagnostic: &str) -> Option<String> {
     // Lean phrases synthesis failures several ways; the shorter marker also
     // covers synthInstance.maxHeartbeats timeouts (issue i108).
-    const SYNTHESIS_MARKERS: [&str; 2] =
-        ["failed to synthesize instance of type class", "failed to synthesize"];
+    const SYNTHESIS_MARKERS: [&str; 2] = [
+        "failed to synthesize instance of type class",
+        "failed to synthesize",
+    ];
     let lines = diagnostic.lines().collect::<Vec<_>>();
     let synthesis = SYNTHESIS_MARKERS.iter().find_map(|marker| {
         lines
@@ -247,7 +249,6 @@ pub(super) fn diagnostic_rewrite_comparison(diagnostic: &str) -> Option<(String,
     let target = diagnostic_expression(target);
     (!pattern.is_empty() && !target.is_empty()).then_some((pattern, target))
 }
-
 
 fn diagnostic_expression(section: &str) -> String {
     section
@@ -442,19 +443,25 @@ pub(super) fn declaration_glob_fts_query(query: &str) -> Option<String> {
     })
 }
 
-pub(super) fn declaration_glob_suffix_retry(candidates: &[Candidate], query: &str) -> Option<String> {
+pub(super) fn declaration_glob_suffix_retry(
+    candidates: &[Candidate],
+    query: &str,
+) -> Option<String> {
     if !declaration_glob_query(query) || query.contains('|') || query.ends_with('*') {
         return None;
     }
     let retry = format!("{query}*");
     let pattern = declaration_glob_regex(&retry).ok()?;
-    candidates.iter().any(|candidate| {
-        let hit = &candidate.hit;
-        !matches!(hit.kind.as_str(), "file" | "imports")
-            && !hit.name.starts_with("_private.")
-            && !hit.name.contains("._@.")
-            && pattern.is_match(&hit.name)
-    }).then_some(retry)
+    candidates
+        .iter()
+        .any(|candidate| {
+            let hit = &candidate.hit;
+            !matches!(hit.kind.as_str(), "file" | "imports")
+                && !hit.name.starts_with("_private.")
+                && !hit.name.contains("._@.")
+                && pattern.is_match(&hit.name)
+        })
+        .then_some(retry)
 }
 
 pub(super) fn apply_declaration_glob(candidates: &mut Vec<Candidate>, query: &str) -> bool {
@@ -679,7 +686,10 @@ pub(super) fn rank_discovery_candidates(
     candidates.retain(|candidate| {
         let name = candidate.hit.name.trim_start_matches("_root_.");
         let leaf = name.rsplit('.').next().unwrap_or(name);
-        let leaf = leaf.strip_prefix('«').and_then(|leaf| leaf.strip_suffix('»')).unwrap_or(leaf);
+        let leaf = leaf
+            .strip_prefix('«')
+            .and_then(|leaf| leaf.strip_suffix('»'))
+            .unwrap_or(leaf);
         let private_macro_helper = name.starts_with("_private.")
             && leaf.starts_with("_aux_")
             && leaf.contains("_macroRules_");
@@ -777,18 +787,24 @@ fn promote_strongest_query_coverage(ranked: &mut Vec<Candidate>, query: &str, to
     }
     // Use original words: expanded tokens also contain identifier parts and aliases.
     let joined_name = query.split_whitespace().collect::<Vec<_>>().join(".");
-    let requested = query.split_whitespace().map(str::to_lowercase).collect::<Vec<_>>();
+    let requested = query
+        .split_whitespace()
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>();
     let coverage = |hit: &SearchHit| {
         let declaration = !matches!(hit.kind.as_str(), "file" | "imports");
         let signature = hit.signature.as_deref().unwrap_or_default().to_lowercase();
-        let full_interface = declaration && requested.len() >= 2
+        let full_interface = declaration
+            && requested.len() >= 2
             && !requested.iter().any(|token| token.contains('.'))
             && requested.iter().all(|token| {
-            hit_name_matches(&hit.name, token) || text_matches_token(&signature, token)
-        });
-        (hit_query_coverage(hit, tokens).0,
-         declaration && qualified_name_matches(&hit.name, &joined_name),
-         full_interface)
+                hit_name_matches(&hit.name, token) || text_matches_token(&signature, token)
+            });
+        (
+            hit_query_coverage(hit, tokens).0,
+            declaration && qualified_name_matches(&hit.name, &joined_name),
+            full_interface,
+        )
     };
     let top_coverage = coverage(&ranked[0].hit);
     let Some((position, best_coverage)) = ranked
@@ -842,7 +858,17 @@ pub(super) fn anchored_api_query(query: &str) -> Option<(&str, Vec<String>, Vec<
     {
         return Some((anchor, Vec::new(), Vec::new()));
     }
+    // An unqualified declaration-looking first word followed by concepts is
+    // usually a discovery request, not a confident exact lookup.  Keep exact
+    // routing for qualified APIs; the discovery ranker can still promote an
+    // exact unqualified hit without paying the exact-miss fallback chain.
     let tokens = meaningful_query_tokens(refinement);
+    if !anchor.contains('.')
+        && !refinement.contains('|')
+        && refinement.split_whitespace().count() < 3
+    {
+        return None;
+    }
     let mut requested = query_tokens(refinement)
         .into_iter()
         .filter(|token| token.chars().count() >= 3)
@@ -927,7 +953,9 @@ pub(super) fn uncovered_hit_terms(hits: &[SearchHit], terms: &[String]) -> Vec<S
         .filter(|term| {
             !searchable.contains(&ascii_numeric_spelling(term))
                 && !concept_alias(term).is_some_and(|alias| {
-                    searchable.split(|c: char| !c.is_alphanumeric()).any(|word| word == alias)
+                    searchable
+                        .split(|c: char| !c.is_alphanumeric())
+                        .any(|word| word == alias)
                 })
         })
         .cloned()
@@ -945,8 +973,10 @@ pub(super) fn distributed_coverage_note(hits: &[SearchHit], terms: &[String]) ->
     (terms.len() >= 2
         && hits.len() >= 2
         && uncovered_hit_terms(hits, terms).is_empty()
-        && hits.iter().all(|hit| !uncovered_hit_terms(std::slice::from_ref(hit), terms).is_empty()))
-        .then(|| "query terms are spread across results; no single result matches all terms".into())
+        && hits
+            .iter()
+            .all(|hit| !uncovered_hit_terms(std::slice::from_ref(hit), terms).is_empty()))
+    .then(|| "query terms are spread across results; no single result matches all terms".into())
 }
 
 pub(super) fn weak_coverage_note(hits: &[SearchHit], terms: &[String]) -> Option<String> {
@@ -1408,7 +1438,10 @@ pub(super) fn promote_family_candidates(
         "{}.",
         canonical_declaration_name(anchor).to_ascii_lowercase()
     );
-    let variant_prefix = format!("{}_", canonical_declaration_name(anchor).to_ascii_lowercase());
+    let variant_prefix = format!(
+        "{}_",
+        canonical_declaration_name(anchor).to_ascii_lowercase()
+    );
     let prefer_apply = requested_terms
         .iter()
         .any(|term| term.eq_ignore_ascii_case("apply"));
@@ -1446,8 +1479,8 @@ pub(super) fn promote_family_candidates(
                             && hit_name_matches(&candidate.hit.name, term)
                     })
                     .count();
-                let apply_name = prefer_apply
-                    && candidate.hit.name.to_ascii_lowercase().contains("apply");
+                let apply_name =
+                    prefer_apply && candidate.hit.name.to_ascii_lowercase().contains("apply");
                 (
                     position,
                     name_matched,
@@ -1470,9 +1503,7 @@ pub(super) fn promote_family_candidates(
                     .then_with(|| left.5.cmp(&right.5))
                     .then_with(|| left.6.total_cmp(&right.6))
             })
-            .map(|(position, name_matched, _, _, matched, _, _)| {
-                (position, name_matched, matched)
-            })
+            .map(|(position, name_matched, _, _, matched, _, _)| (position, name_matched, matched))
         else {
             break;
         };

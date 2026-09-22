@@ -24,11 +24,11 @@ use clap::ValueEnum;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 const WORKFLOW_HELP: &str = r#"AGENT CONTRACT
-  api       search-v16/probe-v24; reread search/probe help only when this digest changes.
+  api       search-v17/probe-v25; reread search/probe help only when this digest changes.
   scope     Use the preassigned workspace; never run ws or enter main/another workspace.
-  discover  Search unknown things; probe known API, exact context, or failures.
-            Exact declarations go straight to probe NAME; qREFs store result sets.
-            Source ranges <=48 lines are complete compact; read search/probe --help once.
+  discover  Search an unknown concept once; probe known API or exact context directly.
+            After failure use probe cREF evidence, then edit/check; do not search the error blind.
+            Review a file with FILE dossier or FILE:DECL_NAME, not sequential source pages.
   change    Edit intended files -> check -> submit. Use check FILE only to isolate dirty files.
             Run one check at a time; do not launch bulk parallel check processes.
   update    Use sync. Use mathmux only—never substitute git, lean, lake, or other tooling.
@@ -36,14 +36,14 @@ const WORKFLOW_HELP: &str = r#"AGENT CONTRACT
   safety    sorry is tracked; new axioms fail validation. Never edit .lake/generated artifacts."#;
 
 const SEARCH_HELP: &str = r#"SEARCH — find or read unknown things; returns qREF
-API search-v16 — compact discovery; reread only when this digest changes
+API search-v17 — compact discovery; reread only when this digest changes
 FORMS — type one directly; declaration/type/source/compose are labels, not keywords
   declaration  NAME | NAME* | KIND NAME [source|body|proof]
   type/concept TYPE_OR_CONCEPT_TERMS | type:LEAN_TYPE
   source       FILE:LINE | FILE:START-END | FILE:tail | FILE:DECL_NAME
                FILE[:RANGE] [find] TERMS
-               FILE outline|declarations|imports|dependents
-               MODULE outline|declarations
+               FILE dossier|outline|declarations|imports|dependents
+               MODULE dossier|outline|declarations
                /REGEX/ | PATH /REGEX/ | re:/REGEX/ | PATH re:/REGEX/
   compose      A|B|C | sREF TERMS
 
@@ -66,6 +66,8 @@ RESULT
   pointer to the earlier qREF instead of the content; any edit restores it.
   FILE:DECL_NAME returns exactly that declaration's current lines — prefer it
   over line ranges when re-reading your own declarations.
+  FILE dossier returns a bounded import and declaration inventory; use it
+  before raw ranges when reviewing an unfamiliar or changed file.
   An exact miss with a current index is authoritative absence: the name does
   not exist. Use the offered near names or concept candidates; never retry
   the same query, and prefer probe NAME source over FILE:RANGE re-reads.
@@ -90,14 +92,14 @@ RULES
   Sigil what you know; leave inference for what you do not."#;
 
 const PROBE_HELP: &str = r##"PROBE — inspect something known; returns qREF
-API probe-v24 — bounded exact inspection; reread only when this digest changes
+API probe-v25 — bounded exact inspection; reread only when this digest changes
 FORMS — type one directly; there are no API, LEAN, or other category keywords
   NAME [signature|source|outline|apply|fields|ext|simp|usages|assumptions|evidence|examples]
   type:LEAN_TYPE [types]
   FILE warnings
   FILE:LINE [goal] | FILE:LINE TERM [signature]
   PATH NAME usages
-  cREF [goal|types|context]
+  cREF [goal|types|context|evidence]
   cREF NAME fits | FILE:LINE NAME fits
   qREF[#N] [signature|source|outline|find TERM|usages]
   positioned-qREF [goal] | stored-probe-qREF
@@ -117,6 +119,8 @@ RESULT
   is not verified applicability; no results is not an existence verdict. Use qualified names.
   cREF goal returns the exact stored failure goal; cREF types the type or instance
   failure; cREF context adds type differences, import-aware laws and one usage.
+  cREF evidence is the default proof dossier: stored goal, focused type/conversion
+  analysis, goal-shaped indexed candidates, import availability, and verification.
   fields targets structures, classes, and inductives; for an inductive it lists
   constructors. Field inventories label omitted inherited obligations and parent types.
   #inspect lists explicit inputs first; show qREF --all retains every input.
@@ -144,7 +148,7 @@ NEXT
   site. Before building on a lemma, test it against the live goal with
   `probe cREF NAME fits`: it answers verdict FITS (with remaining obligations)
   or DOES NOT FIT (with the first type difference); either verdict is a
-  successful probe. After a failed check, `probe cREF goal` before editing blind.
+  successful probe. After a failed check, `probe cREF evidence` before editing blind.
 
 RULES
   cREF goal/analyses need a matching stored failure; for a running check, use
@@ -1176,11 +1180,11 @@ mod tests {
             .unwrap()
             .render_long_help()
             .to_string();
-        assert!(help.contains("API search-v16"));
+        assert!(help.contains("API search-v17"));
         for form in [
             "type:LEAN_TYPE",
             "FILE:LINE",
-            "outline|declarations|imports|dependents",
+            "dossier|outline|declarations|imports|dependents",
             "PATH /REGEX/",
             "source/compose are labels, not keywords",
             "sREF requires TERMS",
@@ -1199,13 +1203,13 @@ mod tests {
             .unwrap()
             .render_long_help()
             .to_string();
-        assert!(probe_help.contains("API probe-v24"));
+        assert!(probe_help.contains("API probe-v25"));
         for contract in [
             "there are no API, LEAN, or other category keywords",
             "NAME [signature|source|outline|apply|fields|ext|simp|usages|assumptions|evidence|examples]",
             "FILE warnings",
             "FILE:LINE [goal]",
-            "cREF [goal|types|context]",
+            "cREF [goal|types|context|evidence]",
             "qREF[#N] [signature|source|outline|find TERM|usages]",
             "Context is mandatory",
             "Use NAME signature, not",
@@ -1244,9 +1248,9 @@ mod tests {
     #[test]
     fn workflow_help_prefers_direct_workspace_experimentation() {
         let help = command_line().render_help().to_string();
-        assert!(help.contains("search-v16/probe-v24"));
+        assert!(help.contains("search-v17/probe-v25"));
         assert!(help.contains("Edit intended files -> check -> submit"));
-        assert!(help.contains("Exact declarations go straight to probe NAME"));
-        assert!(help.contains("Search unknown things; probe known API, exact context"));
+        assert!(help.contains("Search an unknown concept once; probe known API"));
+        assert!(help.contains("After failure use probe cREF evidence, then edit/check"));
     }
 }

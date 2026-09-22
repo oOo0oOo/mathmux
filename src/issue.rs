@@ -2310,7 +2310,7 @@ mod tests {
         );
         assert_eq!(
             query_class(&request("CompactlySupportedKZero Sum")),
-            Some("exact".into())
+            Some("discovery".into())
         );
         assert_eq!(query_class(&request("MatrixGL.")), Some("discovery".into()));
         assert_eq!(query_class(&request(".MatrixGL")), Some("discovery".into()));
