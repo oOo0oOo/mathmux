@@ -473,12 +473,13 @@ impl Service {
                     bail!("{reference} conflict: {}", clean_line(&result.detail))
                 }
             }
-            Command::Submit { message } => {
+            Command::Submit { message, files } => {
                 let _guard = self.mutations.lock().expect("mutation lock poisoned");
                 let workspace = self.state.workspace_for_path(&cwd)?;
                 let dirty = dirty_paths(&workspace.path)?;
                 ensure!(!dirty.is_empty(), "workspace has no changes to submit");
-                let targets = dirty_lean_files(&workspace.path)?;
+                let dirty_targets = dirty_lean_files(&workspace.path)?;
+                let targets = selected_submit_targets(&workspace.path, &files, &dirty_targets)?;
                 ensure!(
                     !targets.is_empty(),
                     "submission has no checked Lean changes"
@@ -493,13 +494,15 @@ impl Service {
                     );
                 }
                 let checks = self.checker.valid_certificates(&workspace, &targets)?;
+                let message_paths = if files.is_empty() { &dirty } else { &targets };
                 let message = message
                     .filter(|value| !value.trim().is_empty())
-                    .unwrap_or_else(|| match dirty.as_slice() {
+                    .unwrap_or_else(|| match message_paths.as_slice() {
                         [path] => format!("Update {}", path.display()),
                         paths => format!("Update {} files", paths.len()),
                     });
-                let result = git::submit(&self.repo, &workspace, &message)?;
+                let selected = (!files.is_empty()).then_some(targets.as_slice());
+                let result = git::submit_selected(&self.repo, &workspace, &message, selected)?;
                 let reference = self.state.next_reference(ReferenceKind::Submission)?;
                 self.state.add_submission(&Submission {
                     reference: reference.clone(),
@@ -837,6 +840,54 @@ fn check_summary(outcome: &CheckOutcome) -> String {
     output
 }
 
+fn selected_submit_targets(
+    workspace: &Path,
+    requested: &[String],
+    dirty_targets: &[PathBuf],
+) -> Result<Vec<PathBuf>> {
+    if requested.is_empty() {
+        return Ok(dirty_targets.to_vec());
+    }
+    let workspace = fs::canonicalize(workspace)?;
+    let mut selected = Vec::new();
+    for value in requested {
+        let path = Path::new(value);
+        let path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            workspace.join(path)
+        };
+        let path = fs::canonicalize(&path)
+            .with_context(|| format!("selected submit file does not exist: {}", path.display()))?;
+        let relative = path.strip_prefix(&workspace).with_context(|| {
+            format!(
+                "selected submit file is outside the workspace: {}",
+                path.display()
+            )
+        })?;
+        ensure!(
+            relative
+                .extension()
+                .is_some_and(|extension| extension == "lean")
+                && relative
+                    .components()
+                    .all(|part| matches!(part, std::path::Component::Normal(_))),
+            "selected submit file is not a workspace Lean file: {}",
+            relative.display()
+        );
+        let relative = relative.to_path_buf();
+        ensure!(
+            dirty_targets.contains(&relative),
+            "selected submit file is not dirty: {}",
+            relative.display()
+        );
+        if !selected.contains(&relative) {
+            selected.push(relative);
+        }
+    }
+    Ok(selected)
+}
+
 fn is_root_scratch(path: &Path) -> bool {
     path.parent()
         .is_none_or(|parent| parent.as_os_str().is_empty())
@@ -905,6 +956,50 @@ mod tests {
     use super::*;
     use crate::state::{Diagnostic, ValidationReport, Workspace};
     use tempfile::tempdir;
+
+    #[test]
+    fn selected_submit_targets_are_dirty_workspace_lean_files() {
+        let temp = tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(workspace.join("Demo")).unwrap();
+        let selected = workspace.join("Demo/Selected.lean");
+        let sibling = workspace.join("Demo/Sibling.lean");
+        let text = workspace.join("notes.txt");
+        fs::write(&selected, "def selected := true\n").unwrap();
+        fs::write(&sibling, "def sibling := true\n").unwrap();
+        fs::write(&text, "notes\n").unwrap();
+        let dirty = vec![
+            PathBuf::from("Demo/Selected.lean"),
+            PathBuf::from("Demo/Sibling.lean"),
+        ];
+
+        assert_eq!(
+            selected_submit_targets(
+                &workspace,
+                &[selected.to_string_lossy().into_owned()],
+                &dirty,
+            )
+            .unwrap(),
+            vec![PathBuf::from("Demo/Selected.lean")]
+        );
+        assert!(
+            selected_submit_targets(&workspace, &[text.to_string_lossy().into_owned()], &dirty,)
+                .unwrap_err()
+                .to_string()
+                .contains("not a workspace Lean file")
+        );
+        assert!(
+            selected_submit_targets(
+                &workspace,
+                &[workspace
+                    .join("Demo/Clean.lean")
+                    .to_string_lossy()
+                    .into_owned()],
+                &dirty,
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn missing_dependency_hint_requires_exact_committed_main_source() {

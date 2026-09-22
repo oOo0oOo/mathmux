@@ -758,7 +758,19 @@ pub struct SubmitResult {
 }
 
 pub fn submit(repo: &Repo, workspace: &Workspace, message: &str) -> Result<SubmitResult> {
+    submit_selected(repo, workspace, message, None)
+}
+
+pub fn submit_selected(
+    repo: &Repo,
+    workspace: &Workspace,
+    message: &str,
+    selected_paths: Option<&[PathBuf]>,
+) -> Result<SubmitResult> {
     ensure!(!message.trim().is_empty(), "submission message is empty");
+    if let Some(paths) = selected_paths {
+        ensure!(!paths.is_empty(), "no files selected for submission");
+    }
     let _integration_lock = acquire_integration_lock(repo)?;
 
     ensure!(
@@ -770,7 +782,21 @@ pub fn submit(repo: &Repo, workspace: &Workspace, message: &str) -> Result<Submi
         "workspace has an unfinished merge; resolve it before submit"
     );
     let base_commit = head(&repo.root)?;
-    run_git_checked_with_index_lock_retry(["add", "-A"], &workspace.path)?;
+    match selected_paths {
+        Some(paths) => {
+            let staged = run_output("git", ["diff", "--cached", "--quiet"], &workspace.path)?;
+            ensure!(
+                staged.status.success(),
+                "workspace has pre-staged changes; unstage them before a selective submit"
+            );
+            let mut args: Vec<std::ffi::OsString> = vec!["add".into(), "-A".into(), "--".into()];
+            args.extend(paths.iter().map(|path| path.as_os_str().to_owned()));
+            run_git_checked_with_index_lock_retry(args, &workspace.path)?;
+        }
+        None => {
+            run_git_checked_with_index_lock_retry(["add", "-A"], &workspace.path)?;
+        }
+    }
     let staged = run_output("git", ["diff", "--cached", "--quiet"], &workspace.path)?;
     ensure!(
         staged.status.code() == Some(1),
@@ -803,17 +829,18 @@ pub fn submit(repo: &Repo, workspace: &Workspace, message: &str) -> Result<Submi
         command_detail(&merge)
     );
 
-    let diff = run_output(
-        "git",
-        [
-            "diff",
-            "--binary",
-            "--no-ext-diff",
-            &base_commit,
-            &merged_tree,
-        ],
-        &workspace.path,
-    )?;
+    let mut diff_args: Vec<std::ffi::OsString> = vec![
+        "diff".into(),
+        "--binary".into(),
+        "--no-ext-diff".into(),
+        base_commit.clone().into(),
+        merged_tree.clone().into(),
+    ];
+    if let Some(paths) = selected_paths {
+        diff_args.push("--".into());
+        diff_args.extend(paths.iter().map(|path| path.as_os_str().to_owned()));
+    }
+    let diff = run_output("git", diff_args, &workspace.path)?;
     ensure!(
         diff.status.success(),
         "cannot compute workspace integration diff: {}",
@@ -1309,6 +1336,61 @@ mod tests {
             fs::read_to_string(root.join("Proof.lean")).unwrap(),
             "def value := 1\n"
         );
+    }
+
+    #[test]
+    fn selective_submit_integrates_only_named_files() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("repo");
+        fs::create_dir(&root).unwrap();
+        run_checked("git", ["init", "-b", "main"], &root).unwrap();
+        run_checked("git", ["config", "user.name", "mathmux test"], &root).unwrap();
+        run_checked(
+            "git",
+            ["config", "user.email", "mathmux@test.invalid"],
+            &root,
+        )
+        .unwrap();
+        fs::write(root.join("Selected.lean"), "def selected := 0\n").unwrap();
+        fs::write(root.join("Sibling.lean"), "def sibling := 0\n").unwrap();
+        run_checked("git", ["add", "."], &root).unwrap();
+        run_checked("git", ["commit", "-m", "initial"], &root).unwrap();
+
+        let repo = Repo::discover(&root).unwrap();
+        let state = State::new(&repo.db_path).unwrap();
+        let workspace = create_workspace(&repo, &state, "agent", None).unwrap();
+        fs::write(
+            workspace.path.join("Selected.lean"),
+            "def selected := 1\n",
+        )
+        .unwrap();
+        fs::write(
+            workspace.path.join("Sibling.lean"),
+            "def sibling := 1\n",
+        )
+        .unwrap();
+
+        submit_selected(
+            &repo,
+            &workspace,
+            "selected change",
+            Some(&[PathBuf::from("Selected.lean")]),
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(root.join("Selected.lean")).unwrap(),
+            "def selected := 1\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("Sibling.lean")).unwrap(),
+            "def sibling := 0\n"
+        );
+        assert_eq!(
+            dirty_paths(&workspace.path).unwrap(),
+            vec![PathBuf::from("Sibling.lean")]
+        );
+        assert!(dirty_paths(&root).unwrap().is_empty());
     }
 
     #[test]

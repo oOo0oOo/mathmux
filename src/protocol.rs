@@ -56,6 +56,8 @@ pub enum Command {
     },
     Submit {
         message: Option<String>,
+        #[serde(default)]
+        files: Vec<String>,
     },
     Show {
         reference: String,
@@ -342,7 +344,13 @@ mod tests {
             .transport_retry_safe()
         );
         assert!(Command::Restart.transport_retry_safe());
-        assert!(!Command::Submit { message: None }.transport_retry_safe());
+        assert!(
+            !Command::Submit {
+                message: None,
+                files: Vec::new(),
+            }
+            .transport_retry_safe()
+        );
         assert!(
             !Command::Cancel {
                 reference: "c1".into()

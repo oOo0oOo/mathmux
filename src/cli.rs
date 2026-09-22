@@ -29,7 +29,8 @@ const WORKFLOW_HELP: &str = r#"AGENT CONTRACT
   discover  Search an unknown concept once; probe known API or exact context directly.
             After failure use probe cREF evidence, then edit/check; do not search the error blind.
             Review a file with FILE dossier or FILE:DECL_NAME, not sequential source pages.
-  change    Edit intended files -> check -> submit. Use check FILE only to isolate dirty files.
+  change    Edit intended files -> check -> submit. Use check FILE to isolate checking and
+            submit FILE... to integrate only reviewed files while keeping sibling drafts.
             Run one check at a time; do not launch bulk parallel check processes.
   update    Use sync. Use mathmux only—never substitute git, lean, lake, or other tooling.
   Lean      Use explicit narrow imports and aligned module/namespace/path; keep public imports API-only.
@@ -245,15 +246,17 @@ enum TopCommand {
     },
     /// Integrate a certified change and queue validation.
     ///
-    /// Requires current check coverage for all dirty Lean files. Integrates into
-    /// managed main, queues build and axiom validation, and returns sREF immediately.
-    /// Takes no file arguments; current dirty coverage defines the submission.
+    /// With no FILE arguments, requires current check coverage for all dirty Lean
+    /// files. With FILE arguments, integrates exactly those certified dirty Lean
+    /// files and leaves sibling drafts untouched. Queues build and axiom validation
+    /// and returns sREF immediately.
     /// New root Scratch*.lean files are check-only and cannot be submitted.
     Submit {
         /// Integration commit message.
         #[arg(short = 'm')]
         message: Option<String>,
-        #[arg(value_name = "FILE", hide = true)]
+        /// Submit exactly these dirty Lean files, leaving other changes untouched.
+        #[arg(value_name = "FILE")]
         files: Vec<PathBuf>,
     },
     /// Show stored detail for a short reference.
@@ -486,11 +489,18 @@ pub fn run() -> Result<u8> {
         },
         TopCommand::Sync { push } => Command::Sync { push },
         TopCommand::Submit { message, files } => {
-            ensure!(
-                files.is_empty(),
-                "submit takes no files; it uses all currently checked dirty Lean files"
-            );
-            Command::Submit { message }
+            let files = files
+                .into_iter()
+                .map(|path| {
+                    let path = if path.is_absolute() {
+                        path
+                    } else {
+                        cwd.join(path)
+                    };
+                    path.to_string_lossy().into_owned()
+                })
+                .collect();
+            Command::Submit { message, files }
         }
         TopCommand::Show {
             reference,
@@ -1250,6 +1260,7 @@ mod tests {
         let help = command_line().render_help().to_string();
         assert!(help.contains("search-v17/probe-v25"));
         assert!(help.contains("Edit intended files -> check -> submit"));
+        assert!(help.contains("submit FILE... to integrate only reviewed files"));
         assert!(help.contains("Search an unknown concept once; probe known API"));
         assert!(help.contains("After failure use probe cREF evidence, then edit/check"));
     }
