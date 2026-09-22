@@ -68,7 +68,7 @@ const SOURCE_OCCURRENCE_ALL_LIMIT: usize = 200;
 const OUTLINE_PREVIEW_LINES: usize = 64;
 const OUTLINE_LINE_CHARS: usize = 120;
 const RELATED_RESULT_LIMIT: usize = SEARCH_PRESENTATION.related_result_limit;
-const SEARCH_INDEX_VERSION: i64 = 16;
+const SEARCH_INDEX_VERSION: i64 = 17;
 // Bump when source parsing semantics change so cached docs/bodies are rebuilt
 // even when the underlying Lean files have not changed.
 const SOURCE_INDEX_KIND: &str = "source-v14";
