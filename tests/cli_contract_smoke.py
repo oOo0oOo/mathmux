@@ -75,6 +75,12 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
             for options in [[], ['--all']]:
                 invalid = run([binary, 'search', 'Fixture.lean:' + bounds, *options], ws, ok=False)
                 assert invalid.returncode != 0 and 'require 1 <= START <= END' in invalid.stdout + invalid.stderr, invalid
+                event_ref = invalid.stderr.split('evidence: ', 1)[1].split()[0]
+                telemetry = sqlite3.connect(env['MATHMUX_ISSUE_DB'])
+                saved = telemetry.execute('SELECT attempt_id, response_json FROM telemetry_events WHERE id=?', (int(event_ref[1:]),)).fetchone()
+                assert saved and 'require 1 <= START <= END' in saved[1], saved
+                assert telemetry.execute('SELECT COUNT(*) FROM telemetry_events WHERE attempt_id=?', (saved[0],)).fetchone()[0] == 1
+                telemetry.close()
 
         for literal in ['"error:"', '"unknown identifier"', '"ordinary"']:
             reduced = probe('Fixture.lean:11 #reduce ' + literal)

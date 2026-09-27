@@ -828,9 +828,8 @@ pub fn record_exchange(
     request: &Request,
     response: &Response,
     client_ms: u64,
-) -> Result<()> {
-    TelemetryStore::global_for_repo(repo)?.record(repo, request, response, client_ms)?;
-    Ok(())
+) -> Result<String> {
+    TelemetryStore::global_for_repo(repo)?.record(repo, request, response, client_ms)
 }
 
 fn query_class(request: &Request) -> Option<String> {

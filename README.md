@@ -102,3 +102,8 @@ checks without a diagnostic require an explicit `FILE` or `FILE:LINE` choice.
 Concurrent probes wait at most two seconds for a busy worker or worker startup
 lock, then return actionable retry guidance. Active checks are left running;
 probe execution deadlines are unchanged.
+
+Development builds print a retained telemetry `eREF` for failed daemon responses,
+including probe infrastructure failures. Attach it with
+`mathmux issue report SUMMARY --ref eREF`; an infrastructure timeout does not
+produce a Lean result or a certificate.

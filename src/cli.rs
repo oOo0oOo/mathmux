@@ -609,6 +609,18 @@ pub fn run() -> Result<u8> {
         Ok(0)
     } else {
         eprintln!("error {}", response.summary);
+        if development {
+            // The daemon and client share an attempt ID, so either can retain
+            // the exchange first without creating a duplicate event.
+            if let Ok(reference) = crate::issue::record_exchange(
+                &repo,
+                &request,
+                &response,
+                client_started.elapsed().as_millis() as u64,
+            ) {
+                eprintln!("evidence: {reference} (attach with mathmux issue report SUMMARY --ref {reference})");
+            }
+        }
         Ok(1)
     }
 }
