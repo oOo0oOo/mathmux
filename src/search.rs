@@ -328,7 +328,7 @@ struct ExactResolution {
     ambiguous: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct IndexedRow {
     owner: String,
     path: String,
@@ -340,6 +340,21 @@ struct IndexedRow {
     docs: String,
     body: String,
     rank: f64,
+}
+
+// A private declaration's source spelling and its mangled kernel spelling
+// are one declaration only when the source row identifies the same file/name.
+fn deduplicate_private_alias_rows(mut rows: Vec<IndexedRow>) -> Vec<IndexedRow> {
+    let sources = rows.iter().filter(|row| row.signature.starts_with("[private]"))
+        .map(|row| (row.path.clone(), row.line, canonical_declaration_name(&row.name).to_owned()))
+        .collect::<HashSet<_>>();
+    rows.retain(|row| {
+        let prefix = format!("_private.{}.", row.module);
+        let Some((index, name)) = row.name.strip_prefix(&prefix).and_then(|rest| rest.split_once('.')) else { return true; };
+        !(!index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())
+            && sources.contains(&(row.path.clone(), row.line, canonical_declaration_name(name).to_owned())))
+    });
+    rows
 }
 
 fn indexed_row_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexedRow> {
@@ -783,6 +798,19 @@ fn near_name_prefix_candidates(connection: &Connection, query: &str) -> Result<V
     let query = canonical_declaration_name(query);
     let leaf = query.rsplit('.').next().unwrap_or(query);
     let mut rows = name_prefix_candidates(connection, leaf)?;
+    if rows.is_empty() {
+        // Preserve the longest intact name components before falling back to a
+        // generic first word whose bounded result window can hide close typos.
+        for (index, _) in leaf.char_indices().skip(1)
+            .filter(|(_, character)| character.is_uppercase() || *character == '_')
+            .collect::<Vec<_>>().into_iter().rev().take(3)
+        {
+            let prefix = leaf[..index].trim_end_matches('_');
+            if prefix.chars().count() < 4 { continue; }
+            rows = name_prefix_candidates(connection, prefix)?;
+            if !rows.is_empty() { break; }
+        }
+    }
     if rows.is_empty()
         && let Some((prefix, _)) = leaf.split_once('_')
         && prefix.chars().count() >= 3
@@ -2954,6 +2982,7 @@ impl Searcher {
             .filter(|row| !matches!(row.kind.as_str(), "file" | "imports"))
             .filter(|row| declaration_kind.is_none_or(|kind| row.kind.eq_ignore_ascii_case(kind)))
             .collect::<Vec<_>>();
+        let rows = deduplicate_private_alias_rows(rows);
         // Refresh can be deferred while another workspace holds the index writer.
         // Recover from current source before declaring a miss or suggesting an
         // allegedly unmerged sibling that is already present after sync.
@@ -3216,6 +3245,14 @@ impl Searcher {
                 .filter(|candidate| !matches!(candidate.hit.kind.as_str(), "file" | "imports"))
             {
                 if !seen.insert(candidate.hit.name.clone()) {
+                    continue;
+                }
+                // A sibling's indexed declaration is not unmerged if the exact
+                // same source file is already present in this workspace.
+                if let (Ok(local), Ok(remote)) = (
+                    fs::read(workspace.path.join(&candidate.hit.path)),
+                    fs::read(sibling.path.join(&candidate.hit.path)),
+                ) && local == remote {
                     continue;
                 }
                 let agent = sibling.model.as_deref().unwrap_or("unknown");

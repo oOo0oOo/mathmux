@@ -218,7 +218,7 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
 }
 
 fn split_verdict_and_note(run: &SearchRun) -> (String, Option<&str>) {
-    if (run.hits.is_empty() || run.inference == "exact-miss")
+    if run.hits.is_empty()
         && run
             .note
             .as_deref()

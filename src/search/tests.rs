@@ -2213,6 +2213,16 @@ fn name_prefix_candidates_use_fts_and_respect_scopes() {
             .unwrap()
             .is_empty()
     );
+    // A near typo must survive hundreds of unrelated declarations sharing
+    // the same first CamelCase word; retrieval must narrow before its limit.
+    for index in 0..600 {
+        connection.execute("INSERT INTO search_fts VALUES ('workspace:w1', '', 'Demo.lean', 'Demo', 1, ?1, 'def', '', '', '')",
+            [format!("Demo.SmoothUnrelated{index}")]).unwrap();
+    }
+    connection.execute("INSERT INTO search_fts VALUES ('workspace:w1', '', 'Demo.lean', 'Demo', 1, 'AtiyahSinger.SmoothBundleAnalyticIndexContinuation282', 'def', '', '', '')", []).unwrap();
+    let query = "SmoothBundleAnalyticIndexContiuation282";
+    let ranked = rank_near_name_rows(query, near_name_prefix_candidates(&connection, query).unwrap());
+    assert_eq!(ranked[0].hit.name, "AtiyahSinger.SmoothBundleAnalyticIndexContinuation282");
     let unchanged = near_name_prefix_candidates(&connection, "prefixAlpha").unwrap();
     assert_eq!(unchanged.len(), 1);
     assert_eq!(unchanged[0].name, "Demo.prefixAlphaSuffix");
@@ -3458,6 +3468,29 @@ fn exact_misses_overlay_active_sibling_declarations_as_unmerged() {
     assert!(recovered.ok);
     assert_eq!(recovered.hits[0].name.trim_start_matches("_root_."), "ContinuousLinearMap.prodMap_apply");
     assert!(!recovered.hits[0].kind.starts_with("unmerged:"));
+    let private_source = "namespace Demo\nprivate theorem hidden_private : True := trivial\nend Demo\n";
+    fs::write(current.path.join("Private.lean"), private_source).unwrap();
+    for (owner, name, signature) in [
+        ("workspace:w1", "Demo.hidden_private", "[private] : True"),
+        ("artifacts:w1", "_private.Private.0.Demo.hidden_private", ""),
+    ] {
+        connection.execute("INSERT INTO search_fts(owner, origin, file, module, line, name, kind, signature, docs, body)
+            VALUES (?1, 'Private.lean', 'Private.lean', 'Private', 2, ?2, 'theorem', ?3, '', ?4)",
+            params![owner, name, signature, private_source]).unwrap();
+    }
+    let private_scopes = HashSet::from(["workspace:w1".into(), "artifacts:w1".into()]);
+    let private = searcher.resolve_exact(&current, &private_scopes, None, true,
+        &exact_plan("hidden_private", false).unwrap(), None).unwrap();
+    assert!(!private.ambiguous);
+    let private = private.result.expect("private source and kernel alias resolve to one declaration");
+    assert!(private.ok);
+    assert_eq!(private.hits.len(), 1);
+    assert_eq!(canonical_declaration_name(&private.hits[0].name), "Demo.hidden_private");
+    assert!(private.hits[0].signature.as_deref().unwrap().contains("[private]"));
+    fs::create_dir_all(&sibling.path).unwrap();
+    fs::copy(current.path.join("Linear.lean"), sibling.path.join("Linear.lean")).unwrap();
+    assert!(searcher.fleet_exact_suggestions(&current, "ContinuousLinearMap.prodMap_apply").unwrap()
+        .iter().all(|candidate| candidate.hit.path != "Linear.lean"));
     fs::write(current.path.join("Fresh.lean"),
         "theorem recover_coe (b : RecoveryBox) : (recoverBox b : Nat → Nat) = recoverFn b := rfl\n").unwrap();
     // Prevent refresh to reproduce an index writer held by another workspace.
@@ -6043,4 +6076,41 @@ fn regex_content_that_looks_like_a_range_is_not_a_source_address() {
     assert_eq!(parsed.pattern, "Demo.lean:20-10");
     let error = parse_source_regex_query(directory.path(), directory.path(), None, "Demo.lean:20-10 /foo/").err().unwrap();
     assert!(error.to_string().contains("invalid discovery request"));
+}
+
+#[test]
+fn private_source_and_kernel_rows_are_one_exact_declaration() {
+    let mut source = indexed_row("Demo.hidden");
+    source.path = "Demo/Facts.lean".into();
+    source.module = "Demo.Facts".into();
+    source.signature = "[private] : True".into();
+    let mut kernel = source.clone();
+    kernel.name = "_private.Demo.Facts.0.Demo.hidden".into();
+    kernel.signature.clear();
+    let rows = deduplicate_private_alias_rows(vec![source.clone(), kernel.clone()]);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].name, "Demo.hidden");
+    assert!(rows[0].signature.starts_with("[private]"));
+    // Keep explicit kernel-name lookup and distinct-file declarations intact.
+    assert_eq!(deduplicate_private_alias_rows(vec![kernel.clone()]).len(), 1);
+    kernel.line += 1;
+    assert_eq!(deduplicate_private_alias_rows(vec![source.clone(), kernel.clone()]).len(), 2);
+    kernel.path = "Demo/Other.lean".into();
+    assert_eq!(deduplicate_private_alias_rows(vec![source, kernel]).len(), 2);
+}
+
+#[test]
+fn warming_does_not_hide_known_suggestions_or_ambiguity() {
+    let mut run = SearchRun { reference: "q1".into(), workspace_ref: "w1".into(),
+        query: "hidden".into(), inference: "exact-miss".into(),
+        hits: vec![search_hit("Demo.hidden")],
+        note: Some("ambiguous declaration name: hidden; qualify the name\nsource index warming".into()),
+        duration_ms: 1, created_at: 0 };
+    let shown = render_summary(&run);
+    assert!(shown.contains("ambiguous declaration name"));
+    assert!(!shown.contains("no indexed match yet"));
+    assert!(!shown.contains("Retry this query"));
+    run.hits.clear();
+    run.note = Some("exact declaration not found in index: hidden\nsource index warming".into());
+    assert!(render_summary(&run).contains("absence not established"));
 }
