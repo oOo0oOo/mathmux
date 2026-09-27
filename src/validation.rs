@@ -709,7 +709,11 @@ unsafe def main : IO UInt32 := do
     let text = combined_output(&output);
     let (failures, native_decides, sorries) = parse_axiom_audit_output(&text);
     if !output.status.success() && failures.is_empty() {
-        bail!("axiom audit failed: {}", command_detail(&output));
+        let detail = command_detail(&output);
+        if detail.trim().is_empty() {
+            bail!("axiom audit failed: process ended with {} and no diagnostic output", output.status);
+        }
+        bail!("axiom audit failed: {detail}");
     }
     Ok(AxiomAudit {
         evidence: text,

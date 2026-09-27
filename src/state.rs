@@ -1427,12 +1427,12 @@ impl State {
                     } else {
                         None
                     };
-                let rendered = render_submission(
-                    &submission, &files, later_passing_validation.as_deref(), all,
-                );
                 let audit_version: i64 = self.open()?.query_row(
                     "SELECT sorry_audit_version FROM submissions WHERE ref = ?1", [reference], |row| row.get(0),
                 )?;
+                let rendered = render_submission(
+                    &submission, &files, later_passing_validation.as_deref(), all, audit_version >= 2,
+                );
                 if audit_version < 2 && submission.validation_status == ValidationStatus::Passed {
                     Ok(format!("{rendered}\nAudit obsolete: this result predates imported-constant scanning; axioms/sorry counts are unverified."))
                 } else {
@@ -2290,11 +2290,11 @@ mod tests {
             created_at: 0,
         };
         let files = vec!["Demo/Changed.lean".into()];
-        let compact = render_submission(&submission, &files, None, false);
+        let compact = render_submission(&submission, &files, None, false, true);
         assert!(compact.contains("files:\n  Demo/Changed.lean"));
         assert!(compact.contains("build warnings: 2; show s1 --all"));
         assert!(!compact.contains("first warning"));
-        assert!(render_submission(&submission, &files, None, true).contains("first warning"));
+        assert!(render_submission(&submission, &files, None, true, true).contains("first warning"));
     }
 
     #[test]
@@ -2564,6 +2564,8 @@ mod tests {
             state.open().unwrap().execute("UPDATE submissions SET sorry_audit_version = 1 WHERE ref = 's2'", []).unwrap();
             assert!(state.latest_audited_submission("main-s2").unwrap().is_none());
             assert!(state.show("s2", false).unwrap().contains("Audit obsolete"));
+            assert!(state.show("s2", false).unwrap().contains("sorries: unknown"));
+            assert!(!state.show("s2", false).unwrap().contains("axioms: clean"));
             let upgraded = state.next_validation().unwrap().unwrap();
             assert_eq!(upgraded.reference, "s2");
             assert!(upgraded.validation_detail.unwrap().contains("audit upgraded"));

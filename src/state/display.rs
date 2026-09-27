@@ -336,6 +336,7 @@ pub(super) fn render_submission(
     files: &[String],
     later_passing_validation: Option<&str>,
     all: bool,
+    audited: bool,
 ) -> String {
     if submission.validation_status == ValidationStatus::Skipped {
         return format!(
@@ -373,7 +374,9 @@ pub(super) fn render_submission(
         output.push_str(&format!("\nbuild: {}", format_duration(duration)));
     }
     if matches!(submission.validation_status.as_str(), "passed" | "failed") {
-        if !submission.axioms.is_empty() {
+        if !audited {
+            output.push_str("\naxioms: unverified");
+        } else if !submission.axioms.is_empty() {
             output.push_str("\naxioms: failed");
             for axiom in &submission.axioms {
                 output.push_str(&format!("\n  {axiom}"));
@@ -389,8 +392,12 @@ pub(super) fn render_submission(
         } else {
             output.push_str("\naxioms: error");
         }
-        output.push_str(&format!("\nsorries: {}", submission.sorries.len()));
-        if all {
+        if audited {
+            output.push_str(&format!("\nsorries: {}", submission.sorries.len()));
+        } else {
+            output.push_str("\nsorries: unknown (audit incomplete or obsolete)");
+        }
+        if all && audited {
             for location in &submission.sorries {
                 output.push_str(&format!("\n  {location}"));
             }
