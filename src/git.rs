@@ -761,6 +761,31 @@ pub fn submit(repo: &Repo, workspace: &Workspace, message: &str) -> Result<Submi
     submit_selected(repo, workspace, message, None)
 }
 
+/// Selected sources must carry every workspace-only prerequisite they were
+/// checked against. Run under the integration lock, before staging or committing.
+fn verify_selected_dependency_closure(repo: &Repo, workspace: &Workspace, paths: &[PathBuf]) -> Result<()> {
+    let selected = paths.iter().collect::<std::collections::HashSet<_>>();
+    let tracked = run_output("git", ["ls-tree", "-r", "--name-only", "-z", "HEAD"], &repo.root)?;
+    ensure!(tracked.status.success(), "cannot inspect managed main source tree");
+    let tracked = String::from_utf8(tracked.stdout)?.split('\0').map(PathBuf::from)
+        .collect::<std::collections::HashSet<_>>();
+    let mut examined = std::collections::HashSet::new();
+    let mut omitted = Vec::new();
+    for target in paths.iter().filter(|path| path.extension().is_some_and(|ext| ext == "lean")) {
+        for dependency in crate::check::transitive_dependencies(&workspace.path, target)? {
+            if selected.contains(&dependency) || !examined.insert(dependency.clone()) { continue; }
+            let current = fs::read(workspace.path.join(&dependency))?;
+            if !tracked.contains(&dependency) || fs::read(repo.root.join(&dependency)).ok().as_deref() != Some(current.as_slice()) {
+                omitted.push(format!("{} (required by {})", dependency.display(), target.display()));
+            }
+        }
+    }
+    ensure!(omitted.is_empty(),
+        "selective submission omits project prerequisites that differ from managed main: {}; include these files in the checked submission, submit them first, or sync and recheck against main; nothing was staged or integrated",
+        omitted.join(", "));
+    Ok(())
+}
+
 pub fn submit_selected(
     repo: &Repo,
     workspace: &Workspace,
@@ -782,6 +807,9 @@ pub fn submit_selected(
         "workspace has an unfinished merge; resolve it before submit"
     );
     let base_commit = head(&repo.root)?;
+    if let Some(paths) = selected_paths {
+        verify_selected_dependency_closure(repo, workspace, paths)?;
+    }
     match selected_paths {
         Some(paths) => {
             let staged = run_output("git", ["diff", "--cached", "--quiet"], &workspace.path)?;
@@ -1370,6 +1398,15 @@ mod tests {
         )
         .unwrap();
 
+        // A checked source must not land against a different prerequisite.
+        fs::write(workspace.path.join("Selected.lean"), "import Sibling\ndef selected := sibling\n").unwrap();
+        let before = head(&root).unwrap();
+        let error = submit_selected(&repo, &workspace, "incomplete packet", Some(&[PathBuf::from("Selected.lean")])).err().expect("missing prerequisite must fail");
+        assert!(error.to_string().contains("Sibling.lean (required by Selected.lean)"));
+        assert_eq!(head(&root).unwrap(), before);
+        assert!(run_output("git", ["diff", "--cached", "--quiet"], &workspace.path).unwrap().status.success());
+        fs::write(workspace.path.join("Selected.lean"), "def selected := 1\n").unwrap();
+
         submit_selected(
             &repo,
             &workspace,
@@ -1390,6 +1427,31 @@ mod tests {
             dirty_paths(&workspace.path).unwrap(),
             vec![PathBuf::from("Sibling.lean")]
         );
+        assert!(dirty_paths(&root).unwrap().is_empty());
+    }
+
+    #[test]
+    fn selective_dependency_closure_detects_transitive_new_sources() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("repo");
+        fs::create_dir(&root).unwrap();
+        run_checked("git", ["init", "-b", "main"], &root).unwrap();
+        run_checked("git", ["config", "user.name", "test"], &root).unwrap();
+        run_checked("git", ["config", "user.email", "test@test.invalid"], &root).unwrap();
+        fs::write(root.join("Target.lean"), "def target := 0\n").unwrap();
+        run_checked("git", ["add", "."], &root).unwrap();
+        run_checked("git", ["commit", "-m", "initial"], &root).unwrap();
+        let repo = Repo::discover(&root).unwrap();
+        let state = State::new(&repo.db_path).unwrap();
+        let workspace = create_workspace(&repo, &state, "agent", None).unwrap();
+        fs::write(workspace.path.join("New.lean"), "def prerequisite := 1\n").unwrap();
+        fs::write(workspace.path.join("Middle.lean"), "import New\n").unwrap();
+        fs::write(workspace.path.join("Target.lean"), "import Middle\ndef target := prerequisite\n").unwrap();
+        let error = submit_selected(&repo, &workspace, "incomplete", Some(&["Target.lean".into(), "Middle.lean".into()])).err().expect("missing transitive prerequisite must fail");
+        assert!(error.to_string().contains("New.lean (required by Target.lean)"));
+        assert!(!root.join("Middle.lean").exists());
+        submit_selected(&repo, &workspace, "complete", Some(&["Target.lean".into(), "Middle.lean".into(), "New.lean".into()])).unwrap();
+        assert!(root.join("New.lean").is_file());
         assert!(dirty_paths(&root).unwrap().is_empty());
     }
 

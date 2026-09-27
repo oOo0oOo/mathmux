@@ -518,7 +518,7 @@ def signatureRange? (fileMap : FileMap) (stx : Syntax) : Option (Position × Pos
 
 partial def firstErrorOrFinal (task : Language.SnapshotTask Language.Lean.CommandParsedSnapshot)
     (fileMap : FileMap) (profile : Bool) :
-    BaseIO (Bool × MessageLog × Array ProfileEntry × Option (Position × Position)) := do
+    BaseIO (Bool × MessageLog × Array ProfileEntry × Option (Position × Position) × Array String) := do
   let command := task.get
   let result := command.elabSnap.resultSnap.get
   let entries := if profile then collectResultProfile fileMap result else #[]
@@ -528,14 +528,21 @@ partial def firstErrorOrFinal (task : Language.SnapshotTask Language.Lean.Comman
     if let some next := command.nextCmdSnap? then
       let started ← IO.monoMsNow
       let messages ← collectAfterError next messages 1 0 started started
-      return (true, messages, entries, signatureRange? fileMap command.stx)
+      return (true, messages, entries, signatureRange? fileMap command.stx, #[])
     else
-      return (true, messages, entries, signatureRange? fileMap command.stx)
+      return (true, messages, entries, signatureRange? fileMap command.stx, #[])
   if let some next := command.nextCmdSnap? then
-    let (failed, messages, rest, signature) ← firstErrorOrFinal next fileMap profile
-    return (failed, messages, entries ++ rest, signature)
+    let (failed, messages, rest, signature, names) ← firstErrorOrFinal next fileMap profile
+    return (failed, messages, entries ++ rest, signature, names)
   else
-    return (false, command.diagnostics.msgLog ++ result.cmdState.messages, entries, none)
+    -- Only this file's new kernel declarations, never imported constants.
+    -- Generated public instance names are a common cross-module collision.
+    let names := result.cmdState.env.toKernelEnv.constants.foldStage2 (fun names name _ =>
+      match name with
+      | .str _ leaf =>
+        if !name.isInternal && leaf.startsWith "inst" then names.push name.toString else names
+      | _ => names) #[]
+    return (false, command.diagnostics.msgLog ++ result.cmdState.messages, entries, none, names)
 
 /-- Preserve hidden typeclass arguments in saved mismatch evidence. -/
 partial def diagnosticPPAll : MessageData → MessageData
@@ -589,11 +596,11 @@ def processSnapshot (snapshot : Language.Lean.InitialSnapshot) (version : Nat)
   let processed := header.processedSnap.get
   let some processed := processed.result? |
     return ← failureWithDiagnostics snapshot "import processing failed" version
-  let (failed, commandMessages, profileEntries, signature) ←
+  let (failed, commandMessages, profileEntries, signature, names) ←
     firstErrorOrFinal processed.firstCmdSnap snapshot.ictx.fileMap profile
   let messages ← if failed then pure commandMessages else collectTree (Language.toSnapshotTree snapshot)
   let diagnostics := deduplicateDiagnostics (← renderMessages messages signature)
-  return { ok := !messages.hasErrors, diagnostics, profile := profileEntries, version := version }
+  return { ok := !messages.hasErrors, diagnostics, profile := profileEntries, names, version := version }
 
 where
   failureWithDiagnostics (snapshot : Language.Lean.InitialSnapshot) (detail : String)

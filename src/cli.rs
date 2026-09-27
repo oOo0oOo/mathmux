@@ -270,10 +270,10 @@ enum TopCommand {
         /// Stored cREF, qREF, sREF, or wREF.
         reference: String,
         /// Include expanded stored detail.
-        #[arg(long, conflicts_with = "wait")]
+        #[arg(long)]
         all: bool,
         /// Wait for a running cREF or queued/running sREF (default limit: 600 seconds).
-        #[arg(long, conflicts_with = "all")]
+        #[arg(long)]
         wait: bool,
         /// Maximum wait in seconds (1–86400). Timing out leaves the job running.
         #[arg(long, requires = "wait", value_name = "SECONDS", value_parser = clap::value_parser!(u64).range(1..=86400))]
@@ -1058,6 +1058,12 @@ mod tests {
         for invalid in ["0", "86401", "-1"] {
             assert!(Args::try_parse_from(["mathmux", "check", "--setup-timeout", invalid]).is_err());
         }
+    }
+
+    #[test]
+    fn show_wait_and_all_can_be_combined() {
+        let args = Args::try_parse_from(["mathmux", "show", "c1", "--wait", "--all"]).unwrap();
+        assert!(matches!(args.command, TopCommand::Show { all: true, wait: true, .. }));
     }
 
     #[test]

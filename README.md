@@ -111,3 +111,16 @@ produce a Lean result or a certificate.
 During dependency preparation, status separates the latest Lake output from
 active Lean source files observed under that setup process. This bounded Linux
 process snapshot is best effort; unavailable activity is labeled explicitly.
+
+Fresh focused checks warn when a newly elaborated public instance name also
+appears in another compiled module indexed for that workspace. This bounded
+check is advisory: the index can be incomplete or stale, and full joint-import
+validation remains authoritative. Give local instances unique explicit names
+to avoid generated-name collisions.
+
+Selective submission rejects omitted project prerequisites whose workspace
+source differs from managed main, before staging or integration. Include those
+prerequisites, submit them first, or sync and recheck. Covered submissions show
+the actual covering validation status and retain an unverified label when that
+validation failed or its audit is obsolete. `show --wait --all` combines waiting
+with expanded stored detail.

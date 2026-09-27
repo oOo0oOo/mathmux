@@ -1443,6 +1443,32 @@ impl State {
                 let rendered = render_submission(
                     &submission, &files, later_passing_validation.as_deref(), all, audit_version >= 2,
                 );
+                if submission.validation_status == ValidationStatus::Skipped {
+                    let mut covering = submission.clone();
+                    let mut seen = std::collections::HashSet::new();
+                    seen.insert(covering.reference.clone());
+                    while covering.validation_status == ValidationStatus::Skipped && seen.len() <= 256 {
+                        let Some(next) = covering.validated_by.as_deref() else { break; };
+                        if !seen.insert(next.to_owned()) { break; }
+                        let Some(next) = self.submission(next)? else { break; };
+                        covering = next;
+                    }
+                    if covering.validation_status == ValidationStatus::Skipped {
+                        return Ok(format!("{rendered}\ncovering validation unavailable; packet certification unverified"));
+                    }
+                    let mut detail = format!("{rendered}\ncovering validation: {} {}", covering.reference, covering.validation_status);
+                    let covering_audit_version: i64 = self.open()?.query_row(
+                        "SELECT sorry_audit_version FROM submissions WHERE ref = ?1", [&covering.reference], |row| row.get(0),
+                    )?;
+                    if covering.validation_status != ValidationStatus::Passed || covering_audit_version < 2 {
+                        detail.push_str("\npacket certification: unverified (no current completed covering audit)");
+                    }
+                    if let Some(reason) = covering.validation_detail.as_deref() {
+                        detail.push_str(&format!("\n{}", crate::util::truncate_line(reason, 1200)));
+                    }
+                    detail.push_str(&format!("\ninspect: mathmux show {}{}", covering.reference, if all { " --all" } else { "" }));
+                    return Ok(detail);
+                }
                 if audit_version < 2 && submission.validation_status == ValidationStatus::Passed {
                     Ok(format!("{rendered}\nAudit obsolete: this result predates imported-constant scanning; axioms/sorry counts are unverified."))
                 } else {
@@ -2545,6 +2571,10 @@ mod tests {
                 .reference,
             "s2"
         );
+        let covered = state.show("s1", false).unwrap();
+        assert!(covered.contains("covering validation: s2 failed"));
+        assert!(covered.contains("packet certification: unverified"));
+        assert!(covered.contains("build passed; 1 extra axiom"));
         let compact = state.show("s2", false).unwrap();
         assert!(compact.contains("Unsafe.assume"));
         assert!(compact.contains("sorries: 1"));

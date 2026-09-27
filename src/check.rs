@@ -28,10 +28,11 @@ use crate::state::{
     FileCheckProfile, State, Workspace,
 };
 use crate::util::{
-    hash_bytes, hash_file, now_unix_ms, run_command_with_observer,
+    hash_bytes, hash_file, now_unix_ms,
 };
 
 mod diagnostics;
+mod collisions;
 
 use diagnostics::{attach_source_context, deduplicate, informational_diagnostics, partition_diagnostics};
 
@@ -202,6 +203,8 @@ struct WorkerResponse {
     profile: Vec<CheckProfileEntry>,
     #[serde(default)]
     detail: String,
+    #[serde(default)]
+    names: Vec<String>,
     version: u64,
 }
 
@@ -1064,6 +1067,10 @@ impl Checker {
         let (warnings, linters, mut suggestions, mut diagnostics) =
             partition_diagnostics(&response.diagnostics);
         let mut warnings = warnings;
+        if response.ok {
+            warnings.splice(0..0, collisions::indexed_instance_collisions(
+                &self.repo.search_db_path, workspace, target, &response.names));
+        }
         let mut linters = linters;
         attach_source_context(&mut warnings, target, &source);
         attach_source_context(&mut linters, target, &source);
@@ -2597,6 +2604,7 @@ fn fallback_check(repo: &Repo, root: &Path, target: &Path) -> Result<WorkerRespo
         diagnostics,
         profile: Vec::new(),
         detail: String::new(),
+        names: Vec::new(),
         version: 1,
     })
 }
