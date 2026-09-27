@@ -77,7 +77,7 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
 
         regex_miss = run([binary, 'search', '/^zzScopeSentinelAbsent$/'], ws).stdout
         assert 'dependencies require an explicit scope' in regex_miss, regex_miss
-        assert 'indexed alternatives (not regex matches)' in regex_miss, regex_miss
+        assert 'indexed alternatives' not in regex_miss, regex_miss
 
         wrong_path = run([binary, 'search', 'Missing/Elsewhere/SourceFixture.lean:1-4'], ws, ok=False)
         assert wrong_path.returncode and 'source file not found or ambiguous' in wrong_path.stderr, wrong_path
@@ -166,7 +166,7 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         assert 'have useful : True' in full_group and 'exact useful' in full_group, full_group
 
         case_recovery = run([binary, 'search', 'FindFixture.lean /[Cc]ompact|[Rr]ellich/'], ws).stdout
-        assert 'indexed alternatives (not regex matches) for: compact rellich' in case_recovery, case_recovery
+        assert 'no regex source matches' in case_recovery and 'indexed alternatives' not in case_recovery, case_recovery
 
         past_end = run([binary, 'search', 'FindFixture.lean:140-187'], ws).stdout
         assert 'file has 2 lines' in past_end, past_end
@@ -234,6 +234,16 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         assert '[Inhabited α]' in short and 'Own documentation.' in short, short
         assert 'Neighbor documentation.' not in short, short
         assert 'All source snapshot lines shown.' in short, short
+        binder_signature = probe('Demo.identityValue signature')
+        assert 'variable (α) in' in binder_signature and '[Inhabited α]' in binder_signature, binder_signature
+        dossier = run([binary, 'search', 'SourceFixture.lean dossier'], ws).stdout
+        assert 'declarations:' in dossier and 'Demo.longProof' in dossier, dossier
+        named = run([binary, 'search', 'SourceFixture.lean:longProof'], ws).stdout
+        named_ref = next(line.removeprefix('ref: ') for line in named.splitlines() if line.startswith('ref: '))
+        named_full = run([binary, 'show', named_ref, '--all'], ws).stdout
+        assert 'exact True.intro' in named_full and 'λ' * 250 in named_full, named_full
+        range_full = run([binary, 'search', 'SourceFixture.lean:12-83', '--all'], ws).stdout
+        assert 'λ' * 250 in range_full and 'exact True.intro' in range_full, range_full
         searched = run([binary, 'search', 'Demo.longProof source'], ws).stdout
         assert 'lines not shown' in searched and 'Continue:' in searched, searched
         searched_ref = next(line.removeprefix('ref: ') for line in searched.splitlines() if line.startswith('ref: '))

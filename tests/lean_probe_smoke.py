@@ -101,6 +101,15 @@ phase_cases = [
 for body, _, _ in phase_cases:
     source = phase_header + body
     request('check', '', line=1)
+recovery_start = len(requests)
+recovery_sources = [
+    "import Lean\nsection\nvariable (n : Nat)\ntheorem repaired : n = n := by\n  exact missingProof\ntheorem downstream : n = n := repaired n\nend\n",
+    "import Lean\nsection\nvariable (n : Nat)\ntheorem repaired : n = n := by\n  rfl\ntheorem downstream : n = n := repaired n\nend\n",
+]
+for _ in range(3):
+    for source in recovery_sources:
+        request('check', '', line=1)
+    request('inspect_evidence', 'downstream', line=7)
 with tempfile.TemporaryDirectory(prefix='mathmux-lean-probe-') as temp:
     setup = pathlib.Path(temp) / 'setup.json'
     setup.write_text(json.dumps(dict(name='ProbeFixture', package=None, isModule=False,
@@ -122,6 +131,12 @@ with tempfile.TemporaryDirectory(prefix='mathmux-lean-probe-') as temp:
         assert response['ok'] == ok, response
         diagnostic_text = '\n'.join(d['text'] for d in response['diagnostics'])
         assert ('required in the declaration signature' in diagnostic_text) == hinted, response
+    for offset in range(0, 9, 3):
+        failed, repaired, evidence = responses[recovery_start + offset:recovery_start + offset + 3]
+        assert not failed['ok'], failed
+        assert repaired['ok'], repaired
+        assert evidence['ok'], evidence
+        assert 'sorryAx' not in evidence['detail'], evidence
     responses = responses[:legacy_count]
     for i in range(7):
         assert responses[i]['ok'], (i, responses[i])

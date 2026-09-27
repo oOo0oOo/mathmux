@@ -29,7 +29,7 @@ impl std::fmt::Display for CommandTimeout {
         if self.phase == "dependency setup" {
             write!(
                 formatter,
-                "dependency setup exceeded {duration} while running lake setup-file; child process terminated"
+                "dependency setup exceeded {duration} while running lake setup-file; child process terminated; completed dependency artifacts are retained, rerun the same check to resume preparation"
             )
         } else {
             write!(
@@ -85,10 +85,20 @@ pub(crate) fn run_command_with_timeout(
 }
 
 pub(crate) fn run_command_with_timeout_cancelable(
+    command: Command,
+    timeout: Duration,
+    phase: &'static str,
+    cancelled: impl Fn() -> bool,
+) -> Result<Output> {
+    run_command_with_observer(command, timeout, phase, cancelled, |_, _| {})
+}
+
+pub(crate) fn run_command_with_observer(
     mut command: Command,
     timeout: Duration,
     phase: &'static str,
     cancelled: impl Fn() -> bool,
+    mut progress: impl FnMut(&[u8], &[u8]),
 ) -> Result<Output> {
     command
         .stdin(Stdio::null())
@@ -118,6 +128,7 @@ pub(crate) fn run_command_with_timeout_cancelable(
     let mut stderr_done = false;
     let mut status = None;
     let deadline = Instant::now() + timeout;
+    let mut next_progress = Instant::now();
     loop {
         if !stdout_done {
             stdout_done = drain_nonblocking(&mut stdout, &mut stdout_bytes)
@@ -156,6 +167,10 @@ pub(crate) fn run_command_with_timeout_cancelable(
                     return Err(error).context("cannot wait for timed command");
                 }
             }
+        }
+        if Instant::now() >= next_progress || (status.is_some() && stdout_done && stderr_done) {
+            progress(&stdout_bytes, &stderr_bytes);
+            next_progress = Instant::now() + Duration::from_secs(1);
         }
         if status.is_some() && stdout_done && stderr_done {
             break;
@@ -442,6 +457,20 @@ mod tests {
 
         assert!(started.elapsed() < Duration::from_secs(2));
         assert!(error.to_string().contains("fixture exceeded 100ms"));
+    }
+
+    #[test]
+    fn timed_command_exposes_output_before_completion() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "echo first; sleep 1.2; echo second"]);
+        let mut live = false;
+        let output = run_command_with_observer(command, Duration::from_secs(5), "fixture", || false,
+            |stdout, _| {
+                let text = String::from_utf8_lossy(stdout);
+                live |= text.contains("first") && !text.contains("second");
+            }).unwrap();
+        assert!(live, "progress must arrive while the build is running");
+        assert!(String::from_utf8_lossy(&output.stdout).contains("second"));
     }
 
     #[test]

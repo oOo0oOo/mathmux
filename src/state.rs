@@ -1034,7 +1034,7 @@ impl State {
         let reference = match connection
             .query_row(
                 "SELECT ref FROM submissions
-                 WHERE sorry_audit_version = 1 AND main_commit = ?1
+                 WHERE sorry_audit_version = 2 AND main_commit = ?1
                  ORDER BY created_at DESC, CAST(substr(ref, 2) AS INTEGER) DESC
                  LIMIT 1",
                 [main_commit],
@@ -1046,7 +1046,7 @@ impl State {
             None => connection
                 .query_row(
                     "SELECT ref FROM submissions
-                         WHERE sorry_audit_version = 1
+                         WHERE sorry_audit_version = 2
                          ORDER BY created_at DESC, CAST(substr(ref, 2) AS INTEGER) DESC
                          LIMIT 1",
                     [],
@@ -1092,7 +1092,7 @@ impl State {
         let reference = connection
             .query_row(
                 "SELECT ref
-                 FROM submissions WHERE validation_status IN ('passed', 'failed')
+                 FROM submissions WHERE validation_status = 'failed' OR (validation_status = 'passed' AND sorry_audit_version = 2)
                  ORDER BY created_at DESC, CAST(substr(ref, 2) AS INTEGER) DESC
                  LIMIT 1",
                 [],
@@ -1120,7 +1120,7 @@ impl State {
         self.open()?
             .query_row(
                 "SELECT ref FROM submissions
-                 WHERE validation_status = 'passed'
+                 WHERE validation_status = 'passed' AND sorry_audit_version = 2
                    AND (created_at > ?1 OR
                         (created_at = ?1 AND CAST(substr(ref, 2) AS INTEGER) >
                                              CAST(substr(?2, 2) AS INTEGER)))
@@ -1144,6 +1144,15 @@ impl State {
         if running {
             return Ok(None);
         }
+        // Earlier audits visited only stage-two (local) constants after importing
+        // the project. Revalidate the newest revision with the corrected audit;
+        // never interrupt a running validation or replay obsolete revisions.
+        connection.execute(
+            "UPDATE submissions SET validation_status = 'queued', validation_started_at = NULL,
+             validation_detail = 'full validation queued: imported-constant audit upgraded'
+             WHERE validation_status = 'passed' AND sorry_audit_version < 2
+             AND ref = (SELECT ref FROM submissions ORDER BY created_at DESC, CAST(substr(ref, 2) AS INTEGER) DESC LIMIT 1)", [],
+        )?;
         let newest = connection
             .query_row(
                 "SELECT ref, workspace_ref, workspace_commit, main_commit, base_commit, checks_json,
@@ -1196,7 +1205,7 @@ impl State {
                 report.build_output,
                 serde_json::to_string(&report.axioms)?,
                 serde_json::to_string(&report.sorries)?,
-                i64::from(report.sorry_audit),
+                if report.sorry_audit { 2_i64 } else { 0 },
                 report.duration_ms,
             ],
         )?;
@@ -1206,6 +1215,37 @@ impl State {
         transaction.commit()?;
         drop(_write_guard);
         self.prune_build_logs()?;
+        Ok(())
+    }
+
+    pub fn update_validation_progress(&self, reference: &str, detail: &str) -> Result<()> {
+        let _write_guard = self.write_guard();
+        self.open()?.execute(
+            "UPDATE submissions SET validation_detail = ?2 WHERE ref = ?1 AND validation_status = 'running'",
+            params![reference, detail],
+        )?;
+        Ok(())
+    }
+
+    #[cfg(feature = "development")]
+    pub fn retry_validation(&self, reference: &str) -> Result<()> {
+        let _write_guard = self.write_guard();
+        let mut connection = self.open()?;
+        let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let latest: Option<String> = transaction.query_row(
+            "SELECT ref FROM submissions ORDER BY created_at DESC, CAST(substr(ref, 2) AS INTEGER) DESC LIMIT 1",
+            [], |row| row.get(0),
+        ).optional()?;
+        ensure!(latest.as_deref() == Some(reference),
+            "retry the latest submission only (latest: {}); newer revisions supersede older validation", latest.as_deref().unwrap_or("none"));
+        let changed = transaction.execute(
+            "UPDATE submissions SET validation_status = 'queued', validation_started_at = NULL,
+             validation_detail = 'retry queued; reusing completed build artifacts; build and axiom audit still required',
+             validation_duration_ms = NULL, sorry_audit_version = 0
+             WHERE ref = ?1 AND validation_status = 'failed'", [reference],
+        )?;
+        ensure!(changed == 1, "{reference} must have failed validation before it can be retried");
+        transaction.commit()?;
         Ok(())
     }
 
@@ -1349,12 +1389,17 @@ impl State {
                     } else {
                         None
                     };
-                Ok(render_submission(
-                    &submission,
-                    &files,
-                    later_passing_validation.as_deref(),
-                    all,
-                ))
+                let rendered = render_submission(
+                    &submission, &files, later_passing_validation.as_deref(), all,
+                );
+                let audit_version: i64 = self.open()?.query_row(
+                    "SELECT sorry_audit_version FROM submissions WHERE ref = ?1", [reference], |row| row.get(0),
+                )?;
+                if audit_version < 2 && submission.validation_status == ValidationStatus::Passed {
+                    Ok(format!("{rendered}\nAudit obsolete: this result predates imported-constant scanning; axioms/sorry counts are unverified."))
+                } else {
+                    Ok(rendered)
+                }
             }
             ReferenceKind::Workspace => self.show_workspace(reference, all),
             ReferenceKind::Sync => self.show_sync(reference, all),
@@ -1898,7 +1943,7 @@ mod tests {
         state
             .open()
             .unwrap()
-            .execute("UPDATE submissions SET sorry_audit_version = 1", [])
+            .execute("UPDATE submissions SET sorry_audit_version = 2", [])
             .unwrap();
 
         assert_eq!(
@@ -2295,6 +2340,11 @@ mod tests {
                 })
                 .unwrap();
         }
+        assert!(!state.show("s2", false).unwrap().contains("later validation s3 passed"));
+        state.finish_validation("s3", &ValidationReport {
+            passed: true, sorry_audit: true, detail: "build and audit passed".into(),
+            build_output: String::new(), axioms: Vec::new(), sorries: Vec::new(), duration_ms: 1,
+        }).unwrap();
         assert!(
             state
                 .show("s2", false)
@@ -2455,6 +2505,31 @@ mod tests {
         let full = state.show("s2", true).unwrap();
         assert!(full.contains("Proof.lean:12:3"));
         assert!(full.contains("info: Building Proof"));
+        #[cfg(feature = "development")]
+        {
+            assert!(state.retry_validation("s1").is_err());
+            state.retry_validation("s2").unwrap();
+            assert!(state.retry_validation("s2").is_err());
+            let retried = state.next_validation().unwrap().unwrap();
+            assert_eq!(retried.main_commit, "main-s2");
+            assert_eq!(retried.checks, ["c1"]);
+            assert!(state.retry_validation("s2").is_err());
+            state.update_validation_progress("s2", "building project: 9/10").unwrap();
+            assert!(state.show("s2", false).unwrap().contains("building project: 9/10"));
+            state.finish_validation("s2", &ValidationReport {
+                passed: true, sorry_audit: true, detail: "build and audit passed".into(),
+                build_output: String::new(), axioms: Vec::new(), sorries: Vec::new(), duration_ms: 1,
+            }).unwrap();
+            state.update_validation_progress("s2", "stale progress").unwrap();
+            assert!(!state.show("s2", false).unwrap().contains("stale progress"));
+            assert!(state.retry_validation("s2").is_err());
+            state.open().unwrap().execute("UPDATE submissions SET sorry_audit_version = 1 WHERE ref = 's2'", []).unwrap();
+            assert!(state.latest_audited_submission("main-s2").unwrap().is_none());
+            assert!(state.show("s2", false).unwrap().contains("Audit obsolete"));
+            let upgraded = state.next_validation().unwrap().unwrap();
+            assert_eq!(upgraded.reference, "s2");
+            assert!(upgraded.validation_detail.unwrap().contains("audit upgraded"));
+        }
     }
 
     #[test]

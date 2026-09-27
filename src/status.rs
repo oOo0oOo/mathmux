@@ -384,6 +384,9 @@ fn render_validation_status(
                 if running.is_some() { "  " } else { " " }
             )?;
         }
+        if let Some(detail) = running.and_then(|submission| submission.validation_detail.as_deref()) {
+            write!(output, "\n  {}", truncate_line(&single_line(detail), 300))?;
+        }
         if let Some(submission) = latest_completed
             .filter(|submission| submission.validation_status == ValidationStatus::Failed)
         {
@@ -1289,6 +1292,10 @@ mod tests {
         render_validation_status(&mut output, &[running], None, Some(1_000_000), 1_003)
             .unwrap();
         assert_eq!(output, "\nvalidation s13:running <1m");
+        let running = submission("s14", "running", Some("building project: 9068/9453"));
+        let mut output = String::new();
+        render_validation_status(&mut output, &[running], None, Some(1_000_000), 1_003).unwrap();
+        assert!(output.contains("building project: 9068/9453"));
     }
 
     #[test]

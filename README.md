@@ -35,7 +35,19 @@ cargo build --release --features development
 cargo install --locked --force --features development --path .
 python tests/cli_contract_smoke.py /path/to/mathmux /path/to/pinned/lean
 python tests/lean_probe_smoke.py /path/to/project-toolchain/bin/lean
+python tests/axiom_audit_smoke.py /path/to/project-toolchain/bin/lean
 ```
 
 Development issues and telemetry use SQLite. Set `MATHMUX_ISSUE_DB` to choose
 the database; `mathmux status` shows repository state.
+
+`mathmux status` includes the current validation phase and latest build output.
+To resume a timed-out validation of the latest submission, use
+`mathmux dev revalidate sREF`, then `mathmux status`. Completed build artifacts
+are reused, and the full build and transitive axiom audit run again. Superseded
+submissions cannot be retried. A dependency-preparation timeout can likewise be
+resumed by repeating the same `mathmux check` command.
+
+The imported-constant audit supersedes older audit results. The daemon queues
+the latest previously passed revision for fresh validation when necessary;
+historical results are marked obsolete until covered by a current audit.

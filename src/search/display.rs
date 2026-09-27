@@ -525,7 +525,7 @@ fn render_source(
         match hit.kind.as_str() {
             "class" | "inductive" | "structure" => 16,
             "fields" => SOURCE_OCCURRENCE_ALL_LIMIT,
-            "contract" => 48,
+            "contract" | "diagnostic-probe" => 48,
             "imports" => 64,
             "outline" => OUTLINE_PREVIEW_LINES,
             "dossier" => usize::MAX,

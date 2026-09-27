@@ -15,7 +15,7 @@ use crate::repo::Repo;
 use crate::state::{State, Submission, ValidationReport, ValidationStatus};
 use crate::util::{
     build_error_diagnostic, command_detail, output_text, run_checked, run_command_with_timeout,
-    run_output,
+    run_output, run_command_with_observer,
 };
 use anyhow::{Context, Result, bail};
 
@@ -95,7 +95,7 @@ fn validation_loop(
                 // cannot be evicted and its live request remains untouched.
                 let _ = checker.evict_idle_workers(Duration::ZERO);
                 let started = Instant::now();
-                let result = validate(&repo, &submission);
+                let result = validate(&repo, &state, &submission);
                 let report = match result {
                     Ok(report) => report,
                     Err(error) => failed_report(
@@ -239,8 +239,9 @@ fn acquire_validation_lock(path: &Path) -> Result<fs::File> {
     Ok(lock)
 }
 
-fn validate(repo: &Repo, submission: &Submission) -> Result<ValidationReport> {
+fn validate(repo: &Repo, state: &State, submission: &Submission) -> Result<ValidationReport> {
     let started = Instant::now();
+    state.update_validation_progress(&submission.reference, "preparing validation worktree")?;
     let root = prepare_worktree(repo, &submission.main_commit)?;
     let (roots, project_modules) = deliverable_modules(&root);
     invalidate_newer_project_artifacts(&root)?;
@@ -250,9 +251,23 @@ fn validate(repo: &Repo, submission: &Submission) -> Result<ValidationReport> {
     restore_available_project_oleans(&repo.cache_dir, &root, &project_modules)?;
     let mut build = background_lake_command(repo, &root);
     build.arg("build").args(&roots);
-    let output = run_command_with_timeout(build, VALIDATION_BUILD_TIMEOUT, "validation build")
-        .context("cannot run validation build")?;
-    let build_output = combined_output(&output);
+    state.update_validation_progress(&submission.reference, "building project; waiting for Lake output")?;
+    let mut last_progress = String::new();
+    let output = run_command_with_observer(build, VALIDATION_BUILD_TIMEOUT, "validation build", || false,
+        |stdout, stderr| {
+            let bytes = if stderr.is_empty() { stdout } else { stderr };
+            let tail = String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(4096)..]);
+            if let Some(line) = tail.lines().rev().find(|line| !line.trim().is_empty()) {
+                let detail = format!("building project: {}", crate::util::truncate_line(line.trim(), 300));
+                if detail != last_progress {
+                    if state.update_validation_progress(&submission.reference, &detail).is_ok() {
+                        last_progress = detail;
+                    }
+                }
+            }
+        })
+        .context("cannot run validation build; completed artifacts retained; retry latest failed submission with mathmux dev revalidate sREF")?;
+    let mut build_output = combined_output(&output);
     if !output.status.success() {
         return Ok(failed_report(
             started,
@@ -262,6 +277,7 @@ fn validate(repo: &Repo, submission: &Submission) -> Result<ValidationReport> {
         ));
     }
     restore_project_oleans(&repo.cache_dir, &root, &project_modules)?;
+    state.update_validation_progress(&submission.reference, "build passed; auditing transitive axioms and sorry declarations")?;
     let audit = match run_axiom_audit(repo, &root, &roots, &project_modules) {
         Ok(audit) => audit,
         Err(error) => {
@@ -273,6 +289,10 @@ fn validate(repo: &Repo, submission: &Submission) -> Result<ValidationReport> {
             ));
         }
     };
+    if !audit.evidence.trim().is_empty() {
+        build_output.push_str("\nAxiom audit evidence (axiom, dependent declaration):\n");
+        build_output.push_str(&audit.evidence);
+    }
     let passed = audit.axioms.is_empty();
     let detail = validation_detail_for_audit(&audit, project_modules.len());
     Ok(ValidationReport {
@@ -289,8 +309,8 @@ fn validate(repo: &Repo, submission: &Submission) -> Result<ValidationReport> {
 fn validation_detail_for_audit(audit: &AxiomAudit, module_count: usize) -> String {
     if audit.axioms.is_empty() {
         format!(
-            "build passed; axioms clean ({} modules)",
-            module_count
+            "build passed; axioms clean ({} modules); {} sorry declarations",
+            module_count, audit.sorries.len()
         )
     } else if audit.native_decides.is_empty() {
         format!(
@@ -537,6 +557,7 @@ fn deliverable_modules(root: &Path) -> (Vec<String>, Vec<String>) {
 }
 
 struct AxiomAudit {
+    evidence: String,
     axioms: Vec<String>,
     native_decides: Vec<String>,
     sorries: Vec<String>,
@@ -593,6 +614,7 @@ fn run_axiom_audit(
 ) -> Result<AxiomAudit> {
     if roots.is_empty() {
         return Ok(AxiomAudit {
+            evidence: String::new(),
             axioms: Vec::new(),
             native_decides: Vec::new(),
             sorries: Vec::new(),
@@ -624,7 +646,8 @@ unsafe def main : IO UInt32 := do
   let state : Core.State := {{ env }}
   let mut failures : Array (Name × Name) := #[]
   let mut sorries : Array Name := #[]
-  let projectConstants := env.checked.get.constants.foldStage2
+  -- Imported constants live in stage one. foldStage2 would audit nothing here.
+  let projectConstants := env.checked.get.constants.fold
     (fun names name _ =>
       match env.getModuleIdxFor? name with
       | some index =>
@@ -658,6 +681,7 @@ unsafe def main : IO UInt32 := do
         bail!("axiom audit failed: {}", command_detail(&output));
     }
     Ok(AxiomAudit {
+        evidence: text,
         axioms: failures,
         native_decides,
         sorries,
@@ -728,6 +752,7 @@ mod tests {
         ));
         assert!(!is_native_decide_axiom("Lean.ofReduceBool"));
         let audit = AxiomAudit {
+            evidence: fixture.into(),
             axioms,
             native_decides,
             sorries,

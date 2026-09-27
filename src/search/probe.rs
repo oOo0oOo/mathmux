@@ -1143,7 +1143,7 @@ impl Searcher {
         if focus == "usages" {
             self.enrich_usage_dossier(workspace, &mut run)?;
         }
-        if (matches!(focus, "source" | "outline") || focus.starts_with("find:"))
+        if (matches!(focus, "signature" | "source" | "outline") || focus.starts_with("find:"))
             && !run.hits.is_empty()
         {
             return self.store_query_hit_refinement(workspace, &reference, &run.hits[0], focus);
@@ -1344,9 +1344,9 @@ impl Searcher {
         focus: &str,
     ) -> Result<String> {
         let mut hit = hit.clone();
-        let source_focus = matches!(focus, "source" | "outline") || focus.starts_with("find:");
+        let source_focus = matches!(focus, "signature" | "source" | "outline") || focus.starts_with("find:");
         let fresh_source = source_focus && self.refresh_probe_source(workspace, &mut hit)?;
-        if !fresh_source && (matches!(focus, "source" | "outline") || focus.starts_with("find:")) {
+        if !fresh_source && source_focus {
             let (scopes, _) = self.search_scopes(workspace)?;
             self.enrich_exact_source(&mut hit, &scopes)?;
         }
@@ -1781,6 +1781,25 @@ fn render_static_probe_summary(run: &SearchRun, focus: &str) -> String {
             } else {
                 "exact".into()
             };
+            if focus == "signature"
+                && let Some(source) = run.hits.first().and_then(|hit| hit.source.as_deref())
+                && let Some(ambient) = source.strip_prefix("-- ambient context\n")
+                    .and_then(|rest| rest.split_once("\n\n").map(|(context, _)| context))
+            {
+                let mut collecting = false;
+                let binders = ambient.lines().filter(|line| {
+                    if !line.starts_with(char::is_whitespace) {
+                        collecting = line.starts_with("variable") || line.starts_with("include ") || line.starts_with("omit ");
+                    }
+                    collecting
+                }).collect::<Vec<_>>().join("\n");
+                if !binders.is_empty() {
+                    prepend_search_note(&mut run.note, format!(
+                        "Source binder context (textual; Lean may omit unused binders):\n{binders}\nElaborated type: mathmux probe FILE:LINE {}",
+                        shell_argument(&format!("#inspect {}", run.hits[0].name.trim_start_matches("_root_.")))
+                    ));
+                }
+            }
             for hit in &mut run.hits {
                 hit.source = None;
             }
@@ -3274,6 +3293,14 @@ mod tests {
             Some("Demo.first")
         );
         assert!(indexed_check_hit(&run, "Demo.first 1").is_none());
+
+        let mut contextual = run.clone();
+        contextual.hits[0].signature = Some("Continuous ((↑) : α → Completion α)".into());
+        contextual.hits[0].source = Some("-- ambient context\nvariable (α : Type*) [UniformSpace α]\nvariable {β : Type*}\n\ntheorem continuous_coe : Continuous ((↑) : α → Completion α) := by trivial".into());
+        let with_context = render_static_probe_summary(&contextual, "signature");
+        assert!(with_context.contains("variable (α : Type*) [UniformSpace α]"), "{with_context}");
+        assert!(with_context.contains("textual; Lean may omit unused binders"));
+        assert!(!with_context.contains(":= by"));
 
         let signature = render_static_probe_summary(&run, "signature");
         assert!(signature.contains("Demo.first : (n : Nat) : n = n"));

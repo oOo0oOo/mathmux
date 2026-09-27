@@ -369,6 +369,11 @@ enum DevCommand {
         #[arg(long)]
         all: bool,
     },
+    /// Retry full validation of the latest failed submission, retaining completed artifacts.
+    Revalidate {
+        /// Latest failed sREF. Build and axiom certification are always rerun.
+        reference: String,
+    },
     /// Report project-owned storage and safe reclaimable space.
     Storage,
     /// Reclaim deleted-workspace setups and obsolete generated services.
@@ -761,6 +766,12 @@ fn run_dev(command: &DevCommand, cwd: &Path) -> Result<u8> {
             } else {
                 bail!("dev show expects iREF or eREF")
             }
+        }
+        DevCommand::Revalidate { reference } => {
+            let repo = Repo::discover(cwd)?;
+            let state = State::new(&repo.db_path)?;
+            state.retry_validation(reference)?;
+            format!("{reference} queued for full validation; completed build artifacts retained. Run mathmux status to start or observe the daemon.")
         }
         DevCommand::Storage => {
             let repo = Repo::discover(cwd)?;
