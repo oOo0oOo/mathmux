@@ -1562,7 +1562,10 @@ fn capture_context(cwd: &Path, related_ref: Option<&str>) -> Result<IssueContext
         worktree = workspace.path;
     }
     if let Some(reference) = related_ref {
-        context.related_detail = Some(state.show(reference, true)?);
+        context.related_detail = Some(match reference.parse::<Reference>()?.kind() {
+            ReferenceKind::Event => TelemetryStore::global_for_repo(&repo)?.show(reference, true)?,
+            _ => state.show(reference, true)?,
+        });
     }
     if let Ok(store) = TelemetryStore::global_for_repo(&repo) {
         context.exchange = store
