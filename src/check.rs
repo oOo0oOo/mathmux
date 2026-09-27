@@ -83,6 +83,13 @@ fn probe_timeout(operation: &str) -> Duration {
     }
 }
 
+const PROBE_WORKER_QUEUE_WAIT: Duration = Duration::from_secs(2);
+
+fn probe_worker_wait(deadline: Instant) -> Result<Duration> {
+    Ok(probe_phase_timeout(Some(deadline), PROBE_WORKER_QUEUE_WAIT, "worker queue")?
+        .min(PROBE_WORKER_QUEUE_WAIT))
+}
+
 fn probe_phase_timeout(
     deadline: Option<Instant>,
     fallback: Duration,
@@ -1189,7 +1196,12 @@ impl Checker {
         let profile = matches!(run, WorkerRun::Profile);
         let key = (workspace.reference.clone(), target.to_path_buf(), profile);
         let (worker, inserted) = {
-            let mut workers = self.runner.workers.lock().expect("worker map poisoned");
+            let mut workers = if let Some(deadline) = deadline {
+                lock_mutex_until(&self.runner.workers, probe_worker_wait(deadline)?)
+                    .context("Lean worker startup is busy; retry probes sequentially after the active request finishes")?
+            } else {
+                self.runner.workers.lock().expect("worker map poisoned")
+            };
             if let Some(worker) = workers.get(&key) {
                 (worker.clone(), false)
             } else {
@@ -1240,13 +1252,9 @@ impl Checker {
             }
         };
         let mut worker_guard = if let Some(deadline) = deadline {
-            let wait_timeout = probe_phase_timeout(
-                Some(deadline),
-                timeout.max(COLD_PROBE_TIMEOUT),
-                "worker lock",
-            )?;
+            let wait_timeout = probe_worker_wait(deadline)?;
             lock_mutex_until(&worker, wait_timeout).context(
-                "Lean worker is busy with another request; retry the probe after it finishes",
+                "Lean worker is busy with another request; run probes for this file sequentially after it finishes",
             )?
         } else {
             worker.lock().expect("Lean worker poisoned")
@@ -3151,6 +3159,20 @@ mod tests {
     fn test_repo(root: &Path) -> Repo {
         run_checked("git", ["init", "-b", "main"], root).unwrap();
         Repo::from_root(root).unwrap()
+    }
+
+    #[test]
+    fn busy_probe_admission_preserves_owner_and_remaining_deadline() {
+        let lock = std::sync::Mutex::new(7);
+        let owner = lock.lock().unwrap();
+        let deadline = Instant::now() + Duration::from_millis(20);
+        let started = Instant::now();
+        assert!(lock_mutex_until(&lock, probe_worker_wait(deadline).unwrap()).is_err());
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(*owner, 7);
+        drop(owner);
+        assert_eq!(*lock_mutex_until(&lock, Duration::from_millis(20)).unwrap(), 7);
+        assert_eq!(probe_worker_wait(Instant::now() + Duration::from_secs(30)).unwrap(), PROBE_WORKER_QUEUE_WAIT);
     }
 
     #[test]

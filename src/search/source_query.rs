@@ -117,6 +117,8 @@ pub(super) fn parse_source_regex_query(
                 .context(crate::protocol::DiscoveryFailure::InvalidRequest),
         );
     }
+    validate_source_ranges(scope)
+        .map_err(|error| error.context(crate::protocol::DiscoveryFailure::InvalidRequest))?;
     let (scope, range) = scope
         .rsplit_once(':')
         .and_then(|(scope, range)| parse_source_line_range(range).map(|range| (scope, range)))
@@ -239,9 +241,7 @@ pub(super) fn source_regex_result(
         }
         let source = fs::read_to_string(&path)?;
         let lines = source.lines().collect::<Vec<_>>();
-        let module = project_module_name(&workspace.path, &path);
-        let spans = declaration_spans(&source, &module);
-        let relative = source_display_path(workspace, dependency_root.as_deref(), &path);
+        let mut matches = Vec::new();
         for (index, line) in lines.iter().enumerate() {
             if Instant::now() >= deadline {
                 timed_out = true;
@@ -254,6 +254,15 @@ pub(super) fn source_regex_result(
             if !regex.is_match(line) {
                 continue;
             }
+            matches.push((line_number, *line));
+        }
+        if matches.is_empty() { continue; }
+        // Most files do not match. Parse declaration boundaries only after
+        // the cheap line scan, preserving line-regex and range semantics.
+        let module = project_module_name(&workspace.path, &path);
+        let spans = declaration_spans(&source, &module);
+        let relative = source_display_path(workspace, dependency_root.as_deref(), &path);
+        for (line_number, line) in matches {
             total += 1;
             add_source_match_group(&mut groups, &relative, &spans, line_number, line);
         }
@@ -434,6 +443,8 @@ pub(super) fn parse_source_occurrence_query(
     main_root: Option<&Path>,
     query: &str,
 ) -> Result<Option<SourceOccurrenceQuery>> {
+    validate_source_ranges(query)
+        .map_err(|error| error.context(crate::protocol::DiscoveryFailure::InvalidRequest))?;
     let alternatives = query
         .split('|')
         .map(str::trim)
@@ -587,6 +598,19 @@ pub(super) fn parse_source_occurrence_query(
         additional_ranges: Vec::new(),
         terms,
     }))
+}
+
+pub(super) fn validate_source_ranges(query: &str) -> Result<()> {
+    for term in query.split_whitespace() {
+        let Some((path, range)) = term.rsplit_once(':') else { continue; };
+        if !path.ends_with(".lean") { continue; }
+        let Some((first, _)) = range.split_once('-') else { continue; };
+        // Declaration-addressed reads may contain hyphens in quoted names.
+        if !first.is_empty() && !first.bytes().all(|b| b.is_ascii_digit()) { continue; }
+        ensure!(parse_source_line_range(range).is_some(),
+            "invalid source range {range}: require 1 <= START <= END (END may be end or tail)");
+    }
+    Ok(())
 }
 
 pub(super) fn parse_source_line_range(range: &str) -> Option<(u64, u64)> {

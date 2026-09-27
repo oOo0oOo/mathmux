@@ -1629,6 +1629,15 @@ impl Searcher {
                         .unwrap_or_default(),
                     run.failed.as_deref(),
                 );
+                if path.is_none() && run.status == crate::state::CheckStatus::Passed {
+                    if let [file] = run.files.as_slice() {
+                        // A successful cached check has no failure diagnostic.
+                        // Its single target still provides an unambiguous current
+                        // file context, exactly like an explicit FILE probe.
+                        return self.resolve_probe_context(workspace, cwd, ProbeContext::File(file.clone()));
+                    }
+                    bail!("{reference} checked {} files; choose an explicit FILE or FILE:LINE probe context", run.files.len());
+                }
                 let path = path.with_context(|| format!("{reference} has no source context"))?;
                 let requested = if Path::new(&path).is_absolute() {
                     path
@@ -3301,6 +3310,19 @@ mod tests {
         assert!(types.contains("actual: instActual"), "{types}");
         assert!(types.contains("expected: instExpected"), "{types}");
         assert!(types.contains("mathmux show c123 --all"));
+        std::fs::write(root.join("Proof.lean"), "theorem target : True := True.intro\n").unwrap();
+        completed.status = crate::state::CheckStatus::Passed;
+        completed.diagnostics.clear();
+        completed.files = vec!["Proof.lean".into()];
+        completed.passed = completed.files.clone();
+        state.add_check_run(&completed, &[]).unwrap();
+        let context = searcher.resolve_probe_context(&workspace, &root, ProbeContext::Check("c123".into())).unwrap();
+        assert_eq!(context, (root.join("Proof.lean"), 0));
+        completed.files.push("Other.lean".into());
+        state.add_check_run(&completed, &[]).unwrap();
+        let error = searcher.resolve_probe_context(&workspace, &root, ProbeContext::Check("c123".into())).unwrap_err();
+        assert!(error.to_string().contains("choose an explicit FILE"));
+
     }
 
     #[test]

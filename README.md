@@ -94,3 +94,11 @@ without attempt IDs retain legacy reference-based deduplication.
 Status keeps registered workspaces visible after their recent activity expires.
 Rows labeled `wREF` report MathMux activity (`active` or `quiet`), not external
 agent liveness. Workspaces leave this list when deleted with `ws delete`.
+
+A passed single-file `cREF` can supply a contextual probe's file even when the
+check was cached and has no diagnostics. The probe reads the current source;
+it does not certify that source or reinterpret the saved check. Multi-file
+checks without a diagnostic require an explicit `FILE` or `FILE:LINE` choice.
+Concurrent probes wait at most two seconds for a busy worker or worker startup
+lock, then return actionable retry guidance. Active checks are left running;
+probe execution deadlines are unchanged.

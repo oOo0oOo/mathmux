@@ -71,6 +71,11 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         def probe(q):
             return run([binary, 'probe', q], ws).stdout
 
+        for bounds in ['20-10', '0-0']:
+            for options in [[], ['--all']]:
+                invalid = run([binary, 'search', 'Fixture.lean:' + bounds, *options], ws, ok=False)
+                assert invalid.returncode != 0 and 'require 1 <= START <= END' in invalid.stdout + invalid.stderr, invalid
+
         for literal in ['"error:"', '"unknown identifier"', '"ordinary"']:
             reduced = probe('Fixture.lean:11 #reduce ' + literal)
             assert literal in reduced, reduced
@@ -352,6 +357,8 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
             checked_ref = checked.splitlines()[0].split()[1]
             info = run([binary, 'show', checked_ref, '--all'], ws).stdout
             assert "does not depend on any axioms" in info and 'auditTruth' in info, info
+            context = probe(checked_ref + ' #check (Nat.add_comm 2 3)')
+            assert 'Nat.add_comm' in context and '2 + 3 = 3 + 2' in context, context
         (ws / 'AuditMismatch.lean').write_text('import Lean\nexample : List Nat := ([] : List Bool)\n')
         mismatch = run([binary, 'check', 'AuditMismatch.lean'], ws, ok=False)
         mismatch_ref = (mismatch.stdout + mismatch.stderr).splitlines()[0].split()[1]

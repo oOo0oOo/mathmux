@@ -6024,3 +6024,23 @@ fn verified_namespace_facet_does_not_request_the_same_lookup_again() {
     assert!(rendered.contains("mathmux show q9 --all"));
     assert!(!rendered.contains("next: mathmux probe"));
 }
+
+#[test]
+fn invalid_numeric_source_ranges_do_not_fall_back_to_discovery() {
+    for range in ["20-10", "0-0", "-1", "9999999999999999999999-20", "2-invalid"] {
+        let error = validate_source_ranges(&format!("Demo.lean:{range}")).unwrap_err();
+        assert!(error.to_string().contains("require 1 <= START <= END"));
+    }
+    for query in ["Demo.lean:1-12", "Demo.lean:2-end", "Demo.lean:2-tail", "Demo.lean:tail", "Demo.lean:lemma_name", "x-y"] {
+        validate_source_ranges(query).unwrap();
+    }
+}
+
+#[test]
+fn regex_content_that_looks_like_a_range_is_not_a_source_address() {
+    let directory = tempfile::tempdir().unwrap();
+    let parsed = parse_source_regex_query(directory.path(), directory.path(), None, "/Demo.lean:20-10/").unwrap().unwrap();
+    assert_eq!(parsed.pattern, "Demo.lean:20-10");
+    let error = parse_source_regex_query(directory.path(), directory.path(), None, "Demo.lean:20-10 /foo/").err().unwrap();
+    assert!(error.to_string().contains("invalid discovery request"));
+}

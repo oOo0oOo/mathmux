@@ -200,7 +200,7 @@ impl IssueStore {
     pub fn create(&self, cwd: &Path, summary: &str, related_ref: Option<&str>) -> Result<String> {
         let summary = summary.trim();
         ensure!(!summary.is_empty(), "issue summary is empty");
-        ensure!(summary.len() <= 500, "issue summary is too long");
+        ensure!(summary.len() <= 500, "issue summary is too long: maximum 500 bytes, received {}; shorten the summary and attach evidence with --ref", summary.len());
         let context = capture_context(cwd, related_ref)?;
         let signature = hash_bytes(summary.to_ascii_lowercase().as_bytes());
         let now = now_unix_ms();
@@ -1824,6 +1824,8 @@ mod tests {
     fn issues_deduplicate_while_open_and_close_with_a_disposition() {
         let directory = tempdir().unwrap();
         let store = IssueStore::new(directory.path().join("issues.db")).unwrap();
+        let error = store.create(directory.path(), &"λ".repeat(251), None).unwrap_err();
+        assert!(error.to_string().contains("maximum 500 bytes, received 502"));
         assert_eq!(
             store.create(directory.path(), "stale check", None).unwrap(),
             "i1"
