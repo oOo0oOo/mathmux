@@ -647,11 +647,15 @@ fn render_agents(output: &mut String, agents: &[AgentStatus], now: i64) -> std::
         .filter(|agent| agent.state == "active")
         .count();
     let idle = agents.iter().filter(|agent| agent.state == "idle").count();
+    let quiet = agents.iter().filter(|agent| agent.state == "quiet").count();
     write!(
         output,
-        "\nagents {} ({active} active, {idle} idle)",
+        "\nagents/workspaces {} ({active} active, {idle} idle, {quiet} quiet)",
         agents.len()
     )?;
+    if agents.iter().any(|agent| agent.workspace_fallback) {
+        output.push_str("\nwREF rows: registered workspaces, MathMux activity only; agent liveness unknown");
+    }
     for agent in agents {
         let label = if agent.workspace_fallback {
             agent.workspace_ref.as_str().to_owned()
@@ -664,7 +668,7 @@ fn render_agents(output: &mut String, agents: &[AgentStatus], now: i64) -> std::
             agent.workspace,
             agent.model,
             agent.state,
-            format_age(now.saturating_sub(agent.last_active))
+            if agent.last_active > 0 { format_age(now.saturating_sub(agent.last_active)) } else { "unknown".into() }
         )?;
         if agent.dirty > 0 {
             write!(output, " dirty:{}", agent.dirty)?;
@@ -727,10 +731,9 @@ fn workspace_agent_status(
     creation_times: &HashMap<String, i64>,
     now: i64,
 ) -> Option<AgentStatus> {
-    let last_active = activity.get(&workspace.reference).copied()? / 1000;
-    if last_active == 0 || now.saturating_sub(last_active) > ACTIVE_SECS {
-        return None;
-    }
+    // Registration persists until ws delete. Silence says nothing about
+    // whether an external agent is still working in this workspace.
+    let last_active = activity.get(&workspace.reference).copied().unwrap_or_default() / 1000;
     let started_at = creation_times
         .get(&workspace.reference)
         .copied()
@@ -754,7 +757,11 @@ fn workspace_agent_status(
             .model
             .clone()
             .unwrap_or_else(|| "workspace".into()),
-        state: "active".into(),
+        state: if last_active > 0 && now.saturating_sub(last_active) <= ACTIVE_SECS {
+            "active"
+        } else {
+            "quiet"
+        }.into(),
         started_at,
         last_active,
         dirty: paths.len(),
@@ -1484,7 +1491,20 @@ mod tests {
         assert_eq!(agent.workspace_ref, "w28");
         assert_eq!(agent.state, "active");
         assert_eq!(agent.started_at, 100);
-        assert!(workspace_agent_status(&workspace, &activity, &creation_times, 1_201).is_none());
+        let quiet = workspace_agent_status(&workspace, &activity, &creation_times, 1_201).unwrap();
+        assert_eq!(quiet.state, "quiet");
+        assert_eq!(quiet.last_active, 900);
+        let mut rendered = String::new();
+        render_agents(&mut rendered, &[quiet], 1_201).unwrap();
+        assert!(rendered.contains("1 quiet"));
+        assert!(rendered.contains("w28"));
+        assert!(rendered.contains("agent liveness unknown"));
+        let unknown = workspace_agent_status(&workspace, &HashMap::new(), &creation_times, 1_201).unwrap();
+        assert_eq!(unknown.state, "quiet");
+        assert_eq!(active_agent_interval(&unknown, 0, 1_201), 0.0);
+        rendered.clear();
+        render_agents(&mut rendered, &[unknown], 1_201).unwrap();
+        assert!(rendered.contains("last unknown"));
     }
 
     #[test]

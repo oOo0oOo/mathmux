@@ -90,3 +90,7 @@ operations on the request thread carry its parent attempt ID. Optional
 `MATHMUX_ACTOR_ID` and `MATHMUX_SESSION_ID` values provide attribution; response
 character counts measure rendered summary text, not model tokens. Older clients
 without attempt IDs retain legacy reference-based deduplication.
+
+Status keeps registered workspaces visible after their recent activity expires.
+Rows labeled `wREF` report MathMux activity (`active` or `quiet`), not external
+agent liveness. Workspaces leave this list when deleted with `ws delete`.
