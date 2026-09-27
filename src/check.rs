@@ -13,7 +13,7 @@ use fs2::FileExt;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use crate::artifact_cache::restore_available_olean;
+use crate::artifact_cache::{isolate_build_metadata, restore_available_olean};
 use crate::coordination::{lock_exclusive_until, lock_mutex_until, lock_shared_until, open_lock};
 use crate::git::{
     background_lake_command, dirty_lean_files, lake_command, merge_in_progress,
@@ -1649,6 +1649,9 @@ impl Checker {
         // current outputs from the warm validation tree, then fall back to
         // reusable trace/hash-matched cache outputs before Lake computes the
         // setup-file.
+        for dependency in dependencies {
+            isolate_build_metadata(&workspace.path, &project_module_name(&workspace.path, dependency))?;
+        }
         self.restore_warm_dependency_artifacts(workspace, dependencies)?;
         restore_available_dependency_oleans(&self.repo.cache_dir, &workspace.path, dependencies)?;
         let path = self.setup_path(workspace, target);
@@ -2202,11 +2205,8 @@ fn restore_available_dependency_artifacts_with_mode(
     if !project_configuration_matches(root, donor)? {
         return Ok(0);
     }
-    restore_if_missing_with_mode(
-        &donor.join(".lake/build/ir/AtiyahSinger.setup.json"),
-        &root.join(".lake/build/ir/AtiyahSinger.setup.json"),
-        hard_link,
-    )?;
+    // Module setup JSON is compiler scratch, rewritten by Lake immediately
+    // before compilation. Do not import large, donor-specific setup files.
     dependencies.iter().try_fold(0, |restored, dependency| {
         let source = root.join(dependency);
         let donor_source = donor.join(dependency);
@@ -2217,9 +2217,6 @@ fn restore_available_dependency_artifacts_with_mode(
         let donor_artifact = artifact_path(donor, dependency);
         let ir_module = ir_module_path(root, dependency);
         let donor_ir_module = ir_module_path(donor, dependency);
-        let setup = setup_ir_path(root, dependency);
-        let donor_setup = setup_ir_path(donor, dependency);
-        restore_if_missing_with_mode(&donor_setup, &setup, hard_link)?;
         for extension in ["c", "c.hash", "ir", "ir.hash"] {
             restore_if_missing_with_mode(
                 &donor_ir_module.with_extension(extension),
@@ -2251,10 +2248,6 @@ fn project_configuration_matches(root: &Path, donor: &Path) -> Result<bool> {
     Ok(true)
 }
 
-fn setup_ir_path(root: &Path, source: &Path) -> PathBuf {
-    ir_module_path(root, source).with_extension("setup.json")
-}
-
 fn ir_module_path(root: &Path, source: &Path) -> PathBuf {
     root.join(".lake/build/ir")
         .join(project_module_name(root, source).replace('.', "/"))
@@ -2268,7 +2261,9 @@ fn restore_if_missing_with_mode(donor: &Path, target: &Path, hard_link: bool) ->
         return Ok(false);
     };
     fs::create_dir_all(parent)?;
-    if hard_link {
+    // Setup JSON and hash sidecars are mutable, unlike cached output content.
+    let mutable = donor.extension().is_some_and(|ext| matches!(ext.to_str(), Some("json" | "hash" | "trace")));
+    if hard_link && !mutable {
         if let Err(error) = fs::hard_link(donor, target) {
             fs::copy(donor, target).with_context(|| {
                 format!("cannot restore warm generated file after hard-link failed: {error}")
@@ -2304,7 +2299,7 @@ fn restore_artifact_bundle_with_mode(
         let donor_path = donor.with_extension(extension);
         let artifact_path = artifact.with_extension(extension);
         if !artifact_path.exists() && donor_path.is_file() {
-            if hard_link {
+            if hard_link && !matches!(extension, "trace" | "olean.hash") {
                 if let Err(error) = fs::hard_link(&donor_path, &artifact_path) {
                     fs::copy(&donor_path, &artifact_path).with_context(|| {
                         format!(
@@ -3865,18 +3860,20 @@ mod tests {
             .unwrap(),
             "warm trace"
         );
-        assert_eq!(
-            fs::read_to_string(
-                workspace.join(".lake/build/ir/AtiyahSinger/Dependency.setup.json")
-            )
-            .unwrap(),
-            "warm setup"
-        );
+        assert!(!workspace.join(".lake/build/ir/AtiyahSinger/Dependency.setup.json").exists());
         assert_eq!(
             fs::read_to_string(workspace.join(".lake/build/ir/AtiyahSinger/Dependency.c"))
                 .unwrap(),
             "warm c"
         );
+        // Lake rewrites traces and setup files in place after the donor lock is
+        // released. A warm restore must not share their mutable inodes.
+        fs::write(donor_artifact.with_extension("trace"), "new donor trace").unwrap();
+        fs::write(&donor_setup, "new donor setup").unwrap();
+        assert_eq!(fs::read_to_string(workspace.join(".lake/build/lib/lean/AtiyahSinger/Dependency.trace")).unwrap(), "warm trace");
+        assert!(!workspace.join(".lake/build/ir/AtiyahSinger/Dependency.setup.json").exists());
+        fs::write(workspace.join(".lake/build/lib/lean/AtiyahSinger/Dependency.trace"), "new receiver trace").unwrap();
+        assert_eq!(fs::read_to_string(donor_artifact.with_extension("trace")).unwrap(), "new donor trace");
     }
 
     #[test]
@@ -3920,13 +3917,7 @@ mod tests {
             .unwrap(),
             "copied dependency"
         );
-        assert_eq!(
-            fs::read_to_string(
-                workspace.join(".lake/build/ir/AtiyahSinger/Dependency.setup.json")
-            )
-            .unwrap(),
-            "copied setup"
-        );
+        assert!(!workspace.join(".lake/build/ir/AtiyahSinger/Dependency.setup.json").exists());
     }
 
     #[test]

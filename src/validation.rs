@@ -6,7 +6,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::artifact_cache::{restore_available_olean, restore_olean};
+use crate::artifact_cache::{isolate_build_metadata, restore_available_olean, restore_olean};
 use crate::check::{Checker, parse_imports, project_module_name};
 use crate::coordination::{lock_exclusive, open_lock};
 use crate::git::{background_lake_command, lake_command, project_lean_files};
@@ -244,6 +244,9 @@ fn validate(repo: &Repo, state: &State, submission: &Submission) -> Result<Valid
     state.update_validation_progress(&submission.reference, "preparing validation worktree")?;
     let root = prepare_worktree(repo, &submission.main_commit)?;
     let (roots, project_modules) = deliverable_modules(&root);
+    for module in &project_modules {
+        isolate_build_metadata(&root, module)?;
+    }
     invalidate_newer_project_artifacts(&root)?;
     // A timed-out build may leave cached outputs and their Lake traces behind
     // while removing the corresponding worktree artifacts. Restore those

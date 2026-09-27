@@ -1,5 +1,7 @@
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, ensure};
 
@@ -79,4 +81,91 @@ fn project_olean_hash(artifact: &Path) -> Result<String> {
     fs::read_to_string(artifact.with_extension("olean.hash"))
         .map(|hash| hash.trim().to_owned())
         .context("artifact has neither a cached olean output nor an olean hash")
+}
+
+/// Lake rewrites these metadata files in place. Break legacy donor hard links
+/// before a new build, preserving mtime so isolation itself does not invalidate caches.
+pub(crate) fn isolate_build_metadata(root: &Path, module: &str) -> Result<()> {
+    let relative = module.replace('.', "/");
+    for (directory, extensions) in [
+        (
+            ".lake/build/lib/lean",
+            &["trace", "olean.hash", "ilean.hash"][..],
+        ),
+        (".lake/build/ir", &["setup.json", "c.hash", "ir.hash"][..]),
+    ] {
+        let base = root.join(directory).join(&relative);
+        for extension in extensions {
+            isolate_metadata_file(&base.with_extension(extension))?;
+        }
+    }
+    Ok(())
+}
+
+fn isolate_metadata_file(path: &Path) -> Result<()> {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if !metadata.is_file() || metadata.nlink() <= 1 {
+        return Ok(());
+    }
+    // Lake writes module setup scratch before every compiler invocation. Drop
+    // only this workspace's shared link instead of copying gigabytes of JSON.
+    if path.to_string_lossy().ends_with(".setup.json") {
+        fs::remove_file(path)?;
+        return Ok(());
+    }
+    static NEXT_COPY: AtomicU64 = AtomicU64::new(0);
+    let temporary = path.with_extension(format!(
+        "mathmux-copy-{}-{}",
+        std::process::id(),
+        NEXT_COPY.fetch_add(1, Ordering::Relaxed)
+    ));
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)?;
+    let result = (|| -> Result<()> {
+        fs::copy(path, &temporary)?;
+        file.set_times(fs::FileTimes::new().set_modified(metadata.modified()?))?;
+        fs::rename(&temporary, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result.with_context(|| format!("cannot isolate mutable build metadata {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_metadata_links_are_detached_without_changing_mtime() {
+        let directory = tempfile::tempdir().unwrap();
+        let donor = directory.path().join("donor.trace");
+        let target = directory.path().join(".lake/build/lib/lean/Demo.trace");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&donor, "original provenance").unwrap();
+        fs::hard_link(&donor, &target).unwrap();
+        let original_time = fs::metadata(&target).unwrap().modified().unwrap();
+        isolate_build_metadata(directory.path(), "Demo").unwrap();
+        assert_eq!(
+            fs::metadata(&target).unwrap().modified().unwrap(),
+            original_time
+        );
+        assert_eq!(fs::metadata(&target).unwrap().nlink(), 1);
+        fs::write(&donor, "different build").unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "original provenance");
+        isolate_build_metadata(directory.path(), "Demo").unwrap();
+        let setup = directory.path().join(".lake/build/ir/Demo.setup.json");
+        fs::create_dir_all(setup.parent().unwrap()).unwrap();
+        fs::hard_link(&donor, &setup).unwrap();
+        isolate_build_metadata(directory.path(), "Demo").unwrap();
+        assert!(!setup.exists());
+        assert_eq!(fs::read_to_string(&donor).unwrap(), "different build");
+    }
 }
