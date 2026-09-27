@@ -367,6 +367,14 @@ fn append_complete_range_hint(output: &mut String, run: &SearchRun) {
 }
 
 fn append_single_result_hint(output: &mut String, run: &SearchRun, proof_body_requested: bool) {
+    if run.hits.first().is_some_and(|hit| hit.kind == "source-range")
+        && run.note.as_deref().is_some_and(|note| note.contains("lines omitted"))
+    {
+        output.push_str(&format!(
+            "\nlarger range (up to {SOURCE_RANGE_ALL_LIMIT} lines): mathmux search {} --all",
+            shell_argument(&run.query)
+        ));
+    }
     if proof_body_requested
         || run.hits.len() != 1
         || run

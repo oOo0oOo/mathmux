@@ -996,7 +996,7 @@ impl Searcher {
                         "bare A.*B query interpreted as a project-wide source regex; write /REGEX/ or PATH /REGEX/ to control scope".to_owned(),
                     );
                 }
-                if result.hits.is_empty() && !recovery.is_empty() {
+                if inferred_regex && result.hits.is_empty() && !recovery.is_empty() {
                     let recovery_query = recovery.join(" ");
                     let recovered = self.planned_text_search(
                         workspace,
@@ -2929,13 +2929,28 @@ impl Searcher {
             .filter(|row| !matches!(row.kind.as_str(), "file" | "imports"))
             .filter(|row| declaration_kind.is_none_or(|kind| row.kind.eq_ignore_ascii_case(kind)))
             .collect::<Vec<_>>();
+        // Refresh can be deferred while another workspace holds the index writer.
+        // Recover from current source before declaring a miss or suggesting an
+        // allegedly unmerged sibling that is already present after sync.
+        let fallback = if rows.is_empty() {
+            fallback_source_candidates(&workspace.path, name, &meaningful_query_tokens(name))?
+                .into_iter()
+                .filter(|candidate| exact_declaration_name_matches(&candidate.hit.name, name))
+                .filter(|candidate| !matches!(candidate.hit.kind.as_str(), "file" | "imports"))
+                .filter(|candidate| declaration_kind.is_none_or(|kind| candidate.hit.kind.eq_ignore_ascii_case(kind)))
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
         let ambiguous = rows
             .iter()
             .map(|row| canonical_declaration_name(&row.name).to_ascii_lowercase())
+            .chain(fallback.iter().map(|candidate| canonical_declaration_name(&candidate.hit.name).to_ascii_lowercase()))
             .collect::<HashSet<_>>()
             .len()
             > 1;
         let mut ranked = ranked_exact_candidates(rows, name, workspace);
+        ranked.extend(fallback);
         if !plan.refinement_tokens.is_empty() {
             // Expanded retrieval tokens must not stand in for the requested
             // condition (for example Continuous versus ContinuousOn).

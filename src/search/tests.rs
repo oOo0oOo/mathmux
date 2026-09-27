@@ -2979,6 +2979,7 @@ fn source_query_regressions() {
         "+{} lines omitted; next: mathmux search Long.lean:49-250",
         250 - SOURCE_RANGE_LIMIT,
     )));
+    assert!(long_summary.contains("mathmux search Long.lean:1-250 --all"));
     assert!(long_summary.ends_with("ref: q-range"));
     let long_range =
         parse_source_occurrence_query(directory.path(), directory.path(), None, "Long.lean:1-250")
@@ -3447,6 +3448,17 @@ fn exact_misses_overlay_active_sibling_declarations_as_unmerged() {
     assert!(!file_note.contains("unmerged sibling declarations"));
     assert!(file_note.contains("local source module found: OnlyFile.lean"));
     assert!(file_note.contains("mathmux search OnlyFile.lean outline"));
+    // A sibling index can be ahead of the current workspace index after sync.
+    // The source already exists locally, so exact lookup must recover it.
+    fs::write(current.path.join("Linear.lean"),
+        "namespace ContinuousLinearMap\ntheorem prodMap_apply : True := trivial\nend ContinuousLinearMap\n").unwrap();
+    let recovered = searcher.resolve_exact(&current, &scopes, None, false,
+        &exact_plan("ContinuousLinearMap.prodMap_apply", false).unwrap(), None)
+        .unwrap().result.expect("recover current source despite stale local index");
+    assert!(recovered.ok);
+    assert_eq!(recovered.hits[0].name.trim_start_matches("_root_."), "ContinuousLinearMap.prodMap_apply");
+    assert!(!recovered.hits[0].kind.starts_with("unmerged:"));
+
 }
 
 #[test]
@@ -5798,6 +5810,11 @@ fn declaration_addressed_reads_return_the_exact_span() {
     assert!(result.contains("rfl"), "{result}");
     assert!(result.contains("complete declaration"), "{result}");
     assert!(!result.contains("def last"), "{result}");
+
+    let scoped = searcher.search(&workspace, &root,
+        "AtiyahSinger/Demo.lean /never.*matches/", None, false).unwrap();
+    assert!(scoped.contains("no regex source matches"), "{scoped}");
+    assert!(!scoped.contains("indexed alternatives"), "{scoped}");
 
     let missing = searcher
         .search(
