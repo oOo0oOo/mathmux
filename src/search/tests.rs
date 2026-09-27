@@ -5935,3 +5935,25 @@ fn ranked_hits_state_their_missing_terms() {
     assert!(summary.contains("[missing: deriv]"), "{summary}");
     assert!(summary.contains("[missing: transition]"), "{summary}");
 }
+
+#[test]
+fn source_scan_accepts_timeout_signal_and_preserves_partial_coverage() {
+    use std::os::unix::process::ExitStatusExt;
+    let output = std::process::Command::new("timeout")
+        .args(["--signal=KILL", "0.05s", "sh", "-c", "printf 'Demo.lean:2\\n'; exec sleep 5"])
+        .output().unwrap();
+    assert_eq!(output.status.signal(), Some(9));
+    assert_eq!(source_scan_output(output).unwrap(), vec![(PathBuf::from("Demo.lean"), 2)]);
+}
+
+#[test]
+fn source_scan_failure_without_stderr_keeps_exit_status() {
+    use std::os::unix::process::ExitStatusExt;
+    for (raw, expected) in [(2 << 8, "exit status: 2"), (15, "signal: 15")] {
+        let error = source_scan_output(std::process::Output {
+            status: std::process::ExitStatus::from_raw(raw),
+            stdout: Vec::new(), stderr: Vec::new(),
+        }).unwrap_err().to_string();
+        assert!(error.contains(expected), "{error}");
+    }
+}

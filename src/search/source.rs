@@ -1678,9 +1678,21 @@ pub(super) fn source_scan_path_counts(
         command.arg(packages);
     }
     let output = command.stdin(Stdio::null()).output()?;
-    if !output.status.success() && !matches!(output.status.code(), Some(1 | 124 | 137)) {
+    source_scan_output(output)
+}
+
+pub(super) fn source_scan_output(output: std::process::Output) -> Result<Vec<(PathBuf, usize)>> {
+    use std::os::unix::process::ExitStatusExt;
+    // GNU timeout --signal=KILL can kill its own process group. Rust then
+    // observes SIGKILL, whereas a shell reports 137. Both are the same bounded
+    // scan outcome; retain any complete coverage records emitted before it.
+    if !output.status.success()
+        && !matches!(output.status.code(), Some(1 | 124 | 137))
+        && output.status.signal() != Some(9)
+    {
         bail!(
-            "local source coverage scan failed: {}",
+            "local source coverage scan failed ({}): {}",
+            output.status,
             clean_line(&String::from_utf8_lossy(&output.stderr))
         );
     }
