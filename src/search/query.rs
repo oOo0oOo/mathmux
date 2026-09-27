@@ -1608,6 +1608,26 @@ pub(super) fn hit_name_matches(name: &str, token: &str) -> bool {
         return true;
     }
     let leaf = token.rsplit('.').next().unwrap_or(token);
+    let name_parts = identifier_query_parts(name);
+    // H0 denotes order zero here only for a Sobolev API, not any theorem with
+    // `zero` in its name (for example a homology calculation).
+    if matches!(ascii_numeric_spelling(leaf).to_lowercase().as_str(), "h0")
+        && name_parts.iter().any(|part| part == "sobolev")
+        && name_parts.iter().any(|part| part == "zero")
+    {
+        return true;
+    }
+    // The query tokens have already been lowercased. Match a compound token
+    // against consecutive camelCase parts, without treating it as an exact name.
+    let compound_query = leaf.replace('_', "");
+    for start in 0..name_parts.len() {
+        let mut compound = String::new();
+        for part in &name_parts[start..] {
+            compound.push_str(part);
+            if compound.eq_ignore_ascii_case(&compound_query) { return true; }
+            if compound.len() >= compound_query.len() { break; }
+        }
+    }
     name.split(['.', '_']).any(|segment| {
         words_match(segment, leaf)
             || identifier_query_parts(segment)

@@ -5957,3 +5957,53 @@ fn source_scan_failure_without_stderr_keeps_exit_status() {
         assert!(error.contains(expected), "{error}");
     }
 }
+
+#[test]
+fn discovery_retrieves_camel_case_norm_bound_amid_generic_norm_hits() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("root");
+    let state_dir = directory.path().join("state");
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(&state_dir).unwrap();
+    let repo = Repo {
+        root: root.clone(), common_git_dir: directory.path().join("git"),
+        state_dir: state_dir.clone(), socket_path: state_dir.join("daemon.sock"),
+        db_path: state_dir.join("state.sqlite3"), search_db_path: state_dir.join("search.sqlite3"),
+        log_path: state_dir.join("daemon.log"), cache_dir: state_dir.join("cache"),
+        integration_lock: state_dir.join("integration.lock"),
+        validation_lock: state_dir.join("validation.lock"), startup_lock: state_dir.join("startup.lock"),
+    };
+    let state = State::new(repo.db_path.clone()).unwrap();
+    let checker = Arc::new(Checker::new(repo.clone(), state.clone(), None).unwrap());
+    let searcher = Searcher::new(repo.clone(), state, checker, None).unwrap();
+    let workspace = Workspace { reference: "w1".into(), name: "demo".into(), path: root,
+        branch: "demo".into(), model: None };
+    let connection = Connection::open(repo.search_db_path).unwrap();
+    let expected = "AtiyahSinger.euclideanSobolevZeroSpatialMultiplier_norm_le_Continuation119";
+    for index in 0..1600 {
+        connection.execute("INSERT INTO search_fts(owner,origin,file,module,line,name,kind,signature,docs,body)
+            VALUES ('workspace:w1','Demo.lean','Demo.lean','Demo',1,?1,'theorem','norm ≤ norm','spatial multiplier H0 norm sup bound SobolevZeroSpatialMultiplier','norm_le norm_le norm_le')",
+            [format!("Demo.norm_le_{index}")]).unwrap();
+    }
+    connection.execute("INSERT INTO search_fts(owner,origin,file,module,line,name,kind,signature,docs,body)
+        VALUES ('workspace:w1','Target.lean','Target.lean','Target',13,?1,'theorem',
+        '(g : E → ℂ) : ‖euclideanSobolevZeroSpatialMultiplier g‖ ≤ C',
+        'The norm bound uses the coefficient supremum alone, with no derivative loss.','')", [expected]).unwrap();
+    connection.execute("INSERT INTO search_origins SELECT rowid,owner,origin FROM search_fts", []).unwrap();
+    let scopes = HashSet::from(["workspace:w1".into()]);
+    for query in ["SobolevZeroSpatialMultiplier norm_le", "spatial multiplier H0 norm sup bound"] {
+        let result = searcher.execute_text_search(&workspace, query, TextSearchPlan::Discovery,
+            TextSearchContext { scopes: &scopes, base_warming: false, import_target: None, show_all: false }).unwrap();
+        assert_eq!(result.hits.first().map(|hit| hit.name.as_str()), Some(expected), "{query}");
+    }
+}
+
+#[test]
+fn compound_name_coverage_and_h0_alias_remain_scoped() {
+    let name = "AtiyahSinger.euclideanSobolevZeroSpatialMultiplier_norm_le_Continuation119";
+    assert!(hit_name_matches(name, "sobolevzerospatialmultiplier"));
+    assert!(hit_name_matches(name, "h0"));
+    assert!(hit_name_matches(name, "h₀"));
+    assert!(!hit_name_matches("Demo.homologyZero_norm_le", "h0"));
+    assert!(hit_name_matches(name, "norm_le"));
+}

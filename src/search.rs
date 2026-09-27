@@ -690,6 +690,29 @@ fn name_contains_candidates(connection: &Connection, tokens: &[String]) -> Resul
         .map_err(Into::into)
 }
 
+// FTS indexes a camelCase identifier as one word. A busy generic token such as
+// `norm` can therefore crowd out a project declaration matching every interior
+// concept. Read only active project rows via the owner index, and require at
+// least two distinct name terms so this remains a bounded supplementary search.
+fn project_concept_name_candidates(connection: &Connection, tokens: &[String]) -> Result<Vec<IndexedRow>> {
+    let mut terms = tokens.iter().filter(|term| term.chars().count() >= 4
+        && term.chars().all(char::is_alphanumeric)).cloned().collect::<Vec<_>>();
+    terms.sort();
+    terms.dedup();
+    terms.truncate(8);
+    if terms.len() < 2 { return Ok(Vec::new()); }
+    let coverage = (1..=terms.len()).map(|index| format!("(instr(lower(name), ?{index}) > 0)"))
+        .collect::<Vec<_>>().join(" + ");
+    let sql = indexed_rows_sql(&format!(
+        "WHERE rowid IN (SELECT rowid FROM search_origins
+            WHERE owner IN (SELECT owner FROM active_search_scopes WHERE owner LIKE 'workspace:%'))
+         AND kind NOT IN ('file', 'imports') AND ({coverage}) >= 2
+         ORDER BY ({coverage}) DESC, length(name), name LIMIT {}",
+        SEARCH_TUNING.retrieval.name_contains_rows));
+    connection.prepare(&sql)?.query_map(params_from_iter(&terms), indexed_row_from_row)?
+        .collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
 fn allow_name_contains_fallback(query: &str) -> bool {
     symbolic_source_term(query).is_none()
 }
@@ -3522,6 +3545,9 @@ impl Searcher {
             rows.extend(name_contains_candidates(&connection, &contains_tokens)?);
         }
         if !name_query && !include_all_signatures {
+            if allow_name_contains_fallback(query) {
+                rows.extend(project_concept_name_candidates(&connection, tokens)?);
+            }
             rows.extend(module_context_candidates(
                 &connection,
                 query,
