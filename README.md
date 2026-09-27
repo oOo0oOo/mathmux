@@ -59,6 +59,13 @@ check streams elapsed time and the latest Lake task every ten seconds;
 `mathmux show cREF` also retains its current phase. Unchanged direct imports
 can still require a rebuild when sync changes a transitive dependency.
 
+A focused source check elaborates in a reusable Lean worker; it does not emit
+that source's `.olean` artifact. A subsequent importing guard may therefore
+compile the source during dependency preparation, even immediately after a
+passing source check. Setup manifests are also specific to each target file.
+Lake's `Replayed` jobs reuse cached outputs and diagnostics; they are not fresh
+compilations. The transitive dependency count is not a count of rebuilt modules.
+
 The imported-constant audit supersedes older audit results. The daemon queues
 the latest previously passed revision for fresh validation when necessary;
 historical results are marked obsolete until covered by a current audit.
