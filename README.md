@@ -45,7 +45,9 @@ the database; `mathmux status` shows repository state.
 To resume a timed-out validation of the latest submission, use
 `mathmux dev revalidate sREF`, then `mathmux status`. Completed build artifacts
 are reused, and the full build and transitive axiom audit run again. Superseded
-submissions cannot be retried. Cold dependency preparation has a separate cancellable fifteen-minute budget;
+submissions cannot be retried.
+
+Cold dependency preparation has a separate cancellable fifteen-minute budget;
 target Lean elaboration remains limited to five minutes, and short probes retain
 their existing total deadlines. A dependency-preparation timeout can likewise be
 resumed by repeating the same `mathmux check` command.
@@ -53,3 +55,9 @@ resumed by repeating the same `mathmux check` command.
 The imported-constant audit supersedes older audit results. The daemon queues
 the latest previously passed revision for fresh validation when necessary;
 historical results are marked obsolete until covered by a current audit.
+
+New checks retain Lean informational messages, including `#print axioms`, in
+`mathmux show cREF --all`. Cached checks carry forward retained messages; output
+discarded by older versions cannot be recovered from their saved references.
+For type mismatches, `mathmux probe cREF types` and `evidence` include saved
+`pp.all` detail with explicit universe and instance arguments.
