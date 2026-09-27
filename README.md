@@ -107,3 +107,7 @@ Development builds print a retained telemetry `eREF` for failed daemon responses
 including probe infrastructure failures. Attach it with
 `mathmux issue report SUMMARY --ref eREF`; an infrastructure timeout does not
 produce a Lean result or a certificate.
+
+During dependency preparation, status separates the latest Lake output from
+active Lean source files observed under that setup process. This bounded Linux
+process snapshot is best effort; unavailable activity is labeled explicitly.

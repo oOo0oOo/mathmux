@@ -129,11 +129,22 @@ impl LakeProgress {
 }
 
 pub(crate) fn run_command_with_observer(
-    mut command: Command,
+    command: Command,
     timeout: Duration,
     phase: &'static str,
     cancelled: impl Fn() -> bool,
     mut progress: impl FnMut(&[u8], &[u8]),
+) -> Result<Output> {
+    run_command_with_process_observer(command, timeout, phase, cancelled,
+        |_, stdout, stderr| progress(stdout, stderr))
+}
+
+pub(crate) fn run_command_with_process_observer(
+    mut command: Command,
+    timeout: Duration,
+    phase: &'static str,
+    cancelled: impl Fn() -> bool,
+    mut progress: impl FnMut(u32, &[u8], &[u8]),
 ) -> Result<Output> {
     command
         .stdin(Stdio::null())
@@ -204,7 +215,7 @@ pub(crate) fn run_command_with_observer(
             }
         }
         if Instant::now() >= next_progress || (status.is_some() && stdout_done && stderr_done) {
-            progress(&stdout_bytes, &stderr_bytes);
+            progress(child.id(), &stdout_bytes, &stderr_bytes);
             next_progress = Instant::now() + Duration::from_secs(1);
         }
         if status.is_some() && stdout_done && stderr_done {
@@ -234,6 +245,39 @@ pub(crate) fn run_command_with_observer(
         stdout: stdout_bytes,
         stderr: stderr_bytes,
     })
+}
+
+/// Best-effort, bounded Linux process-tree snapshot. Never infer active work
+/// from a completed Lake log line, and never inspect unrelated process trees.
+pub(crate) fn active_lean_files(root: u32) -> Vec<String> {
+    let mut pending = vec![root];
+    let mut seen = std::collections::BTreeSet::new();
+    let mut files = std::collections::BTreeSet::new();
+    while let Some(pid) = pending.pop() {
+        if seen.len() >= 256 { break; }
+        if !seen.insert(pid) { continue; }
+        if let Ok(command) = fs::read(format!("/proc/{pid}/cmdline")) {
+            if let Some(file) = lean_file_argument(&command) { files.insert(file); }
+        }
+        // Children can belong to any Lake task thread, not only its main thread.
+        if let Ok(tasks) = fs::read_dir(format!("/proc/{pid}/task")) {
+            for task in tasks.take(256).flatten() {
+                if let Ok(children) = fs::read_to_string(task.path().join("children")) {
+                    pending.extend(children.split_whitespace().filter_map(|id| id.parse::<u32>().ok()).take(256));
+                }
+            }
+        }
+    }
+    files.into_iter().collect()
+}
+
+fn lean_file_argument(command: &[u8]) -> Option<String> {
+    let mut args = command.split(|byte| *byte == 0);
+    let executable = std::str::from_utf8(args.next()?).ok()?;
+    if Path::new(executable).file_name()? != "lean" { return None; }
+    args.filter_map(|arg| std::str::from_utf8(arg).ok())
+        .find(|arg| arg.ends_with(".lean"))
+        .map(|arg| truncate_line(arg, 240))
 }
 
 fn set_nonblocking(file: &impl AsRawFd) -> std::io::Result<()> {
@@ -494,6 +538,25 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn active_lean_argument_rejects_other_programs() {
+        assert_eq!(lean_file_argument(b"/opt/bin/lean\0-R\0.\0Some/Dependency.lean\0"), Some("Some/Dependency.lean".into()));
+        assert_eq!(lean_file_argument(b"lake\0setup-file\0Target.lean\0"), None);
+        assert_eq!(lean_file_argument(b"lean\0--version\0"), None);
+    }
+
+    #[test]
+    fn process_observer_finds_only_its_live_lean_descendants() {
+        let mut command = Command::new("bash");
+        command.args(["-c", "bash -c \"exec -a lean python3 -c 'import time; time.sleep(1.3)' FixtureDependency.lean\" & wait"]);
+        let mut found = false;
+        let output = run_command_with_process_observer(command, Duration::from_secs(5), "fixture", || false,
+            |pid, _, _| { found |= active_lean_files(pid).iter().any(|file| file == "FixtureDependency.lean"); }).unwrap();
+        assert!(output.status.success());
+        assert!(found, "must see the running task even without Lake output");
+        assert!(active_lean_files(u32::MAX).is_empty());
+    }
 
     #[test]
     fn timed_command_does_not_wait_for_an_inherited_pipe_after_child_exit() {

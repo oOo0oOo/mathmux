@@ -1717,16 +1717,24 @@ impl Checker {
             "no saved setup"
         };
         report(&format!("preparing imports for {}: {} transitive project dependencies; refreshing Lake setup ({reason})", target.display(), dependencies.len()));
-        let output = run_command_with_observer(
+        let output = crate::util::run_command_with_process_observer(
             command,
             probe_phase_timeout(deadline, setup_timeout, "dependency setup")?,
             "dependency setup",
             || cancellation.is_some_and(|flag| flag.load(Ordering::SeqCst)),
-            |stdout, stderr| {
+            |pid, stdout, stderr| {
                 let detail = lake_progress.update(stdout, stderr)
                     .unwrap_or("Lake is preparing dependencies; waiting for task output");
                 if last_report.elapsed() >= Duration::from_secs(10) {
-                    report(&format!("preparing imports for {} ({}s): {detail}", target.display(), started.elapsed().as_secs()));
+                    let files = crate::util::active_lean_files(pid);
+                    let active = if files.is_empty() {
+                        "active dependency unavailable (Lake has not reported it)".to_owned()
+                    } else {
+                        let names = files.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+                        let extra = if files.len() > 3 { format!(" (+{} more)", files.len() - 3) } else { String::new() };
+                        format!("active Lean: {names}{extra}")
+                    };
+                    report(&format!("preparing imports for {} ({}s): {active}; latest Lake output: {detail}", target.display(), started.elapsed().as_secs()));
                     last_report = Instant::now();
                 }
             },
