@@ -221,9 +221,7 @@ pub(super) fn render_search_run(run: &SearchRun, all: bool) -> String {
                     output.push_str("\n   source:");
                 }
                 let source_lines = match hit.kind.as_str() {
-                    _ if all && matches!(run.inference.as_str(), "probe" | "probe-source") => {
-                        usize::MAX
-                    }
+                    _ if all => usize::MAX,
                     "fields" | "outline" | "dossier" | "source-range" | "source-occurrences" => {
                         usize::MAX
                     }
@@ -232,7 +230,7 @@ pub(super) fn render_search_run(run: &SearchRun, all: bool) -> String {
                     _ => SOURCE_PREVIEW_LINES,
                 };
                 for line in source.trim().lines().take(source_lines) {
-                    let line = if all && run.inference == "probe-source" {
+                    let line = if all {
                         line.to_owned()
                     } else {
                         truncate_line(line, 240)

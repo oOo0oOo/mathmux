@@ -1599,7 +1599,7 @@ pub(super) fn source_location_result(
             .iter()
             .enumerate()
             .skip(span_start.saturating_sub(1) as usize)
-            .take((shown_end + 1 - span_start) as usize)
+            .take((span_end + 1 - span_start) as usize)
             .map(|(offset, line)| format!("{:>5}  {line}", offset + 1))
             .collect::<Vec<_>>()
             .join("\n");
@@ -1608,8 +1608,8 @@ pub(super) fn source_location_result(
             prepend_search_note(
                 &mut result_note,
                 format!(
-                    "declaration continues; next: {relative}:{}-{span_end}",
-                    shown_end + 1
+                    "declaration snapshot: lines {span_start}-{span_end}; preview shows {} lines",
+                    LOCATION_EXPANDED_LINES
                 ),
             );
         } else {

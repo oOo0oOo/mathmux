@@ -74,6 +74,7 @@ fn render_summary_inner(run: &SearchRun, include_hints: bool) -> String {
                                 | "location"
                                 | "location-expanded"
                                 | "outline"
+                                | "dossier"
                                 | "proof-outline"
                                 | "source-group"
                                 | "source-occurrences"
@@ -519,6 +520,7 @@ fn render_source(
             "contract" => 48,
             "imports" => 64,
             "outline" => OUTLINE_PREVIEW_LINES,
+            "dossier" => usize::MAX,
             "location" => LOCATION_PREVIEW_LINES,
             "location-expanded" => LOCATION_EXPANDED_LINES,
             "source-range" => SOURCE_RANGE_ALL_LIMIT,
@@ -565,6 +567,10 @@ fn render_source(
             "class" | "structure" => {
                 output.push_str(&format!("\n+{omitted} lines; search {} fields", hit.name))
             }
+            "location-expanded" => output.push_str(&format!(
+                "\n+{omitted} lines; full snapshot: mathmux show {} --all",
+                run.reference
+            )),
             "outline" => output.push_str(&format!(
                 "\n+{omitted} declarations; show {} --all",
                 run.reference

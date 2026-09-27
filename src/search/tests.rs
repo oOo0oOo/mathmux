@@ -1880,6 +1880,14 @@ fn source_outline_lists_declarations_without_structure_fields() {
     assert!(detail.contains("imports:\n  Demo"));
     assert!(detail.contains("Outline.lean:3 Demo.alpha : Nat"));
     assert!(detail.contains("next: mathmux probe Demo.alpha source"));
+    let summary = render_summary(&SearchRun {
+        reference: "q-dossier".into(), workspace_ref: "w1".into(),
+        query: "Outline.lean dossier".into(), inference: dossier.inference,
+        hits: dossier.hits, note: dossier.note, duration_ms: 0, created_at: 0,
+    });
+    assert!(summary.contains("declarations:"), "{summary}");
+    assert!(summary.contains("Demo.beta"), "{summary}");
+
     let imports = parse_source_occurrence_query(
         directory.path(),
         directory.path(),
@@ -5804,6 +5812,48 @@ fn declaration_addressed_reads_return_the_exact_span() {
         format!("{missing:#}").contains("no declaration named noSuchLemma"),
         "{missing:#}"
     );
+}
+
+#[test]
+fn declaration_addressed_snapshot_is_lossless_after_source_changes() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("Demo.lean");
+    let long_line = format!("  -- {}", "λ".repeat(300));
+    let body = format!("theorem longProof : True := by\n{long_line}\n{}  trivial\n", "  -- proof step\n".repeat(70));
+    fs::write(&path, format!("{body}def nextDeclaration := 0\n")).unwrap();
+    let workspace = Workspace {
+        reference: "w1".into(), name: "demo".into(),
+        path: directory.path().to_path_buf(), branch: "demo".into(), model: None,
+    };
+    let location = parse_source_location(directory.path(), directory.path(), None, "Demo.lean:longProof")
+        .unwrap().unwrap();
+    let result = source_location_result(&workspace, &location, &fs::read_to_string(&path).unwrap(), None, false);
+    let run = SearchRun {
+        reference: "q1".into(), workspace_ref: "w1".into(), query: "Demo.lean:longProof".into(),
+        inference: result.inference, hits: result.hits, note: result.note, duration_ms: 0, created_at: 0,
+    };
+    let state = State::new(directory.path().join("state.sqlite3")).unwrap();
+    state.add_workspace(&workspace).unwrap();
+    state.add_search(&run).unwrap();
+    let range = parse_source_occurrence_query(directory.path(), directory.path(), None, "Demo.lean:1-73")
+        .unwrap().unwrap();
+    let ranged = source_occurrence_result(&workspace, range, true).unwrap();
+    state.add_search(&SearchRun {
+        reference: "q2".into(), workspace_ref: "w1".into(), query: "Demo.lean:1-73".into(),
+        inference: ranged.inference, hits: ranged.hits, note: ranged.note, duration_ms: 0, created_at: 0,
+    }).unwrap();
+    fs::write(path, "def replacement := 0\n").unwrap();
+    let range_detail = state.show("q2", true).unwrap();
+    assert!(range_detail.contains(&long_line), "{range_detail}");
+    assert!(range_detail.contains("  trivial"));
+    let full = state.show("q1", true).unwrap();
+    assert!(full.contains("  trivial"), "{full}");
+    assert!(full.contains(&long_line), "{full}");
+    assert!(!full.contains("nextDeclaration"));
+    assert!(!full.contains("replacement"));
+    let preview = render_summary(&run);
+    assert!(!preview.contains("  trivial"));
+    assert!(preview.contains("show q1 --all"), "{preview}");
 }
 
 #[test]
