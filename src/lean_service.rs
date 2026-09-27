@@ -52,6 +52,19 @@ pub(crate) struct LeanServiceProcess {
 }
 
 impl LeanServiceProcess {
+    #[cfg(test)]
+    pub(crate) fn idle_test_process() -> Self {
+        let mut child = std::process::Command::new("sleep")
+            .arg("60").stdin(Stdio::piped()).stdout(Stdio::piped())
+            .process_group(0).spawn().unwrap();
+        Self {
+            stdin: child.stdin.take().unwrap(),
+            stdout: BufReader::new(child.stdout.take().unwrap()),
+            child,
+            stderr: Arc::new(Mutex::new(String::new())),
+        }
+    }
+
     pub(crate) fn start(repo: &Repo, workspace: &Path, arguments: &[String]) -> Result<Self> {
         let root = prepare(repo, workspace)?;
         let lean_path = lean_path(repo, workspace, &root)?;

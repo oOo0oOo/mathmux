@@ -1889,7 +1889,13 @@ impl Checker {
     }
 
     pub fn evict_idle_workers(&self, idle_for: std::time::Duration) -> bool {
-        let mut workers = self.runner.workers.lock().expect("worker map poisoned");
+        // Starting a worker can hold the map during service preparation. The
+        // daemon's maintenance pass must never stall acceptance of new clients.
+        let mut workers = match self.runner.workers.try_lock() {
+            Ok(workers) => workers,
+            Err(TryLockError::WouldBlock) => return true,
+            Err(TryLockError::Poisoned(_)) => panic!("worker map poisoned"),
+        };
         workers.retain(|_, worker| match worker.try_lock() {
             Ok(mut worker) => worker.last_used.elapsed() < idle_for && worker.alive(),
             Err(std::sync::TryLockError::WouldBlock) => true,
@@ -3145,6 +3151,37 @@ mod tests {
     fn test_repo(root: &Path) -> Repo {
         run_checked("git", ["init", "-b", "main"], root).unwrap();
         Repo::from_root(root).unwrap()
+    }
+
+    #[test]
+    fn idle_eviction_preserves_locked_and_borrowed_worker_processes() {
+        let directory = tempdir().unwrap();
+        let repo = test_repo(directory.path());
+        let state = State::new(&repo.db_path).unwrap();
+        let checker = Checker::new(repo, state, None).unwrap();
+        {
+            let _starting = checker.runner.workers.lock().unwrap();
+            assert!(checker.evict_idle_workers(Duration::ZERO));
+        }
+        let worker = Arc::new(Mutex::new(LeanWorker {
+            process: LeanServiceProcess::idle_test_process(),
+            environment: "test".into(), setup_path: PathBuf::new(), version: 0,
+            last_used: Instant::now() - Duration::from_secs(3600),
+            last_source: None, last_response: None, profile_baseline: HashMap::new(),
+        }));
+        let process_group = worker.lock().unwrap().process.process_group_id();
+        checker.runner.workers.lock().unwrap()
+            .insert(("w1".into(), PathBuf::from("Proof.lean"), false), worker.clone());
+        let busy = worker.lock().unwrap();
+        assert!(checker.evict_idle_workers(Duration::ZERO));
+        assert_eq!(unsafe { libc::kill(process_group as i32, 0) }, 0);
+        drop(busy);
+        assert!(!checker.evict_idle_workers(Duration::ZERO));
+        // A request that borrowed the Arc but has not acquired its lock yet
+        // still owns a live process after its cache entry is evicted.
+        assert_eq!(unsafe { libc::kill(process_group as i32, 0) }, 0);
+        drop(worker);
+        assert_eq!(unsafe { libc::kill(process_group as i32, 0) }, -1);
     }
 
     #[test]
