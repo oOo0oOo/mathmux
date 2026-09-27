@@ -977,7 +977,8 @@ impl Searcher {
         )?;
         if request.all && !search_all_allowed(&planned.plan) {
             return Err(anyhow::anyhow!(
-                "search --all is only for explicit FILE:START-END or FILE:tail reads; use compact discovery, then `mathmux show qREF --all`"
+                "search --all is only for explicit FILE:START-END or FILE:tail reads; retry `mathmux search {}` then use `mathmux show qREF --all` on its returned reference",
+                shell_argument(&requested_query)
             )
             .context(crate::protocol::DiscoveryFailure::InvalidRequest));
         }
@@ -1057,6 +1058,7 @@ impl Searcher {
             )?,
         };
         let mut result = result;
+        self.enrich_namespace_suggestion(workspace, &requested_query, &mut result)?;
         if !expanded.context.is_empty() && requested_query.split_whitespace().count() == 1 {
             suppress_inferred_missing_note(&mut result.note);
         }
@@ -2960,7 +2962,10 @@ impl Searcher {
                 .into_iter()
                 .filter(|candidate| exact_declaration_name_matches(&candidate.hit.name, name))
                 .filter(|candidate| !matches!(candidate.hit.kind.as_str(), "file" | "imports"))
-                .filter(|candidate| declaration_kind.is_none_or(|kind| candidate.hit.kind.eq_ignore_ascii_case(kind)))
+                .filter(|candidate| {
+                    declaration_kind
+                        .is_none_or(|kind| candidate.hit.kind.eq_ignore_ascii_case(kind))
+                })
                 .collect::<Vec<_>>()
         } else {
             Vec::new()
@@ -2968,7 +2973,9 @@ impl Searcher {
         let ambiguous = rows
             .iter()
             .map(|row| canonical_declaration_name(&row.name).to_ascii_lowercase())
-            .chain(fallback.iter().map(|candidate| canonical_declaration_name(&candidate.hit.name).to_ascii_lowercase()))
+            .chain(fallback.iter().map(|candidate| {
+                canonical_declaration_name(&candidate.hit.name).to_ascii_lowercase()
+            }))
             .collect::<HashSet<_>>()
             .len()
             > 1;
@@ -3242,6 +3249,75 @@ impl Searcher {
             })
             .take(3)
             .collect())
+    }
+
+    // An exact miss stays an exact miss. Only add a requested facet for a
+    // unique indexed name whose declaration still exists in current source.
+    fn enrich_namespace_suggestion(
+        &self,
+        workspace: &Workspace,
+        query: &str,
+        result: &mut SearchResult,
+    ) -> Result<()> {
+        if result.inference != "exact-miss"
+            || result.note.as_deref().is_some_and(|note| note.contains("index warming"))
+        {
+            return Ok(());
+        }
+        let terms = query.split_whitespace().collect::<Vec<_>>();
+        let (name, facet) = match terms.as_slice() {
+            [name] => (*name, "signature"),
+            [name, facet @ ("signature" | "source")] => (*name, *facet),
+            _ => return Ok(()),
+        };
+        let leaf = name.rsplit('.').next().unwrap_or(name);
+        if !name.contains('.') || leaf.chars().count() < 3 {
+            return Ok(());
+        }
+        let (scopes, _) = self.search_scopes(workspace)?;
+        let rows = self.exact_candidates(leaf, &scopes)?;
+        // The retrieval is bounded. A saturated set cannot establish uniqueness.
+        if rows.len() >= SEARCH_TUNING.retrieval.exact_rows {
+            return Ok(());
+        }
+        let names = rows
+            .iter()
+            .filter(|row| !matches!(row.kind.as_str(), "file" | "imports"))
+            .map(|row| row.name.trim_start_matches("_root_."))
+            .collect::<HashSet<_>>();
+        if names.len() != 1 {
+            return Ok(());
+        }
+        let canonical = *names.iter().next().unwrap();
+        if canonical == name || canonical.rsplit('.').next() != Some(leaf) {
+            return Ok(());
+        }
+        let Some(hit) = result.hits.iter_mut().find(|hit| {
+            !hit.kind.starts_with("unmerged:")
+                && hit.name.trim_start_matches("_root_.") == canonical
+        }) else {
+            return Ok(());
+        };
+        if !self.refresh_probe_source(workspace, hit).unwrap_or(false) {
+            return Ok(());
+        }
+        let detail = if facet == "source" {
+            hit.source.as_deref()
+        } else {
+            hit.signature.as_deref()
+        };
+        if let Some(detail) = detail {
+            let addition = format!(
+                "\nVerified source candidate (not the requested exact name): {}\nRequested {facet}:\n{}\nSource-level information; importing-file checks remain certification.",
+                hit.name,
+                truncate_middle(detail, 2400)
+            );
+            result
+                .note
+                .get_or_insert_with(String::new)
+                .push_str(&addition);
+        }
+        Ok(())
     }
 
     fn near_name_suggestions(

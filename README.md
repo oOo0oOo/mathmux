@@ -72,3 +72,21 @@ For type mismatches, `mathmux probe cREF types` and `evidence` include saved
 use `mathmux show sREF --wait --wait-timeout 3600` (seconds, up to 86400).
 A wait timeout ends only the watcher; the check or validation continues.
 Build progress retains the latest Lake task across linter messages.
+
+Type-mismatch check responses point directly to `mathmux probe cREF types`.
+That view highlights the first type difference, including retained expanded
+instance/universe detail when available. `mathmux show cREF --all` continues
+to expose the complete original diagnostics and informational messages.
+
+An exact-name miss may include the requested signature or source for a unique
+indexed namespace alternative, verified against its current source. It remains
+explicitly a suggestion, not an exact hit or a Lean certificate. Ambiguous,
+unmerged, stale, and still-indexing results are not automatically selected.
+
+Development telemetry assigns each CLI invocation an attempt ID, shared with
+the daemon and retained across transport retries. Distinct reads of the same
+reference (including compact and `--all`) are recorded separately. Internal
+operations on the request thread carry its parent attempt ID. Optional
+`MATHMUX_ACTOR_ID` and `MATHMUX_SESSION_ID` values provide attribution; response
+character counts measure rendered summary text, not model tokens. Older clients
+without attempt IDs retain legacy reference-based deduplication.

@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
     #[serde(default)]
+    pub attempt_id: Option<String>,
+    #[serde(default)]
     pub build: String,
     #[serde(default)]
     pub generation: u64,
@@ -263,6 +265,7 @@ mod tests {
         assert!(!formalization_yaml);
 
         let request = Request {
+            attempt_id: None,
             build: "test".into(),
             generation: 1,
             actor_id: Some("actor-125".into()),

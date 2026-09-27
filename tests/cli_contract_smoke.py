@@ -332,6 +332,19 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         db.close()
         assert (ws / 'Fixture.lean').read_text() == source
         print('CLI smoke passed: inherited fields, default constructor inspection, complete stored input lists, dependency Lean error attribution, complete source snapshots/continuations/freshness, assumptions, source evidence, Lean evidence, inspection, application, cached evidence/invalidation, authored examples/routes, structured empty telemetry/provenance, unchanged source.')
+        # Namespace repair remains an exact miss but includes the requested
+        # current-source facet. Ambiguous leaf names must not auto-select.
+        recovery = run([binary, 'probe', 'Wrong.identityValue signature'], ws, ok=False)
+        recovery_text = recovery.stdout + recovery.stderr
+        assert recovery.returncode != 0 and 'Verified source candidate' in recovery_text, recovery_text
+        assert 'Demo.identityValue' in recovery_text and 'Requested signature:' in recovery_text, recovery_text
+        source_recovery = run([binary, 'probe', 'Wrong.identityValue source'], ws, ok=False)
+        assert 'Requested source:' in source_recovery.stdout + source_recovery.stderr, source_recovery
+        ambiguous = run([binary, 'probe', 'Wrong.target signature'], ws, ok=False)
+        assert 'Verified source candidate' not in ambiguous.stdout + ambiguous.stderr, ambiguous
+        malformed = run([binary, 'search', 'Demo.identityValue', '--all'], ws, ok=False)
+        assert 'mathmux search Demo.identityValue' in malformed.stdout + malformed.stderr, malformed
+
         # Successful #print output must survive storage and a cached recheck.
         (ws / 'AuditMessages.lean').write_text('import Lean\ntheorem auditTruth : True := True.intro\n#print axioms auditTruth\n')
         for _ in range(2):
@@ -343,7 +356,19 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         mismatch = run([binary, 'check', 'AuditMismatch.lean'], ws, ok=False)
         mismatch_ref = (mismatch.stdout + mismatch.stderr).splitlines()[0].split()[1]
         expanded = probe(mismatch_ref + ' types')
-        assert 'Expanded type mismatch (pp.all)' in expanded and 'List.{0}' in expanded, expanded
+        assert 'first type difference' in expanded and 'raw expanded diagnostic:' in expanded, expanded
+        assert 'type detail: mathmux probe' in mismatch.stdout + mismatch.stderr, mismatch
+        raw = run([binary, 'show', mismatch_ref, '--all'], ws).stdout
+        assert 'Expanded type mismatch (pp.all)' in raw and 'List.{0}' in raw, raw
+        # Compact and full reads of one check are distinct invocations; each
+        # client/daemon exchange is deduplicated by its attempt ID.
+        run([binary, 'show', mismatch_ref], ws)
+        db = sqlite3.connect(env['MATHMUX_ISSUE_DB'])
+        reads = db.execute("select attempt_id, request_json, response_chars from telemetry_events where verb='show' and reference=?", (mismatch_ref,)).fetchall()
+        assert len(reads) == 2 and len({r[0] for r in reads}) == 2, reads
+        assert {json.loads(r[1])['command']['all'] for r in reads} == {True, False}, reads
+        assert all(r[2] > 0 for r in reads), reads
+        db.close()
         # Repeated failures should expose existing recovery evidence, not only a link.
         recovery = ws / 'RepeatConversion.lean'
         recovery.write_text(

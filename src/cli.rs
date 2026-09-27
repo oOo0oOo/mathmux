@@ -531,6 +531,7 @@ pub fn run() -> Result<u8> {
         TopCommand::Daemon { .. } => unreachable!(),
     };
     let request = Request {
+        attempt_id: Some(crate::util::new_attempt_id()),
         build: crate::util::build_id().to_owned(),
         generation: crate::util::build_generation(),
         actor_id: telemetry_identity("MATHMUX_ACTOR_ID"),
@@ -889,6 +890,7 @@ fn replace_daemon(repo: &Repo, request: &Request) -> Result<UnixStream> {
     lock_exclusive(&startup_lock)?;
     if let Ok(stream) = UnixStream::connect(&repo.socket_path) {
         let probe = Request {
+            attempt_id: None,
             build: request.build.clone(),
             generation: request.generation,
             actor_id: None,
@@ -1018,6 +1020,7 @@ mod tests {
         let response = exchange(
             client,
             &Request {
+                attempt_id: None,
                 build: String::new(),
                 generation: 0,
                 actor_id: None,

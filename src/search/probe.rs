@@ -66,7 +66,7 @@ impl ProbeRequest {
         let query = query.trim();
         ensure!(!query.is_empty(), "probe query is empty");
         if query == "mathmux probe" || query.starts_with("mathmux probe ") {
-            bail!("probe receives QUERY only; omit the leading `mathmux probe`")
+            bail!("probe receives QUERY only; retry `{}`", query)
         }
         let mut parts = query.split_whitespace();
         let first = parts.next().unwrap();
@@ -77,7 +77,9 @@ impl ProbeRequest {
         );
         if let Some((path, start)) = source_range_context(first) {
             bail!(
-                "source ranges are a search form, not a probe context; use `mathmux search {first}` for source or `mathmux probe {path}:{start} goal` for Lean context"
+                "source ranges are a search form, not a probe context; use `mathmux search {}` for source or `mathmux probe {} goal` for Lean context",
+                shell_argument(first),
+                shell_argument(&format!("{path}:{start}"))
             );
         }
         let remainder = if context.is_some() {
@@ -244,7 +246,9 @@ impl ProbeRequest {
             if terms.len() > 2 {
                 let name = terms[0];
                 bail!(
-                    "inspect one declaration per probe; try `probe {name} signature`, then probe the other names separately"
+                    "inspect one declaration per probe; for discovery use `mathmux search {}`; for this declaration use `mathmux probe {} signature`",
+                    shell_argument(remainder),
+                    shell_argument(name)
                 );
             }
             let requested = unquote(terms.last().copied().unwrap_or_default());
@@ -490,10 +494,8 @@ impl Searcher {
             (Some(ProbeContext::File(file)), None, Some("goal")) => {
                 bail!("goal requires an exact FILE:LINE context, not {file}")
             }
-            _ => {
-                Err(anyhow::anyhow!("probe form is incomplete")
-                    .context(crate::protocol::DiscoveryFailure::InvalidRequest))
-            }
+            _ => Err(anyhow::anyhow!("probe form is incomplete")
+                .context(crate::protocol::DiscoveryFailure::InvalidRequest)),
         }
     }
 
@@ -876,6 +878,12 @@ impl Searcher {
             .map(|diagnostic| diagnostic.text.as_str())
             .unwrap_or("check has no diagnostic");
         let (path, line) = diagnostic_position(text, run.failed.as_deref());
+        let expanded = if matches!(focus, Some("types" | "evidence")) {
+            self.state.check_information(reference)?.into_iter()
+                .filter(|diagnostic| diagnostic.kind == "mathmux.expandedTypeMismatch")
+                .map(|diagnostic| compact_expanded_type_detail(&diagnostic.text))
+                .collect::<Vec<_>>()
+        } else { Vec::new() };
         let mut detail = match focus {
             Some("context") => {
                 let mut detail =
@@ -892,6 +900,7 @@ impl Searcher {
                 detail
             }
             Some("types") => diagnostic_type_detail(text)
+                .or_else(|| expanded.first().cloned())
                 .with_context(|| format!("{reference} has no type or instance failure"))?,
             Some("goal") => {
                 let diagnostic = diagnostic
@@ -922,13 +931,12 @@ impl Searcher {
                 "focus `{other}` is not valid for a stored check; valid analyses: goal, types, context, evidence"
             ),
         };
-        if matches!(focus, Some("types" | "evidence")) {
-            for expanded in self.state.check_information(reference)?.into_iter()
-                .filter(|diagnostic| diagnostic.kind == "mathmux.expandedTypeMismatch")
-            {
+        for expanded_detail in expanded {
+            if !detail.contains(&expanded_detail) {
                 detail.push_str("\n\n");
-                detail.push_str(&expanded.text);
+                detail.push_str(&expanded_detail);
             }
+            detail.push_str(&format!("\nraw expanded diagnostic: mathmux show {reference} --all"));
         }
         self.store_probe_result(
             workspace,
@@ -1764,6 +1772,12 @@ fn instance_obligations(signature: &str) -> Vec<String> {
     obligations
 }
 
+// pp.all can distinguish types whose ordinary display is identical. Do not
+// reject that case before inspecting retained expansions, or dump the full type.
+fn compact_expanded_type_detail(text: &str) -> String {
+    diagnostic_type_detail(text).unwrap_or_else(|| truncate_middle(text, 1200))
+}
+
 fn render_static_probe_summary(run: &SearchRun, focus: &str) -> String {
     let mut run = run.clone();
     match focus {
@@ -2512,6 +2526,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn expanded_type_preview_preserves_hidden_instance_difference() {
+        let common = "Shared ".repeat(3000);
+        let text = format!("Expanded type mismatch (pp.all):\nType mismatch\n x\nhas type\n {common}instActual Tail\nbut is expected to have type\n {common}instExpected Tail");
+        let preview = compact_expanded_type_detail(&text);
+        assert!(preview.contains("actual: instActual"));
+        assert!(preview.contains("expected: instExpected"));
+        assert!(preview.len() < 200);
+    }
+
+    #[test]
     fn bodyless_multiline_headers_keep_parameters_and_parents() {
         let source = "class Parent (n : Nat) : Prop where\n  good : n = n\nclass Child\n  (n : Nat) : Prop\n  extends Parent n\nstructure Empty\n  (n : Nat)\n  deriving Inhabited\naxiom value\n  (n : Nat) :\n  n = n\ninductive Choice\n  (n : Nat)\n  | mk : Choice n\n";
         let entries = source::parse_source(source, "Fixture");
@@ -3021,7 +3045,7 @@ mod tests {
             ProbeRequest::parse("mathmux probe Demo.foo source")
                 .unwrap_err()
                 .to_string(),
-            "probe receives QUERY only; omit the leading `mathmux probe`"
+            "probe receives QUERY only; retry `mathmux probe Demo.foo source`"
         );
         assert_eq!(
             ProbeRequest::parse("q123 show --all")
@@ -3262,6 +3286,21 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert_eq!(error, running_check_probe_hint("c123"));
+        // Ordinary pretty-printing can hide the mismatch completely.
+        let mut completed = state.check_run("c123").unwrap().unwrap();
+        completed.status = crate::state::CheckStatus::Failed;
+        completed.diagnostics = vec![crate::state::Diagnostic {
+            kind: "error".into(), text: "Type mismatch\n x\nhas type\n T\nbut is expected to have type\n T".into(), context: None,
+        }];
+        state.add_check_run(&completed, &[]).unwrap();
+        state.append_check_information("c123", &[crate::state::Diagnostic {
+            kind: "mathmux.expandedTypeMismatch".into(),
+            text: "Expanded type mismatch (pp.all):\nType mismatch\n x\nhas type\n T instActual\nbut is expected to have type\n T instExpected".into(), context: None,
+        }]).unwrap();
+        let types = searcher.probe(&workspace, &root, "c123 types").unwrap();
+        assert!(types.contains("actual: instActual"), "{types}");
+        assert!(types.contains("expected: instExpected"), "{types}");
+        assert!(types.contains("mathmux show c123 --all"));
     }
 
     #[test]

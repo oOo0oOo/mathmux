@@ -202,6 +202,7 @@ fn serve_client(mut stream: UnixStream, service: &Service) -> Result<()> {
                     let _ = stream.flush();
                 };
                 server_request = service.telemetry.as_ref().map(|_| request.clone());
+                let _attempt = crate::issue::AttemptScope::enter(request.attempt_id.clone());
                 handled_response(service, request, &mut report)
             }
         }
@@ -781,10 +782,27 @@ fn check_summary(outcome: &CheckOutcome) -> String {
                 output.push('\n');
                 output.push_str(context);
             }
-            output.push_str(&format!(
+            if diagnostic
+                .text
+                .to_ascii_lowercase()
+                .contains("type mismatch")
+            {
+                if compact_type.is_none()
+                    && let Some(difference) =
+                        crate::search::diagnostic_type_detail(&diagnostic.text)
+                {
+                    output.push_str(&format!("\n{difference}"));
+                }
+                output.push_str(&format!(
+                    "\ntype detail: mathmux probe {} types; raw diagnostics: mathmux show {} --all",
+                    outcome.reference, outcome.reference
+                ));
+            } else {
+                output.push_str(&format!(
                 "\nproof dossier: mathmux probe {} evidence; it combines the stored goal, type/conversion analysis, import-aware candidates, and a verification command",
                 outcome.reference
             ));
+            }
             if compact_type.is_some() || detail.chars().count() > CHECK_PRIMARY_DIAGNOSTIC_CHARS {
                 output.push_str(&format!("\nfull diagnostic: show {}", outcome.reference));
             }

@@ -40,6 +40,23 @@ pub struct ContextEvent {
     pub response_bytes: u64,
 }
 
+// Request handlers are synchronous on their own thread. Keep nested operations
+// correlated without leaking identity across requests or introducing global races.
+thread_local! {
+    static ACTIVE_ATTEMPT: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+pub(crate) struct AttemptScope(Option<String>);
+impl AttemptScope {
+    pub(crate) fn enter(id: Option<String>) -> Self {
+        Self(ACTIVE_ATTEMPT.with(|active| active.replace(id)))
+    }
+}
+impl Drop for AttemptScope {
+    fn drop(&mut self) {
+        ACTIVE_ATTEMPT.with(|active| active.replace(self.0.take()));
+    }
+}
+
 pub struct TelemetryOperation<'a> {
     pub workspace: Option<&'a str>,
     pub verb: &'a str,
@@ -430,6 +447,10 @@ impl TelemetryStore {
             )?;
         }
         for column in [
+            "attempt_id",
+            "parent_attempt_id",
+            "actor_id",
+            "session_id",
             "query_class",
             "response_band",
             "follow_up",
@@ -450,6 +471,13 @@ impl TelemetryStore {
                 [],
             )?;
         }
+        if !table_has_column(&connection, "telemetry_events", "response_chars")? {
+            connection.execute(
+                "ALTER TABLE telemetry_events ADD COLUMN response_chars INTEGER",
+                [],
+            )?;
+        }
+        connection.execute("CREATE INDEX IF NOT EXISTS telemetry_attempt ON telemetry_events(project, attempt_id) WHERE attempt_id IS NOT NULL", [])?;
         Ok(())
     }
 
@@ -495,17 +523,19 @@ impl TelemetryStore {
         });
         let now = now_unix_ms();
         let mut connection = open_db(&self.path)?;
-        let transaction = connection.transaction()?;
-        if let Some(reference) = reference.as_deref()
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(identity) = request.attempt_id.as_deref().or(reference.as_deref())
             && let Some(id) = transaction
                 .query_row(
-                    "SELECT id FROM telemetry_events
-                     WHERE project = ?1 AND verb = ?2 AND reference = ?3
-                     LIMIT 1",
+                    if request.attempt_id.is_some() {
+                        "SELECT id FROM telemetry_events WHERE project = ?1 AND verb = ?2 AND attempt_id = ?3 LIMIT 1"
+                    } else {
+                        "SELECT id FROM telemetry_events WHERE project = ?1 AND verb = ?2 AND attempt_id IS NULL AND reference = ?3 LIMIT 1"
+                    },
                     params![
                         repo.root.to_string_lossy(),
                         request.command.verb(),
-                        reference
+                        identity
                     ],
                     |row| row.get::<_, i64>(0),
                 )
@@ -520,8 +550,8 @@ impl TelemetryStore {
                 query_class, search_form, probe_facet, candidate_count, concept_coverage,
                 response_band, follow_up, error_class,
                 client_ms, daemon_ms, rss_kib, request_bytes, response_bytes,
-                request_json, response_json
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+                request_json, response_json, attempt_id, actor_id, session_id, response_chars
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
             params![
                 now,
                 response.build,
@@ -546,6 +576,10 @@ impl TelemetryStore {
                 response_json.len() as u64,
                 request_json,
                 response_json,
+                request.attempt_id,
+                request.actor_id,
+                request.session_id,
+                response.summary.chars().count() as u64,
             ],
         )?;
         let id = transaction.last_insert_rowid();
@@ -612,8 +646,8 @@ impl TelemetryStore {
             "INSERT INTO telemetry_events(
                 created_at, build, project, workspace, verb, reference, ok, outcome_class, error_class,
                 client_ms, daemon_ms, rss_kib, request_bytes, response_bytes,
-                request_json, response_json
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?11, 2, ?12, '{}', ?13)",
+                request_json, response_json, parent_attempt_id
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?11, 2, ?12, '{}', ?13, ?14)",
             params![
                 now,
                 build_id(),
@@ -628,6 +662,7 @@ impl TelemetryStore {
                 operation.rss_kib.or_else(resident_memory_kib),
                 response_json.len() as u64,
                 response_json,
+                ACTIVE_ATTEMPT.with(|active| active.borrow().clone()),
             ],
         )?;
         let id = transaction.last_insert_rowid();
@@ -1725,6 +1760,7 @@ mod tests {
             ("File.lean:3 Demo evidence", "evidence"),
         ] {
             let request = Request {
+                attempt_id: None,
                 build: String::new(),
                 generation: 0,
                 actor_id: None,
@@ -2013,6 +2049,7 @@ mod tests {
             )
             .unwrap();
         let request = Request {
+            attempt_id: None,
             build: String::new(),
             generation: 0,
             actor_id: None,
@@ -2114,6 +2151,7 @@ mod tests {
             .unwrap();
         let store = TelemetryStore::new(directory.path().join("development.db")).unwrap();
         let search = Request {
+            attempt_id: None,
             build: "test".into(),
             generation: 1,
             actor_id: None,
@@ -2287,11 +2325,44 @@ mod tests {
                 .unwrap(),
             6
         );
+
+        // A transport duplicate is one event; a new view of the same result is
+        // another event, even when reference and verb are identical.
+        let mut read = Request {
+            attempt_id: Some("attempt-compact".into()),
+            command: Command::Show { reference: "c9".into(), all: false, wait: false, wait_timeout: None },
+            actor_id: Some("reviewer".into()), session_id: Some("session".into()),
+            ..search.clone()
+        };
+        let compact = Response::ok("c9 λ");
+        let first = store.record(&repo, &read, &compact, 3).unwrap();
+        assert_eq!(first, store.record(&repo, &read, &compact, 4).unwrap());
+        std::thread::scope(|scope| {
+            let readers = (0..4).map(|_| scope.spawn(|| store.record(&repo, &read, &compact, 4).unwrap())).collect::<Vec<_>>();
+            for reader in readers { assert_eq!(reader.join().unwrap(), first); }
+        });
+        read.attempt_id = Some("attempt-full".into());
+        if let Command::Show { all, .. } = &mut read.command { *all = true; }
+        assert_ne!(first, store.record(&repo, &read, &Response::ok("c9 full"), 5).unwrap());
+        let recorded: (i64, String, String) = connection.query_row(
+            "SELECT response_chars, actor_id, session_id FROM telemetry_events WHERE attempt_id='attempt-compact'", [],
+            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap();
+        assert_eq!(recorded, (4, "reviewer".into(), "session".into()));
+        let count: i64 = connection.query_row("SELECT COUNT(*) FROM telemetry_events WHERE verb='show' AND reference='c9'", [], |row| row.get(0)).unwrap();
+        assert_eq!(count, 2);
+        {
+            let _scope = AttemptScope::enter(read.attempt_id.clone());
+            store.record_operation(&repo, &TelemetryOperation { workspace: Some("w1"), verb: "search_profile", reference: None, ok: true, duration_ms: 2, detail: "rank=2ms", rss_kib: None }).unwrap();
+        }
+        assert!(ACTIVE_ATTEMPT.with(|active| active.borrow().is_none()));
+        let parent: String = connection.query_row("SELECT parent_attempt_id FROM telemetry_events WHERE verb='search_profile'", [], |row| row.get(0)).unwrap();
+        assert_eq!(parent, "attempt-full");
     }
 
     #[test]
     fn telemetry_query_class_matches_identifier_boundaries() {
         let request = |query: &str| Request {
+            attempt_id: None,
             build: String::new(),
             generation: 0,
             actor_id: None,
@@ -2352,6 +2423,7 @@ mod tests {
         let store = TelemetryStore::new(directory.path().join("development.db")).unwrap();
 
         let search = Request {
+            attempt_id: None,
             build: "test".into(),
             generation: 1,
             actor_id: None,
