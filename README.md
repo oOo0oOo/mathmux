@@ -103,6 +103,9 @@ checks without a diagnostic require an explicit `FILE` or `FILE:LINE` choice.
 Concurrent probes wait at most two seconds for a busy worker or worker startup
 lock, then return actionable retry guidance. Active checks are left running;
 probe execution deadlines are unchanged.
+Contention returns `probe busy (not queued)` with the occupied source and guidance
+to wait for the active request before continuing sequentially. Telemetry counts
+these rejected requests as `busy`, separately from infrastructure failures.
 
 Development builds print a retained telemetry `eREF` for failed daemon responses,
 including probe infrastructure failures. Attach it with

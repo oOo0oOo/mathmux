@@ -819,7 +819,7 @@ impl Searcher {
             let (ok, payload) = self
                 .checker
                 .probe_context(workspace, path, line, 0, "inspect_evidence", &row.name)
-                .context(crate::protocol::DiscoveryFailure::Infrastructure)?;
+                .map_err(crate::protocol::DiscoveryFailure::infrastructure)?;
             inspection_ok = ok;
             if ok {
                 let evidence: super::evidence::LeanEvidence =

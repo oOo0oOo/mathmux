@@ -86,6 +86,14 @@ fn probe_timeout(operation: &str) -> Duration {
 
 const PROBE_WORKER_QUEUE_WAIT: Duration = Duration::from_secs(2);
 
+fn probe_worker_lock_error(error: anyhow::Error, detail: &str) -> anyhow::Error {
+    if error.downcast_ref::<crate::coordination::LockWaitTimeout>().is_some() {
+        anyhow::anyhow!("{detail}").context(crate::protocol::DiscoveryFailure::Busy)
+    } else {
+        error.context(detail.to_owned())
+    }
+}
+
 fn probe_worker_wait(deadline: Instant) -> Result<Duration> {
     Ok(probe_phase_timeout(Some(deadline), PROBE_WORKER_QUEUE_WAIT, "worker queue")?
         .min(PROBE_WORKER_QUEUE_WAIT))
@@ -1205,7 +1213,8 @@ impl Checker {
         let (worker, inserted) = {
             let mut workers = if let Some(deadline) = deadline {
                 lock_mutex_until(&self.runner.workers, probe_worker_wait(deadline)?)
-                    .context("Lean worker startup is busy; retry probes sequentially after the active request finishes")?
+                    .map_err(|error| probe_worker_lock_error(error,
+                        "Lean worker startup is occupied. Wait for the active request to finish, then run probes sequentially; do not retry concurrently. No probe was executed."))?
             } else {
                 self.runner.workers.lock().expect("worker map poisoned")
             };
@@ -1260,9 +1269,8 @@ impl Checker {
         };
         let mut worker_guard = if let Some(deadline) = deadline {
             let wait_timeout = probe_worker_wait(deadline)?;
-            lock_mutex_until(&worker, wait_timeout).context(
-                "Lean worker is busy with another request; run probes for this file sequentially after it finishes",
-            )?
+            lock_mutex_until(&worker, wait_timeout).map_err(|error| probe_worker_lock_error(error,
+                &format!("Lean worker for {} is occupied. Wait for the active request to finish, then run probes for this file sequentially; do not retry concurrently. No probe was executed.", target.display())))?
         } else {
             worker.lock().expect("Lean worker poisoned")
         };
@@ -3175,6 +3183,19 @@ mod tests {
     fn test_repo(root: &Path) -> Repo {
         run_checked("git", ["init", "-b", "main"], root).unwrap();
         Repo::from_root(root).unwrap()
+    }
+
+    #[test]
+    fn worker_contention_is_busy_but_poisoning_remains_infrastructure() {
+        let busy = probe_worker_lock_error(crate::coordination::LockWaitTimeout.into(), "occupied");
+        let busy = crate::protocol::DiscoveryFailure::infrastructure(busy);
+        assert!(matches!(busy.downcast_ref::<crate::protocol::DiscoveryFailure>(),
+            Some(crate::protocol::DiscoveryFailure::Busy)));
+        assert!(format!("{busy:#}").contains("not queued"));
+        let broken = probe_worker_lock_error(anyhow::anyhow!("lock is poisoned"), "occupied");
+        let broken = crate::protocol::DiscoveryFailure::infrastructure(broken);
+        assert!(matches!(broken.downcast_ref::<crate::protocol::DiscoveryFailure>(),
+            Some(crate::protocol::DiscoveryFailure::Infrastructure)));
     }
 
     #[test]

@@ -120,6 +120,7 @@ pub struct SearchOutcome {
 pub(crate) enum DiscoveryFailure {
     InvalidRequest,
     UnavailableContext,
+    Busy,
     Infrastructure,
 }
 impl std::fmt::Display for DiscoveryFailure {
@@ -127,11 +128,22 @@ impl std::fmt::Display for DiscoveryFailure {
         f.write_str(match self {
             Self::InvalidRequest => "invalid discovery request",
             Self::UnavailableContext => "unavailable probe context",
+            Self::Busy => "probe busy (not queued)",
             Self::Infrastructure => "discovery infrastructure failure",
         })
     }
 }
 impl std::error::Error for DiscoveryFailure {}
+
+impl DiscoveryFailure {
+    pub(crate) fn infrastructure(error: anyhow::Error) -> anyhow::Error {
+        if error.downcast_ref::<Self>().is_some() {
+            error
+        } else {
+            error.context(Self::Infrastructure)
+        }
+    }
+}
 
 impl SearchOutcome {
     pub fn from_run(run: &crate::state::SearchRun) -> Self {

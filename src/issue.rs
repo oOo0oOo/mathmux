@@ -1010,6 +1010,7 @@ fn exchange_outcome_class(
                 return Some(match failure.as_str() {
                     "invalid_request" => "invalid_request",
                     "unavailable_context" => "unavailable_context",
+                    "busy" => "busy",
                     "lean_elaboration" => "formalization",
                     "infrastructure" => "operational_error",
                     _ => "unclassified_error",
@@ -1255,6 +1256,7 @@ fn render_aggregate(verb: &str, events: &[&TelemetryEvent]) -> String {
         })
         .count();
     let rss = events.iter().filter_map(|event| event.rss_kib).max();
+    let busy = events.iter().filter(|event| event.outcome_class.as_deref() == Some("busy")).count();
     let average = durations.iter().sum::<u64>() / durations.len() as u64;
     let mut outcomes = Vec::new();
     if failures > 0 {
@@ -1268,6 +1270,9 @@ fn render_aggregate(verb: &str, events: &[&TelemetryEvent]) -> String {
     }
     if partial > 0 {
         outcomes.push(format!("partial:{partial}"));
+    }
+    if busy > 0 {
+        outcomes.push(format!("busy:{busy}"));
     }
     outcomes.push(format!("err:{errors}"));
     let outcome = outcomes.join(" ");
@@ -1297,6 +1302,7 @@ fn render_event_line(event: &TelemetryEvent) -> String {
         Some("near_suggestions") => "near",
         Some("partial_result") => "partial",
         Some("formalization") => "failed",
+        Some("busy") => "busy",
         Some(
             "operational"
             | "operational_error"
@@ -2111,6 +2117,7 @@ mod tests {
         for (failure, expected) in [
             ("invalid_request", "invalid_request"),
             ("unavailable_context", "unavailable_context"),
+            ("busy", "busy"),
             ("lean_elaboration", "formalization"),
             ("infrastructure", "operational_error"),
             ("unknown_future_category", "unclassified_error"),

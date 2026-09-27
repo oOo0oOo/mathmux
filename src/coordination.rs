@@ -20,6 +20,16 @@ pub(crate) fn open_lock(path: &Path) -> Result<File> {
         .open(path)?)
 }
 
+#[derive(Debug)]
+pub(crate) struct LockWaitTimeout;
+
+impl std::fmt::Display for LockWaitTimeout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("lock wait timed out")
+    }
+}
+impl std::error::Error for LockWaitTimeout {}
+
 pub(crate) fn lock_mutex_until<'a, T>(
     lock: &'a Mutex<T>,
     timeout: Duration,
@@ -29,7 +39,7 @@ pub(crate) fn lock_mutex_until<'a, T>(
         match lock.try_lock() {
             Ok(guard) => return Ok(guard),
             Err(TryLockError::WouldBlock) if Instant::now() < deadline => pause(timeout),
-            Err(TryLockError::WouldBlock) => anyhow::bail!("lock wait timed out"),
+            Err(TryLockError::WouldBlock) => return Err(LockWaitTimeout.into()),
             Err(TryLockError::Poisoned(_)) => anyhow::bail!("lock is poisoned"),
         }
     }

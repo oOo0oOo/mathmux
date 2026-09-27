@@ -1531,12 +1531,12 @@ impl Searcher {
         let mut result = self
             .checker
             .probe_context(workspace, &path, line, 0, operation, &input)
-            .context(crate::protocol::DiscoveryFailure::Infrastructure)?;
+            .map_err(crate::protocol::DiscoveryFailure::infrastructure)?;
         if result.1.trim().is_empty() {
             result = self
                 .checker
                 .probe_context(workspace, &path, line, 0, operation, &input)
-                .context(crate::protocol::DiscoveryFailure::Infrastructure)?;
+                .map_err(crate::protocol::DiscoveryFailure::infrastructure)?;
         }
         if result.1.trim().is_empty() {
             return Err(anyhow::anyhow!(

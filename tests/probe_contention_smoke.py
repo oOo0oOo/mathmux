@@ -1,5 +1,5 @@
 """A busy probe returns promptly without interrupting a check. Args: binary, lean."""
-import json, os, pathlib, shutil, sqlite3, subprocess, sys, tempfile, time
+import concurrent.futures, json, os, pathlib, shutil, sqlite3, subprocess, sys, tempfile, time
 binary = str(pathlib.Path(sys.argv[1]).resolve())
 leanbin = pathlib.Path(sys.argv[2]).resolve().parent
 with tempfile.TemporaryDirectory(prefix='mathmux-probe-busy-') as tmp:
@@ -35,14 +35,23 @@ with tempfile.TemporaryDirectory(prefix='mathmux-probe-busy-') as tmp:
             time.sleep(.02)
         assert marker.exists(), 'check did not enter worker'
         started=time.monotonic()
-        probe=run([binary,'probe','Fixture.lean #check Nat'],ws,ok=False)
+        with concurrent.futures.ThreadPoolExecutor(3) as pool:
+            probes=list(pool.map(lambda term: run([binary,'probe','Fixture.lean #check '+term],ws,ok=False), ['Nat','Bool','String']))
         elapsed=time.monotonic()-started
-        assert probe.returncode != 0 and 'busy' in probe.stderr, (elapsed,probe.stdout,probe.stderr)
+        for probe in probes:
+            assert probe.returncode != 0 and 'probe busy (not queued)' in probe.stderr, (elapsed,probe.stdout,probe.stderr)
+            assert 'Fixture.lean' in probe.stderr and 'No probe was executed' in probe.stderr, probe.stderr
+            assert 'infrastructure failure' not in probe.stderr and 'lock wait timed out' not in probe.stderr, probe.stderr
         assert elapsed<4, elapsed
         assert check.poll() is None, 'active check was interrupted or probe waited for completion'
+        with sqlite3.connect(env['MATHMUX_ISSUE_DB']) as telemetry:
+            busy=telemetry.execute("SELECT outcome_class,error_class,attempt_id FROM telemetry_events WHERE verb='probe'").fetchall()
+        assert len(busy)==3 and all(row[:2]==('busy','busy') for row in busy), busy
+        assert len(set(row[2] for row in busy))==3, busy
         out,err=check.communicate(timeout=30)
         assert check.returncode==0,(out,err)
-        print('Busy probe returned promptly; active Lean check finished successfully')
+        assert 'Nat' in run([binary,'probe','Fixture.lean #check Nat'],ws).stdout
+        print('Three concurrent probes returned explicit busy outcomes; active check preserved; subsequent sequential probe passed')
     finally:
         if check is not None and check.poll() is None: check.communicate(timeout=30)
         try: daemon.wait(timeout=15)
