@@ -307,7 +307,7 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         (ws / 'Fixture/DependencyGuard.lean').write_text('import Fixture.BadDependency\ntheorem guard : True := by trivial\n')
         run(['git', 'add', 'Fixture/BadDependency.lean', 'Fixture/DependencyGuard.lean'], ws)
         run(['git', 'commit', '-m', 'isolated dependency error fixture'], ws)
-        dependency_check = run([binary, 'check', 'Fixture/DependencyGuard.lean'], ws, ok=False)
+        dependency_check = run([binary, 'check', 'Fixture/DependencyGuard.lean', '--setup-timeout', '60'], ws, ok=False)
         assert dependency_check.returncode != 0, dependency_check.stdout
         import re
         check_ref = re.search(r'\bc[0-9]+\b', dependency_check.stdout + dependency_check.stderr).group(0)
