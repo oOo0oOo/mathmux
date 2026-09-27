@@ -2532,9 +2532,11 @@ fn bare_lean_paths_require_explicit_source_context() {
         Ok(_) => panic!("bare Lean path unexpectedly accepted"),
     };
     assert_eq!(
-        error.to_string(),
-        "source file query needs a line, range, or facet: Demo.lean; use Demo.lean:LINE, Demo.lean:START-END, or Demo.lean dossier/outline/imports/dependents"
+        format!("{error:#}"),
+        "invalid discovery request: source file query needs a line, range, or facet: Demo.lean; use Demo.lean:LINE, Demo.lean:START-END, or Demo.lean dossier/outline/imports/dependents"
     );
+    assert!(matches!(error.downcast_ref::<crate::protocol::DiscoveryFailure>(),
+        Some(crate::protocol::DiscoveryFailure::InvalidRequest)));
 }
 
 #[test]

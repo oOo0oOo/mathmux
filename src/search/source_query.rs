@@ -544,9 +544,9 @@ pub(super) fn parse_source_occurrence_query(
             .and_then(|extension| extension.to_str())
             == Some("lean")
         {
-            bail!(
+            return Err(anyhow::anyhow!(
                 "source file query needs a line, range, or facet: {target}; use {target}:LINE, {target}:START-END, or {target} dossier/outline/imports/dependents"
-            );
+            )).context(crate::protocol::DiscoveryFailure::InvalidRequest);
         }
         return Ok(None);
     }
