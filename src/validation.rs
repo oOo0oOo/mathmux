@@ -253,11 +253,10 @@ fn validate(repo: &Repo, state: &State, submission: &Submission) -> Result<Valid
     build.arg("build").args(&roots);
     state.update_validation_progress(&submission.reference, "building project; waiting for Lake output")?;
     let mut last_progress = String::new();
+    let mut lake_progress = crate::util::LakeProgress::default();
     let output = run_command_with_observer(build, VALIDATION_BUILD_TIMEOUT, "validation build", || false,
         |stdout, stderr| {
-            let bytes = if stderr.is_empty() { stdout } else { stderr };
-            let tail = String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(4096)..]);
-            if let Some(line) = tail.lines().rev().find(|line| !line.trim().is_empty()) {
+            if let Some(line) = lake_progress.update(stdout, stderr) {
                 let detail = format!("building project: {}", crate::util::truncate_line(line.trim(), 300));
                 if detail != last_progress {
                     if state.update_validation_progress(&submission.reference, &detail).is_ok() {

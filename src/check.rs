@@ -1682,6 +1682,7 @@ impl Checker {
             .arg(lake_package_target(&workspace.path, target));
         let started = Instant::now();
         let mut last_report = Instant::now();
+        let mut lake_progress = crate::util::LakeProgress::default();
         let reason = if setup_is_current(&path, input_fingerprint) {
             "an imported artifact is unavailable"
         } else if setup_fingerprint_path(&path).is_file() {
@@ -1695,9 +1696,10 @@ impl Checker {
             probe_phase_timeout(deadline, DEPENDENCY_SETUP_TIMEOUT, "dependency setup")?,
             "dependency setup",
             || cancellation.is_some_and(|flag| flag.load(Ordering::SeqCst)),
-            |_, stderr| {
+            |stdout, stderr| {
+                let detail = lake_progress.update(stdout, stderr)
+                    .unwrap_or("Lake is preparing dependencies; waiting for task output");
                 if last_report.elapsed() >= Duration::from_secs(10) {
-                    let detail = dependency_setup_progress(stderr);
                     report(&format!("preparing imports for {} ({}s): {detail}", target.display(), started.elapsed().as_secs()));
                     last_report = Instant::now();
                 }
@@ -2129,17 +2131,6 @@ fn dependency_failure_is_formalization(stderr: &[u8]) -> bool {
 
 fn setup_fingerprint_path(setup_path: &Path) -> PathBuf {
     setup_path.with_extension("fingerprint")
-}
-
-fn dependency_setup_progress(stderr: &[u8]) -> String {
-    let tail = String::from_utf8_lossy(&stderr[stderr.len().saturating_sub(8192)..]);
-    let line = tail.lines().rev().find(|line| {
-        let line = line.trim();
-        line.starts_with("error:") || line.contains("] Built ") || line.contains("] Replayed ")
-            || line.contains("] Building ") || line.contains("] Running ")
-    }).or_else(|| tail.lines().rev().find(|line| !line.trim().is_empty()));
-    line.map(|line| crate::util::truncate_line(line.trim(), 300))
-        .unwrap_or_else(|| "Lake is preparing dependencies; waiting for output".into())
 }
 
 fn setup_is_current(setup_path: &Path, input_fingerprint: &str) -> bool {
@@ -3379,12 +3370,6 @@ mod tests {
         assert_eq!(state.running_check_runs().unwrap().len(), 1);
         drop(held);
         drop(checker);
-    }
-
-    #[test]
-    fn setup_progress_prefers_lake_tasks_over_warning_footers() {
-        assert_eq!(dependency_setup_progress(b""), "Lake is preparing dependencies; waiting for output");
-        assert_eq!(dependency_setup_progress("⚠ [12/90] Built Dependency\nwarning: unused variable\nNote: disable linter\n".as_bytes()), "⚠ [12/90] Built Dependency");
     }
 
     #[test]

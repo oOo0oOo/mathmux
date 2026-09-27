@@ -95,6 +95,39 @@ pub(crate) fn run_command_with_timeout_cancelable(
     run_command_with_observer(command, timeout, phase, cancelled, |_, _| {})
 }
 
+/// Track completed Lake task lines without replacing them with warning bodies.
+/// Offsets avoid rescanning large accumulated build logs on every callback.
+#[derive(Default)]
+pub(crate) struct LakeProgress {
+    offsets: [usize; 2],
+    latest: Option<String>,
+}
+
+impl LakeProgress {
+    pub(crate) fn update(&mut self, stdout: &[u8], stderr: &[u8]) -> Option<&str> {
+        for (index, bytes) in [stdout, stderr].into_iter().enumerate() {
+            let start = self.offsets[index].min(bytes.len());
+            let Some(end) = bytes[start..].iter().rposition(|byte| *byte == b'\n') else { continue; };
+            let end = start + end + 1;
+            for line in String::from_utf8_lossy(&bytes[start..end]).lines() {
+                let line = line.trim();
+                let task = line.split_once('[').and_then(|(_, rest)| rest.split_once("] "));
+                if task.is_some_and(|(count, action)| {
+                    count.split_once('/').is_some_and(|(done, total)| {
+                        !done.is_empty() && !total.is_empty() && done.bytes().all(|b| b.is_ascii_digit())
+                            && total.bytes().all(|b| b.is_ascii_digit())
+                    }) && ["Built ", "Replayed ", "Building ", "Running ", "Fetched ", "Compiled ", "Downloaded "]
+                        .iter().any(|prefix| action.starts_with(prefix))
+                }) || line.starts_with("Build completed ") {
+                    self.latest = Some(truncate_line(line, 300));
+                }
+            }
+            self.offsets[index] = end;
+        }
+        self.latest.as_deref()
+    }
+}
+
 pub(crate) fn run_command_with_observer(
     mut command: Command,
     timeout: Duration,
@@ -447,6 +480,19 @@ pub fn resident_memory_kib() -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lake_progress_survives_warning_floods_and_split_lines() {
+        let mut progress = LakeProgress::default();
+        let first = "⚠ [12/90] Built Dependency\nwarning: unused variable\n";
+        assert_eq!(progress.update(b"", first.as_bytes()), Some("⚠ [12/90] Built Dependency"));
+        let warnings = format!("{first}{}Note: This linter can be disabled\n", "warning body\n".repeat(2000));
+        assert_eq!(progress.update(b"", warnings.as_bytes()), Some("⚠ [12/90] Built Dependency"));
+        assert_eq!(progress.update("✔ [13/90] Bu".as_bytes(), warnings.as_bytes()), Some("⚠ [12/90] Built Dependency"));
+        assert_eq!(progress.update("✔ [13/90] Built Next\n".as_bytes(), warnings.as_bytes()), Some("✔ [13/90] Built Next"));
+        let mut empty = LakeProgress::default();
+        assert_eq!(empty.update(b"", b"Note: This linter can be disabled\n"), None);
+    }
+
     use super::*;
 
     #[test]
