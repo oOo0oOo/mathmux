@@ -6009,3 +6009,18 @@ fn compound_name_coverage_and_h0_alias_remain_scoped() {
     assert!(!hit_name_matches("Demo.homologyZero_norm_le", "h0"));
     assert!(hit_name_matches(name, "norm_le"));
 }
+
+#[test]
+fn verified_namespace_facet_does_not_request_the_same_lookup_again() {
+    let run = SearchRun {
+        reference: "q9".into(), workspace_ref: "w1".into(),
+        query: "Wrong.longName signature".into(), inference: "exact-miss".into(),
+        hits: vec![search_hit("Demo.longName")],
+        note: Some("no exact match\nVerified source candidate (not the requested exact name): Demo.longName\nRequested signature:\nNat".into()),
+        duration_ms: 0, created_at: 0,
+    };
+    let rendered = render_summary(&run);
+    assert!(rendered.contains("Requested signature:"));
+    assert!(rendered.contains("mathmux show q9 --all"));
+    assert!(!rendered.contains("next: mathmux probe"));
+}

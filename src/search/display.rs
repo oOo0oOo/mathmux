@@ -276,6 +276,10 @@ fn append_exact_miss_hint(output: &mut String, run: &SearchRun) {
     if run.inference != "exact-miss" {
         return;
     }
+    if run.note.as_deref().is_some_and(|note| note.contains("Verified source candidate (not the requested exact name):")) {
+        output.push_str(&format!("\nFull candidate source/context: mathmux show {} --all", run.reference));
+        return;
+    }
     if let Some(hit) = run.hits.first() {
         let name = shell_argument(probe_name(&hit.name));
         if hit.kind.starts_with("unmerged:") {
