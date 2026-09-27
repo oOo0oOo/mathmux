@@ -712,11 +712,7 @@ unsafe def main : IO UInt32 := do
     let text = combined_output(&output);
     let (failures, native_decides, sorries) = parse_axiom_audit_output(&text);
     if !output.status.success() && failures.is_empty() {
-        let detail = command_detail(&output);
-        if detail.trim().is_empty() {
-            bail!("axiom audit failed: process ended with {} and no diagnostic output", output.status);
-        }
-        bail!("axiom audit failed: {detail}");
+        bail!("{}", axiom_process_failure(&output));
     }
     Ok(AxiomAudit {
         evidence: text,
@@ -726,6 +722,12 @@ unsafe def main : IO UInt32 := do
     })
 }
 
+fn axiom_process_failure(output: &std::process::Output) -> String {
+    let detail = command_detail(output);
+    let detail = if detail.trim().is_empty() { "no diagnostic output" } else { detail.trim() };
+    format!("axiom audit failed: process ended with {}; {detail}", output.status)
+}
+
 #[cfg(test)]
 mod tests {
     use rusqlite::Connection;
@@ -733,6 +735,20 @@ mod tests {
 
     use super::*;
     use crate::util::{CommandTimeout, run_command_with_timeout};
+
+    #[test]
+    fn audit_signal_failure_keeps_exit_status_even_with_progress() {
+        use std::os::unix::process::ExitStatusExt;
+        for stdout in [Vec::new(), b"MATHMUX_AUDIT_PROGRESS\timporting project modules\n".to_vec()] {
+            let output = std::process::Output {
+                status: std::process::ExitStatus::from_raw(15), stdout, stderr: Vec::new(),
+            };
+            let detail = axiom_process_failure(&output);
+            assert!(detail.contains("signal: 15"), "{detail}");
+            if output.stdout.is_empty() { assert!(detail.contains("no diagnostic output")); }
+            else { assert!(detail.contains("importing project modules")); }
+        }
+    }
 
     #[test]
     fn host_load_brake_matches_cpu_capacity() {
