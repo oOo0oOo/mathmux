@@ -1900,18 +1900,42 @@ fn render_static_probe_summary(run: &SearchRun, focus: &str) -> String {
             }
         }
         "simp" => {
+            run.inference = "probe".into();
             run.hits.retain(|hit| {
                 hit.source
                     .as_deref()
                     .is_some_and(|source| source.contains("@[simp"))
             });
-            if run.hits.is_empty()
-                && !run
+            if run.hits.is_empty() {
+                let warming = run
                     .note
                     .as_deref()
-                    .is_some_and(|note| note.contains("warming"))
-            {
-                run.note = Some("no indexed @[simp] declaration in this name family".into());
+                    .is_some_and(|note| note.contains("index warming"));
+                run.note = Some(if warming {
+                    "Simp membership is unavailable while source indexing is in progress; retry later. No absence is established.".into()
+                } else {
+                    "Simp membership is unavailable from the index: no declaration with a textual @[simp...] attribute was found. Attributes may also be added elsewhere with `attribute [simp]`.".into()
+                });
+            } else {
+                let attributes = run
+                    .hits
+                    .iter()
+                    .filter_map(|hit| hit.source.as_deref())
+                    .filter_map(|source| source.lines().find(|line| line.contains("@[simp")))
+                    .filter_map(|line| {
+                        let attribute = &line[line.find("@[simp")?..];
+                        Some(&attribute[..=attribute.find(']')?])
+                    })
+                    .take(3)
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                prepend_search_note(
+                    &mut run.note,
+                    format!(
+                        "Indexed source contains a textual simp attribute: {}. Active Lean simp-set membership is not checked.",
+                        truncate_middle(&attributes, 300)
+                    ),
+                );
             }
             for hit in &mut run.hits {
                 hit.source = None;
@@ -3408,9 +3432,23 @@ mod tests {
             "   20  structure Config where\n   21    value : Nat\n   22    label : String"
         );
         let simp = render_static_probe_summary(&run, "simp");
+        assert!(simp.starts_with("probe result"), "{simp}");
+        assert!(simp.contains("textual simp attribute"), "{simp}");
+        assert!(simp.contains("Active Lean simp-set membership is not checked"));
         assert!(simp.contains("Demo.second"));
         assert!(!simp.contains("Demo.first"));
         assert!(!simp.contains(":= by"));
+
+        let mut no_simp_run = run.clone();
+        no_simp_run.hits.truncate(1);
+        let no_simp = render_static_probe_summary(&no_simp_run, "simp");
+        assert!(no_simp.contains("Simp membership is unavailable from the index"));
+        assert!(no_simp.contains("attribute [simp]"));
+
+        no_simp_run.note = Some("source index warming".into());
+        let warming_simp = render_static_probe_summary(&no_simp_run, "simp");
+        assert!(warming_simp.contains("Simp membership is unavailable while source indexing is in progress"));
+        assert!(warming_simp.contains("No absence is established"));
 
         let apply = render_static_probe_summary(&run, "apply");
         assert!(apply.contains("Demo.first"));
