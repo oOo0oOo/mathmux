@@ -3468,6 +3468,14 @@ fn exact_misses_overlay_active_sibling_declarations_as_unmerged() {
     assert!(recovered.ok);
     assert_eq!(recovered.hits[0].name.trim_start_matches("_root_."), "ContinuousLinearMap.prodMap_apply");
     assert!(!recovered.hits[0].kind.starts_with("unmerged:"));
+    fs::write(current.path.join("SmoothBundleAnalyticIndexContinuation282.lean"), "def realMember := 0\n").unwrap();
+    connection.execute("INSERT INTO search_fts(owner, origin, file, module, line, name, kind, signature, docs, body)
+        VALUES ('workspace:w1', 'module', 'SmoothBundleAnalyticIndexContinuation282.lean', 'Demo', 1,
+        'Demo.SmoothBundleAnalyticIndexContinuation282', 'file', '', '', '')", []).unwrap();
+    let module_miss = searcher.exact_miss_result(&current, "SmoothBundleAnalyticIndexContiuation282", &scopes, None, false, false).unwrap();
+    assert!(!module_miss.ok);
+    assert!(module_miss.note.as_deref().unwrap().contains("nearby source module (not a declaration): SmoothBundleAnalyticIndexContinuation282.lean"));
+    assert!(module_miss.note.as_deref().unwrap().contains("dossier"));
     let private_source = "namespace Demo\nprivate theorem hidden_private : True := trivial\nend Demo\n";
     fs::write(current.path.join("Private.lean"), private_source).unwrap();
     for (owner, name, signature) in [

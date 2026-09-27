@@ -3092,7 +3092,18 @@ impl Searcher {
         base_warming: bool,
         ambiguous: bool,
     ) -> Result<SearchResult> {
-        let mut suggestions = self.near_name_suggestions(query, scopes)?;
+        let nearby = self.near_name_rows(query, scopes)?;
+        let mut modules = nearby.iter().filter(|row| row.kind == "file"
+            && row.owner == format!("workspace:{}", workspace.reference)
+            && workspace.path.join(&row.path).is_file())
+            .map(|row| (edit_distance(&query.rsplit('.').next().unwrap_or(query).to_lowercase(),
+                &row.name.rsplit('.').next().unwrap_or(&row.name).to_lowercase()), row.path.clone()))
+            .filter(|(distance, _)| *distance <= 2).collect::<Vec<_>>();
+        modules.sort();
+        modules.dedup();
+        let module_hint = modules.first().filter(|first| modules.get(1).is_none_or(|next| next.0 > first.0))
+            .map(|(_, path)| format!("\nnearby source module (not a declaration): {path}; inspect: mathmux search {} dossier", shell_argument(path)));
+        let mut suggestions = rank_near_name_rows(query, nearby);
         if let Some(context) = import_context {
             suggestions
                 .sort_by_key(|candidate| !context.accessible.contains(&candidate.hit.module));
@@ -3109,6 +3120,7 @@ impl Searcher {
                 "no declaration named {query} in the indexed project or dependencies (index current); do not repeat this exact query"
             )
         };
+        if let Some(hint) = module_hint { note.push_str(&hint); }
         if !ambiguous && let Some((parent, leaf)) = query.rsplit_once('.') {
             let parent_rows = self.exact_candidates(parent, scopes)?;
             if parent_rows
@@ -3357,11 +3369,11 @@ impl Searcher {
         Ok(())
     }
 
-    fn near_name_suggestions(
+    fn near_name_rows(
         &self,
         query: &str,
         scopes: &HashSet<String>,
-    ) -> Result<Vec<Candidate>> {
+    ) -> Result<Vec<IndexedRow>> {
         let leaf = query.rsplit('.').next().unwrap_or(query).to_lowercase();
         if leaf.len() < 3 && !query.contains('.') {
             return Ok(Vec::new());
@@ -3370,8 +3382,7 @@ impl Searcher {
         install_active_scopes(&connection, scopes)?;
         // Exact misses must stay bounded: FTS prefix retrieval avoids scanning every
         // indexed declaration just to find a few typo/near-name candidates.
-        let rows = near_name_prefix_candidates(&connection, query)?;
-        Ok(rank_near_name_rows(query, rows))
+        near_name_prefix_candidates(&connection, query)
     }
 
     fn finish_exact(

@@ -432,6 +432,10 @@ fn compact_signature_preview(signature: &str) -> String {
     let mut output = String::new();
     let mut context_binders = 0;
     let mut remaining = signature.trim();
+    if let Some(rest) = remaining.strip_prefix("[private]") {
+        output.push_str("[private] ");
+        remaining = rest.trim_start();
+    }
     // Only the leading binder sequence is context. Brackets in explicit
     // argument types or the conclusion belong to the mathematical statement.
     while let Some(opening @ ('(' | '{' | '[' | '⦃')) = remaining.chars().next() {
@@ -745,6 +749,8 @@ mod tests {
             "(f : X → X) : Continuous f [context: 2 implicit/typeclass]"
         );
         assert_eq!(compact_signature_preview("Nat → Nat"), "Nat → Nat");
+        assert_eq!(compact_signature_preview("[private] {X : Type} (x : X) : X"),
+            "[private] (x : X) : X [context: 1 implicit/typeclass]");
         for signature in [
             "(hf : MemLp f p μ) (hg : MemLp g p μ) : hf.toLp f = hg.toLp g ↔ f =ᵐ[μ] g",
             "(f : E →L[𝕜] F) : f ∈ {g | Continuous g}",
