@@ -124,3 +124,7 @@ prerequisites, submit them first, or sync and recheck. Covered submissions show
 the actual covering validation status and retain an unverified label when that
 validation failed or its audit is obsolete. `show --wait --all` combines waiting
 with expanded stored detail.
+
+Development builds accept `mathmux show eREF` and `show eREF --all` to inspect
+retained telemetry directly. Event records are already complete and do not
+support `--wait`; they are diagnostic evidence, not proof certificates.

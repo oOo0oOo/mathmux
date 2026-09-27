@@ -24,6 +24,16 @@ with tempfile.TemporaryDirectory(prefix='mathmux-event-issue-') as tmp:
                (str(root), json.dumps({'summary': 'unique event failure evidence'})))
     db.commit()
     event = db.execute('SELECT id FROM telemetry_events').fetchone()[0]
+    for options in [[], ['--all']]:
+        shown = run(binary, 'show', f'e{event}', *options)
+        expected = run(binary, 'dev', 'show', f'e{event}', *options)
+        assert shown.stdout == expected.stdout and f'e{event} probe' in shown.stdout, shown
+        if options:
+            assert 'unique event failure evidence' in shown.stdout, shown
+    waiting = run(binary, 'show', f'e{event}', '--wait', ok=False)
+    assert waiting.returncode != 0 and 'already retained' in waiting.stderr, waiting
+    unknown = run(binary, 'show', 'e999999', ok=False)
+    assert unknown.returncode != 0 and 'unknown reference' in unknown.stderr, unknown
     reported = run(binary, 'issue', 'report', 'event reference regression', '--ref', f'e{event}')
     context = json.loads(db.execute('SELECT context_json FROM issues').fetchone()[0])
     assert context['related_ref'] == f'e{event}', context

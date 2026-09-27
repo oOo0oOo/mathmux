@@ -266,6 +266,7 @@ enum TopCommand {
     ///
     /// Accepts cREF, qREF, sREF, or wREF. --all expands stored detail while
     /// keeping raw build logs bounded. --wait waits for a running cREF or sREF validation.
+    /// Development builds also accept retained telemetry eREFs (without --wait).
     Show {
         /// Stored cREF, qREF, sREF, or wREF.
         reference: String,
@@ -464,6 +465,14 @@ pub fn run() -> Result<u8> {
     #[cfg(feature = "development")]
     if let TopCommand::Dev { command } = &args.command {
         return run_dev(command, &cwd);
+    }
+    #[cfg(feature = "development")]
+    if let TopCommand::Show { reference, all, wait, .. } = &args.command
+        && crate::reference::Reference::is_kind(reference, crate::reference::ReferenceKind::Event)
+    {
+        ensure!(!wait, "--wait applies only to checks and submissions; telemetry events are already retained");
+        output_summary(&telemetry_store(&cwd)?.show(reference, *all)?)?;
+        return Ok(0);
     }
     let repo = Repo::discover(&cwd)?;
     let development = development_enabled();
