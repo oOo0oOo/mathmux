@@ -640,10 +640,22 @@ open Lean
 
 unsafe def main : IO UInt32 := do
   initSearchPath (← findSysroot)
-  enableInitializersExecution
-  -- collectAxioms uses imported extension entries. Without loadExts it repeatedly
-  -- traverses dependency proof bodies instead of using Lean's exported axiom data.
-  let env ← importModules (leakEnv := true) (loadExts := true) #[{imports}] {{}} 0
+  IO.println "MATHMUX_AUDIT_PROGRESS\timporting project modules"
+  (← IO.getStdout).flush
+  let mut env ← importModules (leakEnv := true) #[{imports}] {{}} 0
+  -- Initialize only Lean's built-in axiom cache, using the same callback as
+  -- finalizePersistentExtensions. Loading every imported extension can dominate
+  -- a whole-project audit; collectAxioms needs only exportedAxiomsExt.
+  let axiomExts := (← persistentEnvExtensionsRef.get).filter fun ext =>
+    ext.name.getString! == "exportedAxiomsExt"
+  unless axiomExts.size == 1 do
+    throw <| IO.userError "Lean exported axiom extension unavailable or ambiguous"
+  let ext := axiomExts[0]!
+  let imported := ext.toEnvExtension.getState (asyncMode := .sync) env
+  let loaded ← ext.addImportedFn imported.importedEntries {{ env := env, opts := {{}} }}
+  env := ext.toEnvExtension.setState (asyncMode := .sync) env {{ imported with state := loaded }}
+  IO.println "MATHMUX_AUDIT_PROGRESS\tenumerating project declarations"
+  (← IO.getStdout).flush
   let projectModules : NameSet := #[{names}].foldl (fun set name => set.insert name) {{}}
   let allowed : NameSet := #[`propext, `Classical.choice, `Quot.sound].foldl
     (fun set name => set.insert name) {{}}
@@ -688,7 +700,7 @@ unsafe def main : IO UInt32 := do
         |stdout, _| {
             let tail = String::from_utf8_lossy(&stdout[stdout.len().saturating_sub(4096)..]);
             if let Some(progress) = tail.lines().rev().find_map(|line| line.strip_prefix("MATHMUX_AUDIT_PROGRESS\t")) {
-                let detail = format!("auditing transitive axioms: {progress} project declarations");
+                let detail = format!("auditing transitive axioms: {progress}");
                 if detail != last_progress && state.update_validation_progress(reference, &detail).is_ok() {
                     last_progress = detail;
                 }

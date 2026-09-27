@@ -7,23 +7,24 @@ audit = 'import Lean\nimport Lean.Util.CollectAxioms' + audit
 audit = audit.replace('{imports}', '{ module := `AuditFixture }').replace('{names}', '`AuditFixture').replace('{{','{').replace('}}','}')
 with tempfile.TemporaryDirectory(prefix='mathmux-audit-repro-') as tmp:
  p = pathlib.Path(tmp)
- (p/'AuditFixture.lean').write_text('import Lean\naxiom forbidden : False\ntheorem inherited : False := forbidden\ntheorem admitted : False := by sorry\ntheorem inheritedSorry : False := admitted\n')
+ (p/'AuditFixture.lean').write_text('import Lean\naxiom forbidden : False\ntheorem inherited : False := forbidden\ntheorem admitted : False := by sorry\ntheorem inheritedSorry : False := admitted\nprivate theorem hiddenProof : False := forbidden\ntheorem inheritedPrivate : False := hiddenProof\n')
  env = {**os.environ, 'LEAN_PATH': tmp, 'PATH': str(lean.parent)+os.pathsep+os.environ['PATH']}
  c = subprocess.run([str(lean), '-o', 'AuditFixture.olean', 'AuditFixture.lean'],cwd=p,env=env,text=True,capture_output=True)
  assert c.returncode == 0,c.stderr+c.stdout
  (p/'Audit.lean').write_text(audit)
  a = subprocess.run([str(lean), '--run', 'Audit.lean'],cwd=p,env=env,text=True,capture_output=True)
  assert a.returncode == 1, a.stdout+a.stderr
- findings = {line for line in a.stdout.splitlines() if not line.startswith('MATHMUX_AUDIT_PROGRESS')}
+ findings = {line for line in a.stdout.splitlines() if not line.startswith('MATHMUX_AUDIT_PROGRESS') and 'hiddenProof' not in line}
  assert 'MATHMUX_AXIOM\tforbidden\tforbidden' in findings, a.stdout+a.stderr
  assert 'MATHMUX_AXIOM\tforbidden\tinherited' in findings, a.stdout+a.stderr
+ assert 'MATHMUX_AXIOM\tforbidden\tinheritedPrivate' in findings, a.stdout+a.stderr
  assert 'MATHMUX_SORRY\tadmitted' in findings, a.stdout+a.stderr
  assert 'MATHMUX_SORRY\tinheritedSorry' in findings, a.stdout+a.stderr
- (p/'AuditFixture.lean').write_text('module\npublic import Lean\npublic axiom forbidden : False\npublic theorem inherited : False := forbidden\npublic theorem admitted : False := by sorry\npublic theorem inheritedSorry : False := admitted\n')
+ (p/'AuditFixture.lean').write_text('module\npublic import Lean\npublic axiom forbidden : False\npublic theorem inherited : False := forbidden\npublic theorem admitted : False := by sorry\npublic theorem inheritedSorry : False := admitted\nprivate theorem hiddenProof : False := forbidden\npublic theorem inheritedPrivate : False := hiddenProof\n')
  c = subprocess.run([str(lean), '-o', 'AuditFixture.olean', 'AuditFixture.lean'],cwd=p,env=env,text=True,capture_output=True)
  assert c.returncode == 0,c.stderr+c.stdout
  a = subprocess.run([str(lean), '--run', 'Audit.lean'],cwd=p,env=env,text=True,capture_output=True)
- assert a.returncode == 1 and {line for line in a.stdout.splitlines() if not line.startswith('MATHMUX_AUDIT_PROGRESS')} == findings, a.stdout+a.stderr
+ assert a.returncode == 1 and {line for line in a.stdout.splitlines() if not line.startswith('MATHMUX_AUDIT_PROGRESS') and 'hiddenProof' not in line} == findings, a.stdout+a.stderr
  (p/'AuditFixture.lean').write_text('import Lean\ntheorem clean : True := True.intro\n')
  c = subprocess.run([str(lean), '-o', 'AuditFixture.olean', 'AuditFixture.lean'],cwd=p,env=env,text=True,capture_output=True)
  assert c.returncode == 0,c.stderr+c.stdout
