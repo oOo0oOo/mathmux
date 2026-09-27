@@ -952,6 +952,7 @@ pub(super) fn uncovered_hit_terms(hits: &[SearchHit], terms: &[String]) -> Vec<S
         .iter()
         .filter(|term| {
             !searchable.contains(&ascii_numeric_spelling(term))
+                && !hits.iter().any(|hit| sobolev_zero_name_alias(&hit.name, term))
                 && !concept_alias(term).is_some_and(|alias| {
                     searchable
                         .split(|c: char| !c.is_alphanumeric())
@@ -1603,6 +1604,12 @@ pub(super) fn promote_result_context(ranked: &mut Vec<Candidate>, query: &str, t
     *ranked = context;
 }
 
+fn sobolev_zero_name_alias(name: &str, token: &str) -> bool {
+    if ascii_numeric_spelling(token).to_lowercase() != "h0" { return false; }
+    let parts = identifier_query_parts(name);
+    parts.iter().any(|part| part == "sobolev") && parts.iter().any(|part| part == "zero")
+}
+
 pub(super) fn hit_name_matches(name: &str, token: &str) -> bool {
     if name.eq_ignore_ascii_case(token) {
         return true;
@@ -1611,10 +1618,7 @@ pub(super) fn hit_name_matches(name: &str, token: &str) -> bool {
     let name_parts = identifier_query_parts(name);
     // H0 denotes order zero here only for a Sobolev API, not any theorem with
     // `zero` in its name (for example a homology calculation).
-    if matches!(ascii_numeric_spelling(leaf).to_lowercase().as_str(), "h0")
-        && name_parts.iter().any(|part| part == "sobolev")
-        && name_parts.iter().any(|part| part == "zero")
-    {
+    if sobolev_zero_name_alias(name, leaf) {
         return true;
     }
     // The query tokens have already been lowercased. Match a compound token

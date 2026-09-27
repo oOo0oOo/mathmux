@@ -6004,6 +6004,8 @@ fn compound_name_coverage_and_h0_alias_remain_scoped() {
     assert!(hit_name_matches(name, "sobolevzerospatialmultiplier"));
     assert!(hit_name_matches(name, "h0"));
     assert!(hit_name_matches(name, "h₀"));
+    assert!(uncovered_hit_terms(&[search_hit(name)], &["h0".into(), "h₀".into()]).is_empty());
+    assert!(!uncovered_hit_terms(&[search_hit("Demo.homologyZero")], &["h0".into()]).is_empty());
     assert!(!hit_name_matches("Demo.homologyZero_norm_le", "h0"));
     assert!(hit_name_matches(name, "norm_le"));
 }
