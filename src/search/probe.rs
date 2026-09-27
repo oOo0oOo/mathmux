@@ -876,7 +876,7 @@ impl Searcher {
             .map(|diagnostic| diagnostic.text.as_str())
             .unwrap_or("check has no diagnostic");
         let (path, line) = diagnostic_position(text, run.failed.as_deref());
-        let detail = match focus {
+        let mut detail = match focus {
             Some("context") => {
                 let mut detail =
                     diagnostic_context(text, diagnostic.and_then(|d| d.context.as_deref()));
@@ -922,6 +922,14 @@ impl Searcher {
                 "focus `{other}` is not valid for a stored check; valid analyses: goal, types, context, evidence"
             ),
         };
+        if matches!(focus, Some("types" | "evidence")) {
+            for expanded in self.state.check_information(reference)?.into_iter()
+                .filter(|diagnostic| diagnostic.kind == "mathmux.expandedTypeMismatch")
+            {
+                detail.push_str("\n\n");
+                detail.push_str(&expanded.text);
+            }
+        }
         self.store_probe_result(
             workspace,
             reference,

@@ -34,7 +34,7 @@ use crate::util::{
 
 mod diagnostics;
 
-use diagnostics::{attach_source_context, deduplicate, partition_diagnostics};
+use diagnostics::{attach_source_context, deduplicate, informational_diagnostics, partition_diagnostics};
 
 const CHECK_RESULT_VERSION: &[u8] = b"check-result-v3";
 const CHECK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -1035,6 +1035,7 @@ impl Checker {
                 }
             }
         }
+        self.state.append_check_information(reference, &informational_diagnostics(&response.diagnostics))?;
         let (warnings, linters, mut suggestions, mut diagnostics) =
             partition_diagnostics(&response.diagnostics);
         let mut warnings = warnings;
@@ -1119,6 +1120,7 @@ impl Checker {
         {
             return Ok(None);
         }
+        self.state.append_check_information(reference, &self.state.check_information(&certificate.reference)?)?;
         certificate.reference = reference.to_owned();
         certificate.created_at = now_unix_ms();
         Ok(Some(FileCheck {
@@ -4058,6 +4060,9 @@ noncomputable def second : Nat := 2
                 text: "Proof.lean:5:1: information: ordinary trace".into(),
             },
         ];
+        let information = informational_diagnostics(&diagnostics);
+        assert_eq!(information.len(), 1);
+        assert!(information[0].text.contains("ordinary trace"));
         let (warnings, linters, suggestions, mut errors) = partition_diagnostics(&diagnostics);
         assert_eq!(
             (

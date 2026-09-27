@@ -537,6 +537,19 @@ partial def firstErrorOrFinal (task : Language.SnapshotTask Language.Lean.Comman
   else
     return (false, command.diagnostics.msgLog ++ result.cmdState.messages, entries, none)
 
+/-- Preserve hidden typeclass arguments in saved mismatch evidence. -/
+partial def diagnosticPPAll : MessageData → MessageData
+  | .withContext ctx data =>
+    .withContext { ctx with opts := ctx.opts.setBool `pp.all true } (diagnosticPPAll data)
+  | .withNamingContext ctx data => .withNamingContext ctx (diagnosticPPAll data)
+  | .nest n data => .nest n (diagnosticPPAll data)
+  | .group data => .group (diagnosticPPAll data)
+  | .compose left right => .compose (diagnosticPPAll left) (diagnosticPPAll right)
+  | .tagged tag data => .tagged tag (diagnosticPPAll data)
+  | .ofOriginatingSyntax ref data => .ofOriginatingSyntax ref (diagnosticPPAll data)
+  | .ofWidget widget data => .ofWidget widget (diagnosticPPAll data)
+  | data => data
+
 def renderMessages (messages : MessageLog)
     (signature : Option (Position × Position) := none) : BaseIO (Array Diagnostic) := do
   let mut diagnostics := #[]
@@ -554,6 +567,14 @@ def renderMessages (messages : MessageLog)
       kind := message.kind.toString
       text
     }
+    if message.severity == .error && text.contains "Type mismatch" &&
+        (diagnostics.filter (·.kind == "mathmux.expandedTypeMismatch")).size < 3 then
+      let expanded ← Message.toString { message with data := diagnosticPPAll message.data }
+      diagnostics := diagnostics.push {
+        severity := "information"
+        kind := "mathmux.expandedTypeMismatch"
+        text := "Expanded type mismatch (pp.all):\n" ++ expanded
+      }
   return diagnostics
 
 def failureResponse (detail : String) (version : Nat) : Response :=

@@ -188,7 +188,7 @@ pub(crate) fn run_command_with_observer(
             return Err(CommandTimeout {
                 phase,
                 timeout,
-                last_output: recent_output(&stderr_bytes),
+                last_output: recent_output(if stderr_bytes.is_empty() { &stdout_bytes } else { &stderr_bytes }),
             }
             .into());
         }

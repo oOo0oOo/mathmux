@@ -101,6 +101,9 @@ phase_cases = [
 for body, _, _ in phase_cases:
     source = phase_header + body
     request('check', '', line=1)
+expanded_start = len(requests)
+source = "import Lean\nexample : List Nat := ([] : List Bool)\n"
+request('check', '', line=1)
 recovery_start = len(requests)
 recovery_sources = [
     "import Lean\nsection\nvariable (n : Nat)\ntheorem repaired : n = n := by\n  exact missingProof\ntheorem downstream : n = n := repaired n\nend\n",
@@ -131,6 +134,9 @@ with tempfile.TemporaryDirectory(prefix='mathmux-lean-probe-') as temp:
         assert response['ok'] == ok, response
         diagnostic_text = '\n'.join(d['text'] for d in response['diagnostics'])
         assert ('required in the declaration signature' in diagnostic_text) == hinted, response
+    expanded = responses[expanded_start]
+    assert not expanded['ok'], expanded
+    assert any(d['kind'] == 'mathmux.expandedTypeMismatch' and 'List.{0}' in d['text'] for d in expanded['diagnostics']), expanded
     for offset in range(0, 9, 3):
         failed, repaired, evidence = responses[recovery_start + offset:recovery_start + offset + 3]
         assert not failed['ok'], failed

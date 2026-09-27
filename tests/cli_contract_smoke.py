@@ -332,6 +332,18 @@ with tempfile.TemporaryDirectory(prefix='mmprobe-') as tmp:
         db.close()
         assert (ws / 'Fixture.lean').read_text() == source
         print('CLI smoke passed: inherited fields, default constructor inspection, complete stored input lists, dependency Lean error attribution, complete source snapshots/continuations/freshness, assumptions, source evidence, Lean evidence, inspection, application, cached evidence/invalidation, authored examples/routes, structured empty telemetry/provenance, unchanged source.')
+        # Successful #print output must survive storage and a cached recheck.
+        (ws / 'AuditMessages.lean').write_text('import Lean\ntheorem auditTruth : True := True.intro\n#print axioms auditTruth\n')
+        for _ in range(2):
+            checked = run([binary, 'check', 'AuditMessages.lean'], ws).stdout
+            checked_ref = checked.splitlines()[0].split()[1]
+            info = run([binary, 'show', checked_ref, '--all'], ws).stdout
+            assert "does not depend on any axioms" in info and 'auditTruth' in info, info
+        (ws / 'AuditMismatch.lean').write_text('import Lean\nexample : List Nat := ([] : List Bool)\n')
+        mismatch = run([binary, 'check', 'AuditMismatch.lean'], ws, ok=False)
+        mismatch_ref = (mismatch.stdout + mismatch.stderr).splitlines()[0].split()[1]
+        expanded = probe(mismatch_ref + ' types')
+        assert 'Expanded type mismatch (pp.all)' in expanded and 'List.{0}' in expanded, expanded
         # Repeated failures should expose existing recovery evidence, not only a link.
         recovery = ws / 'RepeatConversion.lean'
         recovery.write_text(

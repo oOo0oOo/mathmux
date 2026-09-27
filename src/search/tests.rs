@@ -3458,6 +3458,13 @@ fn exact_misses_overlay_active_sibling_declarations_as_unmerged() {
     assert!(recovered.ok);
     assert_eq!(recovered.hits[0].name.trim_start_matches("_root_."), "ContinuousLinearMap.prodMap_apply");
     assert!(!recovered.hits[0].kind.starts_with("unmerged:"));
+    fs::write(current.path.join("Fresh.lean"),
+        "theorem recover_coe (b : RecoveryBox) : (recoverBox b : Nat → Nat) = recoverFn b := rfl\n").unwrap();
+    // Prevent refresh to reproduce an index writer held by another workspace.
+    let _refresh = searcher.index.refresh_lock.lock().unwrap();
+    let evidence = searcher.failure_context(&current,
+        "Tactic `rewrite` failed: Did not find an occurrence of the pattern\n  recoverBox b\nin the target expression\n  recoverFn b.run = b.run", Some("Fresh.lean")).unwrap();
+    assert!(evidence.contains("recover_coe :"), "{evidence}");
 
 }
 

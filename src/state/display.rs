@@ -465,7 +465,7 @@ pub(super) fn render_submission(
     output
 }
 
-fn append_diagnostics(
+pub(super) fn append_diagnostics(
     output: &mut String,
     label: &str,
     diagnostics: &[Diagnostic],

@@ -352,6 +352,10 @@ impl State {
                 duration_ms INTEGER NOT NULL,
                 created_at INTEGER NOT NULL
              );
+             CREATE TABLE IF NOT EXISTS check_information (
+                check_ref TEXT PRIMARY KEY REFERENCES check_runs(ref) ON DELETE CASCADE,
+                information_json TEXT NOT NULL
+             );
              CREATE INDEX IF NOT EXISTS check_runs_workspace_created
                 ON check_runs(workspace_ref, created_at DESC);
              CREATE INDEX IF NOT EXISTS check_runs_workspace_status_created
@@ -880,6 +884,33 @@ impl State {
             .map_err(Into::into)
     }
 
+    pub fn check_information(&self, reference: &str) -> Result<Vec<Diagnostic>> {
+        Ok(self.open()?.query_row(
+            "SELECT information_json FROM check_information WHERE check_ref = ?1",
+            [reference], |row| json_column(row, 0),
+        ).optional()?.unwrap_or_default())
+    }
+
+    pub fn append_check_information(&self, reference: &str, information: &[Diagnostic]) -> Result<()> {
+        if information.is_empty() { return Ok(()); }
+        let _write_guard = self.write_guard();
+        let mut connection = self.open()?;
+        let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let mut stored: Vec<Diagnostic> = transaction.query_row(
+            "SELECT information_json FROM check_information WHERE check_ref = ?1",
+            [reference], |row| json_column(row, 0),
+        ).optional()?.unwrap_or_default();
+        for diagnostic in information {
+            if !stored.contains(diagnostic) { stored.push(diagnostic.clone()); }
+        }
+        transaction.execute(
+            "INSERT INTO check_information VALUES (?1, ?2) ON CONFLICT(check_ref) DO UPDATE SET information_json = excluded.information_json",
+            params![reference, serde_json::to_string(&stored)?],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn check_run(&self, reference: &str) -> Result<Option<CheckRun>> {
         self.open()?
             .query_row(
@@ -1365,10 +1396,17 @@ impl State {
             "show expects a saved reference such as c123 or q456; use search FILE:LINE or FILE:tail for source context, or probe NAME source for a declaration body"
         })?.kind();
         match kind {
-            ReferenceKind::Check => self
-                .check_run(reference)?
-                .map(|run| render_check_run(&run, all))
-                .with_context(|| format!("unknown reference {reference}")),
+            ReferenceKind::Check => {
+                let run = self.check_run(reference)?.with_context(|| format!("unknown reference {reference}"))?;
+                let mut output = render_check_run(&run, all);
+                let information = self.check_information(reference)?;
+                if all {
+                    display::append_diagnostics(&mut output, "Lean information", &information, None, usize::MAX);
+                } else if !information.is_empty() {
+                    output.push_str(&format!("\nLean information: {} messages; mathmux show {reference} --all", information.len()));
+                }
+                Ok(output)
+            },
             ReferenceKind::Submission => {
                 let submission = self
                     .submission(reference)?

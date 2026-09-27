@@ -973,6 +973,24 @@ impl Searcher {
         }
         terms.truncate(8);
         let mut candidates = self.contract_rows(workspace, &terms)?;
+        // A just-checked file may not have reached the shared source index yet.
+        // Its current local laws remain useful, explicitly unverified candidates.
+        if let Some(path) = path
+            && let Ok(source) = fs::read_to_string(workspace.path.join(path))
+        {
+            let module = project_module_name(&workspace.path, Path::new(path));
+            for entry in parse_source(&source, &module).into_iter()
+                .filter(|entry| matches!(entry.kind.as_str(), "theorem" | "lemma"))
+            {
+                candidates.retain(|row| row.module != module || canonical_declaration_name(&row.name) != canonical_declaration_name(&entry.name));
+                candidates.push(IndexedRow {
+                    owner: format!("workspace:{}", workspace.reference), path: path.into(),
+                    module: module.clone(), line: entry.line, name: entry.name,
+                    kind: entry.kind, signature: entry.signature, docs: entry.docs,
+                    body: entry.body, rank: 0.0,
+                });
+            }
+        }
         // Reserve retrieval for small application laws; otherwise one long
         // signature matching many ambient types can crowd them all out.
         for term in terms.iter().filter(|t| t.contains('.')).take(3) {

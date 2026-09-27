@@ -14,7 +14,7 @@ use crate::issue::{TelemetryOperation, TelemetryStore};
 use crate::repo::Repo;
 use crate::state::{State, Submission, ValidationReport, ValidationStatus};
 use crate::util::{
-    build_error_diagnostic, command_detail, output_text, run_checked, run_command_with_timeout,
+    build_error_diagnostic, command_detail, output_text, run_checked,
     run_output, run_command_with_observer,
 };
 use anyhow::{Context, Result, bail};
@@ -278,7 +278,7 @@ fn validate(repo: &Repo, state: &State, submission: &Submission) -> Result<Valid
     }
     restore_project_oleans(&repo.cache_dir, &root, &project_modules)?;
     state.update_validation_progress(&submission.reference, "build passed; auditing transitive axioms and sorry declarations")?;
-    let audit = match run_axiom_audit(repo, &root, &roots, &project_modules) {
+    let audit = match run_axiom_audit(repo, state, &submission.reference, &root, &roots, &project_modules) {
         Ok(audit) => audit,
         Err(error) => {
             return Ok(failed_report(
@@ -608,6 +608,8 @@ fn axiom_audit_command_args() -> Vec<String> {
 
 fn run_axiom_audit(
     repo: &Repo,
+    state: &State,
+    reference: &str,
     root: &Path,
     roots: &[String],
     project_modules: &[String],
@@ -638,7 +640,10 @@ open Lean
 
 unsafe def main : IO UInt32 := do
   initSearchPath (← findSysroot)
-  let env ← importModules #[{imports}] {{}} 0
+  enableInitializersExecution
+  -- collectAxioms uses imported extension entries. Without loadExts it repeatedly
+  -- traverses dependency proof bodies instead of using Lean's exported axiom data.
+  let env ← importModules (leakEnv := true) (loadExts := true) #[{imports}] {{}} 0
   let projectModules : NameSet := #[{names}].foldl (fun set name => set.insert name) {{}}
   let allowed : NameSet := #[`propext, `Classical.choice, `Quot.sound].foldl
     (fun set name => set.insert name) {{}}
@@ -654,18 +659,23 @@ unsafe def main : IO UInt32 := do
           let origin := env.header.moduleNames[index.toNat]!
           if projectModules.contains origin then names.push name else names
       | none => names) #[]
+  IO.println s!"MATHMUX_AUDIT_PROGRESS\t0/{{projectConstants.size}}"
+  (← IO.getStdout).flush
+  let mut inspected := 0
   for name in projectConstants do
     let action : CoreM (Array Name) := collectAxioms name
     let (axioms, _) ← action.toIO context state
     for axiomName in axioms do
       if axiomName == `sorryAx then
         sorries := sorries.push name
+        IO.println s!"MATHMUX_SORRY\t{{name}}"
       else if !allowed.contains axiomName then
         failures := failures.push (axiomName, name)
-  for name in sorries do
-    IO.println s!"MATHMUX_SORRY\t{{name}}"
-  for (axiomName, name) in failures do
-    IO.println s!"MATHMUX_AXIOM\t{{axiomName}}\t{{name}}"
+        IO.println s!"MATHMUX_AXIOM\t{{axiomName}}\t{{name}}"
+    inspected := inspected + 1
+    if inspected % 1000 == 0 || inspected == projectConstants.size then
+      IO.println s!"MATHMUX_AUDIT_PROGRESS\t{{inspected}}/{{projectConstants.size}}"
+      (← IO.getStdout).flush
   return if failures.isEmpty then 0 else 1
 "#
     );
@@ -673,8 +683,17 @@ unsafe def main : IO UInt32 := do
     fs::write(&path, source)?;
     let mut command = lake_command(repo, root);
     command.args(axiom_audit_command_args()).arg(&path);
-    let output = run_command_with_timeout(command, AXIOM_AUDIT_TIMEOUT, "axiom audit")
-        .context("cannot run axiom audit")?;
+    let mut last_progress = String::new();
+    let output = run_command_with_observer(command, AXIOM_AUDIT_TIMEOUT, "axiom audit", || false,
+        |stdout, _| {
+            let tail = String::from_utf8_lossy(&stdout[stdout.len().saturating_sub(4096)..]);
+            if let Some(progress) = tail.lines().rev().find_map(|line| line.strip_prefix("MATHMUX_AUDIT_PROGRESS\t")) {
+                let detail = format!("auditing transitive axioms: {progress} project declarations");
+                if detail != last_progress && state.update_validation_progress(reference, &detail).is_ok() {
+                    last_progress = detail;
+                }
+            }
+        }).context("cannot run axiom audit")?;
     let text = combined_output(&output);
     let (failures, native_decides, sorries) = parse_axiom_audit_output(&text);
     if !output.status.success() && failures.is_empty() {
@@ -694,7 +713,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::util::CommandTimeout;
+    use crate::util::{CommandTimeout, run_command_with_timeout};
 
     #[test]
     fn host_load_brake_matches_cpu_capacity() {

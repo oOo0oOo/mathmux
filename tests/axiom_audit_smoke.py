@@ -14,7 +14,7 @@ with tempfile.TemporaryDirectory(prefix='mathmux-audit-repro-') as tmp:
  (p/'Audit.lean').write_text(audit)
  a = subprocess.run([str(lean), '--run', 'Audit.lean'],cwd=p,env=env,text=True,capture_output=True)
  assert a.returncode == 1, a.stdout+a.stderr
- findings = set(a.stdout.splitlines())
+ findings = {line for line in a.stdout.splitlines() if not line.startswith('MATHMUX_AUDIT_PROGRESS')}
  assert 'MATHMUX_AXIOM\tforbidden\tforbidden' in findings, a.stdout+a.stderr
  assert 'MATHMUX_AXIOM\tforbidden\tinherited' in findings, a.stdout+a.stderr
  assert 'MATHMUX_SORRY\tadmitted' in findings, a.stdout+a.stderr
@@ -23,10 +23,10 @@ with tempfile.TemporaryDirectory(prefix='mathmux-audit-repro-') as tmp:
  c = subprocess.run([str(lean), '-o', 'AuditFixture.olean', 'AuditFixture.lean'],cwd=p,env=env,text=True,capture_output=True)
  assert c.returncode == 0,c.stderr+c.stdout
  a = subprocess.run([str(lean), '--run', 'Audit.lean'],cwd=p,env=env,text=True,capture_output=True)
- assert a.returncode == 1 and set(a.stdout.splitlines()) == findings, a.stdout+a.stderr
+ assert a.returncode == 1 and {line for line in a.stdout.splitlines() if not line.startswith('MATHMUX_AUDIT_PROGRESS')} == findings, a.stdout+a.stderr
  (p/'AuditFixture.lean').write_text('import Lean\ntheorem clean : True := True.intro\n')
  c = subprocess.run([str(lean), '-o', 'AuditFixture.olean', 'AuditFixture.lean'],cwd=p,env=env,text=True,capture_output=True)
  assert c.returncode == 0,c.stderr+c.stdout
  a = subprocess.run([str(lean), '--run', 'Audit.lean'],cwd=p,env=env,text=True,capture_output=True)
- assert a.returncode == 0 and not a.stdout.strip(), a.stdout+a.stderr
+ assert a.returncode == 0 and 'MATHMUX_AUDIT_PROGRESS' in a.stdout and 'MATHMUX_AXIOM' not in a.stdout and 'MATHMUX_SORRY' not in a.stdout, a.stdout+a.stderr
  print('Imported axiom audit smoke: forbidden axioms and transitive sorry detected; clean module passes.')

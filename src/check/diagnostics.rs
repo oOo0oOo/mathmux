@@ -5,6 +5,16 @@ use crate::state::Diagnostic;
 
 use super::WorkerDiagnostic;
 
+pub(super) fn informational_diagnostics(diagnostics: &[WorkerDiagnostic]) -> Vec<Diagnostic> {
+    let mut information = diagnostics.iter()
+        .filter(|diagnostic| matches!(diagnostic.severity.as_str(), "information" | "info") && !is_tactic_suggestion(diagnostic))
+        .map(|diagnostic| Diagnostic {
+            kind: diagnostic.kind.clone(), text: diagnostic.text.clone(), context: None,
+        }).collect::<Vec<_>>();
+    deduplicate(&mut information);
+    information
+}
+
 pub(super) fn partition_diagnostics(
     diagnostics: &[WorkerDiagnostic],
 ) -> (
