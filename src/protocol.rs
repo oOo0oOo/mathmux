@@ -64,6 +64,8 @@ pub enum Command {
         all: bool,
         #[serde(default)]
         wait: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wait_timeout: Option<u64>,
     },
     Restart,
 }
@@ -303,10 +305,11 @@ mod tests {
             r#"{"cwd":"/project","command":{"verb":"show","reference":"c1","all":false}}"#,
         )
         .unwrap();
-        let Command::Show { wait, .. } = request.command else {
+        let Command::Show { wait, wait_timeout, .. } = request.command else {
             panic!("expected show command");
         };
         assert!(!wait);
+        assert_eq!(wait_timeout, None);
 
         let request: Request =
             serde_json::from_str(r#"{"cwd":"/project","command":{"verb":"restart"}}"#).unwrap();
@@ -334,6 +337,7 @@ mod tests {
                 reference: "c1".into(),
                 all: false,
                 wait: true,
+                wait_timeout: None,
             }
             .transport_retry_safe()
         );

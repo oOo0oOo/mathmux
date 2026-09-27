@@ -64,3 +64,8 @@ New checks retain Lean informational messages, including `#print axioms`, in
 discarded by older versions cannot be recovered from their saved references.
 For type mismatches, `mathmux probe cREF types` and `evidence` include saved
 `pp.all` detail with explicit universe and instance arguments.
+
+`mathmux show sREF --wait` waits up to 600 seconds by default. For a long queue,
+use `mathmux show sREF --wait --wait-timeout 3600` (seconds, up to 86400).
+A wait timeout ends only the watcher; the check or validation continues.
+Build progress retains the latest Lake task across linter messages.

@@ -528,7 +528,8 @@ impl Service {
                 reference,
                 all,
                 wait,
-            } => self.show_reference(&reference, all, wait, report),
+                wait_timeout,
+            } => self.show_reference(&reference, all, wait, wait_timeout, report),
             Command::Restart => {
                 self.retiring.store(true, Ordering::SeqCst);
                 Ok("restarting mathmux daemon".into())
@@ -541,9 +542,10 @@ impl Service {
         reference: &str,
         all: bool,
         wait: bool,
+        wait_timeout: Option<u64>,
         report: &mut dyn FnMut(&str),
     ) -> Result<String> {
-        show_reference(&self.state, reference, all, wait, report)
+        show_reference(&self.state, reference, all, wait, wait_timeout, report)
     }
 }
 
@@ -552,8 +554,12 @@ fn show_reference(
     reference: &str,
     all: bool,
     wait: bool,
+    wait_timeout: Option<u64>,
     report: &mut dyn FnMut(&str),
 ) -> Result<String> {
+    ensure!(wait || wait_timeout.is_none(), "--wait-timeout requires --wait");
+    let timeout_secs = wait_timeout.unwrap_or(600);
+    ensure!((1..=86400).contains(&timeout_secs), "wait timeout must be between 1 and 86400 seconds");
     if !wait {
         return state.show(reference, all);
     }
@@ -563,7 +569,7 @@ fn show_reference(
         "`--wait` applies only to a cREF or a queued/running sREF"
     );
     let is_submission = Reference::is_kind(reference, ReferenceKind::Submission);
-    let deadline = Instant::now() + Duration::from_secs(10 * 60);
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     loop {
         if is_submission {
             let submission = state
@@ -577,7 +583,7 @@ fn show_reference(
             }
             if Instant::now() >= deadline {
                 bail!(
-                    "submission {reference} is still {} after 10 minutes; rerun `mathmux show {reference} --wait`",
+                    "submission {reference} is still {} after {timeout_secs} seconds; job continues; use `mathmux show {reference} --wait --wait-timeout 3600`",
                     submission.validation_status
                 );
             }
@@ -594,7 +600,7 @@ fn show_reference(
             }
             if Instant::now() >= deadline {
                 bail!(
-                    "check {reference} is still running after 10 minutes; rerun `mathmux show {reference} --wait`"
+                    "check {reference} is still running after {timeout_secs} seconds; job continues; use `mathmux show {reference} --wait --wait-timeout 3600`"
                 );
             }
             report(&format!("waiting for {reference} (running)"));
@@ -1144,6 +1150,9 @@ mod tests {
                 created_at: 0,
             })
             .unwrap();
+        let error = show_reference(&state, "s1", false, true, Some(1), &mut |_| {}).unwrap_err();
+        assert!(error.to_string().contains("after 1 seconds; job continues"));
+        assert_eq!(state.submission("s1").unwrap().unwrap().validation_status, ValidationStatus::Queued);
         let updater = state.clone();
         let thread = thread::spawn(move || {
             thread::sleep(Duration::from_millis(25));
@@ -1163,7 +1172,7 @@ mod tests {
                 .unwrap();
         });
         let mut progress = Vec::new();
-        let shown = show_reference(&state, "s1", false, true, &mut |message| {
+        let shown = show_reference(&state, "s1", false, true, Some(3), &mut |message| {
             progress.push(message.to_owned());
         })
         .unwrap();

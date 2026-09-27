@@ -269,9 +269,12 @@ enum TopCommand {
         /// Include expanded stored detail.
         #[arg(long, conflicts_with = "wait")]
         all: bool,
-        /// Wait for a running cREF or queued/running sREF to finish, with bounded progress updates.
+        /// Wait for a running cREF or queued/running sREF (default limit: 600 seconds).
         #[arg(long, conflicts_with = "all")]
         wait: bool,
+        /// Maximum wait in seconds (1–86400). Timing out leaves the job running.
+        #[arg(long, requires = "wait", value_name = "SECONDS", value_parser = clap::value_parser!(u64).range(1..=86400))]
+        wait_timeout: Option<u64>,
     },
     /// Restart only the MathMux daemon for this repository.
     ///
@@ -511,10 +514,12 @@ pub fn run() -> Result<u8> {
             reference,
             all,
             wait,
+            wait_timeout,
         } => Command::Show {
             reference,
             all,
             wait,
+            wait_timeout,
         },
         TopCommand::Restart => Command::Restart,
         #[cfg(feature = "development")]
@@ -889,6 +894,7 @@ fn replace_daemon(repo: &Repo, request: &Request) -> Result<UnixStream> {
                 reference: "q0".into(),
                 all: false,
                 wait: false,
+                wait_timeout: None,
             },
         };
         match exchange(stream, &probe) {
@@ -1026,16 +1032,28 @@ mod tests {
     }
 
     #[test]
+    fn show_wait_timeout_requires_wait_and_a_bounded_positive_value() {
+        let parsed = Args::try_parse_from(["mathmux", "show", "s1", "--wait", "--wait-timeout", "3600"]).unwrap();
+        assert!(matches!(parsed.command, TopCommand::Show { wait: true, wait_timeout: Some(3600), .. }));
+        assert!(Args::try_parse_from(["mathmux", "show", "s1", "--wait-timeout", "3600"]).is_err());
+        for value in ["0", "86401"] {
+            assert!(Args::try_parse_from(["mathmux", "show", "s1", "--wait", "--wait-timeout", value]).is_err());
+        }
+    }
+
+    #[test]
     fn show_wait_progress_is_bounded_without_changing_plain_show() {
         let show_wait = Command::Show {
             reference: "s1".into(),
             all: false,
             wait: true,
+            wait_timeout: None,
         };
         let plain_show = Command::Show {
             reference: "s1".into(),
             all: false,
             wait: false,
+            wait_timeout: None,
         };
 
         assert_eq!(exchange_progress_label(&show_wait), Some("show"));
