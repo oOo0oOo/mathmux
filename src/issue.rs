@@ -2021,6 +2021,7 @@ mod tests {
             command: Command::Check {
                 file: None,
                 profile: false,
+                setup_timeout: None,
             },
         };
         assert_eq!(
@@ -2369,6 +2370,7 @@ mod tests {
             command: Command::Check {
                 file: None,
                 profile: false,
+                setup_timeout: None,
             },
             ..search.clone()
         };

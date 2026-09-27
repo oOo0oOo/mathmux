@@ -32,6 +32,8 @@ pub enum Command {
         file: Option<String>,
         #[serde(default)]
         profile: bool,
+        #[serde(default)]
+        setup_timeout: Option<u64>,
     },
     Cancel {
         reference: String,
@@ -317,6 +319,12 @@ mod tests {
     }
 
     #[test]
+    fn old_check_requests_keep_default_setup_timeout() {
+        let command: Command = serde_json::from_str(r#"{"verb":"check","file":null,"profile":false}"#).unwrap();
+        assert!(matches!(command, Command::Check { setup_timeout: None, .. }));
+    }
+
+    #[test]
     fn only_idempotent_commands_are_transport_retry_safe() {
         assert!(Command::Sync { push: false }.transport_retry_safe());
         assert!(
@@ -328,7 +336,8 @@ mod tests {
         assert!(
             Command::Check {
                 file: None,
-                profile: false
+                profile: false,
+                setup_timeout: None,
             }
             .transport_retry_safe()
         );

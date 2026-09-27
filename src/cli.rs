@@ -203,6 +203,9 @@ enum TopCommand {
         /// Fresh elaboration with source hotspots and Lean timings; use only for slow checks.
         #[arg(long)]
         profile: bool,
+        /// Dependency preparation budget in seconds (default 900); target Lean keeps its own limit.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..=86400))]
+        setup_timeout: Option<u64>,
     },
     /// Cancel an owned running check and terminate its Lean process group.
     #[command(hide = true)]
@@ -471,7 +474,7 @@ pub fn run() -> Result<u8> {
             WsCommand::Delete { name, force } => Command::WsDelete { name, force },
         },
         TopCommand::Status { formalization_yaml } => Command::Status { formalization_yaml },
-        TopCommand::Check { file, profile } => Command::Check {
+        TopCommand::Check { file, profile, setup_timeout } => Command::Check {
             file: file.map(|path| {
                 let path = if path.is_absolute() {
                     path
@@ -481,6 +484,7 @@ pub fn run() -> Result<u8> {
                 path.to_string_lossy().into_owned()
             }),
             profile,
+            setup_timeout,
         },
         TopCommand::Cancel { reference } => Command::Cancel { reference },
         TopCommand::Search {
@@ -1022,6 +1026,7 @@ mod tests {
                 command: Command::Check {
                     file: None,
                     profile: false,
+                    setup_timeout: None,
                 },
             },
         )
@@ -1029,6 +1034,15 @@ mod tests {
         server_thread.join().unwrap();
         assert!(response.ok);
         assert_eq!(response.summary, "ok c1 1ms");
+    }
+
+    #[test]
+    fn check_setup_timeout_accepts_only_bounded_positive_seconds() {
+        let args = Args::try_parse_from(["mathmux", "check", "Proof.lean", "--setup-timeout", "3600"]).unwrap();
+        assert!(matches!(args.command, TopCommand::Check { setup_timeout: Some(3600), .. }));
+        for invalid in ["0", "86401", "-1"] {
+            assert!(Args::try_parse_from(["mathmux", "check", "--setup-timeout", invalid]).is_err());
+        }
     }
 
     #[test]

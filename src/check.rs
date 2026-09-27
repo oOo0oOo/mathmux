@@ -48,7 +48,11 @@ pub(crate) const PREWARM_TARGET_LIMIT: usize = 1;
 // A cold owner can spend a dependency build budget preparing imports before it reaches
 // Lean's own check budget. Duplicate target checks should wait for that owner
 // rather than fail shortly before its reusable result becomes available.
-const SHARED_CHECK_TIMEOUT: Duration = DEPENDENCY_SETUP_TIMEOUT.saturating_add(CHECK_TIMEOUT);
+fn dependency_setup_budget(seconds: Option<u64>) -> Result<Duration> {
+    let seconds = seconds.unwrap_or(DEPENDENCY_SETUP_TIMEOUT.as_secs());
+    ensure!((1..=86400).contains(&seconds), "setup timeout must be between 1 and 86400 seconds");
+    Ok(Duration::from_secs(seconds))
+}
 const COLD_PROBE_TIMEOUT: Duration = Duration::from_secs(16);
 const TACTIC_PROBE_TIMEOUT: Duration = Duration::from_secs(16);
 // Contextual `#check` must elaborate inferred terms in the surrounding file;
@@ -274,6 +278,7 @@ struct CheckOneOptions<'a> {
     reference: &'a str,
     cancellation: &'a AtomicBool,
     include_profile: bool,
+    setup_timeout: Duration,
     import_coverage: Option<ImportCoverage<'a>>,
 }
 
@@ -291,6 +296,7 @@ struct SetupRequest<'a> {
     target: &'a Path,
     input_fingerprint: &'a str,
     has_project_dependencies: bool,
+    setup_timeout: Duration,
     dependencies: &'a [PathBuf],
     deadline: Option<Instant>,
     cancellation: Option<&'a AtomicBool>,
@@ -455,8 +461,10 @@ impl Checker {
         workspace: &Workspace,
         requested: Option<&Path>,
         include_profile: bool,
+        setup_timeout: Option<u64>,
         report: &mut dyn FnMut(&str),
     ) -> Result<CheckOutcome> {
+        let setup_timeout = dependency_setup_budget(setup_timeout)?;
         let started = Instant::now();
         let (targets, dirty_targets) = if let Some(path) = requested {
             (vec![resolve_target(&workspace.path, path)?], None)
@@ -544,6 +552,7 @@ impl Checker {
                     reference: &reference,
                     cancellation: &cancellation,
                     include_profile,
+                    setup_timeout,
                     import_coverage: dirty_targets.as_ref().map(|dirty| ImportCoverage {
                         dirty,
                         passed: &covered_targets,
@@ -724,6 +733,7 @@ impl Checker {
             reference,
             cancellation,
             include_profile,
+            setup_timeout,
             import_coverage,
         } = options;
         let file_started = Instant::now();
@@ -752,10 +762,10 @@ impl Checker {
                     "{reference} waiting for shared check of {}",
                     target.display()
                 ));
-                lock_mutex_until(&check_lock, SHARED_CHECK_TIMEOUT).with_context(|| {
+                lock_mutex_until(&check_lock, setup_timeout.saturating_add(CHECK_TIMEOUT)).with_context(|| {
                     format!(
-                        "shared check of {} is still running after ten minutes; retry after it finishes",
-                        target.display()
+                        "shared check of {} is still running after {} seconds; retry after it finishes",
+                        target.display(), setup_timeout.saturating_add(CHECK_TIMEOUT).as_secs()
                     )
                 })?
             }
@@ -774,10 +784,10 @@ impl Checker {
                     "{reference} waiting for shared check of {}",
                     target.display()
                 ));
-                lock_exclusive_until(&process_lock, SHARED_CHECK_TIMEOUT).with_context(|| {
+                lock_exclusive_until(&process_lock, setup_timeout.saturating_add(CHECK_TIMEOUT)).with_context(|| {
                     format!(
-                        "shared check of {} is still running after ten minutes; retry after it finishes",
-                        target.display()
+                        "shared check of {} is still running after {} seconds; retry after it finishes",
+                        target.display(), setup_timeout.saturating_add(CHECK_TIMEOUT).as_secs()
                     )
                 })?;
             } else {
@@ -928,7 +938,7 @@ impl Checker {
             "{reference} preparing imports for {}",
             target.display()
         ));
-        let setup = self.worker_setup(workspace, target, &dependencies, Some(cancellation), report);
+        let setup = self.worker_setup(workspace, target, &dependencies, Some(cancellation), setup_timeout, report);
         let (setup_path, environment) = match setup {
             Ok(setup) => setup,
             Err(error) => {
@@ -1459,9 +1469,10 @@ impl Checker {
         target: &Path,
         dependencies: &[PathBuf],
         cancellation: Option<&AtomicBool>,
+        setup_timeout: Duration,
         report: &mut dyn FnMut(&str),
     ) -> Result<(PathBuf, String)> {
-        self.worker_setup_with_deadline_mode(workspace, target, dependencies, None, cancellation, false, report)
+        self.worker_setup_with_deadline_mode(workspace, target, dependencies, None, cancellation, false, setup_timeout, report)
     }
 
     fn worker_setup_with_deadline(
@@ -1479,6 +1490,7 @@ impl Checker {
             deadline,
             cancellation,
             false,
+            DEPENDENCY_SETUP_TIMEOUT,
             &mut |_| {},
         )
     }
@@ -1491,6 +1503,7 @@ impl Checker {
         deadline: Option<Instant>,
         cancellation: Option<&AtomicBool>,
         background: bool,
+        setup_timeout: Duration,
         report: &mut dyn FnMut(&str),
     ) -> Result<(PathBuf, String)> {
         let setup_input = setup_input_fingerprint(&workspace.path, target, dependencies)?;
@@ -1508,6 +1521,7 @@ impl Checker {
                         target,
                         input_fingerprint: &setup_input,
                         has_project_dependencies: !dependencies.is_empty(),
+                        setup_timeout,
                         dependencies,
                         deadline,
                         cancellation,
@@ -1604,6 +1618,7 @@ impl Checker {
             target,
             input_fingerprint,
             has_project_dependencies,
+            setup_timeout,
             dependencies,
             deadline,
             cancellation,
@@ -1696,7 +1711,7 @@ impl Checker {
         report(&format!("preparing imports for {}: {} transitive project dependencies; refreshing Lake setup ({reason})", target.display(), dependencies.len()));
         let output = run_command_with_observer(
             command,
-            probe_phase_timeout(deadline, DEPENDENCY_SETUP_TIMEOUT, "dependency setup")?,
+            probe_phase_timeout(deadline, setup_timeout, "dependency setup")?,
             "dependency setup",
             || cancellation.is_some_and(|flag| flag.load(Ordering::SeqCst)),
             |stdout, stderr| {
@@ -1833,6 +1848,7 @@ impl Checker {
             Some(deadline),
             None,
             true,
+            DEPENDENCY_SETUP_TIMEOUT,
             &mut |_| {},
         ) {
             Ok(setup) => setup,
@@ -3182,7 +3198,7 @@ mod tests {
         let checker = Checker::new(repo, state, None).unwrap();
         let requested = root.join(&target);
         let outcome = checker
-            .check(&workspace, Some(&requested), false, &mut |_| {})
+            .check(&workspace, Some(&requested), false, None, &mut |_| {})
             .unwrap();
 
         assert!(outcome.ok);
@@ -3385,11 +3401,14 @@ mod tests {
     }
 
     #[test]
-    fn shared_target_wait_covers_import_and_elaboration_budgets() {
-        assert_eq!(SHARED_CHECK_TIMEOUT, DEPENDENCY_SETUP_TIMEOUT + CHECK_TIMEOUT);
+    fn dependency_setup_budget_is_configurable_without_extending_probes() {
+        assert_eq!(dependency_setup_budget(None).unwrap(), DEPENDENCY_SETUP_TIMEOUT);
         assert!(DEPENDENCY_SETUP_TIMEOUT > CHECK_TIMEOUT);
+        assert_eq!(dependency_setup_budget(Some(3600)).unwrap(), Duration::from_secs(3600));
+        assert!(dependency_setup_budget(Some(0)).is_err());
+        assert!(dependency_setup_budget(Some(86401)).is_err());
         let deadline = Instant::now() + PROBE_SETUP_TIMEOUT;
-        assert!(probe_phase_timeout(Some(deadline), DEPENDENCY_SETUP_TIMEOUT, "dependency setup").unwrap() <= PROBE_SETUP_TIMEOUT);
+        assert!(probe_phase_timeout(Some(deadline), dependency_setup_budget(Some(3600)).unwrap(), "dependency setup").unwrap() <= PROBE_SETUP_TIMEOUT);
     }
 
     fn failed_file_check(fingerprint: &str) -> FileCheck {

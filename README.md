@@ -50,7 +50,10 @@ submissions cannot be retried.
 Cold dependency preparation has a separate cancellable fifteen-minute budget;
 target Lean elaboration remains limited to five minutes, and short probes retain
 their existing total deadlines. A dependency-preparation timeout can likewise be
-resumed by repeating the same `mathmux check` command. During preparation, the
+resumed by repeating the same `mathmux check` command. For a larger cold graph,
+use `mathmux check FILE --setup-timeout 3600` (seconds, 1–86400). This changes
+only dependency preparation; target elaboration and short probes keep their limits.
+During preparation, the
 check streams elapsed time and the latest Lake task every ten seconds;
 `mathmux show cREF` also retains its current phase. Unchanged direct imports
 can still require a rebuild when sync changes a transitive dependency.

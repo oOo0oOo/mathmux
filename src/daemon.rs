@@ -367,13 +367,14 @@ impl Service {
                 git::delete_workspace(&self.repo, &self.state, &name, force)?;
                 Ok(format!("{} deleted", workspace.reference))
             }
-            Command::Check { file, profile } => {
+            Command::Check { file, profile, setup_timeout } => {
                 let workspace = self.state.workspace_for_path(&cwd)?;
                 git::prepare_workspace(&self.repo, &workspace.path)?;
                 let outcome = self.checker.check(
                     &workspace,
                     file.as_deref().map(Path::new),
                     profile,
+                    setup_timeout,
                     report,
                 )?;
                 let mut summary = check_summary(&outcome);
