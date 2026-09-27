@@ -45,7 +45,9 @@ the database; `mathmux status` shows repository state.
 To resume a timed-out validation of the latest submission, use
 `mathmux dev revalidate sREF`, then `mathmux status`. Completed build artifacts
 are reused, and the full build and transitive axiom audit run again. Superseded
-submissions cannot be retried. A dependency-preparation timeout can likewise be
+submissions cannot be retried. Cold dependency preparation has a separate cancellable fifteen-minute budget;
+target Lean elaboration remains limited to five minutes, and short probes retain
+their existing total deadlines. A dependency-preparation timeout can likewise be
 resumed by repeating the same `mathmux check` command.
 
 The imported-constant audit supersedes older audit results. The daemon queues

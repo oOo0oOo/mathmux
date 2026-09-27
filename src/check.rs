@@ -39,14 +39,17 @@ use diagnostics::{attach_source_context, deduplicate, informational_diagnostics,
 const CHECK_RESULT_VERSION: &[u8] = b"check-result-v3";
 const CHECK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const CHECK_QUEUE_TIMEOUT: Duration = CHECK_TIMEOUT;
+// Cold guards may compile many imported project modules before target elaboration.
+// Keep that cancellable build budget separate from the target proof budget.
+const DEPENDENCY_SETUP_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 // Post-sync warming is opportunistic. It must not hold a workspace setup lock
 // for the same five-minute budget as an interactive check.
 const PREWARM_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const PREWARM_TARGET_LIMIT: usize = 1;
-// A cold owner can spend one check budget preparing imports before it reaches
+// A cold owner can spend a dependency build budget preparing imports before it reaches
 // Lean's own check budget. Duplicate target checks should wait for that owner
 // rather than fail shortly before its reusable result becomes available.
-const SHARED_CHECK_TIMEOUT: Duration = Duration::from_secs(2 * 5 * 60);
+const SHARED_CHECK_TIMEOUT: Duration = DEPENDENCY_SETUP_TIMEOUT.saturating_add(CHECK_TIMEOUT);
 const COLD_PROBE_TIMEOUT: Duration = Duration::from_secs(16);
 const TACTIC_PROBE_TIMEOUT: Duration = Duration::from_secs(16);
 // Contextual `#check` must elaborate inferred terms in the surrounding file;
@@ -1670,13 +1673,13 @@ impl Checker {
         let output = match cancellation {
             Some(cancellation) => run_command_with_timeout_cancelable(
                 command,
-                probe_phase_timeout(deadline, CHECK_TIMEOUT, "dependency setup")?,
+                probe_phase_timeout(deadline, DEPENDENCY_SETUP_TIMEOUT, "dependency setup")?,
                 "dependency setup",
                 || cancellation.load(Ordering::SeqCst),
             ),
             None => run_command_with_timeout(
                 command,
-                probe_phase_timeout(deadline, CHECK_TIMEOUT, "dependency setup")?,
+                probe_phase_timeout(deadline, DEPENDENCY_SETUP_TIMEOUT, "dependency setup")?,
                 "dependency setup",
             ),
         }
@@ -3347,7 +3350,10 @@ mod tests {
 
     #[test]
     fn shared_target_wait_covers_import_and_elaboration_budgets() {
-        assert_eq!(SHARED_CHECK_TIMEOUT, CHECK_QUEUE_TIMEOUT + CHECK_TIMEOUT);
+        assert_eq!(SHARED_CHECK_TIMEOUT, DEPENDENCY_SETUP_TIMEOUT + CHECK_TIMEOUT);
+        assert!(DEPENDENCY_SETUP_TIMEOUT > CHECK_TIMEOUT);
+        let deadline = Instant::now() + PROBE_SETUP_TIMEOUT;
+        assert!(probe_phase_timeout(Some(deadline), DEPENDENCY_SETUP_TIMEOUT, "dependency setup").unwrap() <= PROBE_SETUP_TIMEOUT);
     }
 
     fn failed_file_check(fingerprint: &str) -> FileCheck {
