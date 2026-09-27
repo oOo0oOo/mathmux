@@ -664,11 +664,14 @@ unsafe def main : IO UInt32 := do
   let mut failures : Array (Name × Name) := #[]
   let mut sorries : Array Name := #[]
   -- Imported constants live in stage one. foldStage2 would audit nothing here.
+  -- moduleNames maps the entire imported module array; compute it once, not
+  -- once for every constant (quadratic on large project environments).
+  let moduleNames := env.header.moduleNames
   let projectConstants := env.checked.get.constants.fold
     (fun names name _ =>
       match env.getModuleIdxFor? name with
       | some index =>
-          let origin := env.header.moduleNames[index.toNat]!
+          let origin := moduleNames[index.toNat]!
           if projectModules.contains origin then names.push name else names
       | none => names) #[]
   IO.println s!"MATHMUX_AUDIT_PROGRESS\t0/{{projectConstants.size}}"
