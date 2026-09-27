@@ -36,7 +36,7 @@ mod collisions;
 
 use diagnostics::{attach_source_context, deduplicate, informational_diagnostics, partition_diagnostics};
 
-const CHECK_RESULT_VERSION: &[u8] = b"check-result-v4-synthetic-sorry";
+const CHECK_RESULT_VERSION: &[u8] = b"check-result-v5-declaration-exports";
 const CHECK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const CHECK_QUEUE_TIMEOUT: Duration = CHECK_TIMEOUT;
 // Cold guards may compile many imported project modules before target elaboration.
@@ -1310,6 +1310,14 @@ impl Checker {
         } else {
             timeout
         };
+        let expected_names = if action.operation == "check" {
+            crate::search::expected_exported_declarations(
+                source,
+                &project_module_name(&workspace.path, target),
+            )
+        } else {
+            Vec::new()
+        };
         if cancellation.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
             drop(worker_guard);
             self.remove_worker(&key, &worker);
@@ -1330,6 +1338,7 @@ impl Checker {
             request_timeout,
             !profile,
             action,
+            &expected_names,
         );
         if let Some(reference) = check_reference {
             let mut active_processes = self
@@ -1388,6 +1397,7 @@ impl Checker {
                         timeout,
                         true,
                         action,
+                        &expected_names,
                     ) {
                         Ok((response, _)) => {
                             self.runner
@@ -2454,6 +2464,7 @@ impl LeanWorker {
         timeout: Duration,
         reuse_response: bool,
         action: WorkerAction<'_>,
+        expected_names: &[String],
     ) -> Result<(WorkerResponse, WorkerReuse)> {
         self.last_used = Instant::now();
         if reuse_response
@@ -2485,7 +2496,7 @@ impl LeanWorker {
                 line: action.line,
                 column: action.column,
                 input: action.input,
-                names: &[],
+                names: expected_names,
             },
             timeout,
         );
@@ -2596,7 +2607,7 @@ fn fallback_check(repo: &Repo, root: &Path, target: &Path) -> Result<WorkerRespo
         .output()?;
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    let diagnostics = [stdout, stderr]
+    let mut diagnostics = [stdout, stderr]
         .into_iter()
         .filter(|value| !value.is_empty())
         .map(|text| {
@@ -2612,8 +2623,15 @@ fn fallback_check(repo: &Repo, root: &Path, target: &Path) -> Result<WorkerRespo
             }
         })
         .collect::<Vec<_>>();
+    if output.status.success() {
+        diagnostics.push(WorkerDiagnostic {
+            severity: "error".into(),
+            kind: "mathmux.unverifiedExports".into(),
+            text: "Native Lean exited successfully, but the direct check worker was unavailable, so declaration exports and synthetic sorry terms could not be verified. No certificate was issued; retry the focused check.".into(),
+        });
+    }
     Ok(WorkerResponse {
-        ok: output.status.success(),
+        ok: false,
         diagnostics,
         profile: Vec::new(),
         detail: String::new(),
@@ -4078,6 +4096,7 @@ noncomputable def second : Nat := 2
 
     #[test]
     fn worker_request_matches_unified_lean_schema() {
+        let expected = vec!["Demo.visible".to_owned()];
         let request = WorkerRequest {
             operation: "check",
             source: "",
@@ -4086,10 +4105,10 @@ noncomputable def second : Nat := 2
             line: 0,
             column: 0,
             input: "",
-            names: &[],
+            names: &expected,
         };
         let value = serde_json::to_value(request).unwrap();
-        assert_eq!(value["names"], serde_json::json!([]));
+        assert_eq!(value["names"], serde_json::json!(["Demo.visible"]));
     }
 
     #[test]

@@ -6124,3 +6124,11 @@ fn warming_does_not_hide_known_suggestions_or_ambiguity() {
     run.note = Some("exact declaration not found in index: hidden\nsource index warming".into());
     assert!(render_summary(&run).contains("absence not established"));
 }
+#[test]
+fn focused_check_expected_exports_ignore_private_and_anonymous_declarations() {
+    let source = "namespace Demo\nprivate theorem hidden : True := trivial\ntheorem visible : True := trivial\ninstance : Inhabited Nat := ⟨0⟩\nend Demo\n";
+    assert_eq!(
+        expected_exported_declarations(source, "Demo.File"),
+        vec!["Demo.visible"]
+    );
+}

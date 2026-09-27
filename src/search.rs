@@ -53,6 +53,23 @@ pub(crate) use query::diagnostic_type_detail;
 use query::*;
 use source::*;
 use source_query::*;
+
+/// Public, explicitly named declarations that a successful focused check must export.
+/// The source parser provides namespace qualification; anonymous instances and
+/// private declarations deliberately have different generated kernel names.
+pub(crate) fn expected_exported_declarations(source: &str, module: &str) -> Vec<String> {
+    parse_source(source, module)
+        .into_iter()
+        .filter(|entry| {
+            matches!(
+                entry.kind.as_str(),
+                "theorem" | "lemma" | "def" | "abbrev" | "opaque" | "axiom"
+                    | "structure" | "class" | "inductive"
+            ) && !entry.signature.starts_with("[private]")
+        })
+        .map(|entry| entry.name.trim_start_matches("_root_.").to_owned())
+        .collect()
+}
 use tuning::{SEARCH_TUNING, fts_rank_sql, indexed_rows_sql, ranked_rows_sql};
 use type_worker::{TypeSearchHit, TypeSearchResult, TypeSearchState, TypeSearchWorker};
 

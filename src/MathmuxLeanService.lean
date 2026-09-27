@@ -540,7 +540,8 @@ def syntheticSorryMessages (env : Environment) (fileName : String) : MessageLog 
   return sorted.foldl (·.add ·) MessageLog.empty
 
 partial def firstErrorOrFinal (task : Language.SnapshotTask Language.Lean.CommandParsedSnapshot)
-    (fileMap : FileMap) (fileName : String) (profile : Bool) :
+    (fileMap : FileMap) (fileName : String) (profile : Bool)
+    (expected : Array String) :
     BaseIO (Bool × MessageLog × Array ProfileEntry × Option (Position × Position) × Array String) := do
   let command := task.get
   let result := command.elabSnap.resultSnap.get
@@ -555,17 +556,28 @@ partial def firstErrorOrFinal (task : Language.SnapshotTask Language.Lean.Comman
     else
       return (true, messages, entries, signatureRange? fileMap command.stx, #[])
   if let some next := command.nextCmdSnap? then
-    let (failed, messages, rest, signature, names) ← firstErrorOrFinal next fileMap fileName profile
+    let (failed, messages, rest, signature, names) ← firstErrorOrFinal next fileMap fileName profile expected
     return (failed, messages, entries ++ rest, signature, names)
   else
     -- Only this file's new kernel declarations, never imported constants.
     -- Generated public instance names are a common cross-module collision.
+    let emitted := result.cmdState.env.toKernelEnv.constants.foldStage2
+      (fun names name _ => names.push name.toString) #[]
     let names := result.cmdState.env.toKernelEnv.constants.foldStage2 (fun names name _ =>
       match name with
       | .str _ leaf =>
         if !name.isInternal && leaf.startsWith "inst" then names.push name.toString else names
       | _ => names) #[]
-    return (false, syntheticSorryMessages result.cmdState.env fileName, entries, none, names)
+    let mut messages := syntheticSorryMessages result.cmdState.env fileName
+    for name in expected do
+      if !emitted.contains name then
+        messages := messages.add {
+          fileName
+          pos := { line := 1, column := 0 }
+          severity := .error
+          data := .tagged `mathmux.missingDeclaration m!"Source declares `{name}`, but Lean's final environment did not export it. The focused check cannot certify this file; inspect the declaration header and section-variable elaboration."
+        }
+    return (false, messages, entries, none, names)
 
 /-- Preserve hidden typeclass arguments in saved mismatch evidence. -/
 partial def diagnosticPPAll : MessageData → MessageData
@@ -613,14 +625,14 @@ def failureResponse (detail : String) (version : Nat) : Response :=
     version := version }
 
 def processSnapshot (snapshot : Language.Lean.InitialSnapshot) (version : Nat)
-    (profile : Bool) : BaseIO Response := do
+    (profile : Bool) (expected : Array String := #[]) : BaseIO Response := do
   let some header := snapshot.result? |
     return ← failureWithDiagnostics snapshot "header parsing failed" version
   let processed := header.processedSnap.get
   let some processed := processed.result? |
     return ← failureWithDiagnostics snapshot "import processing failed" version
   let (failed, commandMessages, profileEntries, signature, names) ←
-    firstErrorOrFinal processed.firstCmdSnap snapshot.ictx.fileMap snapshot.ictx.fileName profile
+    firstErrorOrFinal processed.firstCmdSnap snapshot.ictx.fileMap snapshot.ictx.fileName profile expected
   let messages : MessageLog ← if failed then pure commandMessages else do
     let all ← collectTree (Language.toSnapshotTree snapshot)
     pure (commandMessages ++ all)
@@ -666,7 +678,7 @@ unsafe def runServer (setup : ModuleSetup) (profile : Bool) : IO Unit := do
       let response ← if request.operation ∉ ["check", "goal", "tactic", "term", "synth", "reduce", "inspect", "inspect_evidence"] then
         pure (probeFailure s!"unknown file operation: {request.operation}" request.version)
       else if request.operation == "check" then
-        processSnapshot snapshot request.version profile
+        processSnapshot snapshot request.version profile request.names
       else if request.line > 0 then
         runLocalProbe snapshot request
       else if request.operation ∈ ["term", "synth", "reduce"] then
