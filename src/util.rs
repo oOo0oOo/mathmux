@@ -29,7 +29,7 @@ impl std::fmt::Display for CommandTimeout {
         if self.phase == "dependency setup" {
             write!(
                 formatter,
-                "dependency setup exceeded {duration} while running lake setup-file; child process terminated; completed dependency artifacts are retained, rerun the same check to resume preparation"
+                "dependency setup exceeded {duration} while running lake setup-file; child process terminated; completed dependency artifacts, if any, are retained, but a module still compiling has no partial artifact. Retry a slow unchanged import with a longer `mathmux check --setup-timeout SECONDS FILE` budget"
             )
         } else {
             write!(

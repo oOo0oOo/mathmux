@@ -1724,6 +1724,7 @@ impl Checker {
         let started = Instant::now();
         let mut last_report = Instant::now();
         let mut lake_progress = crate::util::LakeProgress::default();
+        let mut last_active_dependency = None;
         let reason = if setup_is_current(&path, input_fingerprint) {
             "an imported artifact is unavailable"
         } else if setup_fingerprint_path(&path).is_file() {
@@ -1742,6 +1743,9 @@ impl Checker {
                     .unwrap_or("Lake is preparing dependencies; waiting for task output");
                 if last_report.elapsed() >= Duration::from_secs(10) {
                     let files = crate::util::active_lean_files(pid);
+                    if let Some(file) = files.first() {
+                        last_active_dependency = Some(file.clone());
+                    }
                     let active = if files.is_empty() {
                         "active dependency unavailable (Lake has not reported it)".to_owned()
                     } else {
@@ -1755,10 +1759,11 @@ impl Checker {
             },
         )
             .with_context(|| {
-                format!(
-                    "dependency preparation for {} did not complete; the target was not elaborated",
-                    target.display()
-                )
+                let active = last_active_dependency
+                    .as_deref()
+                    .map(|file| format!("; last active Lean source: {file}"))
+                    .unwrap_or_default();
+                format!("dependency preparation for {} did not complete; the target was not elaborated{active}", target.display())
             })?;
         if !output.status.success() {
             return Err(DependencySetupFailure {
@@ -3350,6 +3355,8 @@ mod tests {
                 .to_string()
                 .contains("dependency setup exceeded 50ms while running lake setup-file")
         );
+        assert!(error.to_string().contains("a module still compiling has no partial artifact"));
+        assert!(error.to_string().contains("--setup-timeout SECONDS FILE"));
     }
 
     #[test]
