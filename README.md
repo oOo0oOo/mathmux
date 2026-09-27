@@ -35,6 +35,7 @@ cargo build --release --features development
 cargo install --locked --force --features development --path .
 python tests/cli_contract_smoke.py /path/to/mathmux /path/to/pinned/lean
 python tests/lean_probe_smoke.py /path/to/project-toolchain/bin/lean
+python tests/synthetic_sorry_smoke.py /path/to/mathmux /path/to/project-toolchain/bin/lean
 python tests/axiom_audit_smoke.py /path/to/project-toolchain/bin/lean
 ```
 
@@ -128,3 +129,10 @@ with expanded stored detail.
 Development builds accept `mathmux show eREF` and `show eREF --all` to inspect
 retained telemetry directly. Event records are already complete and do not
 support `--wait`; they are diagnostic evidence, not proof certificates.
+
+Focused checks reject synthetic `sorry` terms inserted by Lean's error recovery,
+even when Lean suppresses the underlying error while re-elaborating section
+variables. The diagnostic names the affected declaration and its location.
+Ordinary explicit `sorry` remains a draft warning; imported guards and the full
+transitive axiom audit still determine proof completeness. Older focused-check
+certificates must be refreshed under this check behavior.

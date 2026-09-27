@@ -113,6 +113,30 @@ for _ in range(3):
     for source in recovery_sources:
         request('check', '', line=1)
     request('inspect_evidence', 'downstream', line=7)
+synthetic_start = len(requests)
+# Lean itself exits successfully here: re-elaborating the section binder after
+# the instance change suppresses the missing-instance error but inserts a
+# synthetic sorry into the declaration. No explicit sorry occurs in this source.
+synthetic_source = '''import Lean
+class C (α : Type) where
+  x : α
+def T (α : Type) [C α] := α
+instance instC : C Nat := ⟨0⟩
+variable (n : T Nat)
+attribute [-instance] instC
+def foo := n
+'''
+synthetic_cases = [
+    (synthetic_source, False, 'foo'),
+    (synthetic_source.replace('attribute [-instance] instC\n', ''), True, ''),
+    (synthetic_source, False, 'foo'),
+    ('import Lean\nnoncomputable def draft : Nat := by sorry\n', True, ''),
+    ('import Lean\naxiom recoveredType : sorryAx Type true\n', False, 'recoveredType'),
+    ('import Lean\nopaque recoveredBody : Nat := sorryAx Nat true\n', False, 'recoveredBody'),
+    (synthetic_source.replace('def foo', 'private def foo'), False, 'foo'),
+]
+for source, _, _ in synthetic_cases:
+    request('check', '', line=1)
 with tempfile.TemporaryDirectory(prefix='mathmux-lean-probe-') as temp:
     setup = pathlib.Path(temp) / 'setup.json'
     setup.write_text(json.dumps(dict(name='ProbeFixture', package=None, isModule=False,
@@ -124,6 +148,14 @@ with tempfile.TemporaryDirectory(prefix='mathmux-lean-probe-') as temp:
     assert result.returncode == 0, result.stderr + result.stdout
     responses = [json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')]
     assert len(responses) == len(requests), (result.stdout, result.stderr)
+    for response, (_, expected, declaration) in zip(responses[synthetic_start:], synthetic_cases):
+        assert response['ok'] == expected, response
+        synthetic = [d for d in response['diagnostics'] if d['kind'] == 'mathmux.syntheticSorry']
+        if expected:
+            assert not synthetic, response
+        else:
+            assert any(d['severity'] == 'error' and declaration in d['text'] for d in synthetic), response
+    assert ':8:4: error' in str(responses[synthetic_start]), responses[synthetic_start]
     for response, (_, term, _, expected) in zip(responses[legacy_count:], local_cases):
         assert response['ok'] == expected, response
         if expected:

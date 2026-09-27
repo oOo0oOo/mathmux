@@ -3,6 +3,7 @@ import Lean.Setup
 import Lean.Server.InfoUtils
 import Lean.Elab.Tactic
 import Lean.Util.CollectAxioms
+import Lean.Util.Sorry
 
 open Lean Lean.Elab
 open Lean.Core Lean.Meta Lean.Elab Lean.Elab.Term
@@ -516,8 +517,30 @@ def signatureRange? (fileMap : FileMap) (stx : Syntax) : Option (Position × Pos
   let stop ← signature.getTailPos?
   return (fileMap.toPosition start, fileMap.toPosition stop)
 
+/-- Lean may suppress errors while re-elaborating section variables. In that case
+it can finish successfully with synthetic (error-recovery) sorry terms. Inspect
+only this file's declarations; ordinary explicit sorry remains a draft warning. -/
+def syntheticSorryMessages (env : Environment) (fileName : String) : MessageLog := Id.run do
+  let offending := env.toKernelEnv.constants.foldStage2 (fun names name info =>
+    if info.type.hasSyntheticSorry || (info.value? true).any (·.hasSyntheticSorry) then
+      names.push name
+    else names) #[]
+  let mut messages : Array Message := #[]
+  for name in offending do
+    let range := declRangeExt.find? (level := .exported) env name <|>
+      declRangeExt.find? (level := .server) env name
+    let pos := range.map (·.selectionRange.pos) |>.getD { line := 1, column := 0 }
+    messages := messages.push {
+      fileName, pos
+      severity := .error
+      data := .tagged `mathmux.syntheticSorry m!"Declaration `{name}` contains a synthetic sorry inserted by Lean's error recovery. Lean did not retain the underlying elaboration error. Check section-variable binders and changes to local instances; explicit declaration binders can expose the error. This focused check cannot pass."
+    }
+  let sorted := messages.qsort fun a b =>
+    a.pos.line < b.pos.line || (a.pos.line == b.pos.line && a.pos.column < b.pos.column)
+  return sorted.foldl (·.add ·) MessageLog.empty
+
 partial def firstErrorOrFinal (task : Language.SnapshotTask Language.Lean.CommandParsedSnapshot)
-    (fileMap : FileMap) (profile : Bool) :
+    (fileMap : FileMap) (fileName : String) (profile : Bool) :
     BaseIO (Bool × MessageLog × Array ProfileEntry × Option (Position × Position) × Array String) := do
   let command := task.get
   let result := command.elabSnap.resultSnap.get
@@ -532,7 +555,7 @@ partial def firstErrorOrFinal (task : Language.SnapshotTask Language.Lean.Comman
     else
       return (true, messages, entries, signatureRange? fileMap command.stx, #[])
   if let some next := command.nextCmdSnap? then
-    let (failed, messages, rest, signature, names) ← firstErrorOrFinal next fileMap profile
+    let (failed, messages, rest, signature, names) ← firstErrorOrFinal next fileMap fileName profile
     return (failed, messages, entries ++ rest, signature, names)
   else
     -- Only this file's new kernel declarations, never imported constants.
@@ -542,7 +565,7 @@ partial def firstErrorOrFinal (task : Language.SnapshotTask Language.Lean.Comman
       | .str _ leaf =>
         if !name.isInternal && leaf.startsWith "inst" then names.push name.toString else names
       | _ => names) #[]
-    return (false, command.diagnostics.msgLog ++ result.cmdState.messages, entries, none, names)
+    return (false, syntheticSorryMessages result.cmdState.env fileName, entries, none, names)
 
 /-- Preserve hidden typeclass arguments in saved mismatch evidence. -/
 partial def diagnosticPPAll : MessageData → MessageData
@@ -597,8 +620,10 @@ def processSnapshot (snapshot : Language.Lean.InitialSnapshot) (version : Nat)
   let some processed := processed.result? |
     return ← failureWithDiagnostics snapshot "import processing failed" version
   let (failed, commandMessages, profileEntries, signature, names) ←
-    firstErrorOrFinal processed.firstCmdSnap snapshot.ictx.fileMap profile
-  let messages ← if failed then pure commandMessages else collectTree (Language.toSnapshotTree snapshot)
+    firstErrorOrFinal processed.firstCmdSnap snapshot.ictx.fileMap snapshot.ictx.fileName profile
+  let messages : MessageLog ← if failed then pure commandMessages else do
+    let all ← collectTree (Language.toSnapshotTree snapshot)
+    pure (commandMessages ++ all)
   let diagnostics := deduplicateDiagnostics (← renderMessages messages signature)
   return { ok := !messages.hasErrors, diagnostics, profile := profileEntries, names, version := version }
 

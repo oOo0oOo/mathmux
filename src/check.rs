@@ -36,7 +36,7 @@ mod collisions;
 
 use diagnostics::{attach_source_context, deduplicate, informational_diagnostics, partition_diagnostics};
 
-const CHECK_RESULT_VERSION: &[u8] = b"check-result-v3";
+const CHECK_RESULT_VERSION: &[u8] = b"check-result-v4-synthetic-sorry";
 const CHECK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const CHECK_QUEUE_TIMEOUT: Duration = CHECK_TIMEOUT;
 // Cold guards may compile many imported project modules before target elaboration.
