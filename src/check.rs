@@ -28,8 +28,7 @@ use crate::state::{
     FileCheckProfile, State, Workspace,
 };
 use crate::util::{
-    hash_bytes, hash_file, now_unix_ms, run_command_with_timeout,
-    run_command_with_timeout_cancelable,
+    hash_bytes, hash_file, now_unix_ms, run_command_with_observer,
 };
 
 mod diagnostics;
@@ -296,6 +295,7 @@ struct SetupRequest<'a> {
     deadline: Option<Instant>,
     cancellation: Option<&'a AtomicBool>,
     background: bool,
+    report: &'a mut dyn FnMut(&str),
 }
 
 pub struct Checker {
@@ -502,6 +502,11 @@ impl Checker {
             },
             &[],
         )?;
+        let mut persisted_report = |message: &str| {
+            let _ = self.state.update_check_progress(&reference, message);
+            report(message);
+        };
+        let report: &mut dyn FnMut(&str) = &mut persisted_report;
         let cancellation = Arc::new(AtomicBool::new(false));
         self.active_checks
             .lock()
@@ -923,7 +928,7 @@ impl Checker {
             "{reference} preparing imports for {}",
             target.display()
         ));
-        let setup = self.worker_setup(workspace, target, &dependencies, Some(cancellation));
+        let setup = self.worker_setup(workspace, target, &dependencies, Some(cancellation), report);
         let (setup_path, environment) = match setup {
             Ok(setup) => setup,
             Err(error) => {
@@ -1454,8 +1459,9 @@ impl Checker {
         target: &Path,
         dependencies: &[PathBuf],
         cancellation: Option<&AtomicBool>,
+        report: &mut dyn FnMut(&str),
     ) -> Result<(PathBuf, String)> {
-        self.worker_setup_with_deadline(workspace, target, dependencies, None, cancellation)
+        self.worker_setup_with_deadline_mode(workspace, target, dependencies, None, cancellation, false, report)
     }
 
     fn worker_setup_with_deadline(
@@ -1473,6 +1479,7 @@ impl Checker {
             deadline,
             cancellation,
             false,
+            &mut |_| {},
         )
     }
 
@@ -1484,6 +1491,7 @@ impl Checker {
         deadline: Option<Instant>,
         cancellation: Option<&AtomicBool>,
         background: bool,
+        report: &mut dyn FnMut(&str),
     ) -> Result<(PathBuf, String)> {
         let setup_input = setup_input_fingerprint(&workspace.path, target, dependencies)?;
         let environment_base = environment_fingerprint(&workspace.path, dependencies)?;
@@ -1504,6 +1512,7 @@ impl Checker {
                         deadline,
                         cancellation,
                         background,
+                        report,
                     },
                 )?;
                 environment =
@@ -1599,6 +1608,7 @@ impl Checker {
             deadline,
             cancellation,
             background,
+            report,
         } = request;
         let gc_lock = open_lock(&self.repo.state_dir.join("setup-gc.lock"))?;
         lock_shared_until(
@@ -1670,19 +1680,29 @@ impl Checker {
             .current_dir(lake_package_root(&workspace.path, target))
             .arg("setup-file")
             .arg(lake_package_target(&workspace.path, target));
-        let output = match cancellation {
-            Some(cancellation) => run_command_with_timeout_cancelable(
-                command,
-                probe_phase_timeout(deadline, DEPENDENCY_SETUP_TIMEOUT, "dependency setup")?,
-                "dependency setup",
-                || cancellation.load(Ordering::SeqCst),
-            ),
-            None => run_command_with_timeout(
-                command,
-                probe_phase_timeout(deadline, DEPENDENCY_SETUP_TIMEOUT, "dependency setup")?,
-                "dependency setup",
-            ),
-        }
+        let started = Instant::now();
+        let mut last_report = Instant::now();
+        let reason = if setup_is_current(&path, input_fingerprint) {
+            "an imported artifact is unavailable"
+        } else if setup_fingerprint_path(&path).is_file() {
+            "imports, transitive dependency sources, or project configuration changed"
+        } else {
+            "no saved setup"
+        };
+        report(&format!("preparing imports for {}: {} transitive project dependencies; refreshing Lake setup ({reason})", target.display(), dependencies.len()));
+        let output = run_command_with_observer(
+            command,
+            probe_phase_timeout(deadline, DEPENDENCY_SETUP_TIMEOUT, "dependency setup")?,
+            "dependency setup",
+            || cancellation.is_some_and(|flag| flag.load(Ordering::SeqCst)),
+            |_, stderr| {
+                if last_report.elapsed() >= Duration::from_secs(10) {
+                    let detail = dependency_setup_progress(stderr);
+                    report(&format!("preparing imports for {} ({}s): {detail}", target.display(), started.elapsed().as_secs()));
+                    last_report = Instant::now();
+                }
+            },
+        )
             .with_context(|| {
                 format!(
                     "dependency preparation for {} did not complete; the target was not elaborated",
@@ -1808,6 +1828,7 @@ impl Checker {
             Some(deadline),
             None,
             true,
+            &mut |_| {},
         ) {
             Ok(setup) => setup,
             Err(error) => {
@@ -2108,6 +2129,17 @@ fn dependency_failure_is_formalization(stderr: &[u8]) -> bool {
 
 fn setup_fingerprint_path(setup_path: &Path) -> PathBuf {
     setup_path.with_extension("fingerprint")
+}
+
+fn dependency_setup_progress(stderr: &[u8]) -> String {
+    let tail = String::from_utf8_lossy(&stderr[stderr.len().saturating_sub(8192)..]);
+    let line = tail.lines().rev().find(|line| {
+        let line = line.trim();
+        line.starts_with("error:") || line.contains("] Built ") || line.contains("] Replayed ")
+            || line.contains("] Building ") || line.contains("] Running ")
+    }).or_else(|| tail.lines().rev().find(|line| !line.trim().is_empty()));
+    line.map(|line| crate::util::truncate_line(line.trim(), 300))
+        .unwrap_or_else(|| "Lake is preparing dependencies; waiting for output".into())
 }
 
 fn setup_is_current(setup_path: &Path, input_fingerprint: &str) -> bool {
@@ -3099,6 +3131,7 @@ fn available_memory_gib() -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    use crate::util::{run_command_with_timeout, run_command_with_timeout_cancelable};
     use std::os::unix::process::CommandExt;
 
     use tempfile::tempdir;
@@ -3346,6 +3379,29 @@ mod tests {
         assert_eq!(state.running_check_runs().unwrap().len(), 1);
         drop(held);
         drop(checker);
+    }
+
+    #[test]
+    fn setup_progress_prefers_lake_tasks_over_warning_footers() {
+        assert_eq!(dependency_setup_progress(b""), "Lake is preparing dependencies; waiting for output");
+        assert_eq!(dependency_setup_progress("⚠ [12/90] Built Dependency\nwarning: unused variable\nNote: disable linter\n".as_bytes()), "⚠ [12/90] Built Dependency");
+    }
+
+    #[test]
+    fn check_progress_is_visible_while_running_and_cannot_overwrite_completion() {
+        let directory = tempdir().unwrap();
+        let state = State::new(directory.path().join("state.db")).unwrap();
+        let workspace = Workspace { reference: "w1".into(), name: "agent".into(),
+            path: directory.path().to_path_buf(), branch: "main".into(), model: None };
+        state.add_workspace(&workspace).unwrap();
+        let mut run = running_check(&workspace, "c1");
+        state.add_check_run(&run, &[]).unwrap();
+        state.update_check_progress("c1", "preparing imports (20s): [12/90] Built Dependency").unwrap();
+        assert!(state.show("c1", false).unwrap().contains("progress:\n  preparing imports (20s): [12/90] Built Dependency"));
+        run.status = CheckStatus::Passed;
+        state.add_check_run(&run, &[]).unwrap();
+        state.update_check_progress("c1", "late progress").unwrap();
+        assert!(state.check_run("c1").unwrap().unwrap().diagnostics.is_empty());
     }
 
     #[test]

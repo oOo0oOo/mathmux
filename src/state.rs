@@ -818,6 +818,16 @@ impl State {
         Ok(())
     }
 
+    pub fn update_check_progress(&self, reference: &str, detail: &str) -> Result<()> {
+        let diagnostics = vec![Diagnostic { kind: "mathmux.progress".into(), text: detail.into(), context: None }];
+        let _write_guard = self.write_guard();
+        self.open()?.execute(
+            "UPDATE check_runs SET diagnostics_json = ?2 WHERE ref = ?1 AND status = 'running'",
+            params![reference, serde_json::to_string(&diagnostics)?],
+        )?;
+        Ok(())
+    }
+
     pub fn running_check_runs(&self) -> Result<Vec<CheckRun>> {
         let connection = self.open()?;
         let mut statement = connection.prepare(

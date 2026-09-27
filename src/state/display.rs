@@ -316,7 +316,7 @@ pub(super) fn render_check_run(run: &CheckRun, all: bool) -> String {
             output.push_str(&format!("\n  {file}"));
         }
     }
-    append_diagnostics(&mut output, "diagnostics", &run.diagnostics, None, 120);
+    append_diagnostics(&mut output, if run.status == CheckStatus::Running { "progress" } else { "diagnostics" }, &run.diagnostics, None, 120);
     append_diagnostics(&mut output, "warnings", &run.warnings, Some(8), 30);
     append_diagnostics(&mut output, "suggestions", &run.suggestions, Some(8), 30);
     if all {

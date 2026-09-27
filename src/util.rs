@@ -76,6 +76,7 @@ where
         .with_context(|| format!("failed to start command in {}", cwd.display()))
 }
 
+#[cfg(test)]
 pub(crate) fn run_command_with_timeout(
     command: Command,
     timeout: Duration,
@@ -84,6 +85,7 @@ pub(crate) fn run_command_with_timeout(
     run_command_with_timeout_cancelable(command, timeout, phase, || false)
 }
 
+#[cfg(test)]
 pub(crate) fn run_command_with_timeout_cancelable(
     command: Command,
     timeout: Duration,
