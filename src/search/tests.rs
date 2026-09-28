@@ -4008,6 +4008,13 @@ fn warning_probe_indexes_current_residuals_and_invalidates_changed_source() {
     let dossier = searcher.probe(&workspace, &root, warning_ref).unwrap();
     assert!(dossier.contains("risk: high"), "{dossier}");
     assert!(dossier.contains("source context:"), "{dossier}");
+    let focused = searcher
+        .probe(&workspace, &root, &format!("{warning_ref} source"))
+        .unwrap_err();
+    assert!(matches!(
+        focused.downcast_ref::<crate::protocol::DiscoveryFailure>(),
+        Some(crate::protocol::DiscoveryFailure::InvalidRequest)
+    ));
 
     fs::write(root.join("Demo.lean"), format!("{source}\n")).unwrap();
     let stale = searcher

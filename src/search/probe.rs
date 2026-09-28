@@ -1029,10 +1029,12 @@ impl Searcher {
         focus: Option<&str>,
     ) -> Result<String> {
         if let Some(warning) = self.state.warning_probe(reference)? {
-            ensure!(
-                subject.is_none() && focus.is_none(),
-                "warning qREFs are complete dossiers and accept no further focus"
-            );
+            if subject.is_some() || focus.is_some() {
+                return Err(anyhow::anyhow!(
+                    "warning qREFs are complete dossiers and accept no further focus"
+                )
+                .context(crate::protocol::DiscoveryFailure::InvalidRequest));
+            }
             return self.probe_warning_reference(workspace, &warning);
         }
         let run = self
