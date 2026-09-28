@@ -3431,6 +3431,23 @@ fn exact_misses_overlay_active_sibling_declarations_as_unmerged() {
     assert_eq!(summary.matches("UNMERGED (").count(), 1);
     assert!(summary.contains("unmerged sibling declarations (not usable locally):"));
 
+    // A row arriving after the first exact lookup must be promoted from the
+    // near-name pass, never reported as an authoritative exact miss.
+    connection.execute(
+        "INSERT INTO search_fts(
+            owner, origin, file, module, line, name, kind, signature, docs, body
+         ) VALUES ('workspace:w1', 'current/Linear.lean', 'Linear.lean',
+                   'ContinuousLinearMap', 12, 'ContinuousLinearMap.prodMap_apply',
+                   'theorem', 'X → Y', '', '')",
+        [],
+    ).unwrap();
+    let recovered = searcher.exact_miss_result(
+        &current, "ContinuousLinearMap.prodMap_apply", &scopes, None, false, false,
+    ).unwrap();
+    assert!(recovered.ok, "{:?}", recovered.note);
+    assert_eq!(recovered.inference, "exact");
+    assert_eq!(canonical_declaration_name(&recovered.hits[0].name), "ContinuousLinearMap.prodMap_apply");
+
     for (owner, origin) in [
         ("workspace:w1", "current/OnlyFile.lean"),
         ("workspace:w2", "sibling/OnlyFile.lean"),

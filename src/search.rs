@@ -3110,6 +3110,39 @@ impl Searcher {
         ambiguous: bool,
     ) -> Result<SearchResult> {
         let nearby = self.near_name_rows(query, scopes)?;
+        // The index can gain a source row between the first exact lookup and
+        // near-name retrieval (notably just after sync). Never call a name
+        // absent while offering that very declaration as a suggestion.
+        if !ambiguous
+            && let Some(plan) = exact_plan(query, false)
+            && plan.refinement_tokens.is_empty()
+        {
+            let exact_nearby = nearby
+                .iter()
+                .filter(|row| !matches!(row.kind.as_str(), "file" | "imports"))
+                .filter(|row| exact_declaration_name_matches(&row.name, query))
+                .cloned()
+                .collect::<Vec<_>>();
+            if let Some(candidates) = contextual_exact_candidates(
+                ranked_exact_candidates(exact_nearby, query, workspace),
+                query,
+                import_context,
+            ) && let Some(candidate) = merge_exact_candidates(candidates)
+            {
+                return self.finish_exact(
+                    ExactMatch {
+                        candidate,
+                        matched: query.to_owned(),
+                        warming: false,
+                    },
+                    &plan,
+                    workspace,
+                    scopes,
+                    import_context,
+                    base_warming,
+                );
+            }
+        }
         let mut modules = nearby.iter().filter(|row| row.kind == "file"
             && row.owner == format!("workspace:{}", workspace.reference)
             && workspace.path.join(&row.path).is_file())
