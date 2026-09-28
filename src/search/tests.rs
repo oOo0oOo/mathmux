@@ -58,7 +58,7 @@ fn search_all_rejection_gives_declaration_specific_recovery() {
     );
     assert!(message.contains("this is a declaration query"), "{message}");
     assert!(
-        message.contains("mathmux probe AtiyahSinger.example source"),
+        message.contains("mathmux probe NAME source"),
         "{message}"
     );
     assert!(!message.contains("show qREF --all"), "{message}");

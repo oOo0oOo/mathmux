@@ -125,8 +125,8 @@ fn rejected_search_all_message(plan: &SearchPlan, query: &str) -> String {
     match plan {
         SearchPlan::Text(TextSearchPlan::ExactFirst) => format!(
             "search --all expands only explicit FILE:START-END or FILE:tail source reads; \
-             this is a declaration query. Use `mathmux search {query}` for its signature \
-             or `mathmux probe {query} source` for its source"
+             this is a declaration query. Use `mathmux search {query}` to resolve \
+             the exact name, then `mathmux probe NAME source` with that name"
         ),
         SearchPlan::Location(_) => format!(
             "search --all expands only explicit FILE:START-END or FILE:tail source reads; \
