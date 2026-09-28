@@ -51,6 +51,33 @@ fn search_all_accepts_only_explicit_source_ranges() {
 }
 
 #[test]
+fn search_all_rejection_gives_declaration_specific_recovery() {
+    let message = rejected_search_all_message(
+        &SearchPlan::Text(TextSearchPlan::ExactFirst),
+        "AtiyahSinger.example",
+    );
+    assert!(message.contains("this is a declaration query"), "{message}");
+    assert!(
+        message.contains("mathmux probe AtiyahSinger.example source"),
+        "{message}"
+    );
+    assert!(!message.contains("show qREF --all"), "{message}");
+
+    let message = rejected_search_all_message(
+        &SearchPlan::Location(SourceLocation {
+            path: "Demo.lean".into(),
+            display_path: None,
+            line: 10,
+            tail: false,
+            expanded: false,
+            declaration_span: None,
+        }),
+        "Demo.lean:10",
+    );
+    assert!(message.contains("explicit range or tail"), "{message}");
+}
+
+#[test]
 fn coverage_notes_do_not_call_complete_result_sets_weak() {
     let hits = vec![search_hit("Demo.alpha"), search_hit("Demo.beta_gamma")];
     let terms = vec!["alpha".into(), "beta".into(), "gamma".into()];

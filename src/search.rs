@@ -120,6 +120,25 @@ fn search_all_allowed(plan: &SearchPlan) -> bool {
     }
 }
 
+fn rejected_search_all_message(plan: &SearchPlan, query: &str) -> String {
+    let query = shell_argument(query);
+    match plan {
+        SearchPlan::Text(TextSearchPlan::ExactFirst) => format!(
+            "search --all expands only explicit FILE:START-END or FILE:tail source reads; \
+             this is a declaration query. Use `mathmux search {query}` for its signature \
+             or `mathmux probe {query} source` for its source"
+        ),
+        SearchPlan::Location(_) => format!(
+            "search --all expands only explicit FILE:START-END or FILE:tail source reads; \
+             use an explicit range or tail instead of `mathmux search {query} --all`"
+        ),
+        _ => format!(
+            "search --all expands only explicit FILE:START-END or FILE:tail source reads; \
+             retry `mathmux search {query}` without --all and refine the result"
+        ),
+    }
+}
+
 pub struct Searcher {
     repo: Repo,
     state: State,
@@ -1021,10 +1040,10 @@ impl Searcher {
             !expanded.context.is_empty(),
         )?;
         if request.all && !search_all_allowed(&planned.plan) {
-            return Err(anyhow::anyhow!(
-                "search --all is only for explicit FILE:START-END or FILE:tail reads; retry `mathmux search {}` then use `mathmux show qREF --all` on its returned reference",
-                shell_argument(&requested_query)
-            )
+            return Err(anyhow::anyhow!(rejected_search_all_message(
+                &planned.plan,
+                &requested_query
+            ))
             .context(crate::protocol::DiscoveryFailure::InvalidRequest));
         }
         let query = planned.query.as_str();
