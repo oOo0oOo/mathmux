@@ -541,8 +541,11 @@ fn rank_near_name_rows(query: &str, rows: Vec<IndexedRow>) -> Vec<Candidate> {
         })
         .collect::<Vec<_>>();
     suggestions.sort_by(|left, right| {
-        same_namespace_completion(query, &right.3)
-            .cmp(&same_namespace_completion(query, &left.3))
+        let complete_suffix = |name: &str| query.contains('.')
+            && qualified_suffix_segments(query, name) == query.split('.').count();
+        complete_suffix(&right.3).cmp(&complete_suffix(&left.3))
+            .then_with(|| same_namespace_completion(query, &right.3)
+                .cmp(&same_namespace_completion(query, &left.3)))
             .then_with(|| left.2.cmp(&right.2))
             .then_with(|| left.0.cmp(&right.0))
             .then_with(|| left.1.cmp(&right.1))
@@ -834,6 +837,23 @@ fn near_name_prefix_candidates(connection: &Connection, query: &str) -> Result<V
     let query = canonical_declaration_name(query);
     let leaf = query.rsplit('.').next().unwrap_or(query);
     let mut rows = name_prefix_candidates(connection, leaf)?;
+    if query.contains('.') {
+        // Retrieve the complete suffix before the common leaf's bounded window
+        // can crowd it out (e.g. HasFiniteIntegral.mono).
+        let sql = indexed_rows_sql(&format!(
+            "WHERE search_fts MATCH ?1
+             AND owner IN (SELECT owner FROM active_search_scopes)
+             AND lower(substr(name, -length(?2))) = ?2
+             LIMIT {}",
+            SEARCH_TUNING.retrieval.name_contains_rows,
+        ));
+        let mut statement = connection.prepare(&sql)?;
+        rows.extend(statement.query_map(
+            params![format!("name : \"{}\"", query.replace('"', "\"\"")), format!(".{}", query.to_lowercase())],
+            indexed_row_from_row,
+        )?.collect::<rusqlite::Result<Vec<_>>>()?);
+    }
+
     if rows.is_empty() {
         // Preserve the longest intact name components before falling back to a
         // generic first word whose bounded result window can hide close typos.
@@ -3211,10 +3231,10 @@ impl Searcher {
                 .iter()
                 .find(|row| !matches!(row.kind.as_str(), "file" | "imports"))
             {
-                // The parent is real; only the guessed member is not. Say so
-                // and route to its actual API instead of a bare absence.
+                // An unqualified parent can resolve under a longer namespace;
+                // an exact miss does not establish absence of its member.
                 note.push_str(&format!(
-                    "\n{parent} exists ({}); it has no indexed member `{leaf}`. Inspect it: mathmux probe {} usages",
+                    "\n{parent} exists ({}); member `{leaf}` did not resolve under this spelling. Inspect it: mathmux probe {} usages",
                     parent_row.kind,
                     shell_argument(parent),
                 ));

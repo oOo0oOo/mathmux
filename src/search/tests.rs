@@ -2250,6 +2250,26 @@ fn name_prefix_candidates_use_fts_and_respect_scopes() {
     let query = "SmoothBundleAnalyticIndexContiuation282";
     let ranked = rank_near_name_rows(query, near_name_prefix_candidates(&connection, query).unwrap());
     assert_eq!(ranked[0].hit.name, "AtiyahSinger.SmoothBundleAnalyticIndexContinuation282");
+    for index in 0..600 {
+        connection.execute("INSERT INTO search_fts VALUES ('workspace:w1', '', 'Demo.lean', 'Demo', 1, ?1, 'def', '', '', '')",
+            [format!("Unrelated{index}.mono")]).unwrap();
+    }
+    for (owner, name) in [
+        ("packages:demo", "MeasureTheory.HasFiniteIntegral.mono"),
+        ("packages:demo", "MeasureTheory.Integrable.mono"),
+        ("workspace:w2", "Inactive.HasFiniteIntegral.mono"),
+        ("workspace:w1", "HasFiniteIntegral.mono_extra"),
+    ] {
+        connection.execute("INSERT INTO search_fts VALUES (?1, '', 'Demo.lean', 'Demo', 1, ?2, 'def', '', '', '')",
+            params![owner, name]).unwrap();
+    }
+    for query in ["HasFiniteIntegral.mono", "Integrable.mono"] {
+        let rows = near_name_prefix_candidates(&connection, query).unwrap();
+        assert!(!rows.iter().any(|row| row.name.starts_with("Inactive.")));
+        let ranked = rank_near_name_rows(query, rows);
+        assert_eq!(ranked[0].hit.name, format!("MeasureTheory.{query}"));
+        assert!(!exact_declaration_name_matches(query, &ranked[0].hit.name));
+    }
     let unchanged = near_name_prefix_candidates(&connection, "prefixAlpha").unwrap();
     assert_eq!(unchanged.len(), 1);
     assert_eq!(unchanged[0].name, "Demo.prefixAlphaSuffix");
