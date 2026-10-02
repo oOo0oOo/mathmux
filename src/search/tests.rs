@@ -6206,3 +6206,48 @@ fn exact_source_recovery_is_not_crowded_out_by_concept_matches() {
     let unqualified = fallback_exact_source_candidates(directory.path(), leaf).unwrap();
     assert_eq!(unqualified.len(), 2, "preserve ambiguous unqualified declarations");
 }
+
+#[test]
+fn startup_cleanup_preserves_active_and_dependency_rows() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("root");
+    let state_dir = directory.path().join("state");
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(&state_dir).unwrap();
+    let repo = Repo {
+        root: root.clone(),
+        common_git_dir: directory.path().join("git"),
+        state_dir: state_dir.clone(),
+        socket_path: state_dir.join("daemon.sock"),
+        db_path: state_dir.join("state.sqlite3"),
+        search_db_path: state_dir.join("search.sqlite3"),
+        log_path: state_dir.join("daemon.log"),
+        cache_dir: state_dir.join("cache"),
+        integration_lock: state_dir.join("integration.lock"),
+        validation_lock: state_dir.join("validation.lock"),
+        startup_lock: state_dir.join("startup.lock"),
+    };
+    let state = State::new(repo.db_path.clone()).unwrap();
+    let current = Workspace { reference: "w1".into(), name: "current".into(),
+        path: root.clone(), branch: "current".into(), model: None };
+    state.add_workspace(&current).unwrap();
+    let checker = Arc::new(Checker::new(repo.clone(), state.clone(), None).unwrap());
+    let searcher = Searcher::new(repo.clone(), state, checker, None).unwrap();
+    let connection = searcher.open().unwrap();
+    for owner in ["workspace:w1", "workspace:w2", "artifacts:w2", "dependency:mathlib"] {
+        connection.execute("INSERT INTO search_files VALUES (?1, 'Demo.lean', ?2, 1, 1)",
+            params![owner, SOURCE_INDEX_KIND]).unwrap();
+        connection.execute("INSERT INTO search_fts(owner,origin,file,module,line,name,kind,signature,docs,body)
+            VALUES (?1,'Demo.lean','Demo.lean','Demo',1,'Demo.value','def','','','')", [owner]).unwrap();
+    }
+    // Also cover repair of a legacy index before owner-based deletion.
+    connection.execute("DELETE FROM search_meta WHERE key='origins_mapped'", []).unwrap();
+    searcher.migrate().unwrap();
+    let mut statement = connection.prepare("SELECT owner FROM search_fts ORDER BY owner").unwrap();
+    let remaining = statement.query_map([], |r| r.get::<_,String>(0)).unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>().unwrap();
+    assert_eq!(remaining, ["dependency:mathlib", "workspace:w1"]);
+    assert_eq!(connection.query_row("SELECT count(*) FROM search_origins", [], |r|r.get::<_,i64>(0)).unwrap(), 2);
+    searcher.migrate().unwrap();
+    assert_eq!(connection.query_row("SELECT count(*) FROM search_fts", [], |r|r.get::<_,i64>(0)).unwrap(), 2);
+}

@@ -1820,7 +1820,14 @@ impl Searcher {
                 "DELETE FROM search_reference_files WHERE owner = ?1",
                 [&owner],
             )?;
-            connection.execute("DELETE FROM search_fts WHERE owner = ?1", [&owner])?;
+            // origins_mapped was repaired above. Use its owner index instead
+            // of scanning every dependency declaration once per stale workspace.
+            connection.execute(
+                "DELETE FROM search_fts WHERE rowid IN (
+                    SELECT rowid FROM search_origins WHERE owner = ?1
+                 )",
+                [&owner],
+            )?;
             connection.execute("DELETE FROM search_origins WHERE owner = ?1", [&owner])?;
             connection.execute("DELETE FROM search_imports WHERE owner = ?1", [&owner])?;
             connection.execute("DELETE FROM search_files WHERE owner = ?1", [&owner])?;
