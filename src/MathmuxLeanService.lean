@@ -97,11 +97,24 @@ def goalsBetweenOffsets (trees : Array InfoTree) (_fileMap : FileMap)
         best := some candidate
   return best.map (·.2)
 
+-- A local inspection must not force unrelated later commands while looking
+-- for a tactic goal before falling back to a term context. Parsing continuation
+-- tasks have no syntax but carry a lower bound for the remaining source.
+def snapshotMayContainPosition (task : Language.SnapshotTask Language.SnapshotTree)
+    (start stop : Nat) : Bool := Id.run do
+  let last := if start < stop then stop - 1 else stop
+  if let some range := task.stx?.bind (·.getRange?) then
+    return range.start.byteIdx ≤ last && start ≤ range.stop.byteIdx
+  if let .some range := task.reportingRange then
+    return range.start.byteIdx ≤ last
+  return true
+
 partial def goalInSnapshotTree (tree : Language.SnapshotTree) (fileMap : FileMap)
     (start stop : Nat) : BaseIO (Option GoalsAtResult) := do
   if let some goal := goalsBetweenOffsets tree.element.infoTree?.toArray fileMap start stop then
     return some goal
   for child in tree.children do
+    if !snapshotMayContainPosition child start stop then continue
     if let some goal ← goalInSnapshotTree child.get fileMap start stop then
       return some goal
   return none
@@ -128,6 +141,7 @@ partial def contextInSnapshotTree (tree : Language.SnapshotTree) (fileMap : File
   if let some ctx := contextBetweenOffsets tree.element.infoTree?.toArray start stop then
     return some ctx
   for child in tree.children do
+    if !snapshotMayContainPosition child start stop then continue
     if let some ctx ← contextInSnapshotTree child.get fileMap start stop then
       return some ctx
   return none
