@@ -6183,3 +6183,26 @@ fn focused_check_expected_exports_ignore_private_and_anonymous_declarations() {
         vec!["Demo.visible"]
     );
 }
+
+#[test]
+fn exact_source_recovery_is_not_crowded_out_by_concept_matches() {
+    let directory = tempfile::tempdir().unwrap();
+    let name = "AtiyahSinger.realManifoldComplexNormalTensorEvenToOddDoubledVariableRankClass_Continuation286";
+    // A large project has many files sharing the namespace and concepts.
+    for i in 0..110 {
+        fs::write(directory.path().join(format!("Noise{i}.lean")),
+            format!("namespace AtiyahSinger\n{}\ndef other{i} := 0\nend AtiyahSinger\n",
+                "-- real manifold complex normal tensor even odd doubled variable rank class Continuation286\n".repeat(20))).unwrap();
+    }
+    fs::write(directory.path().join("Target.lean"),
+        "namespace AtiyahSinger\ndef realManifoldComplexNormalTensorEvenToOddDoubledVariableRankClass_Continuation286 := 0\nend AtiyahSinger\n").unwrap();
+    let leaf = name.rsplit('.').next().unwrap();
+    fs::write(directory.path().join("Other.lean"),
+        format!("namespace Other\ndef {leaf} := 0\nend Other\n")).unwrap();
+    let recovered = fallback_exact_source_candidates(directory.path(), name).unwrap();
+    assert_eq!(recovered.len(), 1, "only the requested namespace may match");
+    assert!(exact_declaration_name_matches(&recovered[0].hit.name, name),
+        "exact declaration was hidden by unrelated concept matches");
+    let unqualified = fallback_exact_source_candidates(directory.path(), leaf).unwrap();
+    assert_eq!(unqualified.len(), 2, "preserve ambiguous unqualified declarations");
+}

@@ -3023,7 +3023,7 @@ impl Searcher {
         // Recover from current source before declaring a miss or suggesting an
         // allegedly unmerged sibling that is already present after sync.
         let fallback = if rows.is_empty() {
-            fallback_source_candidates(&workspace.path, name, &meaningful_query_tokens(name))?
+            fallback_exact_source_candidates(&workspace.path, name)?
                 .into_iter()
                 .filter(|candidate| exact_declaration_name_matches(&candidate.hit.name, name))
                 .filter(|candidate| !matches!(candidate.hit.kind.as_str(), "file" | "imports"))

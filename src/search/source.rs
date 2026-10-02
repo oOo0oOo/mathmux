@@ -1358,6 +1358,19 @@ pub(super) fn fallback_source_candidates(
     query: &str,
     query_tokens: &[String],
 ) -> Result<Vec<Candidate>> {
+    source_candidates(workspace, query, query_tokens, false)
+}
+
+pub(super) fn fallback_exact_source_candidates(workspace: &Path, name: &str) -> Result<Vec<Candidate>> {
+    source_candidates(workspace, name, &meaningful_query_tokens(name), true)
+}
+
+fn source_candidates(
+    workspace: &Path,
+    query: &str,
+    query_tokens: &[String],
+    exact: bool,
+) -> Result<Vec<Candidate>> {
     let started = Instant::now();
     let scan_deadline = started + SOURCE_SCAN_BUDGET;
     let fallback_deadline = started + SOURCE_FALLBACK_BUDGET;
@@ -1411,6 +1424,13 @@ pub(super) fn fallback_source_candidates(
         } {
             terms.push(alias.to_owned());
         }
+    }
+    if exact {
+        // Exact recovery must not spend its bounded path budget on common
+        // namespace/concept words. The source can spell a qualified name as
+        // a leaf inside a namespace, so scan for that intact leaf, then
+        // validate the parsed fully qualified declaration below.
+        terms = vec![query.rsplit('.').next().unwrap_or(query).to_lowercase()];
     }
     terms.sort();
     terms.dedup();
@@ -1471,6 +1491,11 @@ pub(super) fn fallback_source_candidates(
         for entry in parse_source(&source, &module) {
             if Instant::now() >= fallback_deadline {
                 break 'paths;
+            }
+            if exact && (matches!(entry.kind.as_str(), "file" | "imports")
+                || !exact_declaration_name_matches(&entry.name, query))
+            {
+                continue;
             }
             let searchable =
                 format!("{} {} {}", entry.name, entry.signature, entry.body).to_lowercase();
