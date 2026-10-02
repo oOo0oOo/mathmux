@@ -1040,7 +1040,7 @@ impl Searcher {
         let run = self
             .state
             .search_run(reference)?
-            .with_context(|| format!("unknown query reference {reference}"))?;
+            .with_context(|| crate::state::missing_query_reference(reference))?;
         let hit = run.hits.get(hit_index).with_context(|| {
             format!(
                 "{reference} has {} result(s), not result #{}",
@@ -1659,7 +1659,7 @@ impl Searcher {
                 let run = self
                     .state
                     .search_run(&reference)?
-                    .with_context(|| format!("unknown query reference {reference}"))?;
+                    .with_context(|| crate::state::missing_query_reference(&reference))?;
                 ensure!(
                     run.workspace_ref == workspace.reference,
                     "{reference} belongs to {}; run the Lean probe from that workspace",

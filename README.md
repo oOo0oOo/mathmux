@@ -146,3 +146,9 @@ variables. The diagnostic names the affected declaration and its location.
 Ordinary explicit `sorry` remains a draft warning; imported guards and the full
 transitive axiom audit still determine proof completeness. Older focused-check
 certificates must be refreshed under this check behavior.
+
+Search and probe `qREF` snapshots are retained for up to 48 hours and 50,000
+results per repository. Historical packet references can therefore expire even
+when associated check or submission references still resolve. Re-run the original
+search or probe with its declaration or file context to obtain a fresh snapshot.
+An unknown query-reference response does not establish that its declaration is absent.

@@ -20,6 +20,14 @@ const STORED_PROFILE_LIMIT_BYTES: usize = 512 * 1024;
 const STATE_SCHEMA_VERSION: i64 = 4;
 pub(crate) const SEARCH_USAGE_LIMIT: usize = 8;
 
+pub(crate) fn missing_query_reference(reference: &str) -> String {
+    format!(
+        "unknown or expired query reference {reference}; search/probe snapshots are retained for up to {} hours and {} results. Rerun the original search or probe with its declaration/file context to create a fresh qREF; check and submission references have separate retention.",
+        SEARCH_HISTORY_AGE_MS / (60 * 60 * 1000), SEARCH_HISTORY_LIMIT
+    )
+}
+
+
 pub(crate) struct ContractEvidenceRecord {
     pub reference: String,
     pub theorem: String,
@@ -1480,7 +1488,7 @@ impl State {
             ReferenceKind::Query => self
                 .search_run(reference)?
                 .map(|run| render_search_run(&run, all))
-                .with_context(|| format!("unknown reference {reference}")),
+                .with_context(|| missing_query_reference(reference)),
             _ => bail!("reference {reference} is not stored in project state"),
         }
     }
