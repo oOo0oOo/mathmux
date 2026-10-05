@@ -13,12 +13,12 @@ cargo install --locked --force --git https://github.com/oOo0oOo/mathmux mathmux
 
 ## Use
 
-For a clean Lean repository at `~/proofs` with local `main` checked out:
+For a clean Lean repository at `~/formalization` with local `main` checked out:
 
 ```sh
-cd ~/proofs
+cd ~/formalization
 mathmux ws create my-work
-cd ../.mathmux-proofs/my-work
+cd ../.mathmux-formalization/my-work  # path printed by ws create
 ```
 
 Edit your Lean files in the new workspace, then:
@@ -41,6 +41,7 @@ pass with `sorry` declarations; these are reported separately.
 ## Search
 
 Find declarations by name, concept, or type; read and search source.
+Selected examples:
 
 ```sh
 mathmux search Nat.add_comm
@@ -56,6 +57,7 @@ mathmux search Proof.lean "/sorry|admit/"
 ## Probe
 
 Inspect declarations, goals, and failures; try Lean terms and tactics in context.
+Selected examples:
 
 ```sh
 mathmux probe Nat.add_comm signature
