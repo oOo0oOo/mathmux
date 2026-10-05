@@ -11,14 +11,15 @@ cargo install --locked --force --git https://github.com/oOo0oOo/mathmux mathmux
 
 ## Use
 
-From a clean Lean repository with local `main` checked out:
+For a clean Lean repository at `~/proofs` with local `main` checked out:
 
 ```sh
+cd ~/proofs
 mathmux ws create my-work
-cd <workspace-path>
+cd ../.mathmux-proofs/my-work
 ```
 
-Use the workspace path printed by `ws create`. Edit your Lean files there, then:
+Edit your Lean files in the new workspace, then:
 
 ```sh
 mathmux check
@@ -33,9 +34,32 @@ pass with `sorry` declarations; these are reported separately.
 To wait for validation, use `mathmux show sREF --wait`, replacing `sREF` with the
 submission reference printed by `submit`.
 
-- `mathmux search QUERY` finds declarations and source.
-- `mathmux probe NAME` inspects a known declaration.
-- `mathmux sync` brings changes from local `main` into your workspace.
-- `mathmux sync --push` publishes local `main` to its configured remote.
+`mathmux sync` brings changes from local `main` into your workspace.
+`mathmux sync --push` publishes local `main` to its configured remote.
+
+## Search and probe
+
+Search by name, concept, type, or source text; inspect a file’s declarations
+and imports:
+
+```sh
+mathmux search "Nat.add*"
+mathmux search "compact continuous"
+mathmux search "type:Nat → Nat"
+mathmux search Proof.lean dossier
+```
+
+Probe signatures, source, and usages; inspect goals and failed checks; try Lean
+terms or tactics in context:
+
+```sh
+mathmux probe Nat.add_comm signature
+mathmux probe Nat.add_comm usages
+mathmux probe cREF evidence
+mathmux probe Proof.lean:12 "by simp"
+```
+
+Replace `Proof.lean:12` with your file and line, and `cREF` with a failed check’s
+reference. Probes do not edit files or replace checks.
 
 Use `mathmux --help` or `mathmux COMMAND --help` for command details.
