@@ -3,6 +3,8 @@
 Mathmux manages Git workspaces for Lean projects, searches declarations, checks
 changes, and integrates submissions into local `main`.
 
+Use `mathmux --help` for an overview and `mathmux COMMAND --help` for details.
+
 ## Install
 
 ```sh
@@ -31,35 +33,39 @@ mathmux status
 changes into local `main`, and queues a build and axiom audit. Validation can
 pass with `sorry` declarations; these are reported separately.
 
-To wait for validation, use `mathmux show sREF --wait`, replacing `sREF` with the
-submission reference printed by `submit`.
+`mathmux show sREF --wait` waits for submission validation.
 
 `mathmux sync` brings changes from local `main` into your workspace.
 `mathmux sync --push` publishes local `main` to its configured remote.
 
-## Search and probe
+## Search
 
-Search by name, concept, type, or source text; inspect a file’s declarations
-and imports:
+Find declarations by name, concept, or type; read and search source.
 
 ```sh
+mathmux search Nat.add_comm
 mathmux search "Nat.add*"
 mathmux search "compact continuous"
 mathmux search "type:Nat → Nat"
+mathmux search Proof.lean:10-25
 mathmux search Proof.lean dossier
+mathmux search Proof.lean dependents
+mathmux search Proof.lean "/sorry|admit/"
 ```
 
-Probe signatures, source, and usages; inspect goals and failed checks; try Lean
-terms or tactics in context:
+## Probe
+
+Inspect declarations, goals, and failures; try Lean terms and tactics in context.
 
 ```sh
 mathmux probe Nat.add_comm signature
+mathmux probe Nat.add_comm source
 mathmux probe Nat.add_comm usages
+mathmux probe Fin fields
+mathmux probe Proof.lean:12 goal
 mathmux probe cREF evidence
+mathmux probe Proof.lean "#check Nat.add_comm"
 mathmux probe Proof.lean:12 "by simp"
 ```
 
-Replace `Proof.lean:12` with your file and line, and `cREF` with a failed check’s
-reference. Probes do not edit files or replace checks.
-
-Use `mathmux --help` or `mathmux COMMAND --help` for command details.
+Probes do not edit files or replace checks.
