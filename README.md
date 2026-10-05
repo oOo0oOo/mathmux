@@ -1,7 +1,7 @@
 # mathmux
 
-Mathmux manages Git workspaces for Lean projects, searches declarations, checks
-changes, and integrates submissions into local `main`.
+Mathmux supports parallel agent work through a local CLI for Git management,
+code search, and efficient Lean interaction.
 
 Use `mathmux --help` for an overview and `mathmux COMMAND --help` for details.
 
